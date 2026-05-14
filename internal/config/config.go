@@ -20,6 +20,8 @@ type DeviceConfig struct {
 	ADBPort     int    `json:"adb_port"`
 	DeviceID    string `json:"device_id"`
 	PackageName string `json:"package_name"`
+	ZoomOutKey  string `json:"zoom_out_key"` // Key to press for zoom out (e.g., "-")
+	ZoomInKey   string `json:"zoom_in_key"`  // Key to press for zoom in (e.g., "+")
 }
 
 type TrainingConfig struct {
@@ -83,7 +85,6 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	d.Duration = dur
 	return nil
 }
-
 func DefaultConfig() *BotConfig {
 	return &BotConfig{
 		Device: DeviceConfig{
@@ -91,6 +92,8 @@ func DefaultConfig() *BotConfig {
 			ADBPort:     5037,
 			DeviceID:    "localhost:5555",
 			PackageName: "com.supercell.clashofclans",
+			ZoomOutKey:  "i",
+			ZoomInKey:   "o",
 		},
 		Training: TrainingConfig{
 			Enabled:            true,

@@ -41,6 +41,7 @@ type Bot struct {
 
 	attackCount atomic.Int32
 	seqRunning  atomic.Bool
+	zoomedOut   atomic.Bool
 	startedAt   time.Time
 }
 
@@ -165,6 +166,9 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		navigator.SetTemplates(templates)
 	}
 
+	// Professional Zoom Out on first launch - moved to main loop to ensure village is loaded
+	// navigator.ZoomOut()
+
 	recognizer := game.NewRecognizer()
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -256,6 +260,14 @@ func (b *Bot) processFrame(gc *game.GameContext) {
 			Str("state", state.String()).
 			Int("score", score).
 			Msg("state detected")
+	}
+
+	// Professional Zoom Out on first detection of Main Village or Attack button
+	if (gc.State == game.StateMainVillage || b.templateMatch(screen, "btn_attack", 0.6)) && !b.zoomedOut.Load() {
+		if b.zoomedOut.CompareAndSwap(false, true) {
+			b.logger.Info().Msg("main village elements detected, performing initial zoom out...")
+			go b.navigator.ZoomOut()
+		}
 	}
 
 	if b.seqRunning.Load() {

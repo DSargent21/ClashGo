@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os/exec"
 	"sort"
 	"time"
 
@@ -154,6 +155,60 @@ func (n *Navigator) dismissShieldInfo() {
 
 func (n *Navigator) TapAt(x, y int) error {
 	return n.client.Tap(x, y)
+}
+
+func (n *Navigator) ZoomOut() {
+	// Execute ADB fallback in parallel to minimize total latency
+	go func() {
+		_ = n.client.KeyEvent(37) // KEYCODE_I
+	}()
+
+	// Native macOS AppleScript for BlueStacks
+	// We use hardware-level key down/up emulation for maximum reliability
+	// confirmed to work on macOS BlueStacks environments.
+	err := n.nativeZoom("i", 10)
+	if err != nil {
+		fmt.Printf("[Navigator] Native ZoomOut failed: %v\n", err)
+	}
+}
+
+func (n *Navigator) ZoomIn() {
+	go func() {
+		_ = n.client.KeyEvent(43) // KEYCODE_O
+	}()
+
+	err := n.nativeZoom("o", 5)
+	if err != nil {
+		fmt.Printf("[Navigator] Native ZoomIn failed: %v\n", err)
+	}
+}
+
+// nativeZoom executes a macOS AppleScript to send hardware-level keystrokes 
+// to the BlueStacks application.
+func (n *Navigator) nativeZoom(key string, repeats int) error {
+	script := fmt.Sprintf(`
+		tell application "BlueStacks" to activate
+		delay 0.8
+		tell application "System Events"
+			repeat %d times
+				key down "%s"
+				delay 0.05
+				key up "%s"
+				delay 0.02
+			end repeat
+		end tell
+	`, repeats, key, key)
+
+	return exec.Command("osascript", "-e", script).Run()
+}
+
+
+func (n *Navigator) PinchAtScaled(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {
+	sx1, sy1 := n.cal.ScaleRef(x1, y1)
+	sx2, sy2 := n.cal.ScaleRef(x2, y2)
+	sx3, sy3 := n.cal.ScaleRef(x3, y3)
+	sx4, sy4 := n.cal.ScaleRef(x4, y4)
+	return n.client.Pinch(sx1, sy1, sx2, sy2, sx3, sy3, sx4, sy4, ms)
 }
 
 func (n *Navigator) TapAtScaled(x, y int) error {

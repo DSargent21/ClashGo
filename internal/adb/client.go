@@ -275,6 +275,12 @@ func (c *Client) Home() error   { return c.KeyEvent(3) }
 func (c *Client) Enter() error  { return c.KeyEvent(66) }
 func (c *Client) Delete() error { return c.KeyEvent(67) }
 
+// ZoomOut sends the standard Android zoom out keyevent (169)
+func (c *Client) ZoomOut() error { return c.KeyEvent(169) }
+
+// ZoomIn sends the standard Android zoom in keyevent (168)
+func (c *Client) ZoomIn() error { return c.KeyEvent(168) }
+
 func (c *Client) Shell(cmd string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

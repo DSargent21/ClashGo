@@ -254,9 +254,12 @@ func (c *Classifier) buildRules() {
 			Weight:   60,
 			Desc:     "main village - builder info icon or attack button",
 			Template: "btn_attack",
-			MinPass:  1,
+			MinPass:  2,
 			Checks: []pixelCheck{
-				{378, 10, 0x7A, 0xBD, 0xE3, 15},
+				{378, 10, 0x7A, 0xBD, 0xE3, 15},  // Builder info blue
+				{60, 548, 0xFF, 0xAF, 0x00, 20},  // Attack button orange center
+				{40, 548, 0x8D, 0x4B, 0x00, 20},  // Attack button darker edge
+				{830, 20, 0xFF, 0xEE, 0x00, 20},  // Shop button yellow
 			},
 		},
 		{
