@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/diegosargent/coc-bot/internal/adb"
+	"github.com/Ducky705/ClashGo/internal/adb"
 	"gocv.io/x/gocv"
 )
 

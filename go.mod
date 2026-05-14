@@ -1,4 +1,4 @@
-module github.com/diegosargent/coc-bot
+module github.com/Ducky705/ClashGo
 
 go 1.22
 

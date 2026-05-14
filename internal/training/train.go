@@ -8,9 +8,9 @@ import (
 
 	"gocv.io/x/gocv"
 
-	"github.com/diegosargent/coc-bot/internal/config"
-	"github.com/diegosargent/coc-bot/internal/game"
-	"github.com/diegosargent/coc-bot/internal/vision"
+	"github.com/Ducky705/ClashGo/internal/config"
+	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGo/internal/vision"
 )
 
 type TroopCount struct {

@@ -5,7 +5,7 @@ import (
 	"image"
 	"math"
 
-	"github.com/diegosargent/coc-bot/internal/adb"
+	"github.com/Ducky705/ClashGo/internal/adb"
 )
 
 const (

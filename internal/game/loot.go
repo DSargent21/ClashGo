@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/diegosargent/coc-bot/internal/vision"
+	"github.com/Ducky705/ClashGo/internal/vision"
 	"gocv.io/x/gocv"
 )
 

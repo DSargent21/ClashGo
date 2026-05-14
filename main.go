@@ -1,15 +1,15 @@
 package main
 
 import (
-	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/diegosargent/coc-bot/internal/bot"
-	"github.com/diegosargent/coc-bot/internal/config"
+	"github.com/Ducky705/ClashGo/internal/bot"
+	"github.com/Ducky705/ClashGo/internal/config"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )

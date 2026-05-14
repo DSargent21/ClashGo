@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/diegosargent/coc-bot/internal/adb"
-	"github.com/diegosargent/coc-bot/internal/game"
+	"github.com/Ducky705/ClashGo/internal/adb"
+	"github.com/Ducky705/ClashGo/internal/game"
 	"gocv.io/x/gocv"
 )
 

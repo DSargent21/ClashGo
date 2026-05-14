@@ -9,7 +9,7 @@ import (
 
 	"gocv.io/x/gocv"
 
-	"github.com/diegosargent/coc-bot/internal/vision"
+	"github.com/Ducky705/ClashGo/internal/vision"
 )
 
 type Navigator struct {
