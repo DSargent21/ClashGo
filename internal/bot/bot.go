@@ -360,26 +360,21 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			break
 		}
 
-		b.logger.Info().Msg("loot too low, skipping base...")
+		b.logger.Info().
+			Int("req_gold", b.cfg.Search.MinLootGold).
+			Int("req_elixir", b.cfg.Search.MinLootElixir).
+			Int("req_de", b.cfg.Search.MinLootDarkElixir).
+			Msg("loot too low, skipping base...")
 
-		nextTpl, ok := b.templates.Get("btn_next")
-		if ok {
-			pt, conf, err := vision.MatchTemplateBest(screen, nextTpl, 0.7)
-			if err == nil && conf > 0.7 {
-				b.logger.Info().Float64("confidence", conf).Msg("clicking 'Next' button template")
-				b.client.Tap(pt.X, pt.Y)
-			} else {
-				b.logger.Warn().Msg("could not find 'Next' button template, using fallback coordinates")
-				nextX, nextY := b.cal.ScaleRef(770, 560)
-				b.client.Tap(nextX, nextY)
-			}
-		} else {
-			b.logger.Warn().Msg("'btn_next' template not found, using fallback coordinates")
+		screen.Close() // Close before findAndClick which does its own capture
+
+		if !b.findAndClick("btn_next", "Next Match", 3) {
+			b.logger.Warn().Msg("could not find 'Next' button, using fallback coordinates")
 			nextX, nextY := b.cal.ScaleRef(770, 560)
 			b.client.Tap(nextX, nextY)
 		}
 
-		screen.Close()
+		// Wait for next base to load
 		time.Sleep(3 * time.Second)
 	}
 

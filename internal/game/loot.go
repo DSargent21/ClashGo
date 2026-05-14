@@ -121,8 +121,8 @@ func (lr *LootRecognizer) ReadAvailableLoot(screen gocv.Mat) (Resources, error) 
 	if searchROI.Max.X < 500 { searchROI.Max.X = 600 }
 
 	// 1. Find anchors sequentially to share scale and enforce vertical order
-	// This is very fast (single scale match for 2nd and 3rd icons)
-	_, goldY, goldScale, goldTextROI := lr.findAnchorAndROI(screen, "icon_gold", searchROI, -1, -1.0)
+	// Use calibration ScaleY as a hint (most CoC scaling is height-based)
+	_, goldY, goldScale, goldTextROI := lr.findAnchorAndROI(screen, "icon_gold", searchROI, -1, lr.cal.ScaleY)
 	_, elixirY, _, elixirTextROI := lr.findAnchorAndROI(screen, "icon_elixir", searchROI, goldY, goldScale)
 	_, _, _, deTextROI := lr.findAnchorAndROI(screen, "icon_de", searchROI, elixirY, goldScale)
 
@@ -177,10 +177,10 @@ func (lr *LootRecognizer) findAnchorAndROI(screen gocv.Mat, anchorName string, s
 
 	if scaleHint > 0 {
 		// Fast path: use pinned scale with tight range
-		matches, err = vision.MatchMultiScale(roi, anchor, scaleHint*0.99, scaleHint*1.01, 3, 0.45)
+		matches, err = vision.MatchMultiScale(roi, anchor, scaleHint*0.8, scaleHint*1.2, 5, 0.45)
 	} else {
-		// Full search
-		matches, err = vision.MatchMultiScale(roi, anchor, 0.7, 1.3, 12, 0.45)
+		// Full search - widen for high-res screens
+		matches, err = vision.MatchMultiScale(roi, anchor, 0.5, 5.0, 25, 0.45)
 	}
 
 	if err != nil || len(matches) == 0 {

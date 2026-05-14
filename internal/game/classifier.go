@@ -170,11 +170,13 @@ func (c *Classifier) buildRules() {
 			State:    StateBattle,
 			Priority: 90,
 			Weight:   90,
-			Desc:     "live battle - end battle button",
+			Desc:     "matchmaking or live battle",
+			Template: "btn_next",
 			MinPass:  1,
 			Checks: []pixelCheck{
-				{50, 548, 0xD1, 0x0D, 0x0E, 15},
-				{50, 548, 0x5E, 0x06, 0x06, 15},
+				{100, 560, 0xCE, 0x0D, 0x0E, 25},  // End battle button (red)
+				{1206, 500, 0xFC, 0xBA, 0x36, 25}, // Next button (orange)
+				{40, 110, 0xFF, 0xEC, 0x4A, 25},   // Gold loot icon (yellow)
 			},
 		},
 		{
@@ -230,7 +232,9 @@ func (c *Classifier) buildRules() {
 			Desc:     "search map - clouds",
 			MinPass:  1,
 			Checks: []pixelCheck{
-				{430, 360, 0xFF, 0xFF, 0xFF, 20}, // Center should be bright in clouds
+				{430, 360, 0xFF, 0xFF, 0xFF, 30}, // Center
+				{200, 200, 0xEE, 0xF5, 0xFF, 30}, // Top left-ish
+				{600, 500, 0xEE, 0xF5, 0xFF, 30}, // Bottom right-ish
 				{56, 592, 0x0A, 0x22, 0x3F, 25},  // Search menu box
 			},
 		},
