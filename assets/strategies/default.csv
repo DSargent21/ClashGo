@@ -1,0 +1,33 @@
+# Default Attack Strategy - BARCH (Barbarians + Archers)
+# Format: troop,x,y,name,count
+
+attackplan "BARCH", "Barbarians and Archers basic strategy"
+deployingtype "8 sides"
+
+# Wave 1 - First quarter
+wave 1, 1, 100, 350, Barbarian, 10
+wave 1, 2, 120, 350, Archer, 10
+wave 1, 3, 80, 400, Barbarian, 8
+wave 1, 4, 140, 400, Archer, 8
+
+# Wave 2 - Second quarter
+wave 2, 1, 700, 350, Barbarian, 10
+wave 2, 2, 720, 350, Archer, 10
+wave 2, 3, 680, 400, Barbarian, 8
+wave 2, 4, 740, 400, Archer, 8
+
+# Wave 3 - Third quarter
+wave 3, 1, 100, 300, Barbarian, 10
+wave 3, 2, 120, 300, Archer, 10
+wave 3, 3, 100, 400, Barbarian, 10
+wave 3, 4, 120, 400, Archer, 10
+
+# Wave 4 - Fourth quarter
+wave 4, 1, 700, 300, Barbarian, 10
+wave 4, 2, 720, 300, Archer, 10
+wave 4, 3, 700, 400, Barbarian, 10
+wave 4, 4, 720, 400, Archer, 10
+
+# Center drops
+troop 430, 350, Archer, 20
+troop 430, 400, Barbarian, 15

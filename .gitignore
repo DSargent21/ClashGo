@@ -1,0 +1,30 @@
+# Binaries
+bin/
+*.exe
+*.test
+*.prof
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project Debug/Temporary Assets
+debug_*.png
+*.bak
+assets/captures/current.png
+assets/captures/live_check.png
+assets/captures/scout.png
+assets/captures/scout2.png
+assets/captures/scout2_annotated.png
+
+# Local configurations
+config.json
+config.json.bak
+
+# IDEs
+.vscode/
+.idea/
+
+# Go
+vendor/
+go.sum
