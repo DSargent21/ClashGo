@@ -324,15 +324,17 @@ func (p Pixel) String() string {
 func FindRedArea(screen gocv.Mat, minArea int) ([]image.Point, error) {
 	blurred := gocv.NewMat()
 	defer blurred.Close()
-	gocv.GaussianBlur(screen, &blurred, image.Point{X: 5, Y: 5}, 0, 0, gocv.BorderDefault)
+	// Stronger blur to connect dashed red lines
+	gocv.GaussianBlur(screen, &blurred, image.Point{X: 7, Y: 7}, 0, 0, gocv.BorderDefault)
 
 	hsv := gocv.NewMat()
 	defer hsv.Close()
 	gocv.CvtColor(blurred, &hsv, gocv.ColorBGRToHSV)
 
-	lowerRed1 := gocv.NewScalar(0, 150, 150, 0)
-	upperRed1 := gocv.NewScalar(10, 255, 255, 0)
-	lowerRed2 := gocv.NewScalar(160, 150, 150, 0)
+	// Ultra-loosened HSV for Red to catch all possible boundary shades
+	lowerRed1 := gocv.NewScalar(0, 70, 70, 0)
+	upperRed1 := gocv.NewScalar(20, 255, 255, 0)
+	lowerRed2 := gocv.NewScalar(150, 70, 70, 0)
 	upperRed2 := gocv.NewScalar(180, 255, 255, 0)
 
 	mask1 := gocv.NewMat()
@@ -346,9 +348,10 @@ func FindRedArea(screen gocv.Mat, minArea int) ([]image.Point, error) {
 	defer mask1.Close()
 	defer mask2.Close()
 
-	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3})
+	// Dilate to bridge gaps in the red line
+	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 5})
 	defer kernel.Close()
-	gocv.MorphologyEx(mask, &mask, gocv.MorphOpen, kernel)
+	gocv.Dilate(mask, &mask, kernel)
 
 	contours := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
 	defer contours.Close()
@@ -369,15 +372,15 @@ func FindRedArea(screen gocv.Mat, minArea int) ([]image.Point, error) {
 func CalculateBaseEdges(screen gocv.Mat, minArea int) (top, bottom, left, right image.Point, err error) {
 	blurred := gocv.NewMat()
 	defer blurred.Close()
-	gocv.GaussianBlur(screen, &blurred, image.Point{X: 5, Y: 5}, 0, 0, gocv.BorderDefault)
+	gocv.GaussianBlur(screen, &blurred, image.Point{X: 7, Y: 7}, 0, 0, gocv.BorderDefault)
 
 	hsv := gocv.NewMat()
 	defer hsv.Close()
 	gocv.CvtColor(blurred, &hsv, gocv.ColorBGRToHSV)
 
-	lowerRed1 := gocv.NewScalar(0, 150, 150, 0)
-	upperRed1 := gocv.NewScalar(10, 255, 255, 0)
-	lowerRed2 := gocv.NewScalar(160, 150, 150, 0)
+	lowerRed1 := gocv.NewScalar(0, 70, 70, 0)
+	upperRed1 := gocv.NewScalar(20, 255, 255, 0)
+	lowerRed2 := gocv.NewScalar(150, 70, 70, 0)
 	upperRed2 := gocv.NewScalar(180, 255, 255, 0)
 
 	mask1 := gocv.NewMat()
@@ -391,18 +394,20 @@ func CalculateBaseEdges(screen gocv.Mat, minArea int) (top, bottom, left, right 
 	defer mask1.Close()
 	defer mask2.Close()
 
-	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3})
+	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 5, Y: 5})
 	defer kernel.Close()
-	gocv.MorphologyEx(mask, &mask, gocv.MorphOpen, kernel)
+	gocv.Dilate(mask, &mask, kernel)
 
 	contours := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
 	defer contours.Close()
 
-	// Combine all contour points into a single PointVector
+	// Combine all large contours to form the full diamond
 	allContourPoints := gocv.NewPointVector()
 	defer allContourPoints.Close()
+	found := false
 	for i := 0; i < contours.Size(); i++ {
 		area := gocv.ContourArea(contours.At(i))
+		// Base lines are thin but long, so they have high area in the mask after dilation
 		if area < float64(minArea) {
 			continue
 		}
@@ -410,9 +415,10 @@ func CalculateBaseEdges(screen gocv.Mat, minArea int) (top, bottom, left, right 
 		for j := 0; j < c.Size(); j++ {
 			allContourPoints.Append(c.At(j))
 		}
+		found = true
 	}
 
-	if allContourPoints.Size() == 0 {
+	if !found {
 		return image.Point{}, image.Point{}, image.Point{}, image.Point{}, fmt.Errorf("no red area detected")
 	}
 
@@ -420,27 +426,18 @@ func CalculateBaseEdges(screen gocv.Mat, minArea int) (top, bottom, left, right 
 	defer hull.Close()
 	gocv.ConvexHull(allContourPoints, &hull, true, false)
 
-	// Extract extreme points from hull
-	top = allContourPoints.At(0)
-	bottom = allContourPoints.At(0)
-	left = allContourPoints.At(0)
-	right = allContourPoints.At(0)
+	// Initialize with first point
+	idx0 := int(hull.GetIntAt(0, 0))
+	pt0 := allContourPoints.At(idx0)
+	top, bottom, left, right = pt0, pt0, pt0, pt0
 
-	for i := 0; i < hull.Rows(); i++ {
+	for i := 1; i < hull.Rows(); i++ {
 		idx := int(hull.GetIntAt(i, 0))
 		pt := allContourPoints.At(idx)
-		if pt.Y < top.Y {
-			top = pt
-		}
-		if pt.Y > bottom.Y {
-			bottom = pt
-		}
-		if pt.X < left.X {
-			left = pt
-		}
-		if pt.X > right.X {
-			right = pt
-		}
+		if pt.Y < top.Y { top = pt }
+		if pt.Y > bottom.Y { bottom = pt }
+		if pt.X < left.X { left = pt }
+		if pt.X > right.X { right = pt }
 	}
 
 	return top, bottom, left, right, nil

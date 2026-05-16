@@ -102,7 +102,7 @@ func DefaultConfig() *BotConfig {
 		},
 		Attack: AttackConfig{
 			Enabled:            true,
-			StrategyFile:       "assets/strategies/default.csv",
+			StrategyFile:       "assets/strategies/auto_edrag_rush.yaml",
 			MaxAttackPerSession: 100,
 			DropDelay:          Duration{500 * time.Millisecond},
 			SpellDelay:         Duration{2 * time.Second},

@@ -1,0 +1,31 @@
+name: "Balloon EDrag Rush"
+description: "High performance Balloon + EDrag attack with Heroes and Spells"
+target_edge: "TopRight"
+phases:
+  - name: "Balloon Wall"
+    units: [{ name: "Balloon", amount: "All" }]
+    pattern: "Line"
+    offset: 100 # Increased from 20 to 100
+    delay_after_ms: 400
+
+  - name: "EDrag Force"
+    units: [{ name: "Electro Dragon", amount: "All" }]
+    pattern: "Line"
+    offset: 150 # Increased from 40 to 150
+    delay_after_ms: 1000
+
+  - name: "Heroes Push"
+    units: 
+      - { name: "Archer Queen", amount: "All" }
+      - { name: "Grand Warden", amount: "All" }
+      - { name: "Minion Prince", amount: "All" }
+    pattern: "Point"
+    position: "Center"
+    offset: 180 # Increased from 50 to 180
+    delay_after_ms: 1500
+
+  - name: "Rage Support"
+    units: [{ name: "Rage Spell", amount: "All" }]
+    pattern: "Line"
+    offset: -50 # Spells should still be inside
+    delay_after_ms: 500

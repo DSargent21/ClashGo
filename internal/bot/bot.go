@@ -17,6 +17,7 @@ import (
 	"github.com/Ducky705/ClashGo/internal/game"
 	"github.com/Ducky705/ClashGo/internal/training"
 	"github.com/Ducky705/ClashGo/internal/vision"
+	"github.com/Ducky705/ClashGo/pkg/strategy"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -41,6 +42,10 @@ type Bot struct {
 	logger     zerolog.Logger
 
 	attackCount atomic.Int32
+	totalGold   atomic.Int64
+	totalElixir atomic.Int64
+	totalDE     atomic.Int64
+	totalStars  atomic.Int32
 	seqRunning  atomic.Bool
 	zoomedOut   atomic.Bool
 	startedAt   time.Time
@@ -464,12 +469,39 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	b.logger.Info().Msg("battle complete, ending...")
 	b.attackExec.EndBattle()
-	b.attackExec.WaitForBattleEnd(60 * time.Second)
+	
+	if b.attackExec.WaitForBattleEnd(60 * time.Second) {
+		// Capture screen to read results
+		resultScreen, err := b.client.CaptureToMat()
+		if err == nil {
+			lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
+			res, err := lootRec.ReadBattleResult(resultScreen)
+			if err == nil {
+				b.totalGold.Add(int64(res.Loot.Gold + res.Bonus.Gold))
+				b.totalElixir.Add(int64(res.Loot.Elixir + res.Bonus.Elixir))
+				b.totalDE.Add(int64(res.Loot.DarkElixir + res.Bonus.DarkElixir))
+				b.totalStars.Add(int32(res.Stars))
+				
+				b.logger.Info().
+					Int("stars", res.Stars).
+					Int("gold", res.Loot.Gold).
+					Int("bonus_gold", res.Bonus.Gold).
+					Msg("battle result processed")
+			}
+			resultScreen.Close()
+			lootRec.Close()
+		}
+	}
+
 	b.attackExec.ReturnHome()
 
 	b.attackCount.Add(1)
 	b.logger.Info().
-		Int32("total", b.attackCount.Load()).
+		Int32("total_attacks", b.attackCount.Load()).
+		Int64("total_gold", b.totalGold.Load()).
+		Int64("total_elixir", b.totalElixir.Load()).
+		Int64("total_de", b.totalDE.Load()).
+		Int32("total_stars", b.totalStars.Load()).
 		Dur("runtime", time.Since(b.startedAt)).
 		Msg("attack session stats")
 }
@@ -815,25 +847,19 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 }
 
 func (b *Bot) deployTroops(screen gocv.Mat) {
-	plan, err := b.attackExec.LoadStrategy(b.cfg.Attack.StrategyFile)
+	strat, err := strategy.ParseYAML(b.cfg.Attack.StrategyFile)
 	if err != nil {
-		b.logger.Warn().Err(err).Msg("could not load strategy, using default drops")
+		b.logger.Warn().Err(err).Str("path", b.cfg.Attack.StrategyFile).Msg("could not load strategy")
 		return
 	}
 
-	redPts, err := b.attackExec.AnalyzeRedArea(screen)
-	if err != nil {
-		b.logger.Warn().Err(err).Msg("red area analysis failed")
-	}
-
 	b.logger.Info().
-		Str("strategy", plan.Strategy.Name).
-		Int("drops", len(plan.DropOrder)).
-		Int("red_pts", len(redPts)).
-		Msg("executing attack plan")
+		Str("strategy", strat.Name).
+		Int("phases", len(strat.Phases)).
+		Msg("executing dynamic attack plan")
 
-	if err := b.attackExec.DeployAll(plan, screen, redPts); err != nil {
-		b.logger.Error().Err(err).Msg("deploy failed")
+	if err := b.attackExec.DeployDynamic(strat, screen); err != nil {
+		b.logger.Error().Err(err).Msg("dynamic deploy failed")
 	}
 }
 

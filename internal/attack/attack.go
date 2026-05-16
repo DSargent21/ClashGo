@@ -262,7 +262,7 @@ func (e *Executor) EndBattle() error {
 }
 
 func (e *Executor) ReturnHome() error {
-	hx, hy := e.cal.ScaleRef(290, 576)
+	hx, hy := e.cal.ScaleRef(429, 582)
 	if err := e.client.Tap(hx, hy); err != nil { return err }
 	time.Sleep(5 * time.Second)
 	screen, err := e.client.CaptureToMat()
