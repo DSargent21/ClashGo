@@ -338,11 +338,23 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 
 	matches, err := vision.MatchMultiScaleROI(screen, tpl, 0.2, 2.0, 30, threshold, physROI)
 	if err != nil || len(matches) == 0 {
+		if err != nil {
+			b.logger.Debug().Err(err).Msg("btn_attack template match error")
+		}
 		return false
 	}
 
 	best := matches[0]
-	if !b.isOrange(screen, best.Point.X, best.Point.Y) {
+	isOrange := b.isOrange(screen, best.Point.X, best.Point.Y)
+	
+	b.logger.Debug().
+		Float64("conf", best.Confidence).
+		Int("x", best.Point.X).
+		Int("y", best.Point.Y).
+		Bool("is_orange", isOrange).
+		Msg("attack button detection check")
+
+	if !isOrange {
 		return false
 	}
 

@@ -107,7 +107,9 @@ func MatchMultiScaleROI(screen, template gocv.Mat, minScale, maxScale float64, s
 		}
 
 		res := gocv.NewMat()
-		gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+		mask := gocv.NewMat()
+		gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, mask)
+		mask.Close()
 
 		if res.Empty() {
 			res.Close()
