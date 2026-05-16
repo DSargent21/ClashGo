@@ -1,0 +1,47 @@
+name: "Auto EDrag Rush"
+description: "Professional Balloon + EDrag attack with Double Diamond precision"
+target_edge: "Random"
+phases:
+  - name: "Balloons"
+    units: [{ name: "Balloon", amount: "All" }]
+    pattern: "Line"
+    offset: 80 # Near the outer Yellow line
+    delay_after_ms: 500
+
+  - name: "Electro Dragons"
+    units: [{ name: "Electro Dragon", amount: "All" }]
+    pattern: "Line"
+    offset: 60 # Slightly inside balloons
+    delay_after_ms: 800
+
+  - name: "Siege Machine"
+    units: [{ name: "Stone Slammer", amount: "All" }]
+    pattern: "Point"
+    position: "Center"
+    offset: 50 # Dead middle of the gap
+    delay_after_ms: 1000
+
+  - name: "Heroes"
+    units:
+      - { name: "Barbarian King", amount: "All" }
+      - { name: "Barbarian King", amount: "All", pattern: "Ability" }
+      - { name: "Archer Queen", amount: "All" }
+      - { name: "Archer Queen", amount: "All", pattern: "Ability" }
+      - { name: "Grand Warden", amount: "All" }
+      - { name: "Grand Warden", amount: "All", pattern: "Ability" }
+      - { name: "Minion Prince", amount: "All" }
+      - { name: "Minion Prince", amount: "All", pattern: "Ability" }
+    pattern: "Point"
+    position: "Center"
+    offset: 40 # Closer to the Blue line
+    delay_after_ms: 500
+
+  - name: "Spells"
+
+    units:
+      - { name: "Rage Spell", amount: "All" }
+      - { name: "Ice Spell", amount: "All" }
+    pattern: "Line"
+    offset: 30 # Near the point of entry
+    delay_after_ms: 2000
+

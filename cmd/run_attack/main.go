@@ -47,7 +47,7 @@ func main() {
 	executor := attack.NewExecutor(client, cal, &botCfg.Attack, log.Logger)
 
 	// 4. Load Strategy
-	stratPath := "assets/strategies/balloon_edrag_rush.yaml"
+	stratPath := "assets/strategies/auto_edrag_rush.yaml"
 	s, err := strategy.ParseYAML(stratPath)
 	if err != nil {
 		log.Fatal().Err(err).Str("path", stratPath).Msg("failed to load strategy")
@@ -61,7 +61,7 @@ func main() {
 		client.ZoomOut()
 		time.Sleep(200 * time.Millisecond)
 	}
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond) // Increased for stability
 
 	log.Info().Msg("capturing screen for base analysis...")
 	// 6. Capture Live Screen

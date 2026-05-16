@@ -8,8 +8,9 @@ import (
 )
 
 type Unit struct {
-	Name   string `yaml:"name"`
-	Amount string `yaml:"amount"` // Can be "All" or a number
+	Name    string `yaml:"name"`
+	Amount  string `yaml:"amount"`  // Can be "All" or a number
+	Pattern string `yaml:"pattern"` // Optional: Override phase pattern (e.g., "Ability")
 }
 
 type Phase struct {
