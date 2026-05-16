@@ -2,7 +2,10 @@ package attack
 
 import (
 	"fmt"
+	"image"
+	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"gocv.io/x/gocv"
@@ -12,6 +15,7 @@ import (
 	"github.com/Ducky705/ClashGo/internal/game"
 	"github.com/Ducky705/ClashGo/internal/vision"
 	"github.com/Ducky705/ClashGo/pkg/strategy"
+	"github.com/rs/zerolog"
 )
 
 type AttackResult struct {
@@ -32,7 +36,7 @@ type DeployEntry struct {
 }
 
 type AttackPlan struct {
-	Strategy strategy.AttackStrategy
+	Strategy  strategy.AttackStrategy
 	DropOrder []DeployEntry
 }
 
@@ -41,13 +45,15 @@ type Executor struct {
 	cal      *game.Calibration
 	cfg      *config.AttackConfig
 	classify func(gocv.Mat) (game.GameState, int)
+	logger   zerolog.Logger
 }
 
-func NewExecutor(client *adb.Client, cal *game.Calibration, cfg *config.AttackConfig) *Executor {
+func NewExecutor(client *adb.Client, cal *game.Calibration, cfg *config.AttackConfig, logger zerolog.Logger) *Executor {
 	return &Executor{
 		client: client,
 		cal:    cal,
 		cfg:    cfg,
+		logger: logger.With().Str("component", "attack_executor").Logger(),
 	}
 }
 
@@ -108,7 +114,8 @@ func (e *Executor) troopSlotOrder() []string {
 		"WallBreaker", "Balloon", "Wizard", "Healer",
 		"Dragon", "Pekka", "Minion", "HogRider",
 		"Valkyrie", "Golem", "Witch", "LavaHound",
-		"Bowler", "Miner",
+		"Bowler", "Miner", "ElectroDragon", "Yeti",
+		"DragonRider", "ElectroTitan", "RootRider",
 	}
 }
 
@@ -185,14 +192,14 @@ func (e *Executor) spellPosition(slot int) (int, int) {
 }
 
 func (e *Executor) ActivateQueen(pct int) error {
-	px := e.cal.ScaleXRef(820)
-	py := e.cal.ScaleYRef(200)
+	px := e.cal.ScaleXRef(553)
+	py := e.cal.ScaleYRef(204)
 	return e.client.Tap(px, py)
 }
 
 func (e *Executor) ActivateWarden(pct int) error {
-	px := e.cal.ScaleXRef(865)
-	py := e.cal.ScaleYRef(200)
+	px := e.cal.ScaleXRef(583)
+	py := e.cal.ScaleYRef(204)
 	return e.client.Tap(px, py)
 }
 
@@ -202,7 +209,7 @@ func (e *Executor) DeployClanCastle(x, y int) error {
 }
 
 func (e *Executor) EndBattle() error {
-	ex, ey := e.cal.ScaleRef(50, 548)
+	ex, ey := e.cal.ScaleRef(34, 558)
 	if err := e.client.Tap(ex, ey); err != nil {
 		return err
 	}
@@ -211,7 +218,7 @@ func (e *Executor) EndBattle() error {
 }
 
 func (e *Executor) ReturnHome() error {
-	hx, hy := e.cal.ScaleRef(430, 566)
+	hx, hy := e.cal.ScaleRef(290, 576)
 	if err := e.client.Tap(hx, hy); err != nil {
 		return err
 	}
@@ -272,11 +279,13 @@ type DropPoint struct {
 func (e *Executor) ReadBattleResult(screen gocv.Mat) (AttackResult, error) {
 	var result AttackResult
 
-	starY := e.cal.ScaleYRef(538)
-	starPositions := []int{714, 739, 763}
+	starY := e.cal.ScaleYRef(548)
+	// Star positions in 860x732 reference coordinates, scaled to physical via ScaleXRef
+	starPositions := []int{481, 498, 514}
 
 	for _, sx := range starPositions {
-		px, py := e.cal.ScaleRef(sx, starY)
+		px := e.cal.ScaleXRef(sx)
+		py := starY
 		if px < 0 || py < 0 || px >= screen.Cols() || py >= screen.Rows() {
 			continue
 		}
@@ -340,4 +349,188 @@ func (e *Executor) DeployAll(plan *AttackPlan, screen gocv.Mat, redPts []DropPoi
 	}
 
 	return nil
+}
+
+func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) error {
+	w, h := screen.Cols(), screen.Rows()
+
+	for _, phase := range s.Phases {
+		e.logger.Info().Str("phase", phase.Name).Msg("starting attack phase")
+
+		for _, unit := range phase.Units {
+			// Find the unit on the bar dynamically
+			fileName := strings.ToLower(strings.ReplaceAll(unit.Name, " ", "_"))
+			tplPath := fmt.Sprintf("assets/templates/attack/%s.png", fileName)
+			tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
+			if tpl.Empty() {
+				e.logger.Warn().Str("unit", unit.Name).Str("path", tplPath).Msg("unit template not found")
+				continue
+			}
+			defer tpl.Close()
+
+			matches, _ := vision.MatchTemplate(screen, tpl, 0.7)
+			if len(matches) == 0 {
+				e.logger.Warn().Str("unit", unit.Name).Msg("unit not found on deployment bar")
+				continue
+			}
+
+			// Select the unit
+			uPt := matches[0].Point
+			e.logger.Debug().Str("unit", unit.Name).Interface("point", uPt).Msg("selecting unit")
+			if err := e.client.Tap(uPt.X, uPt.Y); err != nil {
+				return err
+			}
+			time.Sleep(200 * time.Millisecond)
+
+			// Calculate deployment points/lines using Screen Edges
+			p1, p2 := e.calculateDeploymentAreaEdge(s.TargetEdge, phase.Offset, w, h)
+
+			switch phase.Pattern {
+			case "Line":
+				duration := 600
+				e.logger.Debug().Str("unit", unit.Name).Interface("from", p1).Interface("to", p2).Msg("deploying in line")
+				if err := e.client.Swipe(p1.X, p1.Y, p2.X, p2.Y, duration); err != nil {
+					return err
+				}
+			case "Point":
+				mid := image.Point{X: (p1.X + p2.X) / 2, Y: (p1.Y + p2.Y) / 2}
+				e.logger.Debug().Str("unit", unit.Name).Interface("point", mid).Msg("deploying at point")
+				if err := e.client.Tap(mid.X, mid.Y); err != nil {
+					return err
+				}
+			}
+		}
+
+		if phase.DelayAfterMS > 0 {
+			time.Sleep(time.Duration(phase.DelayAfterMS) * time.Millisecond)
+		}
+	}
+
+	return nil
+}
+
+func (e *Executor) calculateDeploymentAreaEdge(edge string, offset int, w, h int) (image.Point, image.Point) {
+	// Professional Margin: Use 2% of screen width/height for safety
+	safeX := int(float64(w) * 0.02)
+	safeY := int(float64(h) * 0.02)
+	
+	// Deployment Bar Margin: Use 15% of screen height
+	barY := int(float64(h) * 0.85)
+
+	var p1, p2 image.Point
+
+	switch edge {
+	case "Top":
+		p1 = image.Pt(safeX, safeY+offset)
+		p2 = image.Pt(w-safeX, safeY+offset)
+	case "Bottom":
+		p1 = image.Pt(safeX, barY-offset)
+		p2 = image.Pt(w-safeX, barY-offset)
+	case "Left":
+		p1 = image.Pt(safeX+offset, safeY)
+		p2 = image.Pt(safeX+offset, barY)
+	case "Right":
+		p1 = image.Pt(w-safeX-offset, safeY)
+		p2 = image.Pt(w-safeX-offset, barY)
+	case "TopRight":
+		// From top-middle to right-middle
+		p1 = image.Pt(w/2, safeY+offset)
+		p2 = image.Pt(w-safeX-offset, h/2)
+	case "TopLeft":
+		p1 = image.Pt(safeX+offset, h/2)
+		p2 = image.Pt(w/2, safeY+offset)
+	case "BottomRight":
+		p1 = image.Pt(w/2, barY-offset)
+		p2 = image.Pt(w-safeX-offset, h/2)
+	case "BottomLeft":
+		p1 = image.Pt(safeX+offset, h/2)
+		p2 = image.Pt(w/2, barY-offset)
+	default:
+		p1 = image.Pt(w/2, safeY+offset)
+		p2 = image.Pt(w-safeX-offset, h/2)
+	}
+
+	return p1, p2
+}
+
+
+func (e *Executor) findTroopSlot(name string) int {
+	order := e.troopSlotOrder()
+	for i, t := range order {
+		if strings.EqualFold(t, name) {
+			return i
+		}
+	}
+	// For heroes, spells, etc., we'll need a more robust mapping later
+	// but for now, let's just use simple mapping
+	if strings.Contains(strings.ToLower(name), "king") { return 10 } // placeholder
+	if strings.Contains(strings.ToLower(name), "queen") { return 11 }
+	if strings.Contains(strings.ToLower(name), "warden") { return 12 }
+	
+	return -1
+}
+
+func (e *Executor) calculateDeploymentArea(edge string, offset int, top, bottom, left, right image.Point) (image.Point, image.Point) {
+	var p1, p2 image.Point
+	var center image.Point
+
+	// Calculate a rough center of the base to determine "outwards" direction
+	center = image.Point{
+		X: (left.X + right.X) / 2,
+		Y: (top.Y + bottom.Y) / 2,
+	}
+
+	switch edge {
+	case "TopRight":
+		p1, p2 = top, right
+	case "BottomRight":
+		p1, p2 = right, bottom
+	case "BottomLeft":
+		p1, p2 = bottom, left
+	case "TopLeft":
+		p1, p2 = left, top
+	default:
+		p1, p2 = top, right
+	}
+
+	// Calculate direction vector along the edge
+	dx := float64(p2.X - p1.X)
+	dy := float64(p2.Y - p1.Y)
+	mag := math.Sqrt(dx*dx + dy*dy)
+	
+	if mag == 0 {
+		return p1, p2
+	}
+
+	// Normal vector (perpendicular to the edge)
+	nx := dy / mag
+	ny := -dx / mag
+
+	// IMPORTANT: Ensure the normal points AWAY from the center of the base
+	// Test a point shifted by the normal
+	testPt := image.Point{
+		X: (p1.X+p2.X)/2 + int(nx*10),
+		Y: (p1.Y+p2.Y)/2 + int(ny*10),
+	}
+
+	distToCenterOrig := math.Sqrt(math.Pow(float64((p1.X+p2.X)/2-center.X), 2) + math.Pow(float64((p1.Y+p2.Y)/2-center.Y), 2))
+	distToCenterNew := math.Sqrt(math.Pow(float64(testPt.X-center.X), 2) + math.Pow(float64(testPt.Y-center.Y), 2))
+
+	// If the new point is closer to center, flip the normal
+	if distToCenterNew < distToCenterOrig {
+		nx = -nx
+		ny = -ny
+	}
+
+	// Apply offset
+	p1.X += int(nx * float64(offset))
+	p1.Y += int(ny * float64(offset))
+	p2.X += int(nx * float64(offset))
+	p2.Y += int(ny * float64(offset))
+
+	return p1, p2
+}
+
+func (e *Executor) logPhase(phase strategy.Phase) {
+	e.logger.Info().Str("phase", phase.Name).Msg("attack phase")
 }

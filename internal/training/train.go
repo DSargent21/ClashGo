@@ -11,44 +11,47 @@ import (
 	"github.com/Ducky705/ClashGo/internal/config"
 	"github.com/Ducky705/ClashGo/internal/game"
 	"github.com/Ducky705/ClashGo/internal/vision"
+	"github.com/rs/zerolog"
 )
 
 type TroopCount struct {
-	Name   string
-	Count  int
-	Max    int
+	Name  string
+	Count int
+	Max   int
 }
 
 type ArmyStatus struct {
-	Full          bool
-	TotalSlots    int
-	UsedSlots     int
-	Troops        []TroopCount
-	CCFull        bool
-	SpellsReady   int
-	LastUpdated   time.Time
+	Full        bool
+	TotalSlots  int
+	UsedSlots   int
+	Troops      []TroopCount
+	CCFull      bool
+	SpellsReady int
+	LastUpdated time.Time
 }
 
 type QueueEntry struct {
-	Troop  string
-	Count  int
+	Troop   string
+	Count   int
 	Trained int
 }
 
 type Trainer struct {
-	client   game.Device
-	cal      *game.Calibration
-	cfg      *config.TrainingConfig
-	classify func(gocv.Mat) (game.GameState, int)
+	client    game.Device
+	cal       *game.Calibration
+	cfg       *config.TrainingConfig
+	classify  func(gocv.Mat) (game.GameState, int)
 	templates *game.TemplateStore
-	mu       sync.RWMutex
+	logger    zerolog.Logger
+	mu        sync.RWMutex
 }
 
-func NewTrainer(client game.Device, cal *game.Calibration, cfg *config.TrainingConfig) *Trainer {
+func NewTrainer(client game.Device, cal *game.Calibration, cfg *config.TrainingConfig, logger zerolog.Logger) *Trainer {
 	return &Trainer{
-		client:   client,
-		cal:      cal,
-		cfg:      cfg,
+		client: client,
+		cal:    cal,
+		cfg:    cfg,
+		logger: logger.With().Str("component", "trainer").Logger(),
 	}
 }
 

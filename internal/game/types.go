@@ -213,17 +213,17 @@ type Interrupt struct {
 	Recover string // recommended recovery action
 }
 
-// pixelCheck describes a single pixel verification rule.
-type pixelCheck struct {
+// PixelCheck describes a single pixel verification rule.
+type PixelCheck struct {
 	X, Y      int
 	R, G, B   uint8
 	Tolerance int
 }
 
-// stateRule describes how to detect a specific game state.
-type stateRule struct {
+// StateRule describes how to detect a specific game state.
+type StateRule struct {
 	State     GameState
-	Checks    []pixelCheck
+	Checks    []PixelCheck
 	Template  string // optional template name to match
 	MinPass   int    // minimum checks that must pass
 	Weight    int    // score boost when matched
@@ -262,10 +262,10 @@ type ClassifierConfig struct {
 
 func DefaultClassifierConfig() ClassifierConfig {
 	return ClassifierConfig{
-		ColorTolerance:   15,
-		TemplateThreshold: 0.70,
-		ConfirmFrames:   2,
-		RequireSharp:   false,
+		ColorTolerance:    20,
+		TemplateThreshold: 0.60,
+		ConfirmFrames:     2,
+		RequireSharp:      false,
 	}
 }
 
@@ -318,4 +318,11 @@ func (s *safeScreen) Close() {
 	}
 	s.hasMat = false
 	s.mu.Unlock()
+}
+
+func absDiff(a, b int) int {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }

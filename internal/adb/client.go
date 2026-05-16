@@ -36,6 +36,9 @@ func (a *adbLogAdapter) Debugf(format string, v ...any) {
 func (a *adbLogAdapter) Info(msg string)  { a.log.Info(msg) }
 func (a *adbLogAdapter) Warn(msg string)  { a.log.Warn(msg) }
 func (a *adbLogAdapter) Error(msg string) { a.log.Error(msg) }
+func (a *adbLogAdapter) WithFields(fields map[string]any) Logger {
+	return &adbLogAdapter{log: a.log.WithFields(fields)}
+}
 
 func NewClient(opts ...Option) *Client {
 	c := &Client{

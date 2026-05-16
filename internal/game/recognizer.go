@@ -235,14 +235,6 @@ func (r *Recognizer) UniquePixelCount(mat gocv.Mat, rgn image.Rectangle) int {
 	return len(seen)
 }
 
-func absDiff(a, b int) int {
-	d := a - b
-	if d < 0 {
-		return -d
-	}
-	return d
-}
-
 func sqDiff(a, b float64) float64 {
 	d := a - b
 	return d * d

@@ -8,7 +8,7 @@ import (
 
 	"gocv.io/x/gocv"
 	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type Explorer struct {
@@ -19,10 +19,11 @@ type Explorer struct {
 	client    *adb.Client
 	classify  func(gocv.Mat) (GameState, int)
 	rec       *Recognizer
+	logger    zerolog.Logger
 
-	depth      int
-	visited    map[uint64]bool
-	nav        *Navigator
+	depth   int
+	visited map[uint64]bool
+	nav     *Navigator
 }
 
 func NewExplorer(
@@ -31,6 +32,7 @@ func NewExplorer(
 	graph *StateGraph,
 	templates *TemplateStore,
 	classify func(gocv.Mat) (GameState, int),
+	logger zerolog.Logger,
 ) *Explorer {
 	return &Explorer{
 		cfg:       DefaultExplorerConfig(),
@@ -41,20 +43,21 @@ func NewExplorer(
 		classify:  classify,
 		rec:       NewRecognizer(),
 		visited:   make(map[uint64]bool),
+		logger:    logger.With().Str("component", "explorer").Logger(),
 	}
 }
 
 func (e *Explorer) Explore(ctx *GameContext) error {
-	log.Info().Msg("explorer: starting auto-mapping")
+	e.logger.Info().Msg("starting auto-mapping")
 
 	if err := e.exploreFromState(ctx); err != nil {
 		return err
 	}
 
-	log.Info().
+	e.logger.Info().
 		Int("states", e.graph.StateCount()).
 		Int("edges", e.graph.EdgeCount()).
-		Msg("explorer: mapping complete")
+		Msg("mapping complete")
 
 	return nil
 }
@@ -78,14 +81,14 @@ func (e *Explorer) exploreFromState(ctx *GameContext) error {
 
 	state, score := e.classify(screen)
 	e.graph.AddNode(state)
-	log.Debug().Str("state", state.String()).Int("score", score).Msg("explorer: found state")
+	e.logger.Debug().Str("state", state.String()).Int("score", score).Msg("found state")
 
 	elems := e.findClickableElements(screen)
-	log.Debug().Int("elements", len(elems)).Msg("explorer: found clickables")
+	e.logger.Debug().Int("elements", len(elems)).Msg("found clickables")
 
 	for _, elem := range elems {
 		if err := e.tryElement(ctx, state, elem); err != nil {
-			log.Warn().Err(err).Msg("explorer: element click failed")
+			e.logger.Warn().Err(err).Msg("element click failed")
 		}
 	}
 
@@ -128,14 +131,14 @@ func (e *Explorer) tryElement(ctx *GameContext, fromState GameState, elem Clicka
 		e.saveTemplateForState(toState, elem.Region, screenAfter)
 	}
 
-	log.Info().
+	e.logger.Info().
 		Str("from", fromState.String()).
 		Str("to", toState.String()).
 		Str("action", "tap").
 		Int("x", sx).
 		Int("y", sy).
 		Int("score", score).
-		Msg("explorer: transition")
+		Msg("transition")
 
 	if !e.visited[e.rec.ScreenHash(screenAfter)] && e.depth < e.cfg.MaxDepth {
 		e.depth++
@@ -285,16 +288,16 @@ func (e *Explorer) saveTemplateForState(state GameState, rgn Rectangle, screen g
 	defer cropped.Close()
 
 	if err := e.templates.Save(name, state, r, screen); err != nil {
-		log.Debug().Err(err).Msg("explorer: failed to save template")
+		e.logger.Debug().Err(err).Msg("failed to save template")
 	}
 }
 
 func (e *Explorer) ExploreWithUserConfirmation(ctx *GameContext, states []GameState) error {
 	for _, state := range states {
-		log.Info().Str("state", state.String()).Msg("explorer: navigating to target state")
+		e.logger.Info().Str("state", state.String()).Msg("navigating to target state")
 
 		if !e.navigateToState(ctx, state) {
-			log.Warn().Str("state", state.String()).Msg("explorer: could not reach state")
+			e.logger.Warn().Str("state", state.String()).Msg("could not reach state")
 			continue
 		}
 

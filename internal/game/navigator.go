@@ -11,6 +11,7 @@ import (
 	"gocv.io/x/gocv"
 
 	"github.com/Ducky705/ClashGo/internal/vision"
+	"github.com/rs/zerolog"
 )
 
 type Navigator struct {
@@ -20,15 +21,17 @@ type Navigator struct {
 	client    Device
 	classify  func(gocv.Mat) (GameState, int)
 	templates *TemplateStore
+	logger    zerolog.Logger
 }
 
-func NewNavigator(client Device, cal *Calibration, graph *StateGraph, classify func(gocv.Mat) (GameState, int)) *Navigator {
+func NewNavigator(client Device, cal *Calibration, graph *StateGraph, classify func(gocv.Mat) (GameState, int), logger zerolog.Logger) *Navigator {
 	return &Navigator{
 		cfg:      DefaultNavigatorConfig(),
 		cal:      cal,
 		graph:    graph,
 		client:   client,
 		classify: classify,
+		logger:   logger.With().Str("component", "navigator").Logger(),
 	}
 }
 
@@ -164,11 +167,11 @@ func (n *Navigator) ZoomOut() {
 	}()
 
 	// Native macOS AppleScript for BlueStacks
-	// We use hardware-level key down/up emulation for maximum reliability
-	// confirmed to work on macOS BlueStacks environments.
 	err := n.nativeZoom("i", 10)
 	if err != nil {
-		fmt.Printf("[Navigator] Native ZoomOut failed: %v\n", err)
+		n.logger.Warn().Err(err).Msg("native ZoomOut failed")
+	} else {
+		n.logger.Debug().Msg("native ZoomOut completed")
 	}
 }
 
@@ -179,7 +182,9 @@ func (n *Navigator) ZoomIn() {
 
 	err := n.nativeZoom("o", 5)
 	if err != nil {
-		fmt.Printf("[Navigator] Native ZoomIn failed: %v\n", err)
+		n.logger.Warn().Err(err).Msg("native ZoomIn failed")
+	} else {
+		n.logger.Debug().Msg("native ZoomIn completed")
 	}
 }
 
@@ -295,7 +300,7 @@ func (n *Navigator) NavigateToBattle(ctx *GameContext) bool {
 				screen, err := n.client.CaptureToMat()
 				if err == nil {
 					defer screen.Close()
-					matches, err := vision.MatchMultiScale(screen, tpl, 0.3, 1.3, 10, 0.7)
+					matches, err := vision.MatchMultiScale(screen, tpl, 0.2, 1.8, 20, 0.6)
 					if err == nil && len(matches) > 0 {
 						sort.Slice(matches, func(i, j int) bool {
 							return matches[i].Confidence > matches[j].Confidence
@@ -377,12 +382,20 @@ func (n *Navigator) NavigateToFindMatch(ctx *GameContext) bool {
 					ax := int(float64(pt.X) * physScale)
 					ay := int(float64(pt.Y) * physScale)
 
-					fmt.Printf("Found 'Find a Match' button: conf=%.4f at %v -> clicking phys (%d, %d)\n", conf, pt, ax, ay)
+					n.logger.Debug().
+						Float64("confidence", conf).
+						Interface("point", pt).
+						Int("phys_x", ax).
+						Int("phys_y", ay).
+						Msg("found 'Find a Match' button")
 					n.client.Tap(ax, ay)
 					time.Sleep(1500 * time.Millisecond)
 					return true
 				} else {
-					fmt.Printf("Button 'step5_findmatch' not found in region: conf=%.4f err=%v\n", conf, err)
+					n.logger.Trace().
+						Float64("confidence", conf).
+						Err(err).
+						Msg("button 'btn_find_match' not found in region")
 				}
 			}
 		}
@@ -390,7 +403,10 @@ func (n *Navigator) NavigateToFindMatch(ctx *GameContext) bool {
 
 	// Fallback to scaled coordinates for the yellow "Find a Match" button
 	ax, ay := n.cal.ScaleRef(150, 540)
-	fmt.Printf("Using fallback coordinates for 'Find a Match': (%d, %d)\n", ax, ay)
+	n.logger.Info().
+		Int("ax", ax).
+		Int("ay", ay).
+		Msg("using fallback coordinates for 'Find a Match'")
 	n.client.Tap(ax, ay)
 	time.Sleep(1500 * time.Millisecond)
 	return true

@@ -32,8 +32,8 @@ func main() {
 		fmt.Printf("  x=%3d: RGB(%3d,%3d,%3d)\n", x, r, g, b)
 	}
 
-	fmt.Println("\nRight edge pixels (y=360):")
-	for x := 1180; x < 1280; x += 10 {
+	fmt.Println("\nRight edge pixels (y=366):")
+	for x := 790; x < 860; x += 10 {
 		b := mat.GetUCharAt(360, x*3)
 		g := mat.GetUCharAt(360, x*3+1)
 		r := mat.GetUCharAt(360, x*3+2)

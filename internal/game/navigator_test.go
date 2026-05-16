@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
 
@@ -39,6 +40,26 @@ func (m *MockDevice) CaptureToMat() (gocv.Mat, error) {
 	return gocv.NewMatWithSize(RefHeight, RefWidth, gocv.MatTypeCV8UC3), nil
 }
 
+func (m *MockDevice) Pinch(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {
+	return nil
+}
+
+func (m *MockDevice) ZoomOut() error {
+	return nil
+}
+
+func (m *MockDevice) ZoomIn() error {
+	return nil
+}
+
+func (m *MockDevice) KeyEvent(code int) error {
+	return nil
+}
+
+func (m *MockDevice) Text(text string) error {
+	return nil
+}
+
 func (m *MockDevice) Close() error {
 	return nil
 }
@@ -63,9 +84,10 @@ func TestNavigateToBattle_Template(t *testing.T) {
 	ts, _ := NewTemplateStore(tmpDir)
 	ts.LoadTemplates()
 
+	nopLogger := zerolog.Nop()
 	navigator := NewNavigator(client, cal, nil, func(gocv.Mat) (GameState, int) {
 		return StateMainVillage, 100
-	})
+	}, nopLogger)
 	navigator.SetTemplates(ts)
 
 	ctx := &GameContext{State: StateMainVillage}
@@ -100,9 +122,10 @@ func TestNavigateToFindMatch_Template(t *testing.T) {
 	ts, _ := NewTemplateStore(tmpDir)
 	ts.LoadTemplates()
 
+	nopLogger := zerolog.Nop()
 	navigator := NewNavigator(client, cal, nil, func(gocv.Mat) (GameState, int) {
 		return StateMainVillage, 100
-	})
+	}, nopLogger)
 	navigator.SetTemplates(ts)
 
 	ctx := &GameContext{State: StateMainVillage}

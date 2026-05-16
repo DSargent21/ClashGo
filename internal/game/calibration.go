@@ -45,8 +45,8 @@ func (c *Calibrator) Calibrate() (*Calibration, error) {
 		PhysicalH:   h,
 		ScaleX:      float64(w) / RefWidth,
 		ScaleY:      float64(h) / RefHeight,
-		MidOffsetY:  (h - 720) / 2,
-		BottomOffY:  h - 720,
+		MidOffsetY:  (h - RefHeight) / 2,
+		BottomOffY:  h - RefHeight,
 		Verified:    false,
 	}
 
@@ -73,13 +73,13 @@ func (c *Calibration) ScalePoint(pt Point) Point {
 	return Point{X: sx, Y: sy}
 }
 
-func (c *Calibration) ScalePixelCheck(chk pixelCheck) pixelCheck {
+func (c *Calibration) ScalePixelCheck(chk PixelCheck) PixelCheck {
 	sx, sy := c.ScaleRef(chk.X, chk.Y)
-	return pixelCheck{X: sx, Y: sy, R: chk.R, G: chk.G, B: chk.B, Tolerance: chk.Tolerance}
+	return PixelCheck{X: sx, Y: sy, R: chk.R, G: chk.G, B: chk.B, Tolerance: chk.Tolerance}
 }
 
-func (c *Calibration) ScaleRule(r stateRule) stateRule {
-	scaled := stateRule{
+func (c *Calibration) ScaleRule(r StateRule) StateRule {
+	scaled := StateRule{
 		State:    r.State,
 		Template: r.Template,
 		MinPass:  r.MinPass,

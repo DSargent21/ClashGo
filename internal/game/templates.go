@@ -227,8 +227,9 @@ func (ts *TemplateStore) Count() int {
 func (ts *TemplateStore) Close() {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	for _, mat := range ts.templates {
-		mat.Close()
-	}
+
+	// We clear the maps but avoid manual Mat.Close() which is causing SIGSEGV
+	// due to complex CGO lifecycle/GC interactions.
 	ts.templates = make(map[string]gocv.Mat)
+	ts.registry = make(map[string]TemplateMeta)
 }
