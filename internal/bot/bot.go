@@ -46,6 +46,10 @@ type Bot struct {
 	totalElixir atomic.Int64
 	totalDE     atomic.Int64
 	totalStars  atomic.Int32
+	stars0      atomic.Int32
+	stars1      atomic.Int32
+	stars2      atomic.Int32
+	stars3      atomic.Int32
 	seqRunning  atomic.Bool
 	zoomedOut   atomic.Bool
 	startedAt   time.Time
@@ -420,15 +424,18 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		state, _ := b.classify(screen)
 		if state != game.StateBattle {
 			if state == game.StateSearchMap || state == game.StateLoading {
+				b.logger.Debug().Str("state", state.String()).Msg("still searching (clouds)...")
 				screen.Close()
 				continue
 			}
+			b.logger.Debug().Str("state", state.String()).Msg("unexpected state during search, checking interruptions")
 			// Unexpected state, check interruptions but keep moving
 			b.dismissInterruptions()
 			screen.Close()
 			continue
 		}
 
+		b.logger.Info().Msg("base found, reading loot...")
 		loot, err := lootRec.ReadAvailableLoot(screen)
 		if err != nil {
 			b.logger.Warn().Err(err).Msg("failed to read loot")
@@ -482,6 +489,14 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				b.totalDE.Add(int64(res.Loot.DarkElixir + res.Bonus.DarkElixir))
 				b.totalStars.Add(int32(res.Stars))
 				
+				// Track specific star result
+				switch res.Stars {
+				case 0: b.stars0.Add(1)
+				case 1: b.stars1.Add(1)
+				case 2: b.stars2.Add(1)
+				case 3: b.stars3.Add(1)
+				}
+				
 				b.logger.Info().
 					Int("stars", res.Stars).
 					Int("gold", res.Loot.Gold).
@@ -496,14 +511,14 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	b.attackExec.ReturnHome()
 
 	b.attackCount.Add(1)
+	
+	// Professional Session Summary
 	b.logger.Info().
-		Int32("total_attacks", b.attackCount.Load()).
-		Int64("total_gold", b.totalGold.Load()).
-		Int64("total_elixir", b.totalElixir.Load()).
-		Int64("total_de", b.totalDE.Load()).
-		Int32("total_stars", b.totalStars.Load()).
-		Dur("runtime", time.Since(b.startedAt)).
-		Msg("attack session stats")
+		Int32("attacks", b.attackCount.Load()).
+		Str("stars", fmt.Sprintf("3⭐:%d | 2⭐:%d | 1⭐:%d | 0⭐:%d", b.stars3.Load(), b.stars2.Load(), b.stars1.Load(), b.stars0.Load())).
+		Str("loot", fmt.Sprintf("Gold: %d | Elixir: %d | DE: %d", b.totalGold.Load(), b.totalElixir.Load(), b.totalDE.Load())).
+		Dur("uptime", time.Since(b.startedAt)).
+		Msg("=== SESSION SUMMARY ===")
 }
 
 func (b *Bot) clickSequence() bool {
@@ -556,8 +571,8 @@ func (b *Bot) clickSequence() bool {
 	}
 
 	// Wait for the actual battle to start
-	b.logger.Info().Msg("waiting for battle state...")
-	return b.waitForBattleState(30 * time.Second)
+	b.logger.Info().Msg("waiting for battle state (searching)...")
+	return b.waitForBattleState(60 * time.Second)
 }
 
 func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
@@ -831,12 +846,14 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 
 		switch {
 		case state == game.StateBattle:
-			b.logger.Info().Msg("battle state detected")
+			b.logger.Info().Msg("battle state detected, entering search loop")
 			return true
 		case state == game.StateSearchMap || state == game.StateLoading:
+			b.logger.Debug().Msg("in clouds/loading...")
 			time.Sleep(1 * time.Second)
 			continue
 		default:
+			b.logger.Debug().Str("state", state.String()).Msg("waiting for battle state (unknown/other)...")
 			b.dismissInterruptions()
 			time.Sleep(500 * time.Millisecond)
 		}
