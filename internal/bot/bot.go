@@ -126,14 +126,8 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	time.Sleep(2 * time.Second)
 
 	log.Info().Str("package", packageName).Msg("launching game...")
-	activity := packageName + "/com.supercell.titan.GameApp"
-	if err := client.StartActivity(activity); err != nil {
-		log.Warn().Err(err).Msg("direct launch failed, trying fallback activity...")
-		// Fallback activity name used in some versions
-		altActivity := packageName + "/com.supercell.clashofclans.GameApp"
-		if err := client.StartActivity(altActivity); err != nil {
-			return nil, fmt.Errorf("failed to start game activity: %w", err)
-		}
+	if err := client.StartApp(packageName); err != nil {
+		return nil, fmt.Errorf("failed to start game: %w", err)
 	}
 
 	// Brief wait for game to start rendering, then rely on template polling

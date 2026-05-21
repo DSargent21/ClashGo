@@ -416,8 +416,9 @@ func (c *Client) StartApp(pkg string) error {
 	if err := c.EnsureConnected(); err != nil {
 		return err
 	}
-	// Note: Coc launch usually needs the component name
-	return c.transport.StartActivity(pkg + "/com.supercell.clashofclans.GameApp")
+	// Use monkey to reliably start the app by package name
+	_, err := c.transport.Exec("shell:monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1")
+	return err
 }
 
 func (c *Client) Reconnect() error {
