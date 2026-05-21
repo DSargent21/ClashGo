@@ -87,7 +87,8 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 			tpl, ok := c.templates.Get(rule.Template)
 			if ok {
 				// Professional Multi-Scale matching for robustness across resolutions
-				matches, err := vision.MatchMultiScale(norm, tpl, 0.2, 1.2, 10, c.cfg.TemplateThreshold)
+				// Increased steps and range for 'Next' button specifically
+				matches, err := vision.MatchMultiScale(norm, tpl, 0.15, 1.5, 25, c.cfg.TemplateThreshold)
 				if err == nil && len(matches) > 0 {
 					// Use the best match confidence
 					bestConf := matches[0].Confidence
@@ -186,12 +187,17 @@ func (c *Classifier) buildRules() {
 			Template: "btn_next",
 			MinPass:  1,
 			Checks: []PixelCheck{
-				// 100,560 (end battle) -> 67,570
-				{67, 570, 0xCE, 0x0D, 0x0E, 25},
-				// 1206,500 (next button) -> 813,509 @ 860x732 (right edge)
-				{813, 509, 0xFC, 0xBA, 0x36, 25},
-				// 40,110 (gold icon) -> 27,112
-				{27, 112, 0xFF, 0xEC, 0x4A, 25},
+				// End Battle (Red) - typical locations
+				{67, 570, 0xCE, 0x0D, 0x0E, 40},
+				{112, 408, 0xCE, 0x0D, 0x0E, 40}, // From captured_screen diagnostic
+				
+				// Next Button (Orange/Yellow)
+				{813, 509, 0xFC, 0xBA, 0x36, 40},
+				{796, 564, 0xFC, 0xBA, 0x36, 40}, // Center area from captured_screen
+				{614, 588, 0xFC, 0xBA, 0x36, 40}, // From live device diagnostic
+				
+				// Gold Icon (Top Left)
+				{27, 112, 0xFF, 0xEC, 0x4A, 30},
 			},
 		},
 		{

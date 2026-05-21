@@ -53,7 +53,10 @@ type Bot struct {
 	seqRunning  atomic.Bool
 	zoomedOut   atomic.Bool
 	startedAt   time.Time
-}
+	lastAction  time.Time
+	lastSequenceStart time.Time
+	stuckTimeout time.Duration
+	}
 
 func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	zl := &adbLogAdapter{log: log.Logger}
@@ -109,34 +112,33 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	log.Info().Msg("Android system is ready")
 
 	// Ensure game is started
-	log.Info().Msg("launching Clash of Clans...")
+	log.Info().Msg("checking game status...")
 	packageName := cfg.Device.PackageName
 	if packageName == "" {
 		packageName = "com.supercell.clashofclans"
 	}
 	
-	// Professional approach: Restart the game on launch to clear state
-	log.Info().Str("package", packageName).Msg("restarting game for clean state...")
-	
-	// Try multiple times to ensure it stops
-	for i := 0; i < 3; i++ {
-		if err := client.ForceStop(packageName); err != nil {
-			log.Warn().Err(err).Int("attempt", i).Msg("failed to force stop game")
-		}
-		time.Sleep(2 * time.Second)
+	// Always close the app to start out for a clean state
+	log.Info().Str("package", packageName).Msg("ensuring clean state by restarting game...")
+	if err := client.ForceStop(packageName); err != nil {
+		log.Warn().Err(err).Msg("failed to force stop game during startup")
 	}
-	
+	time.Sleep(2 * time.Second)
+
+	log.Info().Str("package", packageName).Msg("launching game...")
 	activity := packageName + "/com.supercell.titan.GameApp"
-	log.Info().Str("activity", activity).Msg("starting game activity...")
 	if err := client.StartActivity(activity); err != nil {
-		log.Error().Err(err).Str("activity", activity).Msg("failed to start game activity")
-		return nil, fmt.Errorf("failed to start game activity: %w", err)
+		log.Warn().Err(err).Msg("direct launch failed, trying fallback activity...")
+		// Fallback activity name used in some versions
+		altActivity := packageName + "/com.supercell.clashofclans.GameApp"
+		if err := client.StartActivity(altActivity); err != nil {
+			return nil, fmt.Errorf("failed to start game activity: %w", err)
+		}
 	}
-	log.Info().Str("package", packageName).Msg("game launch intent sent successfully")
 
 	// Brief wait for game to start rendering, then rely on template polling
-	log.Info().Msg("waiting 5s for game to initialize...")
-	time.Sleep(5 * time.Second)
+	log.Info().Msg("waiting for game to settle...")
+	time.Sleep(15 * time.Second)
 
 	log.Info().Msg("starting calibration...")
 	calibrator := game.NewCalibrator(client)
@@ -145,21 +147,11 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		return nil, fmt.Errorf("calibrate: %w", err)
 	}
 
-	classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), log.Logger)
-	classify := func(mat gocv.Mat) (game.GameState, int) {
-		return classifier.ClassifyState(mat)
-	}
-
 	graph := game.NewStateGraph()
 	graph.AddNode(game.StateMainVillage)
 
-	navigator := game.NewNavigator(client, cal, graph, classify, log.Logger)
-
 	attackExec := attack.NewExecutor(client, cal, &cfg.Attack, log.Logger)
-	attackExec.SetClassifier(classify)
-
 	trainer := training.NewTrainer(client, cal, &cfg.Training, log.Logger)
-	trainer.SetClassifier(classify)
 
 	var templates *game.TemplateStore
 	templates, err = game.NewTemplateStore("assets/templates")
@@ -171,13 +163,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	if templates != nil {
 		templates.LoadTemplates()
 		log.Info().Int("templates", templates.Count()).Msg("templates loaded")
-		classifier.SetTemplates(templates)
-		trainer.SetTemplates(templates)
-		navigator.SetTemplates(templates)
 	}
-
-	// Professional Zoom Out on first launch - moved to main loop to ensure village is loaded
-	// navigator.ZoomOut()
 
 	recognizer := game.NewRecognizer()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -194,14 +180,28 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		ctx:        ctx,
 		cancel:     cancel,
 		logger:     log.With().Str("bot", "orchestrator").Logger(),
-		startedAt:  time.Now(),
+		startedAt:         time.Now(),
+		lastAction:        time.Now(),
+		lastSequenceStart: time.Now(),
+		stuckTimeout:      3 * time.Minute,
 	}
 
+
 	b.classifier = game.NewClassifier(cal, game.DefaultClassifierConfig(), b.logger)
+	if b.templates != nil {
+		b.classifier.SetTemplates(b.templates)
+	}
+
 	b.classify = func(mat gocv.Mat) (game.GameState, int) {
 		return b.classifier.ClassifyState(mat)
 	}
+
+	// Update dependents with the final classifier/classify function
 	b.navigator = game.NewNavigator(client, cal, graph, b.classify, b.logger)
+	if b.templates != nil {
+		b.navigator.SetTemplates(b.templates)
+	}
+
 	b.attackExec.SetClassifier(b.classify)
 	b.trainer.SetClassifier(b.classify)
 
@@ -232,7 +232,6 @@ func (b *Bot) Stop() {
 	b.cancel()
 	b.client.Close()
 }
-
 func (b *Bot) captureLoop() {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -244,9 +243,53 @@ func (b *Bot) captureLoop() {
 		case <-b.ctx.Done():
 			return
 		case <-ticker.C:
+			b.checkStuck()
 			b.processFrame(gc)
 		}
 	}
+}
+
+func (b *Bot) checkStuck() {
+	// Don't check if an attack sequence is running
+	if b.seqRunning.Load() {
+		b.lastSequenceStart = time.Now()
+		return
+	}
+
+	// If we haven't taken a known action (state transition) or started a sequence in too long
+	if time.Since(b.lastAction) > b.stuckTimeout || time.Since(b.lastSequenceStart) > 5*time.Minute {
+		b.logger.Warn().
+			Dur("stuck_time", time.Since(b.lastAction)).
+			Dur("idle_time", time.Since(b.lastSequenceStart)).
+			Msg("bot appears stuck or idling too long, triggering emergency restart...")
+
+		b.restartGame()
+		b.lastAction = time.Now()
+		b.lastSequenceStart = time.Now()
+	}
+}
+
+func (b *Bot) restartGame() {
+	pkg := b.cfg.Device.PackageName
+	if pkg == "" {
+		pkg = "com.supercell.clashofclans"
+	}
+
+	b.logger.Info().Str("package", pkg).Msg("restarting game...")
+
+	if err := b.client.ForceStop(pkg); err != nil {
+		b.logger.Error().Err(err).Msg("failed to force stop game")
+	}
+
+	time.Sleep(2 * time.Second)
+
+	if err := b.client.StartApp(pkg); err != nil {
+		b.logger.Error().Err(err).Msg("failed to start app")
+	}
+
+	// Wait for game to launch and settle
+	time.Sleep(15 * time.Second)
+	b.zoomedOut.Store(false) // Reset zoom state on restart
 }
 
 func (b *Bot) processFrame(gc *game.GameContext) {
@@ -263,6 +306,12 @@ func (b *Bot) processFrame(gc *game.GameContext) {
 	captureMs := time.Since(start)
 
 	gc.UpdateScreen(screen, captureMs)
+
+	// Update lastAction if we are in any known state to prevent restart during normal idling.
+	// The stuck check will still trigger if we stay in StateUnknown for too long.
+	if state != game.StateUnknown && state != game.StateLoading {
+		b.lastAction = time.Now()
+	}
 
 	if gc.ConfirmState(state) {
 		now := time.Now()
@@ -298,6 +347,7 @@ func (b *Bot) processFrame(gc *game.GameContext) {
 	// Primary detection: try to find the attack button via template matching
 	if b.findAttackButton(screen, 0.45) {
 		b.logger.Info().Msg("attack button detected, starting sequence")
+		b.lastSequenceStart = time.Now()
 		go b.executeAttackSequence(gc)
 		return
 	}
@@ -436,11 +486,11 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		state, _ := b.classify(screen)
 		if state != game.StateBattle {
 			if state == game.StateSearchMap || state == game.StateLoading {
-				b.logger.Debug().Str("state", state.String()).Msg("still searching (clouds)...")
+				b.logger.Info().Str("state", state.String()).Msg("still searching (clouds)...")
 				screen.Close()
 				continue
 			}
-			b.logger.Debug().Str("state", state.String()).Msg("unexpected state during search, checking interruptions")
+			b.logger.Info().Str("state", state.String()).Msg("searching area (wait)...")
 			// Unexpected state, check interruptions but keep moving
 			b.dismissInterruptions()
 			screen.Close()
@@ -477,9 +527,19 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 		// Professional High-Speed Click: Use pinpoint with fallback
 		if !b.findAndClick("btn_next", "Next Match", 2) {
-			b.logger.Warn().Msg("template match failed, forcing skip via pinpoint")
-			nextX, nextY := b.cal.ScaleRef(810, 660)
-			b.client.Tap(nextX, nextY)
+			b.logger.Warn().Msg("template match failed, forcing skip via color/pinpoint")
+			
+			// Try color-based fallback before hardcoded coordinates
+			searchROI := image.Rect(b.cal.PhysicalW/2, b.cal.PhysicalH/2, b.cal.PhysicalW, b.cal.PhysicalH)
+			orangePt, err := vision.PixelSearch(screen, searchROI, 252, 186, 54, 50)
+			if err == nil {
+				b.logger.Info().Msg("clicking Next via orange color fallback")
+				b.client.Tap(orangePt.X, orangePt.Y)
+			} else {
+				// Final hardcoded fallback
+				nextX, nextY := b.cal.ScaleRef(796, 565)
+				b.client.Tap(nextX, nextY)
+			}
 		}
 
 		// Wait briefly for the "Clouds" to appear (transition start)
@@ -653,7 +713,7 @@ var villagePinpoints = map[string]Pinpoint{
 	"btn_battle":     {X: 525, Y: 615, Name: "Battle"},
 	"btn_army_arrow": {X: 512, Y: 189, Name: "Army Arrow"},
 	"btn_army_1":     {X: 402, Y: 247, Name: "Army 1"},
-	"btn_next":       {X: 778, Y: 574, Name: "Next Match"},
+	"btn_next":       {X: 796, Y: 565, Name: "Next Match"}, // Verified coordinate
 }
 
 func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
@@ -861,11 +921,11 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 			b.logger.Info().Msg("battle state detected, entering search loop")
 			return true
 		case state == game.StateSearchMap || state == game.StateLoading:
-			b.logger.Debug().Msg("in clouds/loading...")
+			b.logger.Info().Msg("in clouds/loading...")
 			time.Sleep(1 * time.Second)
 			continue
 		default:
-			b.logger.Debug().Str("state", state.String()).Msg("waiting for battle state (unknown/other)...")
+			b.logger.Info().Str("state", state.String()).Msg("waiting for battle state (searching)...")
 			b.dismissInterruptions()
 			time.Sleep(500 * time.Millisecond)
 		}

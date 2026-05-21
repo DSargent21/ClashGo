@@ -109,11 +109,10 @@ func main() {
 	fmt.Println("\n" + strings.Repeat("=", 40))
 	fmt.Printf(" LOOT DETECTION REPORT\n")
 	fmt.Println(strings.Repeat("=", 40))
-	fmt.Printf(" Gold:        %10d (Conf: %.2f)\n", report.Resources.Gold, report.GoldConf)
-	fmt.Printf(" Elixir:      %10d (Conf: %.2f)\n", report.Resources.Elixir, report.ElixirConf)
-	fmt.Printf(" Dark Elixir: %10d (Conf: %.2f)\n", report.Resources.DarkElixir, report.DeConf)
+	fmt.Printf(" Gold:        %10d\n", report.Resources.Gold)
+	fmt.Printf(" Elixir:      %10d\n", report.Resources.Elixir)
+	fmt.Printf(" Dark Elixir: %10d\n", report.Resources.DarkElixir)
 	fmt.Println(strings.Repeat("-", 40))
-	fmt.Printf(" Scale:       %10.2f\n", report.Scale)
 	fmt.Printf(" Duration:    %10s\n", duration)
 	fmt.Println(strings.Repeat("=", 40))
 
@@ -121,25 +120,21 @@ func main() {
 	diag := screen.Clone()
 	defer diag.Close()
 
-	// Icons
-	gocv.Rectangle(&diag, report.GoldIcon, color.RGBA{255, 215, 0, 255}, 1)
-	gocv.Rectangle(&diag, report.ElixirIcon, color.RGBA{255, 0, 255, 255}, 1)
-	gocv.Rectangle(&diag, report.DeIcon, color.RGBA{100, 100, 100, 255}, 1)
-
-	// ROIs
-	drawROI(diag, report.GoldROI, color.RGBA{255, 215, 0, 255}, fmt.Sprintf("Gold: %d", report.Resources.Gold))
-	for _, b := range report.GoldBlobs {
-		gocv.Rectangle(&diag, b, color.RGBA{255, 255, 255, 255}, 1)
+	// High-Precision ROIs for Scouting (Reference 860x732)
+	rois := []struct {
+		name   string
+		y1, y2 int
+		val    int
+		c      color.RGBA
+	}{
+		{"gold", 72, 94, report.Resources.Gold, color.RGBA{255, 215, 0, 255}},
+		{"elixir", 101, 122, report.Resources.Elixir, color.RGBA{255, 0, 255, 255}},
+		{"de", 130, 151, report.Resources.DarkElixir, color.RGBA{100, 100, 100, 255}},
 	}
 
-	drawROI(diag, report.ElixirROI, color.RGBA{255, 0, 255, 255}, fmt.Sprintf("Elixir: %d", report.Resources.Elixir))
-	for _, b := range report.ElixirBlobs {
-		gocv.Rectangle(&diag, b, color.RGBA{255, 255, 255, 255}, 1)
-	}
-
-	drawROI(diag, report.DeROI, color.RGBA{100, 100, 100, 255}, fmt.Sprintf("DE: %d", report.Resources.DarkElixir))
-	for _, b := range report.DeBlobs {
-		gocv.Rectangle(&diag, b, color.RGBA{255, 255, 255, 255}, 1)
+	for _, r := range rois {
+		rect := image.Rect(int(44*cal.ScaleX), int(float64(r.y1-2)*cal.ScaleY), int(420*cal.ScaleX), int(float64(r.y2+2)*cal.ScaleY))
+		drawROI(diag, rect, r.c, fmt.Sprintf("%s: %d", r.name, r.val))
 	}
 
 	if gocv.IMWrite(*outputPath, diag) {

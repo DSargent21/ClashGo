@@ -14,7 +14,7 @@ import (
 type LootRecognizer struct {
 	cal            *Calibration
 	templates      *TemplateStore
-	digitTemplates []gocv.Mat
+	digitTemplates [][]gocv.Mat // Multiple templates per digit (variants)
 	logger         zerolog.Logger
 	mu             sync.Mutex
 	Debug          bool
@@ -37,42 +37,38 @@ func NewLootRecognizer(cal *Calibration, ts *TemplateStore, logger zerolog.Logge
 }
 
 func (lr *LootRecognizer) prepareDigitTemplates() {
-	lr.digitTemplates = make([]gocv.Mat, 10)
+	lr.digitTemplates = make([][]gocv.Mat, 10)
 	for i := 0; i < 10; i++ {
 		name := fmt.Sprintf("digit_%d", i)
-		
-		// Look in root and subdirectories
-		tpl, ok := lr.templates.Get(name)
-		if !ok || tpl.Empty() {
-			// Try specific subdirectories if not found in root
-			for _, sub := range []string{"Gold", "Elixir", "DE"} {
-				tpl, ok = lr.templates.Get(sub + "/" + name)
-				if ok && !tpl.Empty() { break }
-			}
+		variants := []string{name}
+		for _, sub := range []string{"Gold", "Elixir", "DE"} {
+			variants = append(variants, sub+"/"+name)
 		}
 
-		if !ok || tpl.Empty() {
-			lr.logger.Warn().Str("digit", name).Msg("template not found or empty")
-			continue
+		for _, vName := range variants {
+			tpl, ok := lr.templates.Get(vName)
+			if !ok || tpl.Empty() { continue }
+			gray := gocv.NewMat()
+			if tpl.Channels() == 3 { gocv.CvtColor(tpl, &gray, gocv.ColorBGRToGray) } else { tpl.CopyTo(&gray) }
+			bin := gocv.NewMat()
+			gocv.Threshold(gray, &bin, 0, 255, gocv.ThresholdBinary|gocv.ThresholdOtsu)
+			rect := tightBoundingBox(bin)
+			if !rect.Empty() {
+				tight := bin.Region(rect); lr.digitTemplates[i] = append(lr.digitTemplates[i], tight.Clone()); tight.Close()
+			} else {
+				lr.digitTemplates[i] = append(lr.digitTemplates[i], bin.Clone())
+			}
+			bin.Close(); gray.Close()
 		}
-		gray := gocv.NewMat()
-		if tpl.Channels() == 3 { gocv.CvtColor(tpl, &gray, gocv.ColorBGRToGray) } else { tpl.CopyTo(&gray) }
-		bin := gocv.NewMat()
-		gocv.Threshold(gray, &bin, 0, 255, gocv.ThresholdBinary|gocv.ThresholdOtsu)
-		rect := tightBoundingBox(bin)
-		if !rect.Empty() {
-			tight := bin.Region(rect); lr.digitTemplates[i] = tight.Clone(); tight.Close()
-			lr.logger.Debug().Int("digit", i).Interface("rect", rect).Msg("loaded tight template")
-		} else {
-			lr.digitTemplates[i] = bin.Clone()
-			lr.logger.Debug().Int("digit", i).Msg("loaded full template")
-		}
-		bin.Close(); gray.Close()
 	}
 }
 
 func (lr *LootRecognizer) Close() {
-	for _, tpl := range lr.digitTemplates { if !tpl.Empty() { tpl.Close() } }
+	for _, variants := range lr.digitTemplates {
+		for _, tpl := range variants {
+			if !tpl.Empty() { tpl.Close() }
+		}
+	}
 }
 
 type LootReport struct { Resources Resources }
@@ -96,7 +92,6 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	var result BattleResult
 
 	// Battle Loot (Center column)
-	// User-calibrated coordinates (reference 860x732)
 	battleRois := []struct { name string; x1, y1, x2, y2 int }{
 		{"gold",   320, 318, 441, 342},
 		{"elixir", 321, 357, 441, 381},
@@ -122,12 +117,11 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	}
 	result.Bonus = Resources{Gold: boLoot[0], Elixir: boLoot[1], DarkElixir: boLoot[2]}
 
-	// Star Detection (Top center Victory banner)
-	// White pixel check at 3 star centers
+	// Star Detection
 	starPoints := []image.Point{
-		{X: 327, Y: 205}, // Left star
-		{X: 430, Y: 196}, // Middle star
-		{X: 535, Y: 210}, // Right star
+		{X: 327, Y: 205},
+		{X: 430, Y: 196},
+		{X: 535, Y: 210},
 	}
 	for _, p := range starPoints {
 		sx, sy := lr.cal.ScaleRef(p.X, p.Y)
@@ -144,8 +138,6 @@ func isPixelWhite(img gocv.Mat, x, y int) bool {
 	b := img.GetUCharAt(y, x*3)
 	g := img.GetUCharAt(y, x*3+1)
 	r := img.GetUCharAt(y, x*3+2)
-	// Stars are white/silver. In the screenshot, the detected star has a sum around 446.
-	// Dark/empty stars are much lower (< 150).
 	return int(r)+int(g)+int(b) > 350
 }
 
@@ -198,18 +190,22 @@ func (lr *LootRecognizer) readRow(gray gocv.Mat, roi image.Rectangle) int {
 }
 
 func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
-	if bin.Empty() { return detectedDigit{digit: -1} }
 	bestDigit, maxConf := -1, float32(0.60)
-	for i, tpl := range lr.digitTemplates {
-		if tpl.Empty() { continue }
-		scaled := gocv.NewMat()
-		// Resize bin to match tpl size for normalized correlation
-		gocv.Resize(bin, &scaled, image.Point{X: tpl.Cols(), Y: tpl.Rows()}, 0, 0, gocv.InterpolationLinear)
-		res := gocv.NewMat()
-		gocv.MatchTemplate(scaled, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
-		_, conf, _, _ := gocv.MinMaxLoc(res)
-		if float32(conf) > maxConf { maxConf = float32(conf); bestDigit = i }
-		res.Close(); scaled.Close()
+	for i, variants := range lr.digitTemplates {
+		for _, tpl := range variants {
+			if tpl.Empty() { continue }
+			scaled := gocv.NewMat()
+			gocv.Resize(bin, &scaled, image.Point{X: tpl.Cols(), Y: tpl.Rows()}, 0, 0, gocv.InterpolationNearestNeighbor)
+			res := gocv.NewMat()
+			gocv.MatchTemplate(scaled, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+			_, conf, _, _ := gocv.MinMaxLoc(res)
+			if float32(conf) > maxConf {
+				maxConf = float32(conf)
+				bestDigit = i
+			}
+			res.Close()
+			scaled.Close()
+		}
 	}
 	return detectedDigit{digit: bestDigit, conf: maxConf}
 }
