@@ -266,36 +266,69 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 			}
 			tpl.Close()
 
-			if isHeroesPhase && isHero && match != nil && !isAbility {
+			if isHeroesPhase && isHero && match != nil {
 				heroMatches = append(heroMatches, struct {
-					unit strategy.Unit
-					match *vision.Match
+					unit      strategy.Unit
+					match     *vision.Match
 					isAbility bool
 				}{unit, match, isAbility})
 				continue // Process after collecting all heroes
 			}
 
 			if match == nil {
-				if !isAbility { e.logger.Warn().Str("unit", unit.Name).Msg("unit not found in bar") }
+				if !isAbility {
+					e.logger.Warn().Str("unit", unit.Name).Msg("unit not found in bar")
+				}
 				continue
 			}
 
 			e.deployUnit(unit, match, pCfg, targetEdge, w, h, isAbility)
 		}
 
-		// Handle Heroes Phase (Max 4 Heroes)
+		// Handle Heroes Phase (Deployment first, then Abilities)
 		if isHeroesPhase && len(heroMatches) > 0 {
-			// Sort by confidence descending
-			sort.Slice(heroMatches, func(i, j int) bool {
-				return heroMatches[i].match.Confidence > heroMatches[j].match.Confidence
+			// 1. Separate Deployments and Abilities
+			var deployments []struct {
+				unit      strategy.Unit
+				match     *vision.Match
+				isAbility bool
+			}
+			var abilities []struct {
+				unit      strategy.Unit
+				match     *vision.Match
+				isAbility bool
+			}
+
+			for _, hm := range heroMatches {
+				if hm.isAbility {
+					abilities = append(abilities, hm)
+				} else {
+					deployments = append(deployments, hm)
+				}
+			}
+
+			// 2. Sort deployments by confidence descending and take top 4
+			sort.Slice(deployments, func(i, j int) bool {
+				return deployments[i].match.Confidence > deployments[j].match.Confidence
 			})
 
-			// Take only the top 4
 			limit := 4
-			if len(heroMatches) < limit { limit = len(heroMatches) }
-			
+			if len(deployments) < limit {
+				limit = len(deployments)
+			}
+			activeHeroes := make(map[string]bool)
+
 			for i := 0; i < limit; i++ {
-				e.deployUnit(heroMatches[i].unit, heroMatches[i].match, pCfg, targetEdge, w, h, heroMatches[i].isAbility)
+				e.deployUnit(deployments[i].unit, deployments[i].match, pCfg, targetEdge, w, h, false)
+				activeHeroes[strings.ToLower(strings.TrimSpace(deployments[i].unit.Name))] = true
+			}
+
+			// 3. Process abilities for active heroes only
+			for _, ab := range abilities {
+				name := strings.ToLower(strings.TrimSpace(ab.unit.Name))
+				if activeHeroes[name] {
+					e.deployUnit(ab.unit, ab.match, pCfg, targetEdge, w, h, true)
+				}
 			}
 		}
 
@@ -321,11 +354,16 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 
 	uPt := match.Point
 	e.logger.Info().Str("unit", unit.Name).Bool("ability", isAbility).Int("x", uPt.X).Int("y", uPt.Y).Float64("conf", match.Confidence).Msg("selecting unit")
-	
+
 	if isAbility {
-		// Single tap for abilities, no selection verification needed
-		e.client.Tap(uPt.X+rand.Intn(11)-5, uPt.Y+rand.Intn(11)-5)
-		time.Sleep(time.Duration(100+rand.Intn(100)) * time.Millisecond)
+		// Hero abilities: retap the icon to activate. 
+		// Use a small delay before the first tap to ensure deployment is complete,
+		// and tap twice for robustness as requested.
+		time.Sleep(100 * time.Millisecond)
+		for i := 0; i < 2; i++ {
+			e.client.Tap(uPt.X+rand.Intn(7)-3, uPt.Y+rand.Intn(7)-3)
+			time.Sleep(time.Duration(100+rand.Intn(100)) * time.Millisecond)
+		}
 		return
 	}
 
@@ -354,7 +392,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 	if !selected {
 		e.logger.Warn().Str("unit", unit.Name).Msg("could not verify selection (teal glow), trying to deploy anyway...")
 	}
-	
+
 	time.Sleep(time.Duration(50+rand.Intn(100)) * time.Millisecond)
 
 	// Deployment Logic
@@ -423,6 +461,31 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 	}
 }
 
+func (e *Executor) CalculateInBetween(edge string, offset int, bT, bB, bL, bR, fT, fB, fL, fR image.Point) (p1, p2 image.Point) {
+	pct := float64(offset) / 100.0
+	var baseP1, baseP2, fieldP1, fieldP2 image.Point
+	switch edge {
+	case "TopRight": baseP1, baseP2, fieldP1, fieldP2 = bT, bR, fT, fR
+	case "BottomRight": baseP1, baseP2, fieldP1, fieldP2 = bR, bB, fR, fB
+	case "BottomLeft": baseP1, baseP2, fieldP1, fieldP2 = bB, bL, fB, fL
+	case "TopLeft": baseP1, baseP2, fieldP1, fieldP2 = bL, bT, fL, fT
+	default: baseP1, baseP2, fieldP1, fieldP2 = bT, bR, fT, fR
+	}
+
+	p1 = image.Pt(
+		int(float64(baseP1.X) + float64(fieldP1.X-baseP1.X)*pct),
+		int(float64(baseP1.Y) + float64(fieldP1.Y-baseP1.Y)*pct),
+	)
+	p2 = image.Pt(
+		int(float64(baseP2.X) + float64(fieldP2.X-baseP2.X)*pct),
+		int(float64(baseP2.Y) + float64(fieldP2.Y-baseP2.Y)*pct),
+	)
+	return
+}
+
+func (e *Executor) MaximizeLineSpread(p1, p2 image.Point, w, mBarY int) (image.Point, image.Point) {
+	return p1, p2 // Simplified for now, just return as is
+}
 func (e *Executor) EndBattle() error {
 	ex, ey := e.cal.ScaleRef(34, 558)
 	if err := e.client.Tap(ex, ey); err != nil { return err }

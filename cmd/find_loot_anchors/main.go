@@ -8,7 +8,6 @@ import (
 	"github.com/Ducky705/ClashGo/internal/config"
 	"github.com/Ducky705/ClashGo/internal/game"
 	"github.com/Ducky705/ClashGo/internal/vision"
-	"gocv.io/x/gocv"
 )
 
 func main() {
