@@ -79,36 +79,34 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	var result BattleResult
 
 	// Battle Loot (Center column)
-	battleRois := []struct { name string; x1, y1, x2, y2 int }{
-		{"gold",   320, 318, 441, 342},
+	battleRois := []struct {
+		name           string
+		x1, y1, x2, y2 int
+	}{
+		{"gold", 320, 318, 441, 342},
 		{"elixir", 321, 357, 441, 381},
-		{"de",     353, 395, 441, 417},
+		{"de", 353, 395, 441, 417},
 	}
-	for i, r := range battleRois {
-		rect := image.Rect(int(float64(r.x1)*lr.cal.ScaleX), int(float64(r.y1)*lr.cal.ScaleY), int(float64(r.x2)*lr.cal.ScaleX), int(float64(r.y2)*lr.cal.ScaleY))
-		val := lr.readRow(gray, rect)
-		switch i {
-		case 0: result.Loot.Gold = val
-		case 1: result.Loot.Elixir = val
-		case 2: result.Loot.DarkElixir = val
-		}
-	}
+	battleSearch := image.Rect(
+		int(280*lr.cal.ScaleX), int(300*lr.cal.ScaleY),
+		int(480*lr.cal.ScaleX), int(450*lr.cal.ScaleY),
+	)
+	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
 
 	// Bonus Loot (Right column box)
-	bonusRois := []struct { name string; x1, y1, x2, y2 int }{
-		{"gold",   581, 368, 673, 387},
+	bonusRois := []struct {
+		name           string
+		x1, y1, x2, y2 int
+	}{
+		{"gold", 581, 368, 673, 387},
 		{"elixir", 581, 401, 673, 420},
-		{"de",     612, 432, 674, 450},
+		{"de", 612, 432, 674, 450},
 	}
-	for i, r := range bonusRois {
-		rect := image.Rect(int(float64(r.x1)*lr.cal.ScaleX), int(float64(r.y1)*lr.cal.ScaleY), int(float64(r.x2)*lr.cal.ScaleX), int(float64(r.y2)*lr.cal.ScaleY))
-		val := lr.readRow(gray, rect)
-		switch i {
-		case 0: result.Bonus.Gold = val
-		case 1: result.Bonus.Elixir = val
-		case 2: result.Bonus.DarkElixir = val
-		}
-	}
+	bonusSearch := image.Rect(
+		int(540*lr.cal.ScaleX), int(350*lr.cal.ScaleY),
+		int(750*lr.cal.ScaleX), int(500*lr.cal.ScaleY),
+	)
+	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois)
 
 	// Star Detection
 	starPoints := []image.Point{
@@ -119,16 +117,81 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	for _, p := range starPoints {
 		sx, sy := lr.cal.ScaleRef(p.X, p.Y)
 		if sx >= 0 && sx < screen.Cols() && sy >= 0 && sy < screen.Rows() {
-			b := screen.GetUCharAt(sy, sx*3)
-			g := screen.GetUCharAt(sy, sx*3+1)
-			r := screen.GetUCharAt(sy, sx*3+2)
-			if int(r)+int(g)+int(b) > 350 {
+			// Sample 5x5 region for robustness
+			sum, count := 0, 0
+			for dy := -2; dy <= 2; dy++ {
+				for dx := -2; dx <= 2; dx++ {
+					nx, ny := sx+dx, sy+dy
+					if nx >= 0 && nx < screen.Cols() && ny >= 0 && ny < screen.Rows() {
+						b := screen.GetUCharAt(ny, nx*3)
+						g := screen.GetUCharAt(ny, nx*3+1)
+						r := screen.GetUCharAt(ny, nx*3+2)
+						sum += int(r) + int(g) + int(b)
+						count++
+					}
+				}
+			}
+			if count > 0 && sum/count > 350 {
 				result.Stars++
 			}
 		}
 	}
 
 	return result, nil
+}
+
+func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.Rectangle, fallbacks []struct {
+	name           string
+	x1, y1, x2, y2 int
+}) Resources {
+	// Ensure searchRoi is within bounds
+	if searchRoi.Min.X < 0 {
+		searchRoi.Min.X = 0
+	}
+	if searchRoi.Min.Y < 0 {
+		searchRoi.Min.Y = 0
+	}
+	if searchRoi.Max.X > screen.Cols() {
+		searchRoi.Max.X = screen.Cols()
+	}
+	if searchRoi.Max.Y > screen.Rows() {
+		searchRoi.Max.Y = screen.Rows()
+	}
+
+	region := screen.Region(searchRoi)
+	defer region.Close()
+	grayReg := gray.Region(searchRoi)
+	defer grayReg.Close()
+
+	var results [3]int
+	iconNames := []string{"icon_gold", "icon_elixir", "icon_de"}
+
+	for i, name := range iconNames {
+		tpl, ok := lr.templates.Get(name)
+		if ok && !tpl.Empty() {
+			res := gocv.NewMat()
+			gocv.MatchTemplate(region, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+			_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
+			res.Close()
+
+			if maxConf > 0.7 {
+				// Numbers are typically to the right of the icon
+				rect := image.Rect(maxLoc.X+tpl.Cols()+2, maxLoc.Y-2, maxLoc.X+tpl.Cols()+120, maxLoc.Y+tpl.Rows()+2)
+				results[i] = lr.readRow(grayReg, rect)
+				continue
+			}
+		}
+		// Fallback
+		f := fallbacks[i]
+		rect := image.Rect(
+			int(float64(f.x1)*lr.cal.ScaleX)-searchRoi.Min.X,
+			int(float64(f.y1)*lr.cal.ScaleY)-searchRoi.Min.Y,
+			int(float64(f.x2)*lr.cal.ScaleX)-searchRoi.Min.X,
+			int(float64(f.y2)*lr.cal.ScaleY)-searchRoi.Min.Y,
+		)
+		results[i] = lr.readRow(grayReg, rect)
+	}
+	return Resources{Gold: results[0], Elixir: results[1], DarkElixir: results[2]}
 }
 
 func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) {
