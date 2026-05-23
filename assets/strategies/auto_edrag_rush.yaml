@@ -6,20 +6,20 @@ phases:
     units: [{ name: "Balloon", amount: "All" }]
     pattern: "Line"
     offset: 80 # Near the outer Yellow line
-    delay_after_ms: 500
+    delay_after_ms: 10
 
   - name: "Electro Dragons"
     units: [{ name: "Electro Dragon", amount: "All" }]
     pattern: "Line"
     offset: 60 # Slightly inside balloons
-    delay_after_ms: 800
+    delay_after_ms: 10
 
   - name: "Siege Machine"
     units: [{ name: "Stone Slammer", amount: "All" }]
     pattern: "Point"
     position: "Center"
     offset: 50 # Dead middle of the gap
-    delay_after_ms: 1000
+    delay_after_ms: 10
 
   - name: "Heroes"
     units:
@@ -31,10 +31,12 @@ phases:
       - { name: "Grand Warden", amount: "All", pattern: "Ability" }
       - { name: "Minion Prince", amount: "All" }
       - { name: "Minion Prince", amount: "All", pattern: "Ability" }
+      - { name: "Dragon Duke", amount: "All" }
+      - { name: "Dragon Duke", amount: "All", pattern: "Ability" }
     pattern: "Point"
     position: "Center"
     offset: 40 # Closer to the Blue line
-    delay_after_ms: 500
+    delay_after_ms: 10
 
   - name: "Spells"
 
@@ -43,5 +45,5 @@ phases:
       - { name: "Ice Spell", amount: "All" }
     pattern: "Line"
     offset: 30 # Near the point of entry
-    delay_after_ms: 2000
+    delay_after_ms: 10
 

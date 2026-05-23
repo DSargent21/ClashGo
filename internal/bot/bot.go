@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"os/exec"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -71,42 +70,41 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 
 	log.Info().Msg("initializing bot startup sequence...")
 
-	// Auto-detect device in case config is outdated but BlueStacks is already running
-	_ = client.AutoDetectDevice()
-
-	// Try to connect first, launch if fails
-	if err := client.Connect(); err != nil {
-		log.Warn().Err(err).Msg("initial ADB connection failed")
-
-		if runtime.GOOS == "darwin" {
-			log.Info().Msg("attempting to launch BlueStacks...")
-			// Use 'open -a BlueStacks' as it's the standard way to launch apps on macOS
-			if err := exec.Command("open", "-a", "BlueStacks").Run(); err != nil {
-				log.Error().Err(err).Msg("failed to launch BlueStacks via 'open' command")
+	if runtime.GOOS == "darwin" {
+		log.Info().Msg("verifying BlueStacks configuration...")
+		restartNeeded := true
+		if err := client.Connect(); err == nil {
+			w, h, _ := client.ScreenSize()
+			if w == cfg.Device.Width && h == cfg.Device.Height {
+				log.Info().Msg("BlueStacks already running with correct resolution")
+				restartNeeded = false
 			}
-
-			// Wait for ADB server and device to become available
-			log.Info().Msg("waiting for ADB connection (up to 90s)...")
-			deadline := time.Now().Add(90 * time.Second)
-			connected := false
-			for time.Now().Before(deadline) {
-				_ = client.AutoDetectDevice()
-				if err := client.Reconnect(); err == nil {
-					connected = true
-					break
-				}
-				time.Sleep(3 * time.Second)
-			}
-			if !connected {
-				return nil, fmt.Errorf("timeout waiting for ADB connection")
-			}
-			log.Info().Msg("ADB connected successfully")
-		} else {
-			return nil, fmt.Errorf("ADB connect failed and automatic launch only supported on macOS: %w", err)
 		}
-	} else {
-		log.Info().Msg("ADB connected successfully (already running)")
+
+		if restartNeeded {
+			if err := client.EnsureBlueStacksMac(cfg.Device.Width, cfg.Device.Height, cfg.Device.DPI); err != nil {
+				log.Error().Err(err).Msg("failed to enforce BlueStacks configuration")
+			}
+		}
 	}
+
+	// Wait for ADB server and device to become available
+	log.Info().Msg("waiting for ADB connection (up to 90s)...")
+	deadline := time.Now().Add(90 * time.Second)
+	connected := false
+	for time.Now().Before(deadline) {
+		_ = client.AutoDetectDevice()
+		if err := client.Reconnect(); err == nil {
+			connected = true
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	if !connected {
+		return nil, fmt.Errorf("timeout waiting for ADB connection")
+	}
+	log.Info().Msg("ADB connected successfully")
 
 	// Ensure system is booted
 	log.Info().Msg("waiting for Android system to report 'boot_completed'...")
@@ -181,7 +179,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		startedAt:         time.Now(),
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
-		stuckTimeout:      3 * time.Minute,
+		stuckTimeout:      15 * time.Second,
 	}
 
 
@@ -241,25 +239,40 @@ func (b *Bot) captureLoop() {
 		case <-b.ctx.Done():
 			return
 		case <-ticker.C:
-			b.checkStuck()
+			b.checkStuck(gc)
 			b.processFrame(gc)
 		}
 	}
 }
 
-func (b *Bot) checkStuck() {
-	// Don't check if an attack sequence is running
+func (b *Bot) checkStuck(gc *game.GameContext) {
+	// Don't check stuckTimeout if an attack sequence is running, 
+	// but do check if the sequence itself has been running for an absurdly long time.
 	if b.seqRunning.Load() {
-		b.lastSequenceStart = time.Now()
+		if time.Since(b.lastSequenceStart) > 15*time.Minute {
+			b.logger.Warn().
+				Dur("seq_time", time.Since(b.lastSequenceStart)).
+				Msg("attack sequence running too long, triggering emergency restart...")
+			b.restartGame()
+			b.lastAction = time.Now()
+			b.lastSequenceStart = time.Now()
+		}
 		return
 	}
 
-	// If we haven't taken a known action (state transition) or started a sequence in too long
-	if time.Since(b.lastAction) > b.stuckTimeout || time.Since(b.lastSequenceStart) > 5*time.Minute {
+	// Determine dynamic timeout: 3m for Battle, 15s otherwise
+	timeout := b.stuckTimeout
+	if gc.State == game.StateBattle {
+		timeout = 3 * time.Minute
+	}
+
+	// If we haven't taken a known action (state transition) in too long
+	if time.Since(b.lastAction) > timeout {
 		b.logger.Warn().
+			Str("state", gc.State.String()).
 			Dur("stuck_time", time.Since(b.lastAction)).
-			Dur("idle_time", time.Since(b.lastSequenceStart)).
-			Msg("bot appears stuck or idling too long, triggering emergency restart...")
+			Dur("timeout", timeout).
+			Msg("bot appears stuck, triggering emergency restart...")
 
 		b.restartGame()
 		b.lastAction = time.Now()
@@ -305,9 +318,10 @@ func (b *Bot) processFrame(gc *game.GameContext) {
 
 	gc.UpdateScreen(screen, captureMs)
 
-	// Update lastAction if we are in any known state to prevent restart during normal idling.
-	// The stuck check will still trigger if we stay in StateUnknown for too long.
-	if state != game.StateUnknown && state != game.StateLoading {
+	// Update lastAction only on state transition. 
+	// This ensures if we are stuck in a single state without taking action (like clicking attack)
+	// for more than 15s, we trigger a restart.
+	if state != gc.State && state != game.StateUnknown && state != game.StateLoading {
 		b.lastAction = time.Now()
 	}
 
@@ -331,6 +345,7 @@ func (b *Bot) processFrame(gc *game.GameContext) {
 		if b.zoomedOut.CompareAndSwap(false, true) {
 			b.logger.Info().Msg("main village elements detected, performing initial zoom out...")
 			b.navigator.ZoomOut()
+			b.lastAction = time.Now()
 			// Wait for zoom animation to settle
 			time.Sleep(2000 * time.Millisecond)
 			// Return here so the next loop iteration captures a fresh screen after zoom

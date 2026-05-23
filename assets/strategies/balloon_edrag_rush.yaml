@@ -12,7 +12,7 @@ phases:
     units: [{ name: "Electro Dragon", amount: "All" }]
     pattern: "Line"
     offset: 150 # Increased from 40 to 150
-    delay_after_ms: 1000
+    delay_after_ms: 500
 
   - name: "Heroes Push"
     units: 
@@ -22,7 +22,7 @@ phases:
     pattern: "Point"
     position: "Center"
     offset: 180 # Increased from 50 to 180
-    delay_after_ms: 1500
+    delay_after_ms: 500
 
   - name: "Rage Support"
     units: [{ name: "Rage Spell", amount: "All" }]

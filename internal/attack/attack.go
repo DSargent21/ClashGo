@@ -335,10 +335,10 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 		if !lastBar.Empty() { lastBar.Close(); lastBar = gocv.NewMat() }
 		
 		pDelay := time.Duration(phase.DelayAfterMS) * time.Millisecond
-		if phase.Name == "Heroes" || phase.Name == "Siege Machine" { pDelay = 100 * time.Millisecond }
+		if phase.Name == "Heroes" || phase.Name == "Siege Machine" { pDelay = 10 * time.Millisecond }
 		if pDelay > 0 {
-			// Add randomized delay variance (+/- 50ms)
-			variance := time.Duration(rand.Intn(101)-50) * time.Millisecond
+			// Add randomized delay variance (+/- 10ms)
+			variance := time.Duration(rand.Intn(21)-10) * time.Millisecond
 			time.Sleep(pDelay + variance)
 		}
 	}
@@ -357,33 +357,40 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 
 	if isAbility {
 		// Hero abilities: retap the icon to activate. 
-		e.client.HumanSleep(150, 50)
+		e.client.HumanSleep(50, 20)
 		for i := 0; i < 2; i++ {
 			e.client.TapHuman(uPt.X, uPt.Y, 4.0)
-			e.client.HumanSleep(150, 50)
+			e.client.HumanSleep(50, 20)
 		}
 		return
 	}
 
 	selected := false
-	for i := 0; i < 3; i++ {
+	if isSpell {
+		// Spells need to be fast. Skip verification.
 		e.client.TapHuman(uPt.X, uPt.Y, 3.5)
-		e.client.HumanSleep(300, 100) // Humanized APM for selection
-
-		if strings.Contains(unitName, "slammer") || strings.Contains(unitName, "siege") {
-			e.client.HumanSleep(200, 50)
+		e.client.HumanSleep(50, 20)
+		selected = true
+	} else {
+		for i := 0; i < 3; i++ {
 			e.client.TapHuman(uPt.X, uPt.Y, 3.5)
-			e.client.HumanSleep(300, 100)
-		}
+			e.client.HumanSleep(100, 40) // Fast selection tap
 
-		verifyScreen, _ := e.client.CaptureToMat()
-		if !verifyScreen.Empty() {
-			if e.isUnitSelected(verifyScreen, uPt.X, uPt.Y) {
-				selected = true
-				verifyScreen.Close()
-				break
+			if isSiege {
+				e.client.HumanSleep(50, 20)
+				e.client.TapHuman(uPt.X, uPt.Y, 3.5)
+				e.client.HumanSleep(100, 40)
 			}
-			verifyScreen.Close()
+
+			verifyScreen, _ := e.client.CaptureToMat()
+			if !verifyScreen.Empty() {
+				if e.isUnitSelected(verifyScreen, uPt.X, uPt.Y) {
+					selected = true
+					verifyScreen.Close()
+					break
+				}
+				verifyScreen.Close()
+			}
 		}
 	}
 
@@ -391,11 +398,14 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		e.logger.Warn().Str("unit", unit.Name).Msg("could not verify selection (teal glow), trying to deploy anyway...")
 	}
 
-	e.client.HumanSleep(100, 40)
+	if !isSpell {
+		e.client.HumanSleep(40, 20)
+	}
 
 	// Deployment Logic
 	isRage := strings.Contains(unitName, "rage")
 	isFreeze := strings.Contains(unitName, "ice") || strings.Contains(unitName, "freeze")
+	isDragonDuke := strings.Contains(unitName, "duke")
 
 	if isSpell {
 		edgeA, okA := pCfg.SpellEdgesA[targetEdge]
@@ -409,7 +419,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 						pct := float64(i) / 2.0
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
 						e.client.TapHuman(tx, ty, 8.0)
-						e.client.HumanSleep(150, 50)
+						e.client.HumanSleep(50, 20)
 					}
 				}
 			} else if isFreeze {
@@ -418,16 +428,32 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					pct := float64(i) / 2.0
 					tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
 					e.client.TapHuman(tx, ty, 8.0)
-					e.client.HumanSleep(150, 50)
+					e.client.HumanSleep(50, 20)
 				}
 			}
 		}
 	} else {
 		var p1, p2 image.Point
+		deploymentEdge := targetEdge
+
+		if isDragonDuke && !isAbility {
+			// Dragon Duke goes on adjacent side
+			adjacents := map[string][]string{
+				"TopLeft":     {"TopRight", "BottomLeft"},
+				"TopRight":    {"TopLeft", "BottomRight"},
+				"BottomLeft":  {"TopLeft", "BottomRight"},
+				"BottomRight": {"TopRight", "BottomLeft"},
+			}
+			if opts, ok := adjacents[targetEdge]; ok {
+				deploymentEdge = opts[rand.Intn(len(opts))]
+				e.logger.Info().Str("target", targetEdge).Str("duke_edge", deploymentEdge).Msg("Dragon Duke adjacent placement")
+			}
+		}
+
 		if isHeroOrSiege {
-			if pt, ok := pCfg.HeroTargets[targetEdge]; ok { p1, p2 = pt, pt }
+			if pt, ok := pCfg.HeroTargets[deploymentEdge]; ok { p1, p2 = pt, pt }
 		} else {
-			if edge, ok := pCfg.Edges[targetEdge]; ok { p1, p2 = edge.P1, edge.P2 }
+			if edge, ok := pCfg.Edges[deploymentEdge]; ok { p1, p2 = edge.P1, edge.P2 }
 		}
 
 		steps := 1
@@ -443,7 +469,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 			for i := 0; i < steps; i++ {
 				e.client.TapHuman(p1.X, p1.Y, 12.0)
 				if steps > 1 {
-					e.client.HumanSleep(250, 80) // Humanized deployment APM
+					e.client.HumanSleep(30, 10) // Ultra fast deployment
 				}
 			}
 		} else { // Line (Simulated 2-Finger Alternating Taps)
@@ -451,12 +477,6 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 			
 			// We split the steps into two interleaving streams to simulate two fingers
 			for i := 0; i < steps; i++ {
-				// Random hesitation (10% chance)
-				if rand.Float64() < 0.10 {
-					e.logger.Debug().Msg("human hesitation pause")
-					e.client.HumanSleep(600, 200)
-				}
-
 				// Alternating logic: Finger 1 (left side of progress), Finger 2 (right side of progress)
 				// This simulates two thumbs moving along the line.
 				var pct float64
@@ -473,9 +493,9 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				
 				// Rapid alternation between "fingers" (shorter delay) vs between "sets"
 				if i%2 == 0 {
-					e.client.HumanSleep(120, 30) // Fast tap between fingers
+					e.client.HumanSleep(20, 10) // Ultra fast tap between fingers
 				} else {
-					e.client.HumanSleep(250, 70) // Normal human delay between dual taps
+					e.client.HumanSleep(40, 15) // Ultra fast human delay between dual taps
 				}
 			}
 		}
@@ -526,8 +546,8 @@ func (e *Executor) ReturnHome() error {
 }
 
 func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(500 * time.Millisecond)
+	deadline := time.Now().Add(3 * time.Minute)
+	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {

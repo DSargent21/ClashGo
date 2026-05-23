@@ -22,6 +22,9 @@ type DeviceConfig struct {
 	PackageName string `json:"package_name"`
 	ZoomOutKey  string `json:"zoom_out_key"` // Key to press for zoom out (e.g., "-")
 	ZoomInKey   string `json:"zoom_in_key"`  // Key to press for zoom in (e.g., "+")
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	DPI         int    `json:"dpi"`
 }
 
 type TrainingConfig struct {
@@ -94,6 +97,9 @@ func DefaultConfig() *BotConfig {
 			PackageName: "com.supercell.clashofclans",
 			ZoomOutKey:  "i",
 			ZoomInKey:   "o",
+			Width:       860,
+			Height:      732,
+			DPI:         160,
 		},
 		Training: TrainingConfig{
 			Enabled:            true,
