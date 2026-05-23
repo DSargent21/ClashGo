@@ -357,25 +357,23 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 
 	if isAbility {
 		// Hero abilities: retap the icon to activate. 
-		// Use a small delay before the first tap to ensure deployment is complete,
-		// and tap twice for robustness as requested.
-		time.Sleep(100 * time.Millisecond)
+		e.client.HumanSleep(150, 50)
 		for i := 0; i < 2; i++ {
-			e.client.Tap(uPt.X+rand.Intn(7)-3, uPt.Y+rand.Intn(7)-3)
-			time.Sleep(time.Duration(100+rand.Intn(100)) * time.Millisecond)
+			e.client.TapHuman(uPt.X, uPt.Y, 4.0)
+			e.client.HumanSleep(150, 50)
 		}
 		return
 	}
 
 	selected := false
 	for i := 0; i < 3; i++ {
-		e.client.Tap(uPt.X+rand.Intn(7)-3, uPt.Y+rand.Intn(7)-3)
-		time.Sleep(time.Duration(250+rand.Intn(100)) * time.Millisecond)
+		e.client.TapHuman(uPt.X, uPt.Y, 3.5)
+		e.client.HumanSleep(300, 100) // Humanized APM for selection
 
 		if strings.Contains(unitName, "slammer") || strings.Contains(unitName, "siege") {
-			time.Sleep(time.Duration(150+rand.Intn(100)) * time.Millisecond)
-			e.client.Tap(uPt.X+rand.Intn(7)-3, uPt.Y+rand.Intn(7)-3)
-			time.Sleep(time.Duration(250+rand.Intn(100)) * time.Millisecond)
+			e.client.HumanSleep(200, 50)
+			e.client.TapHuman(uPt.X, uPt.Y, 3.5)
+			e.client.HumanSleep(300, 100)
 		}
 
 		verifyScreen, _ := e.client.CaptureToMat()
@@ -393,7 +391,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		e.logger.Warn().Str("unit", unit.Name).Msg("could not verify selection (teal glow), trying to deploy anyway...")
 	}
 
-	time.Sleep(time.Duration(50+rand.Intn(100)) * time.Millisecond)
+	e.client.HumanSleep(100, 40)
 
 	// Deployment Logic
 	isRage := strings.Contains(unitName, "rage")
@@ -410,8 +408,8 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					for i := 0; i < 3; i++ {
 						pct := float64(i) / 2.0
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-						e.client.Tap(tx+rand.Intn(21)-10, ty+rand.Intn(21)-10)
-						time.Sleep(time.Duration(40+rand.Intn(60)) * time.Millisecond)
+						e.client.TapHuman(tx, ty, 8.0)
+						e.client.HumanSleep(150, 50)
 					}
 				}
 			} else if isFreeze {
@@ -419,8 +417,8 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				for i := 0; i < 3; i++ {
 					pct := float64(i) / 2.0
 					tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-					e.client.Tap(tx+rand.Intn(21)-10, ty+rand.Intn(21)-10)
-					time.Sleep(time.Duration(40+rand.Intn(60)) * time.Millisecond)
+					e.client.TapHuman(tx, ty, 8.0)
+					e.client.HumanSleep(150, 50)
 				}
 			}
 		}
@@ -433,29 +431,52 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 
 		steps := 1
-		if strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro") {
+		isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro")
+		if isSpamUnit {
 			steps = 15
 		} else if p1 != p2 {
-			steps = 12 // Default for standard units on a line to simulate dragging
+			steps = 12 // Default for standard units on a line
 		}
 
 		if p1 == p2 { // Point
 			e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying point")
 			for i := 0; i < steps; i++ {
-				e.client.Tap(p1.X+rand.Intn(31)-15, p1.Y+rand.Intn(31)-15)
+				e.client.TapHuman(p1.X, p1.Y, 12.0)
 				if steps > 1 {
-					time.Sleep(time.Duration(20+rand.Intn(100)) * time.Millisecond)
+					e.client.HumanSleep(250, 80) // Humanized deployment APM
 				}
 			}
-		} else { // Line (Simulated Drag)
-			e.logger.Info().Str("unit", unit.Name).Msg("deploying line (drag simulation)")
+		} else { // Line (Simulated 2-Finger Alternating Taps)
+			e.logger.Info().Str("unit", unit.Name).Msg("deploying line (2-finger simulation)")
+			
+			// We split the steps into two interleaving streams to simulate two fingers
 			for i := 0; i < steps; i++ {
-				pct := float64(i) / float64(steps-1)
+				// Random hesitation (10% chance)
+				if rand.Float64() < 0.10 {
+					e.logger.Debug().Msg("human hesitation pause")
+					e.client.HumanSleep(600, 200)
+				}
+
+				// Alternating logic: Finger 1 (left side of progress), Finger 2 (right side of progress)
+				// This simulates two thumbs moving along the line.
+				var pct float64
+				if i%2 == 0 {
+					// Finger 1: even steps, scaled from 0 to 0.5
+					pct = (float64(i) / float64(steps-1)) * 0.5
+				} else {
+					// Finger 2: odd steps, scaled from 0.5 to 1.0
+					pct = 0.5 + ((float64(i-1) / float64(steps-1)) * 0.5)
+				}
+
 				tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-				// High randomness offset (+/- 15px)
-				e.client.Tap(tx+rand.Intn(31)-15, ty+rand.Intn(31)-15)
-				// Randomized delay between drag steps
-				time.Sleep(time.Duration(20+rand.Intn(40)) * time.Millisecond)
+				e.client.TapHuman(tx, ty, 15.0) // High spread for field deployment
+				
+				// Rapid alternation between "fingers" (shorter delay) vs between "sets"
+				if i%2 == 0 {
+					e.client.HumanSleep(120, 30) // Fast tap between fingers
+				} else {
+					e.client.HumanSleep(250, 70) // Normal human delay between dual taps
+				}
 			}
 		}
 	}
@@ -488,13 +509,13 @@ func (e *Executor) MaximizeLineSpread(p1, p2 image.Point, w, mBarY int) (image.P
 }
 func (e *Executor) EndBattle() error {
 	ex, ey := e.cal.ScaleRef(34, 558)
-	if err := e.client.Tap(ex, ey); err != nil { return err }
+	if err := e.client.TapHuman(ex, ey, 5.0); err != nil { return err }
 	time.Sleep(3 * time.Second); return nil
 }
 
 func (e *Executor) ReturnHome() error {
 	hx, hy := e.cal.ScaleRef(429, 582)
-	if err := e.client.Tap(hx, hy); err != nil { return err }
+	if err := e.client.TapHuman(hx, hy, 5.0); err != nil { return err }
 	time.Sleep(5 * time.Second)
 	screen, err := e.client.CaptureToMat()
 	if err != nil { return err }

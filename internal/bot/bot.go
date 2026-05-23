@@ -71,6 +71,9 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 
 	log.Info().Msg("initializing bot startup sequence...")
 
+	// Auto-detect device in case config is outdated but BlueStacks is already running
+	_ = client.AutoDetectDevice()
+
 	// Try to connect first, launch if fails
 	if err := client.Connect(); err != nil {
 		log.Warn().Err(err).Msg("initial ADB connection failed")
@@ -87,6 +90,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 			deadline := time.Now().Add(90 * time.Second)
 			connected := false
 			for time.Now().Before(deadline) {
+				_ = client.AutoDetectDevice()
 				if err := client.Reconnect(); err == nil {
 					connected = true
 					break
@@ -94,7 +98,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 				time.Sleep(3 * time.Second)
 			}
 			if !connected {
-				return nil, fmt.Errorf("timeout waiting for ADB connection (localhost:5037 -> localhost:5555)")
+				return nil, fmt.Errorf("timeout waiting for ADB connection")
 			}
 			log.Info().Msg("ADB connected successfully")
 		} else {

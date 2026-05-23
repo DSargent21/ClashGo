@@ -93,7 +93,8 @@ func (c *Client) EnsureConnected() error {
 }
 
 func (c *Client) Devices() ([]string, error) {
-	t, err := NewTransport(c.DeviceID, c.host, c.port, c.timeout)
+	// Use empty device ID to talk to the ADB host directly for the device list
+	t, err := NewTransport("", c.host, c.port, c.timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +123,48 @@ func (c *Client) Devices() ([]string, error) {
 		}
 	}
 	return devs, nil
+}
+
+// AutoDetectDevice attempts to find a suitable ADB device if the current one is disconnected.
+// It prioritizes common emulator addresses.
+func (c *Client) AutoDetectDevice() error {
+	devs, err := c.Devices()
+	if err != nil {
+		return fmt.Errorf("list devices: %w", err)
+	}
+
+	if len(devs) == 0 {
+		return errors.New("no ADB devices found")
+	}
+
+	// 1. Check if current ID is still in the list
+	for _, d := range devs {
+		if d == c.DeviceID {
+			return nil
+		}
+	}
+
+	// 2. Look for emulator-like devices (127.0.0.1, localhost, or emulator-)
+	var bestMatch string
+	for _, d := range devs {
+		low := strings.ToLower(d)
+		if strings.Contains(low, "127.0.0.1") || strings.Contains(low, "localhost") || strings.Contains(low, "emulator-") {
+			bestMatch = d
+			break
+		}
+	}
+
+	// 3. Fallback to first device
+	if bestMatch == "" {
+		bestMatch = devs[0]
+	}
+
+	if c.DeviceID != bestMatch {
+		c.log.Warn(fmt.Sprintf("ADB device auto-switched: %s -> %s", c.DeviceID, bestMatch))
+		c.DeviceID = bestMatch
+	}
+
+	return nil
 }
 
 func (c *Client) captureScreenRaw() ([]byte, error) {
@@ -219,12 +262,22 @@ func (c *Client) Tap(x, y int) error {
 	return err
 }
 
-func (c *Client) TapRandomized(x, y int) error {
+// TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
+func (c *Client) TapHuman(x, y int, stdDev float64) error {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ox := r.Intn(11) - 5
-	oy := r.Intn(11) - 5
-	time.Sleep(time.Duration(50+r.Intn(151)) * time.Millisecond)
+	
+	// Gaussian offset for X and Y
+	ox := int(r.NormFloat64() * stdDev)
+	oy := int(r.NormFloat64() * stdDev)
+	
+	// Small hesitation before tapping (50-150ms)
+	c.HumanSleep(100, 25)
+	
 	return c.Tap(x+ox, y+oy)
+}
+
+func (c *Client) TapRandomized(x, y int) error {
+	return c.TapHuman(x, y, 3.5)
 }
 
 func (c *Client) Swipe(x1, y1, x2, y2 int, ms int) error {
@@ -239,6 +292,31 @@ func (c *Client) Swipe(x1, y1, x2, y2 int, ms int) error {
 
 	_, err := c.transport.Exec(fmt.Sprintf("shell:input swipe %d %d %d %d %d", x1, y1, x2, y2, ms))
 	return err
+}
+
+// SwipeHuman simulates a human swipe by adding a slight curve and variable speed.
+func (c *Client) SwipeHuman(x1, y1, x2, y2, ms int) error {
+	// For simplicity in standard ADB, we use the basic swipe but randomize the points and duration
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	
+	// Randomize start and end points slightly
+	ox1, oy1 := int(r.NormFloat64()*5), int(r.NormFloat64()*5)
+	ox2, oy2 := int(r.NormFloat64()*5), int(r.NormFloat64()*5)
+	
+	// Randomize duration (+/- 15%)
+	duration := int(float64(ms) * (0.85 + r.Float64()*0.3))
+	
+	return c.Swipe(x1+ox1, y1+oy1, x2+ox2, y2+oy2, duration)
+}
+
+// HumanSleep pauses execution for a duration based on a Gaussian distribution.
+func (c *Client) HumanSleep(baseMs, stdDevMs int) {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	ms := baseMs + int(r.NormFloat64()*float64(stdDevMs))
+	if ms < 10 {
+		ms = 10 // Minimum floor
+	}
+	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
 func (c *Client) Hold(x, y int, ms int) error {
