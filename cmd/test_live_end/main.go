@@ -1,12 +1,15 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
 	"github.com/Ducky705/ClashGo/internal/adb"
 	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGo/internal/vision"
 	"github.com/rs/zerolog"
+	"gocv.io/x/gocv"
 )
 
 type adbLogAdapter struct {
@@ -25,32 +28,50 @@ func (a *adbLogAdapter) WithFields(fields map[string]any) adb.Logger {
 }
 
 func main() {
+	filePath := flag.String("file", "", "Path to image file to test instead of live ADB")
+	flag.Parse()
+
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
-	logger.Info().Msg("🚀 Starting Live End-Battle Detection Test")
+	logger.Info().Msg("🚀 Starting End-Battle Detection Test")
 
-	// 1. Connect to ADB
-	client := adb.NewClient(
-		adb.WithHost("127.0.0.1"),
-		adb.WithPort(5037),
-		adb.WithDeviceID("emulator-5554"),
-		adb.WithLogger(&adbLogAdapter{log: logger}),
-	)
-	if err := client.Connect(); err != nil {
-		fmt.Printf("❌ ADB Connection Error: %v\n", err)
-		return
-	}
+	var img gocv.Mat
+	if *filePath != "" {
+		fmt.Printf("📂 Loading image: %s\n", *filePath)
+		img = vision.LoadImage(*filePath)
+	} else {
+		// 1. Connect to ADB
+		client := adb.NewClient(
+			adb.WithHost("127.0.0.1"),
+			adb.WithPort(5037),
+			adb.WithDeviceID("emulator-5554"),
+			adb.WithLogger(&adbLogAdapter{log: logger}),
+		)
+		if err := client.Connect(); err != nil {
+			fmt.Printf("❌ ADB Connection Error: %v\n", err)
+			return
+		}
 
-	// 2. Capture Current Screen
-	fmt.Println("📸 Capturing screen...")
-	img, err := client.CaptureToMat()
-	if err != nil {
-		fmt.Printf("❌ Capture Error: %v\n", err)
-		return
+		// 2. Capture Current Screen
+		fmt.Println("📸 Capturing screen...")
+		var err error
+		img, err = client.CaptureToMat()
+		if err != nil {
+			fmt.Printf("❌ Capture Error: %v\n", err)
+			return
+		}
+		
+		// Save captured screen for manual inspection
+		vision.SaveImage(img, "battle_end_capture.png")
+		fmt.Println("💾 Saved screen to battle_end_capture.png")
 	}
 	defer img.Close()
 
+	if img.Empty() {
+		fmt.Println("❌ Error: Image is empty")
+		return
+	}
+
 	// 3. Setup Calibration & Templates
-	// We use 860x732 as the reference resolution for the internal logic
 	cal := &game.Calibration{
 		ScaleX: float64(img.Cols()) / 860.0,
 		ScaleY: float64(img.Rows()) / 732.0,

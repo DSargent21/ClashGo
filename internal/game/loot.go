@@ -3,6 +3,7 @@ package game
 import (
 	"fmt"
 	"image"
+	"math"
 	"sort"
 	"strconv"
 	"sync"
@@ -83,12 +84,12 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		name           string
 		x1, y1, x2, y2 int
 	}{
-		{"gold", 320, 318, 441, 342},
-		{"elixir", 321, 357, 441, 381},
-		{"de", 353, 395, 441, 417},
+		{"gold", 50, 318, 450, 345},
+		{"elixir", 50, 357, 450, 385},
+		{"de", 100, 395, 450, 420},
 	}
 	battleSearch := image.Rect(
-		int(280*lr.cal.ScaleX), int(300*lr.cal.ScaleY),
+		int(20*lr.cal.ScaleX), int(300*lr.cal.ScaleY),
 		int(480*lr.cal.ScaleX), int(450*lr.cal.ScaleY),
 	)
 	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
@@ -98,42 +99,57 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		name           string
 		x1, y1, x2, y2 int
 	}{
-		{"gold", 581, 368, 673, 387},
-		{"elixir", 581, 401, 673, 420},
-		{"de", 612, 432, 674, 450},
+		{"gold", 520, 368, 720, 387},
+		{"elixir", 520, 401, 720, 420},
+		{"de", 550, 432, 720, 450},
 	}
 	bonusSearch := image.Rect(
-		int(540*lr.cal.ScaleX), int(350*lr.cal.ScaleY),
-		int(750*lr.cal.ScaleX), int(500*lr.cal.ScaleY),
+		int(500*lr.cal.ScaleX), int(350*lr.cal.ScaleY),
+		int(780*lr.cal.ScaleX), int(500*lr.cal.ScaleY),
 	)
 	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois)
 
-	// Star Detection
-	starPoints := []image.Point{
-		{X: 327, Y: 205},
-		{X: 430, Y: 196},
-		{X: 535, Y: 210},
-	}
-	for _, p := range starPoints {
-		sx, sy := lr.cal.ScaleRef(p.X, p.Y)
-		if sx >= 0 && sx < screen.Cols() && sy >= 0 && sy < screen.Rows() {
-			// Sample 5x5 region for robustness
-			sum, count := 0, 0
-			for dy := -2; dy <= 2; dy++ {
-				for dx := -2; dx <= 2; dx++ {
-					nx, ny := sx+dx, sy+dy
-					if nx >= 0 && nx < screen.Cols() && ny >= 0 && ny < screen.Rows() {
-						b := screen.GetUCharAt(ny, nx*3)
-						g := screen.GetUCharAt(ny, nx*3+1)
-						r := screen.GetUCharAt(ny, nx*3+2)
-						sum += int(r) + int(g) + int(b)
-						count++
-					}
+	// Star Detection (Search for yellow pixel clusters in the center-top results area)
+	isResultsScreen := result.Loot.Gold > 0 || result.Loot.Elixir > 0 || result.Loot.DarkElixir > 0 ||
+		result.Bonus.Gold > 0 || result.Bonus.Elixir > 0 || result.Bonus.DarkElixir > 0
+	
+	if isResultsScreen {
+		yellowPixels := []image.Point{}
+		startY, endY := int(140*lr.cal.ScaleY), int(260*lr.cal.ScaleY)
+		startX, endX := int(280*lr.cal.ScaleX), int(580*lr.cal.ScaleX)
+		
+		for y := startY; y < endY; y++ {
+			for x := startX; x < endX; x++ {
+				b := screen.GetUCharAt(y, x*3)
+				g := screen.GetUCharAt(y, x*3+1)
+				r := screen.GetUCharAt(y, x*3+2)
+				// Ultra-strict yellow for active stars
+				if r > 240 && g > 210 && b < 120 && r > b+100 {
+					yellowPixels = append(yellowPixels, image.Pt(x, y))
 				}
 			}
-			if count > 0 && sum/count > 350 {
-				result.Stars++
+		}
+
+		if len(yellowPixels) > 0 {
+			clusters := [][]image.Point{}
+			clusterDist := 60 * lr.cal.ScaleX
+			for _, p := range yellowPixels {
+				found := false
+				for i, c := range clusters {
+					dist := math.Sqrt(math.Pow(float64(p.X-c[0].X), 2) + math.Pow(float64(p.Y-c[0].Y), 2))
+					if dist < clusterDist {
+						clusters[i] = append(clusters[i], p); found = true; break
+					}
+				}
+				if !found { clusters = append(clusters, []image.Point{p}) }
 			}
+			
+			validClusters := 0
+			for _, c := range clusters {
+				if len(c) > 50 { validClusters++ }
+			}
+			result.Stars = validClusters
+			if result.Stars > 3 { result.Stars = 3 }
 		}
 	}
 
@@ -144,19 +160,10 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 	name           string
 	x1, y1, x2, y2 int
 }) Resources {
-	// Ensure searchRoi is within bounds
-	if searchRoi.Min.X < 0 {
-		searchRoi.Min.X = 0
-	}
-	if searchRoi.Min.Y < 0 {
-		searchRoi.Min.Y = 0
-	}
-	if searchRoi.Max.X > screen.Cols() {
-		searchRoi.Max.X = screen.Cols()
-	}
-	if searchRoi.Max.Y > screen.Rows() {
-		searchRoi.Max.Y = screen.Rows()
-	}
+	if searchRoi.Min.X < 0 { searchRoi.Min.X = 0 }
+	if searchRoi.Min.Y < 0 { searchRoi.Min.Y = 0 }
+	if searchRoi.Max.X > screen.Cols() { searchRoi.Max.X = screen.Cols() }
+	if searchRoi.Max.Y > screen.Rows() { searchRoi.Max.Y = screen.Rows() }
 
 	region := screen.Region(searchRoi)
 	defer region.Close()
@@ -175,13 +182,11 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 			res.Close()
 
 			if maxConf > 0.7 {
-				// Numbers are typically to the right of the icon
-				rect := image.Rect(maxLoc.X+tpl.Cols()+2, maxLoc.Y-2, maxLoc.X+tpl.Cols()+120, maxLoc.Y+tpl.Rows()+2)
+				rect := image.Rect(maxLoc.X+tpl.Cols()-10, maxLoc.Y-2, maxLoc.X+tpl.Cols()+200, maxLoc.Y+tpl.Rows()+2)
 				results[i] = lr.readRow(grayReg, rect)
 				continue
 			}
 		}
-		// Fallback
 		f := fallbacks[i]
 		rect := image.Rect(
 			int(float64(f.x1)*lr.cal.ScaleX)-searchRoi.Min.X,
@@ -220,7 +225,6 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 				continue
 			}
 		}
-		// Fallback
 		rect := image.Rect(int(44*lr.cal.ScaleX), int(float64(ic.y1-2)*lr.cal.ScaleY), int(420*lr.cal.ScaleX), int(float64(ic.y2+2)*lr.cal.ScaleY))
 		results[i] = lr.readRow(gray, rect)
 	}
@@ -247,7 +251,7 @@ func (lr *LootRecognizer) readRow(gray gocv.Mat, roi image.Rectangle) int {
 		var detected []detectedDigit
 		for i := 0; i < contours.Size(); i++ {
 			rect := gocv.BoundingRect(contours.At(i))
-			if rect.Dy() < 10 || rect.Dy() > 30 || rect.Dx() < 2 || rect.Dx() > 25 { continue }
+			if rect.Dy() < 8 || rect.Dy() > 30 || rect.Dx() < 1 || rect.Dx() > 35 { continue }
 			
 			blob := thresh.Region(rect)
 			d := lr.matchDigit(blob)
@@ -262,7 +266,7 @@ func (lr *LootRecognizer) readRow(gray gocv.Mat, roi image.Rectangle) int {
 			for _, d := range detected {
 				found := false
 				for i, c := range cleaned {
-					if d.rect.Min.X >= c.rect.Min.X-4 && d.rect.Min.X <= c.rect.Min.X+4 {
+					if d.rect.Min.X >= c.rect.Min.X-2 && d.rect.Min.X <= c.rect.Min.X+2 {
 						found = true
 						if d.conf > c.conf { cleaned[i] = d }
 						break
@@ -296,7 +300,16 @@ func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 		if float32(conf) > maxConf { maxConf = float32(conf); bestDigit = i }
 		res.Close(); scaledTpl.Close()
 	}
-	if maxConf < 0.6 { return detectedDigit{digit: -1} }
+	
+	// Thin vertical blobs are almost always '1'
+	if bestDigit == -1 || maxConf < 0.55 {
+		if bw >= 2 && bw <= 8 && bh >= 10 {
+			fill := float64(gocv.CountNonZero(bin)) / float64(bw*bh)
+			if fill > 0.5 { return detectedDigit{digit: 1, conf: 0.6} }
+		}
+	}
+
+	if maxConf < 0.5 { return detectedDigit{digit: -1} }
 	return detectedDigit{digit: bestDigit, conf: maxConf}
 }
 
