@@ -182,7 +182,7 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 			res.Close()
 
 			if maxConf > 0.7 {
-				rect := image.Rect(maxLoc.X+tpl.Cols()-10, maxLoc.Y-2, maxLoc.X+tpl.Cols()+200, maxLoc.Y+tpl.Rows()+2)
+				rect := image.Rect(maxLoc.X+tpl.Cols()+2, maxLoc.Y-2, maxLoc.X+tpl.Cols()+200, maxLoc.Y+tpl.Rows()+2)
 				results[i] = lr.readRow(grayReg, rect)
 				continue
 			}
@@ -220,12 +220,12 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 			res.Close()
 
 			if maxConf > 0.8 {
-				rect := image.Rect(maxLoc.X+44, maxLoc.Y-5, maxLoc.X+420, maxLoc.Y+tpl.Rows()+5)
+				rect := image.Rect(maxLoc.X+54, maxLoc.Y-5, maxLoc.X+420, maxLoc.Y+tpl.Rows()+5)
 				results[i] = lr.readRow(gray, rect)
 				continue
 			}
 		}
-		rect := image.Rect(int(44*lr.cal.ScaleX), int(float64(ic.y1-2)*lr.cal.ScaleY), int(420*lr.cal.ScaleX), int(float64(ic.y2+2)*lr.cal.ScaleY))
+		rect := image.Rect(int(54*lr.cal.ScaleX), int(float64(ic.y1-2)*lr.cal.ScaleY), int(420*lr.cal.ScaleX), int(float64(ic.y2+2)*lr.cal.ScaleY))
 		results[i] = lr.readRow(gray, rect)
 	}
 
@@ -264,6 +264,9 @@ func (lr *LootRecognizer) readRow(gray gocv.Mat, roi image.Rectangle) int {
 			sort.Slice(detected, func(i, j int) bool { return detected[i].rect.Min.X < detected[j].rect.Min.X })
 			cleaned := []detectedDigit{}
 			for _, d := range detected {
+				// Safety: Ignore blobs that are too far to the left (likely icon bleed)
+				if d.rect.Min.X < 3 { continue }
+
 				found := false
 				for i, c := range cleaned {
 					if d.rect.Min.X >= c.rect.Min.X-2 && d.rect.Min.X <= c.rect.Min.X+2 {
@@ -273,6 +276,25 @@ func (lr *LootRecognizer) readRow(gray gocv.Mat, roi image.Rectangle) int {
 					}
 				}
 				if !found { cleaned = append(cleaned, d) }
+			}
+
+			// Final sanity check: if the first digit is a '1' and is significantly 
+			// separated from the next digit, it might be noise.
+			if len(cleaned) > 1 {
+				dist := cleaned[1].rect.Min.X - cleaned[0].rect.Max.X
+				if cleaned[0].digit == 1 && dist > 15 {
+					cleaned = cleaned[1:]
+				}
+			}
+
+			// Trailing noise filter: if the last digit is a '1' and is significantly
+			// separated from the previous digit, it might be noise/icon bleed.
+			if len(cleaned) > 1 {
+				lastIdx := len(cleaned) - 1
+				dist := cleaned[lastIdx].rect.Min.X - cleaned[lastIdx-1].rect.Max.X
+				if cleaned[lastIdx].digit == 1 && dist > 15 {
+					cleaned = cleaned[:lastIdx]
+				}
 			}
 
 			score := float64(len(cleaned)*len(cleaned)) * 100.0
@@ -303,9 +325,9 @@ func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 	
 	// Thin vertical blobs are almost always '1'
 	if bestDigit == -1 || maxConf < 0.55 {
-		if bw >= 2 && bw <= 8 && bh >= 10 {
+		if bw >= 1 && bw <= 6 && bh >= 12 { // Narrower and taller
 			fill := float64(gocv.CountNonZero(bin)) / float64(bw*bh)
-			if fill > 0.5 { return detectedDigit{digit: 1, conf: 0.6} }
+			if fill > 0.65 { return detectedDigit{digit: 1, conf: 0.6} }
 		}
 	}
 
