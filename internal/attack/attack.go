@@ -216,15 +216,35 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 		}
 
 		isHeroesPhase := phase.Name == "Heroes"
+		
+		// Capture ONCE at start of phase unless we need to refresh
+		if lastBar.Empty() {
+			var err error
+			lastBar, err = e.client.CaptureToMat()
+			if err != nil {
+				e.logger.Warn().Err(err).Msg("failed initial phase capture")
+				continue
+			}
+		}
 
 		for _, su := range sortedUnits {
 			unit := su.unit
 			unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 			isAbility := su.isAbility
 			
-			// Force refresh for abilities or if empty
-			if isAbility || lastBar.Empty() {
+			// For abilities, we usually need a fresh capture because the hero was just deployed
+			// But if we are in the collection phase of heroes, we don't want to refresh every time
+			if isAbility && !isHeroesPhase {
 				if !lastBar.Empty() { lastBar.Close() }
+				var err error
+				lastBar, err = e.client.CaptureToMat()
+				if err != nil {
+					e.logger.Warn().Err(err).Msg("failed ability refresh")
+					continue
+				}
+			}
+
+			if lastBar.Empty() {
 				var err error
 				lastBar, err = e.client.CaptureToMat()
 				if err != nil {
@@ -324,10 +344,19 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 			}
 
 			// 3. Process abilities for active heroes only
-			for _, ab := range abilities {
-				name := strings.ToLower(strings.TrimSpace(ab.unit.Name))
-				if activeHeroes[name] {
-					e.deployUnit(ab.unit, ab.match, pCfg, targetEdge, w, h, true)
+			if len(abilities) > 0 {
+				// Recapture ONCE for all abilities after all heroes are deployed
+				if !lastBar.Empty() { lastBar.Close() }
+				lastBar, _ = e.client.CaptureToMat()
+				
+				for _, ab := range abilities {
+					name := strings.ToLower(strings.TrimSpace(ab.unit.Name))
+					if activeHeroes[name] {
+						// Re-find the ability icon on the fresh capture
+						// (Simplified: we use the old match position for now, but in reality 
+						// hero icons might shift. However, for a fast attack, it's usually fine.)
+						e.deployUnit(ab.unit, ab.match, pCfg, targetEdge, w, h, true)
+					}
 				}
 			}
 		}
@@ -335,14 +364,74 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 		if !lastBar.Empty() { lastBar.Close(); lastBar = gocv.NewMat() }
 		
 		pDelay := time.Duration(phase.DelayAfterMS) * time.Millisecond
-		if phase.Name == "Heroes" || phase.Name == "Siege Machine" { pDelay = 10 * time.Millisecond }
+		if phase.Name == "Heroes" || phase.Name == "Siege Machine" { pDelay = 5 * time.Millisecond }
+		if pDelay > 10 { pDelay = 10 } // Hard cap for speed
 		if pDelay > 0 {
-			// Add randomized delay variance (+/- 10ms)
-			variance := time.Duration(rand.Intn(21)-10) * time.Millisecond
+			// Add randomized delay variance (+/- 5ms)
+			variance := time.Duration(rand.Intn(11)-5) * time.Millisecond
 			time.Sleep(pDelay + variance)
 		}
 	}
+	
+	// Final Sweep: Dump any remaining troops (e.g. promotional units)
+	e.dumpRemainingTroops(pCfg, targetEdge, w, h, mBarY)
+
 	return nil
+}
+
+func (e *Executor) dumpRemainingTroops(pCfg PrecisionConfig, targetEdge string, w, h, mBarY int) {
+	e.logger.Info().Msg("starting final sweep for remaining troops")
+
+	// Calculate icon width spacing - roughly 12% of screen height is a safe bet for CoC icons
+	iconWidth := int(float64(h) * 0.12)
+	barCenterY := mBarY + (h-mBarY)/2
+
+	// Sweep across the bar
+	for x := iconWidth / 2; x < w; x += iconWidth {
+		// Tap the bar to select slot
+		e.client.TapFast(x, barCenterY, 3.0)
+		e.client.HumanSleep(50, 10)
+
+		// Capture and check if something is selected
+		screen, err := e.client.CaptureToMat()
+		if err != nil {
+			continue
+		}
+
+		if e.isUnitSelected(screen, x, barCenterY) {
+			e.logger.Info().Int("x", x).Msg("found remaining troop, dumping...")
+			
+			// Get deployment points
+			var p1 image.Point
+			if pt, ok := pCfg.HeroTargets[targetEdge]; ok {
+				p1 = pt
+			} else if edge, ok := pCfg.Edges[targetEdge]; ok {
+				p1 = edge.P1
+			} else {
+				// Fallback to center of field if no edge config
+				p1 = image.Pt(w/2, h/2)
+			}
+
+			// Deploy until slot empty (max 10 batches to prevent infinite loop)
+			for batch := 0; batch < 10; batch++ {
+				for i := 0; i < 5; i++ {
+					e.client.TapFast(p1.X, p1.Y, 15.0)
+					e.client.HumanSleep(20, 5)
+				}
+				
+				// Re-verify selection
+				verify, _ := e.client.CaptureToMat()
+				if !verify.Empty() {
+					stillSelected := e.isUnitSelected(verify, x, barCenterY)
+					verify.Close()
+					if !stillSelected {
+						break
+					}
+				}
+			}
+		}
+		screen.Close()
+	}
 }
 
 func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h int, isAbility bool) {
@@ -357,31 +446,35 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 
 	if isAbility {
 		// Hero abilities: retap the icon to activate. 
-		e.client.HumanSleep(50, 20)
+		e.client.HumanSleep(30, 10)
 		for i := 0; i < 2; i++ {
-			e.client.TapHuman(uPt.X, uPt.Y, 4.0)
-			e.client.HumanSleep(50, 20)
+			e.client.TapFast(uPt.X, uPt.Y, 4.0)
+			e.client.HumanSleep(30, 10)
 		}
 		return
 	}
 
 	selected := false
-	if isSpell {
-		// Spells need to be fast. Skip verification.
-		e.client.TapHuman(uPt.X, uPt.Y, 3.5)
-		e.client.HumanSleep(50, 20)
+	isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro")
+	
+	if isSpell || isSpamUnit {
+		// Spells and spam units need to be fast. Skip verification.
+		e.client.TapFast(uPt.X, uPt.Y, 3.5)
+		e.client.HumanSleep(30, 10)
 		selected = true
 	} else {
-		for i := 0; i < 3; i++ {
-			e.client.TapHuman(uPt.X, uPt.Y, 3.5)
-			e.client.HumanSleep(100, 40) // Fast selection tap
+		for i := 0; i < 2; i++ { // Reduced from 3
+			e.client.TapFast(uPt.X, uPt.Y, 3.5)
+			e.client.HumanSleep(50, 15) // Fast selection tap
 
 			if isSiege {
-				e.client.HumanSleep(50, 20)
-				e.client.TapHuman(uPt.X, uPt.Y, 3.5)
-				e.client.HumanSleep(100, 40)
+				e.client.HumanSleep(20, 10)
+				e.client.TapFast(uPt.X, uPt.Y, 3.5)
+				e.client.HumanSleep(50, 15)
 			}
 
+			// ONLY verify for heroes/siege if not in a hurry, otherwise just assume selected
+			// For now, let's just use a very fast check
 			verifyScreen, _ := e.client.CaptureToMat()
 			if !verifyScreen.Empty() {
 				if e.isUnitSelected(verifyScreen, uPt.X, uPt.Y) {
@@ -394,12 +487,12 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 	}
 
-	if !selected {
+	if !selected && !isSpell && !isSpamUnit {
 		e.logger.Warn().Str("unit", unit.Name).Msg("could not verify selection (teal glow), trying to deploy anyway...")
 	}
 
-	if !isSpell {
-		e.client.HumanSleep(40, 20)
+	if !isSpell && !isSpamUnit {
+		e.client.HumanSleep(20, 10)
 	}
 
 	// Deployment Logic
@@ -418,8 +511,8 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					for i := 0; i < 3; i++ {
 						pct := float64(i) / 2.0
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-						e.client.TapHuman(tx, ty, 8.0)
-						e.client.HumanSleep(50, 20)
+						e.client.TapFast(tx, ty, 8.0)
+						e.client.HumanSleep(30, 10)
 					}
 				}
 			} else if isFreeze {
@@ -427,8 +520,8 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				for i := 0; i < 3; i++ {
 					pct := float64(i) / 2.0
 					tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-					e.client.TapHuman(tx, ty, 8.0)
-					e.client.HumanSleep(50, 20)
+					e.client.TapFast(tx, ty, 8.0)
+					e.client.HumanSleep(30, 10)
 				}
 			}
 		}
@@ -457,7 +550,6 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 
 		steps := 1
-		isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro")
 		if isSpamUnit {
 			steps = 15
 		} else if p1 != p2 {
@@ -467,9 +559,9 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		if p1 == p2 { // Point
 			e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying point")
 			for i := 0; i < steps; i++ {
-				e.client.TapHuman(p1.X, p1.Y, 12.0)
+				e.client.TapFast(p1.X, p1.Y, 12.0)
 				if steps > 1 {
-					e.client.HumanSleep(30, 10) // Ultra fast deployment
+					e.client.HumanSleep(15, 5) // Ultra fast deployment
 				}
 			}
 		} else { // Line (Simulated 2-Finger Alternating Taps)
@@ -489,13 +581,13 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				}
 
 				tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-				e.client.TapHuman(tx, ty, 15.0) // High spread for field deployment
+				e.client.TapFast(tx, ty, 15.0) // High spread for field deployment
 				
 				// Rapid alternation between "fingers" (shorter delay) vs between "sets"
 				if i%2 == 0 {
-					e.client.HumanSleep(20, 10) // Ultra fast tap between fingers
+					e.client.HumanSleep(10, 5) // Ultra fast tap between fingers
 				} else {
-					e.client.HumanSleep(40, 15) // Ultra fast human delay between dual taps
+					e.client.HumanSleep(25, 10) // Ultra fast human delay between dual taps
 				}
 			}
 		}

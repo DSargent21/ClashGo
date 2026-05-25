@@ -25,7 +25,7 @@ func main() {
 	// 1. Load Config
 	botCfg := config.DefaultConfig()
 	// Set the device ID based on your adb devices output
-	botCfg.Device.DeviceID = "127.0.0.1:5555" 
+	botCfg.Device.DeviceID = "emulator-5554" 
 
 	// 2. Initialize ADB
 	client := adb.NewClient(func(c *adb.Client) {
@@ -59,9 +59,9 @@ func main() {
 	log.Info().Msg("zooming out for maximum deployment area...")
 	for i := 0; i < 5; i++ {
 		client.ZoomOut()
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // Reduced from 200
 	}
-	time.Sleep(1000 * time.Millisecond) // Increased for stability
+	time.Sleep(500 * time.Millisecond) // Reduced from 1000
 
 	log.Info().Msg("capturing screen for base analysis...")
 	// 6. Capture Live Screen
