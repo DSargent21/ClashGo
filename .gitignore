@@ -11,11 +11,24 @@ Thumbs.db
 # Project Debug/Temporary Assets
 debug_*.png
 *.bak
-assets/captures/current.png
-assets/captures/live_check.png
-assets/captures/scout.png
-assets/captures/scout2.png
-assets/captures/scout2_annotated.png
+assets/captures/
+assets/grab/
+assets/screenshots/
+assets/verify/
+assets/debug_seg/
+assets/templates_captured/
+test_data/
+captured_screen.png
+battle_end_capture.png
+loot_diag.png
+mock.log
+ClashGo
+coc-bot
+coc-bot-test
+adb_mock_v2.go
+full_mock_adb.go
+app.go
+cli.go
 
 # Local configurations
 config.json

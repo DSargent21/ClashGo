@@ -144,17 +144,29 @@ func (c *Client) AutoDetectDevice() error {
 		}
 	}
 
-	// 2. Look for emulator-like devices (127.0.0.1, localhost, or emulator-)
+	// 2. Look for real devices first (not emulator-like)
 	var bestMatch string
 	for _, d := range devs {
 		low := strings.ToLower(d)
-		if strings.Contains(low, "127.0.0.1") || strings.Contains(low, "localhost") || strings.Contains(low, "emulator-") {
+		isEmulator := strings.Contains(low, "127.0.0.1") || strings.Contains(low, "localhost") || strings.Contains(low, "emulator-")
+		if !isEmulator {
 			bestMatch = d
 			break
 		}
 	}
 
-	// 3. Fallback to first device
+	// 3. Fallback to emulator-like devices if no real device found
+	if bestMatch == "" {
+		for _, d := range devs {
+			low := strings.ToLower(d)
+			if strings.Contains(low, "127.0.0.1") || strings.Contains(low, "localhost") || strings.Contains(low, "emulator-") {
+				bestMatch = d
+				break
+			}
+		}
+	}
+
+	// 4. Fallback to first device in list
 	if bestMatch == "" {
 		bestMatch = devs[0]
 	}
@@ -199,10 +211,30 @@ func (c *Client) CaptureScreen() ([]byte, error) {
 func (c *Client) CaptureToMat() (gocv.Mat, error) {
 	start := time.Now()
 
-	resp, err := c.captureScreenRaw()
+	c.mu.Lock()
+	if c.transport == nil {
+		if err := c.connectTransport(); err != nil {
+			c.mu.Unlock()
+			c.health.RecordFailure(err)
+			return gocv.Mat{}, err
+		}
+	}
+	transport := c.transport
+	c.mu.Unlock()
+
+	bufPtr, n, err := transport.CaptureScreenPooled()
 	if err != nil {
+		if reconnErr := transport.Reconnect(); reconnErr == nil {
+			bufPtr, n, err = transport.CaptureScreenPooled()
+		}
+	}
+	if err != nil {
+		c.health.RecordFailure(err)
 		return gocv.Mat{}, err
 	}
+	defer ReturnBuffer(bufPtr)
+
+	resp := (*bufPtr)[:n]
 
 	if len(resp) < 12 {
 		err := fmt.Errorf("screencap response too short: %d bytes", len(resp))
@@ -248,6 +280,7 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 	return imgBGR, nil
 }
 
+// Tap performs a direct ADB tap.
 func (c *Client) Tap(x, y int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -262,18 +295,20 @@ func (c *Client) Tap(x, y int) error {
 	return err
 }
 
-// TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
-func (c *Client) TapHuman(x, y int, stdDev float64) error {
+// TapFast performs a tap with minimal randomness and NO intentional delay.
+func (c *Client) TapFast(x, y int, stdDev float64) error {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	
-	// Gaussian offset for X and Y
 	ox := int(r.NormFloat64() * stdDev)
 	oy := int(r.NormFloat64() * stdDev)
-	
+	return c.Tap(x+ox, y+oy)
+}
+
+// TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
+func (c *Client) TapHuman(x, y int, stdDev float64) error {
 	// Small hesitation before tapping (50-150ms)
 	c.HumanSleep(100, 25)
 	
-	return c.Tap(x+ox, y+oy)
+	return c.TapFast(x, y, stdDev)
 }
 
 func (c *Client) TapRandomized(x, y int) error {

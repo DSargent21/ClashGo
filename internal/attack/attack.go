@@ -434,6 +434,52 @@ func (e *Executor) dumpRemainingTroops(pCfg PrecisionConfig, targetEdge string, 
 	}
 }
 
+func (e *Executor) IsSlotEmpty(screen gocv.Mat, x, y int) bool {
+	return e.isSlotEmpty(screen, x, y)
+}
+
+func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
+	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
+		return true
+	}
+
+	// Slot icon size roughly 12% of screen height
+	h := screen.Rows()
+	size := int(float64(h) * 0.03) // Small center sample
+	region := image.Rect(x-size, y-size, x+size, y+size)
+	if region.Min.X < 0 { region.Min.X = 0 }
+	if region.Min.Y < 0 { region.Min.Y = 0 }
+	if region.Max.X > screen.Cols() { region.Max.X = screen.Cols() }
+	if region.Max.Y > screen.Rows() { region.Max.Y = screen.Rows() }
+
+	sub := screen.Region(region)
+	defer sub.Close()
+
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+
+	// Dark blue/grey background of empty slot
+	// H: ~210° (105 in OpenCV)
+	// S: Low saturation
+	// V: Low to mid brightness
+	lower := gocv.NewScalar(90, 20, 30, 0)
+	upper := gocv.NewScalar(130, 120, 100, 0)
+
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.InRangeWithScalar(hsv, lower, upper, &mask)
+
+	count := gocv.CountNonZero(mask)
+	total := sub.Rows() * sub.Cols()
+	ratio := float64(count) / float64(total)
+
+	e.logger.Debug().Int("x", x).Int("y", y).Float64("empty_ratio", ratio).Msg("slot empty check")
+	
+	// If >70% matches the empty slot color, it's empty
+	return ratio > 0.7
+}
+
 func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h int, isAbility bool) {
 	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 	isSiege := strings.Contains(unitName, "slammer") || strings.Contains(unitName, "siege")
@@ -445,7 +491,16 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 	e.logger.Info().Str("unit", unit.Name).Bool("ability", isAbility).Int("x", uPt.X).Int("y", uPt.Y).Float64("conf", match.Confidence).Msg("selecting unit")
 
 	if isAbility {
-		// Hero abilities: retap the icon to activate. 
+		// Hero abilities: Verify hero is alive (slot not empty)
+		verify, err := e.client.CaptureToMat()
+		if err == nil {
+			defer verify.Close()
+			if e.isSlotEmpty(verify, uPt.X, uPt.Y) {
+				e.logger.Info().Str("unit", unit.Name).Msg("hero dead or ability used, skipping")
+				return
+			}
+		}
+
 		e.client.HumanSleep(30, 10)
 		for i := 0; i < 2; i++ {
 			e.client.TapFast(uPt.X, uPt.Y, 4.0)
@@ -559,6 +614,19 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		if p1 == p2 { // Point
 			e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying point")
 			for i := 0; i < steps; i++ {
+				// Periodically check if slot empty
+				if i > 0 && i%4 == 0 {
+					verify, err := e.client.CaptureToMat()
+					if err == nil {
+						isEmpty := e.isSlotEmpty(verify, uPt.X, uPt.Y)
+						verify.Close()
+						if isEmpty {
+							e.logger.Info().Str("unit", unit.Name).Msg("slot empty, breaking early")
+							break
+						}
+					}
+				}
+
 				e.client.TapFast(p1.X, p1.Y, 12.0)
 				if steps > 1 {
 					e.client.HumanSleep(15, 5) // Ultra fast deployment
@@ -569,6 +637,19 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 			
 			// We split the steps into two interleaving streams to simulate two fingers
 			for i := 0; i < steps; i++ {
+				// Periodically check if slot empty
+				if i > 0 && i%4 == 0 {
+					verify, err := e.client.CaptureToMat()
+					if err == nil {
+						isEmpty := e.isSlotEmpty(verify, uPt.X, uPt.Y)
+						verify.Close()
+						if isEmpty {
+							e.logger.Info().Str("unit", unit.Name).Msg("slot empty, breaking early")
+							break
+						}
+					}
+				}
+
 				// Alternating logic: Finger 1 (left side of progress), Finger 2 (right side of progress)
 				// This simulates two thumbs moving along the line.
 				var pct float64

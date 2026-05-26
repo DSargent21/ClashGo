@@ -179,7 +179,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		startedAt:         time.Now(),
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
-		stuckTimeout:      15 * time.Second,
+		stuckTimeout:      60 * time.Second,
 	}
 
 
@@ -229,18 +229,45 @@ func (b *Bot) Stop() {
 	b.client.Close()
 }
 func (b *Bot) captureLoop() {
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
 	gc := game.NewGameContext()
 
+	type frame struct {
+		mat gocv.Mat
+		err error
+		dur time.Duration
+	}
+	frames := make(chan frame, 1)
+
+	// Producer
+	go func() {
+		for {
+			select {
+			case <-b.ctx.Done():
+				return
+			default:
+				start := time.Now()
+				screen, err := b.client.CaptureToMat()
+				dur := time.Since(start)
+
+				select {
+				case frames <- frame{mat: screen, err: err, dur: dur}:
+				default:
+					if err == nil && !screen.Empty() {
+						screen.Close() // Drop frame if consumer is too slow
+					}
+				}
+			}
+		}
+	}()
+
+	// Consumer
 	for {
 		select {
 		case <-b.ctx.Done():
 			return
-		case <-ticker.C:
+		case f := <-frames:
 			b.checkStuck(gc)
-			b.processFrame(gc)
+			b.processFrame(gc, f.mat, f.err, f.dur)
 		}
 	}
 }
@@ -303,18 +330,17 @@ func (b *Bot) restartGame() {
 	b.zoomedOut.Store(false) // Reset zoom state on restart
 }
 
-func (b *Bot) processFrame(gc *game.GameContext) {
-	start := time.Now()
-
-	screen, err := b.client.CaptureToMat()
+func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, captureMs time.Duration) {
 	if err != nil {
 		gc.RecordCaptureError()
 		b.logger.Debug().Err(err).Msg("capture failed")
 		return
 	}
+	if screen.Empty() {
+		return
+	}
 
 	state, score := b.classify(screen)
-	captureMs := time.Since(start)
 
 	gc.UpdateScreen(screen, captureMs)
 

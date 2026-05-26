@@ -1,100 +1,58 @@
+//go:build !cli
+// +build !cli
+
 package main
 
 import (
-	"context"
-	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
+	"embed"
 
-	"github.com/Ducky705/ClashGo/internal/bot"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
-var (
-	version = "dev"
-	commit  = "none"
-)
+//go:embed all:web/dist
+var assets embed.FS
 
 func main() {
-	// Professional logging setup
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = log.Output(zerolog.ConsoleWriter{
-		Out:        os.Stderr,
-		TimeFormat: "15:04:05",
-		NoColor:    false,
+	// Create an instance of the app structure
+	app := NewApp()
+
+	// Create application with options
+	err := wails.Run(&options.App{
+		Title:             "Vanguard Mission Control",
+		Width:             1200,
+		Height:            850,
+		MinWidth:          1024,
+		MinHeight:         768,
+		AssetServer: &assetserver.Options{
+			Assets: assets,
+		},
+		BackgroundColour: &options.RGBA{R: 9, G: 9, B: 11, A: 1},
+		OnStartup:        app.startup,
+		Bind: []interface{}{
+			app,
+		},
+		Mac: &mac.Options{
+			TitleBar: &mac.TitleBar{
+				TitlebarAppearsTransparent: true,
+				HideTitle:                  false,
+				FullSizeContent:            false,
+				UseToolbar:                 false,
+				HideToolbarSeparator:       true,
+			},
+			Appearance:           mac.NSAppearanceNameDarkAqua,
+			WebviewIsTransparent: true,
+			WindowIsTranslucent:  true,
+			About: &mac.AboutInfo{
+				Title:   "Vanguard",
+				Message: "© 2026 Vanguard Systems",
+			},
+		},
 	})
 
-	if os.Getenv("DEBUG") != "" {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	} else {
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	}
-
-	fmt.Printf("coc-bot v%s (%.7s)\n", version, commit)
-
-	// Remove execution timeout for full pipeline test
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-sigCh:
-			log.Info().Msg("shutdown signal received")
-		case <-ctx.Done():
-			if ctx.Err() == context.DeadlineExceeded {
-				log.Info().Msg("test execution timeout reached")
-			}
-		}
-		cancel()
-	}()
-
-	cfg := loadConfig()
-
-	b, err := bot.NewBot(cfg)
 	if err != nil {
-		log.Fatal().Err(err).Msg("failed to initialize bot")
+		println("Error:", err.Error())
 	}
-
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				stats := b.Stats()
-				health := b.Health()
-				log.Info().
-					Int32("attacks", stats.AttacksCompleted).
-					Str("uptime", stats.Uptime.Round(time.Second).String()).
-					Float64("avg_ms", health.AvgCaptureMs).
-					Msg("bot stats")
-			}
-		}
-	}()
-
-	if err := b.Start(); err != nil {
-		log.Fatal().Err(err).Msg("failed to start bot")
-	}
-
-	<-ctx.Done()
-
-	log.Info().Msg("shutting down...")
-	b.Stop()
-	log.Info().Msg("shutdown complete")
-}
-
-func loadConfig() *config.BotConfig {
-	cfg := config.LoadOrDefault("config.json")
-	if cfg != nil {
-		return cfg
-	}
-	return config.DefaultConfig()
 }

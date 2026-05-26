@@ -32,15 +32,40 @@ func NewTransport(deviceID, host string, port int, timeout time.Duration) (*Tran
 		port:     port,
 		timeout:  timeout,
 	}
-	if err := t.connect(); err != nil {
+	if err := t.Reconnect(); err != nil {
 		return nil, err
 	}
 	return t, nil
 }
 
-func (t *Transport) connect() error {
+func (t *Transport) execService(service string) ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if err := t.connectLocked(); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if t.conn != nil {
+			t.conn.Close()
+			t.conn = nil
+		}
+	}()
+
+	if err := t.sendServiceLocked(service); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(t.conn)
+}
+
+func (t *Transport) connectLocked() error {
 	if t.closed.Load() {
 		return ErrTransportGone
+	}
+
+	if t.conn != nil {
+		t.conn.Close()
+		t.conn = nil
 	}
 
 	addr := fmt.Sprintf("%s:%d", t.host, t.port)
@@ -51,7 +76,7 @@ func (t *Transport) connect() error {
 
 	t.conn = conn
 
-	if err := t.setTransport(); err != nil {
+	if err := t.setTransportLocked(); err != nil {
 		conn.Close()
 		t.conn = nil
 		return fmt.Errorf("set transport: %w", err)
@@ -60,7 +85,7 @@ func (t *Transport) connect() error {
 	return nil
 }
 
-func (t *Transport) sendService(service string) error {
+func (t *Transport) sendServiceLocked(service string) error {
 	conn := t.conn
 	if conn == nil {
 		return ErrNotConnected
@@ -83,13 +108,13 @@ func (t *Transport) sendService(service string) error {
 	case "OKAY":
 		return nil
 	case "FAIL":
-		return t.readFailure()
+		return t.readFailureLocked()
 	default:
 		return fmt.Errorf("%w: status=%q", ErrInvalidResponse, string(status))
 	}
 }
 
-func (t *Transport) readFailure() error {
+func (t *Transport) readFailureLocked() error {
 	conn := t.conn
 	if conn == nil {
 		return ErrNotConnected
@@ -119,84 +144,73 @@ func (t *Transport) readFailure() error {
 	return fmt.Errorf("ADB: %s", string(msg))
 }
 
-func (t *Transport) execService(service string) ([]byte, error) {
-	if err := t.sendService(service); err != nil {
-		return nil, err
-	}
-	return io.ReadAll(t.conn)
-}
-
-func (t *Transport) execRaw(service string) ([]byte, error) {
-	return t.execService(service)
-}
-
 func (t *Transport) Reconnect() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	if t.closed.Load() {
-		return ErrTransportGone
-	}
-
-	if t.conn != nil {
-		t.conn.Close()
-		t.conn = nil
-	}
-
-	return t.connect()
+	return t.connectLocked()
 }
 
-func (t *Transport) setTransport() error {
+func (t *Transport) setTransportLocked() error {
 	if t.deviceID == "" {
 		return nil
 	}
-	return t.sendService("host:transport:" + t.deviceID)
-}
-
-func (t *Transport) ensureConnected() error {
-	if t.closed.Load() {
-		return ErrTransportGone
-	}
-	// Always reconnect for services that take over the connection
-	if t.conn != nil {
-		t.conn.Close()
-		t.conn = nil
-	}
-	return t.Reconnect()
-}
-
-func (t *Transport) Close() error {
-	if t.closed.Swap(true) {
-		return nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.conn != nil {
-		t.conn.Close()
-		t.conn = nil
-	}
-	return nil
-}
-
-func (t *Transport) IsConnected() bool {
-	if t.closed.Load() || t.conn == nil {
-		return false
-	}
-	return true
+	return t.sendServiceLocked("host:transport:" + t.deviceID)
 }
 
 func (t *Transport) Exec(service string) ([]byte, error) {
-	if err := t.ensureConnected(); err != nil {
-		return nil, err
-	}
 	return t.execService(service)
 }
 
 func (t *Transport) ExecRaw(service string) ([]byte, error) {
-	if err := t.ensureConnected(); err != nil {
-		return nil, err
+	return t.execService(service)
+}
+
+func (t *Transport) CaptureScreenPooled() (*[]byte, int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if err := t.connectLocked(); err != nil {
+		return nil, 0, err
 	}
-	return t.execRaw(service)
+	defer func() {
+		if t.conn != nil {
+			t.conn.Close()
+			t.conn = nil
+		}
+	}()
+
+	if err := t.sendServiceLocked("exec:/system/bin/screencap"); err != nil {
+		return nil, 0, err
+	}
+
+	bufPtr := bufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	total := 0
+
+	for {
+		n, err := t.conn.Read(buf[total:])
+		total += n
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			bufferPool.Put(bufPtr)
+			return nil, 0, err
+		}
+		if total == len(buf) {
+			// Grow buffer if needed
+			newBuf := make([]byte, len(buf)*2)
+			copy(newBuf, buf)
+			buf = newBuf
+			*bufPtr = buf
+		}
+	}
+
+	return bufPtr, total, nil
+}
+
+func ReturnBuffer(bufPtr *[]byte) {
+	bufferPool.Put(bufPtr)
 }
 
 func (t *Transport) CaptureScreen() ([]byte, error) {
@@ -313,4 +327,34 @@ func (t *Transport) PowerOff() error {
 func (t *Transport) SendAstroBuddy(msg string) error {
 	_, err := t.Exec("shell:am broadcast -a clashofclans.astro.BUDDY")
 	return err
+}
+
+func (t *Transport) Close() error {
+	if t.closed.Swap(true) {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.conn != nil {
+		t.conn.Close()
+		t.conn = nil
+	}
+	return nil
+}
+
+func (t *Transport) IsConnected() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed.Load() || t.conn == nil {
+		return false
+	}
+	return true
+}
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		// 10MB buffer to handle uncompressed screen captures
+		b := make([]byte, 10*1024*1024)
+		return &b
+	},
 }
