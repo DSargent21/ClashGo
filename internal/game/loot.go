@@ -156,14 +156,22 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	return result, nil
 }
 
+func (lr *LootRecognizer) safeRect(img gocv.Mat, r image.Rectangle) image.Rectangle {
+	if r.Min.X < 0 { r.Min.X = 0 }
+	if r.Min.Y < 0 { r.Min.Y = 0 }
+	if r.Max.X > img.Cols() { r.Max.X = img.Cols() }
+	if r.Max.Y > img.Rows() { r.Max.Y = img.Rows() }
+	if r.Max.X < r.Min.X { r.Max.X = r.Min.X }
+	if r.Max.Y < r.Min.Y { r.Max.Y = r.Min.Y }
+	return r
+}
+
 func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.Rectangle, fallbacks []struct {
 	name           string
 	x1, y1, x2, y2 int
 }) Resources {
-	if searchRoi.Min.X < 0 { searchRoi.Min.X = 0 }
-	if searchRoi.Min.Y < 0 { searchRoi.Min.Y = 0 }
-	if searchRoi.Max.X > screen.Cols() { searchRoi.Max.X = screen.Cols() }
-	if searchRoi.Max.Y > screen.Rows() { searchRoi.Max.Y = screen.Rows() }
+	searchRoi = lr.safeRect(screen, searchRoi)
+	if searchRoi.Empty() { return Resources{} }
 
 	region := screen.Region(searchRoi)
 	defer region.Close()
@@ -232,10 +240,7 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 }
 
 func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
-	if roi.Min.X < 0 { roi.Min.X = 0 }
-	if roi.Min.Y < 0 { roi.Min.Y = 0 }
-	if roi.Max.X > screen.Cols() { roi.Max.X = screen.Cols() }
-	if roi.Max.Y > screen.Rows() { roi.Max.Y = screen.Rows() }
+	roi = lr.safeRect(screen, roi)
 	if roi.Empty() { return 0 }
 
 	sub := screen.Region(roi)

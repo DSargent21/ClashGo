@@ -36,28 +36,31 @@ type ElementAssertion struct {
 }
 
 type TestCase struct {
-	Image         string             `json:"image"`
-	ExpectedState string             `json:"expected_state"`
-	ExpectedLoot  game.Resources     `json:"expected_loot"`
-	Elements      []ElementAssertion `json:"elements,omitempty"`
+	Image          string             `json:"image"`
+	ExpectedState  string             `json:"expected_state"`
+	ExpectedLoot   game.Resources     `json:"expected_loot"`
+	ExpectedBattle *game.BattleResult `json:"expected_battle,omitempty"`
+	Elements       []ElementAssertion `json:"elements,omitempty"`
 }
 
 type TestResult struct {
-	Name      string
-	Passed    bool
-	Latency   map[string]time.Duration
-	Errors    []string
-	StateGot  string
-	StateWant string
-	LootGot   game.Resources
-	LootWant  game.Resources
+	Name       string
+	Passed     bool
+	Latency    map[string]time.Duration
+	Errors     []string
+	StateGot   string
+	StateWant  string
+	LootGot    game.Resources
+	LootWant   game.Resources
+	BattleGot  *game.BattleResult
+	BattleWant *game.BattleResult
 }
 
 var (
-	testDir    = flag.String("dir", "test_data/images", "Directory containing test images and snapshots")
-	update     = flag.Bool("update", false, "Update snapshots with current vision results")
-	verbose    = flag.Bool("v", false, "Verbose output")
-	templates  = flag.String("templates", "assets/templates", "Template directory")
+	testDir     = flag.String("dir", "test_data/images", "Directory containing test images and snapshots")
+	update      = flag.Bool("update", false, "Update snapshots with current vision results")
+	verbose     = flag.Bool("v", false, "Verbose output")
+	templates   = flag.String("templates", "assets/templates", "Template directory")
 	concurrency = flag.Int("j", runtime.NumCPU(), "Number of parallel workers")
 )
 
@@ -67,12 +70,12 @@ func main() {
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).Level(zerolog.ErrorLevel)
 
 	if *update {
-		// Update is usually sequential to avoid file write contention, but could be parallel too.
-		// For now, keep it simple.
 		ts, _ := game.NewTemplateStore(*templates)
 		ts.LoadTemplates()
 		cal := &game.Calibration{PhysicalW: 1920, PhysicalH: 1080, ScaleX: 1.0, ScaleY: 1.0}
-		runUpdate(*testDir, game.NewClassifier(cal, game.DefaultClassifierConfig(), logger), game.NewLootRecognizer(cal, ts, logger))
+		classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), logger)
+		classifier.SetTemplates(ts)
+		runUpdate(*testDir, classifier, game.NewLootRecognizer(cal, ts, logger))
 		return
 	}
 
@@ -101,13 +104,10 @@ func runTestsParallel(dir string, logger zerolog.Logger) {
 	results := make(chan TestResult, len(snapshots))
 	var wg sync.WaitGroup
 
-	// Start workers
 	for w := 0; w < *concurrency; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			
-			// Each worker needs its own vision components to avoid mutex contention
 			ts, _ := game.NewTemplateStore(*templates)
 			ts.LoadTemplates()
 			cal := &game.Calibration{PhysicalW: 1920, PhysicalH: 1080, ScaleX: 1.0, ScaleY: 1.0}
@@ -141,21 +141,20 @@ func runTestsParallel(dir string, logger zerolog.Logger) {
 		if !res.Passed {
 			status = fmt.Sprintf("%sFAIL%s", colorRed, colorReset)
 		}
-		
+
 		totalLat := time.Duration(0)
 		for _, d := range res.Latency {
 			totalLat += d
 		}
 
-		fmt.Printf("%s %-40s %8s [S:%-4s L:%-4s]\n", 
-			status, 
-			res.Name, 
+		fmt.Printf("%s %-40s %8s [S:%-4s L:%-4s]\n",
+			status,
+			res.Name,
 			totalLat.Round(time.Millisecond),
 			res.Latency["state"].Round(time.Millisecond),
 			res.Latency["loot"].Round(time.Millisecond))
 	}
 
-	// Sort results for consistent summary output
 	sort.Slice(allResults, func(i, j int) bool {
 		return allResults[i].Name < allResults[j].Name
 	})
@@ -171,8 +170,10 @@ func runUpdate(dir string, classifier *game.Classifier, lootRec *game.LootRecogn
 			return nil
 		}
 
-		// Skip if it looks like a template or system file
-		if strings.Contains(path, "node_modules") || strings.Contains(path, "assets/templates") {
+		if strings.Contains(path, "node_modules") || strings.Contains(path, "assets/templates") || 
+		   strings.Contains(path, "assets/debug_seg") || strings.Contains(path, "assets/grab") ||
+		   strings.Contains(path, "tools/") || strings.Contains(path, "build/") ||
+		   strings.Contains(path, ".git/") {
 			return nil
 		}
 
@@ -185,12 +186,29 @@ func runUpdate(dir string, classifier *game.Classifier, lootRec *game.LootRecogn
 		defer img.Close()
 
 		state, _ := classifier.ClassifyState(img)
+		
+		// If classifier says Unknown but we see lot of stars/bonus, it might be BattleEnd
+		battle, _ := lootRec.ReadBattleResult(img)
+		
+		isBattleEnd := state.String() == "BattleEnd"
+		if !isBattleEnd {
+			// Heuristic: If we found stars or bonus loot, it's definitely BattleEnd
+			if battle.Stars > 0 || battle.Bonus.Gold > 0 || battle.Bonus.Elixir > 0 {
+				isBattleEnd = true
+				state = game.StateBattleEnd
+			}
+		}
+
 		loot, _ := lootRec.ReadAvailableLoot(img)
 
 		tc := TestCase{
 			Image:         info.Name(),
 			ExpectedState: state.String(),
 			ExpectedLoot:  loot,
+		}
+
+		if isBattleEnd {
+			tc.ExpectedBattle = &battle
 		}
 
 		jsonPath := strings.TrimSuffix(path, ".png") + ".vtest.json"
@@ -238,7 +256,6 @@ func runSingleTest(path string, classifier *game.Classifier, lootRec *game.LootR
 	}
 	defer img.Close()
 
-	// 1. State Classification
 	s1 := time.Now()
 	state, _ := classifier.ClassifyState(img)
 	res.Latency["state"] = time.Since(s1)
@@ -250,7 +267,6 @@ func runSingleTest(path string, classifier *game.Classifier, lootRec *game.LootR
 		res.Errors = append(res.Errors, fmt.Sprintf("State mismatch: got %s, want %s", res.StateGot, res.StateWant))
 	}
 
-	// 2. Loot OCR
 	s2 := time.Now()
 	loot, _ := lootRec.ReadAvailableLoot(img)
 	res.Latency["loot"] = time.Since(s2)
@@ -262,6 +278,33 @@ func runSingleTest(path string, classifier *game.Classifier, lootRec *game.LootR
 		res.Errors = append(res.Errors, fmt.Sprintf("Loot mismatch: got G:%d E:%d DE:%d, want G:%d E:%d DE:%d",
 			loot.Gold, loot.Elixir, loot.DarkElixir,
 			tc.ExpectedLoot.Gold, tc.ExpectedLoot.Elixir, tc.ExpectedLoot.DarkElixir))
+	}
+
+	if tc.ExpectedBattle != nil {
+		s3 := time.Now()
+		battle, _ := lootRec.ReadBattleResult(img)
+		res.Latency["battle"] = time.Since(s3)
+		res.BattleGot = &battle
+		res.BattleWant = tc.ExpectedBattle
+
+		if battle.Stars != tc.ExpectedBattle.Stars {
+			res.Passed = false
+			res.Errors = append(res.Errors, fmt.Sprintf("Stars mismatch: got %d, want %d", battle.Stars, tc.ExpectedBattle.Stars))
+		}
+
+		if battle.Bonus.Gold != tc.ExpectedBattle.Bonus.Gold || battle.Bonus.Elixir != tc.ExpectedBattle.Bonus.Elixir || battle.Bonus.DarkElixir != tc.ExpectedBattle.Bonus.DarkElixir {
+			res.Passed = false
+			res.Errors = append(res.Errors, fmt.Sprintf("Bonus mismatch: got G:%d E:%d DE:%d, want G:%d E:%d DE:%d",
+				battle.Bonus.Gold, battle.Bonus.Elixir, battle.Bonus.DarkElixir,
+				tc.ExpectedBattle.Bonus.Gold, tc.ExpectedBattle.Bonus.Elixir, tc.ExpectedBattle.Bonus.DarkElixir))
+		}
+
+		if battle.Loot.Gold != tc.ExpectedBattle.Loot.Gold || battle.Loot.Elixir != tc.ExpectedBattle.Loot.Elixir || battle.Loot.DarkElixir != tc.ExpectedBattle.Loot.DarkElixir {
+			res.Passed = false
+			res.Errors = append(res.Errors, fmt.Sprintf("Battle Loot mismatch: got G:%d E:%d DE:%d, want G:%d E:%d DE:%d",
+				battle.Loot.Gold, battle.Loot.Elixir, battle.Loot.DarkElixir,
+				tc.ExpectedBattle.Loot.Gold, tc.ExpectedBattle.Loot.Elixir, tc.ExpectedBattle.Loot.DarkElixir))
+		}
 	}
 
 	return res
