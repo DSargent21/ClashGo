@@ -78,27 +78,38 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 		}
 
 		totalScore := 0
-		if passed >= rule.MinPass && rule.MinPass > 0 {
-			totalScore = passed*100 + rule.Weight
+		pixelPassed := false
+		if rule.MinPass > 0 {
+			if passed >= rule.MinPass {
+				totalScore = passed * 100
+				pixelPassed = true
+			}
+		} else {
+			// No pixel requirements
+			pixelPassed = true
 		}
 
-		// Check template if defined
+		templatePassed := false
+		bestConf := 0.0
 		if rule.Template != "" && c.templates != nil {
 			tpl, ok := c.templates.Get(rule.Template)
 			if ok {
-				// Professional Multi-Scale matching for robustness across resolutions
-				// Increased steps and range for 'Next' button specifically
 				matches, err := vision.MatchMultiScale(norm, tpl, 0.15, 1.5, 25, c.cfg.TemplateThreshold)
 				if err == nil && len(matches) > 0 {
-					// Use the best match confidence
-					bestConf := matches[0].Confidence
-					totalScore += int(bestConf*1000) + rule.Weight
+					bestConf = matches[0].Confidence
+					templatePassed = true
 				}
 			}
 		}
 
-		if totalScore > 0 {
-			scores = append(scores, scoredState{State: rule.State, Score: totalScore})
+		if pixelPassed && (passed > 0 || templatePassed) {
+			totalScore += int(bestConf * 1000)
+			totalScore += rule.Weight // Add weight exactly once
+			
+			scores = append(scores, scoredState{
+				State: rule.State,
+				Score: totalScore,
+			})
 		}
 	}
 
@@ -187,17 +198,18 @@ func (c *Classifier) buildRules() {
 			Template: "btn_next",
 			MinPass:  1,
 			Checks: []PixelCheck{
+				// Gold Icon Yellow (Top Left)
+				{35, 85, 0xFF, 0xC5, 0x09, 30},
+				// Elixir Icon Purple (Top Left)
+				{35, 115, 0xD6, 0x1A, 0xFF, 30},
+				
 				// End Battle (Red) - typical locations
 				{67, 570, 0xCE, 0x0D, 0x0E, 40},
-				{112, 408, 0xCE, 0x0D, 0x0E, 40}, // From captured_screen diagnostic
+				{112, 408, 0xCE, 0x0D, 0x0E, 40},
 				
 				// Next Button (Orange/Yellow)
 				{813, 509, 0xFC, 0xBA, 0x36, 40},
-				{796, 564, 0xFC, 0xBA, 0x36, 40}, // Center area from captured_screen
-				{614, 588, 0xFC, 0xBA, 0x36, 40}, // From live device diagnostic
-				
-				// Gold Icon (Top Left)
-				{27, 112, 0xFF, 0xEC, 0x4A, 30},
+				{796, 564, 0xFC, 0xBA, 0x36, 40},
 			},
 		},
 		{
