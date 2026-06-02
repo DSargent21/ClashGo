@@ -303,6 +303,58 @@ func (c *Client) TapFast(x, y int, stdDev float64) error {
 	return c.Tap(x+ox, y+oy)
 }
 
+// TapDual performs two taps simultaneously using background shell execution.
+func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.transport == nil {
+		if err := c.connectTransport(); err != nil {
+			return err
+		}
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	ox1 := int(r.NormFloat64() * stdDev1)
+	oy1 := int(r.NormFloat64() * stdDev1)
+
+	r2 := rand.New(rand.NewSource(time.Now().UnixNano() + 71))
+	ox2 := int(r2.NormFloat64() * stdDev2)
+	oy2 := int(r2.NormFloat64() * stdDev2)
+
+	cmd := fmt.Sprintf("shell:input tap %d %d & input tap %d %d & wait", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
+	_, err := c.transport.Exec(cmd)
+	return err
+}
+
+// TapTriple performs three taps simultaneously using background shell execution.
+func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float64, x3, y3 int, stdDev3 float64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.transport == nil {
+		if err := c.connectTransport(); err != nil {
+			return err
+		}
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	ox1 := int(r.NormFloat64() * stdDev1)
+	oy1 := int(r.NormFloat64() * stdDev1)
+
+	r2 := rand.New(rand.NewSource(time.Now().UnixNano() + 71))
+	ox2 := int(r2.NormFloat64() * stdDev2)
+	oy2 := int(r2.NormFloat64() * stdDev2)
+
+	r3 := rand.New(rand.NewSource(time.Now().UnixNano() + 142))
+	ox3 := int(r3.NormFloat64() * stdDev3)
+	oy3 := int(r3.NormFloat64() * stdDev3)
+
+	cmd := fmt.Sprintf("shell:input tap %d %d & input tap %d %d & input tap %d %d & wait", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
+	_, err := c.transport.Exec(cmd)
+	return err
+}
+
 // TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
 func (c *Client) TapHuman(x, y int, stdDev float64) error {
 	// Small hesitation before tapping (50-150ms)
