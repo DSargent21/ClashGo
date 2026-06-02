@@ -872,7 +872,13 @@ func (e *Executor) MaximizeLineSpread(p1, p2 image.Point, w, mBarY int) (image.P
 func (e *Executor) EndBattle() error {
 	ex, ey := e.cal.ScaleRef(34, 558)
 	if err := e.client.TapHuman(ex, ey, 5.0); err != nil { return err }
-	time.Sleep(3 * time.Second); return nil
+	time.Sleep(1000 * time.Millisecond) // Wait for confirmation dialog
+
+	// Tap green "End Battle" or "Okay" confirmation button (approx 520, 430)
+	okX, okY := e.cal.ScaleRef(520, 430)
+	if err := e.client.TapHuman(okX, okY, 5.0); err != nil { return err }
+	time.Sleep(2000 * time.Millisecond) // Wait for screen transition
+	return nil
 }
 
 func (e *Executor) ReturnHome() error {
@@ -898,7 +904,7 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 			if err != nil { continue }
 			defer screen.Close()
 			state, _ := e.classify(screen)
-			if state == game.StateBattleEnd { return true }
+			if state == game.StateBattleEnd || state == game.StateReturnHome { return true }
 			if time.Now().After(deadline) { return false }
 		}
 	}

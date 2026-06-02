@@ -48,6 +48,9 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 	if screen.Empty() {
 		return StateUnknown, 0
 	}
+	if screen.Cols() < 600 || screen.Rows() < 500 {
+		return StateUnknown, 0
+	}
 
 	var norm gocv.Mat
 	defer func() {
@@ -229,12 +232,8 @@ func (c *Classifier) buildRules() {
 			Priority: 88,
 			Weight:   88,
 			Desc:     "battle result stars",
-			MinPass:  1,
-			Checks: []PixelCheck{
-				{481, 548, 0xC0, 0xC8, 0xC0, 20},
-				{498, 548, 0xC0, 0xC8, 0xC0, 20},
-				{514, 548, 0xC0, 0xC8, 0xC0, 20},
-			},
+			Template: "btn_return_home",
+			MinPass:  0,
 		},
 		{
 			State:    StateArmyCamp,

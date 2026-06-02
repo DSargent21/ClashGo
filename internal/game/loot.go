@@ -110,38 +110,33 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois)
 
 	// Star Detection (Search for yellow pixel clusters in the center-top results area)
-	isResultsScreen := result.Loot.Gold > 0 || result.Loot.Elixir > 0 || result.Loot.DarkElixir > 0 ||
-		result.Bonus.Gold > 0 || result.Bonus.Elixir > 0 || result.Bonus.DarkElixir > 0
-	
-	if isResultsScreen {
-		startY, endY := int(140*lr.cal.ScaleY), int(260*lr.cal.ScaleY)
-		startX, endX := int(280*lr.cal.ScaleX), int(580*lr.cal.ScaleX)
-		rect := image.Rect(startX, startY, endX, endY)
-		rect = lr.safeRect(screen, rect)
-		if !rect.Empty() {
-			subRegion := screen.Region(rect)
-			defer subRegion.Close()
+	startY, endY := int(140*lr.cal.ScaleY), int(260*lr.cal.ScaleY)
+	startX, endX := int(280*lr.cal.ScaleX), int(580*lr.cal.ScaleX)
+	rect := image.Rect(startX, startY, endX, endY)
+	rect = lr.safeRect(screen, rect)
+	if !rect.Empty() {
+		subRegion := screen.Region(rect)
+		defer subRegion.Close()
 
-			lowerYellow := gocv.NewScalar(0, 210, 240, 0)
-			upperYellow := gocv.NewScalar(120, 255, 255, 0)
+		lowerYellow := gocv.NewScalar(0, 150, 170, 0)
+		upperYellow := gocv.NewScalar(120, 255, 255, 0)
 
-			yellowMask := gocv.NewMat()
-			defer yellowMask.Close()
-			gocv.InRangeWithScalar(subRegion, lowerYellow, upperYellow, &yellowMask)
+		yellowMask := gocv.NewMat()
+		defer yellowMask.Close()
+		gocv.InRangeWithScalar(subRegion, lowerYellow, upperYellow, &yellowMask)
 
-			contours := gocv.FindContours(yellowMask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
-			defer contours.Close()
+		contours := gocv.FindContours(yellowMask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+		defer contours.Close()
 
-			validStars := 0
-			for i := 0; i < contours.Size(); i++ {
-				area := gocv.ContourArea(contours.At(i))
-				if area > 40 {
-					validStars++
-				}
+		validStars := 0
+		for i := 0; i < contours.Size(); i++ {
+			area := gocv.ContourArea(contours.At(i))
+			if area > 40 {
+				validStars++
 			}
-			result.Stars = validStars
-			if result.Stars > 3 { result.Stars = 3 }
 		}
+		result.Stars = validStars
+		if result.Stars > 3 { result.Stars = 3 }
 	}
 
 	return result, nil
