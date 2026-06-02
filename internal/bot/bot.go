@@ -2,8 +2,10 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
+	"os"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -513,6 +515,11 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
 
+	var remainingUndeployed int
+	var deployErr error
+	var stratName string = "Unknown"
+	var targetEdge string = "Unknown"
+
 	for {
 		// High-Speed Loop: reduced sleep for faster cycling
 		time.Sleep(1200 * time.Millisecond)
@@ -554,7 +561,19 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 		if meetsReq {
 			b.logger.Info().Msg("loot requirements met, starting attack!")
-			b.deployTroops(screen)
+			if strat, err := strategy.ParseYAML(b.cfg.Attack.StrategyFile); err == nil {
+				stratName = strat.Name
+				targetEdge = strat.TargetEdge
+			}
+			remainingUndeployed, deployErr = b.deployTroops(screen)
+			if deployErr != nil || remainingUndeployed > 0 {
+				failScreen, err := b.client.CaptureToMat()
+				if err == nil {
+					gocv.IMWrite("last_attack_failed.png", failScreen)
+					failScreen.Close()
+					b.logger.Warn().Msg("saved failure screenshot to last_attack_failed.png")
+				}
+			}
 			screen.Close()
 			break
 		}
@@ -588,13 +607,28 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	b.logger.Info().Msg("battle complete, ending...")
 	b.attackExec.EndBattle()
 	
+	var battleStars int = 0
+	var battleGold int = 0
+	var battleElixir int = 0
+	var battleDE int = 0
+	var parsedResults bool = false
+
 	if b.attackExec.WaitForBattleEnd(60 * time.Second) {
 		// Capture screen to read results
 		resultScreen, err := b.client.CaptureToMat()
 		if err == nil {
+			gocv.IMWrite("last_battle_result.png", resultScreen)
+			b.logger.Info().Msg("saved battle result screenshot to last_battle_result.png")
+
 			lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
 			res, err := lootRec.ReadBattleResult(resultScreen)
 			if err == nil {
+				battleStars = res.Stars
+				battleGold = res.Loot.Gold + res.Bonus.Gold
+				battleElixir = res.Loot.Elixir + res.Bonus.Elixir
+				battleDE = res.Loot.DarkElixir + res.Bonus.DarkElixir
+				parsedResults = true
+
 				b.totalGold.Add(int64(res.Loot.Gold + res.Bonus.Gold))
 				b.totalElixir.Add(int64(res.Loot.Elixir + res.Bonus.Elixir))
 				b.totalDE.Add(int64(res.Loot.DarkElixir + res.Bonus.DarkElixir))
@@ -622,6 +656,70 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	b.attackExec.ReturnHome()
 
 	b.attackCount.Add(1)
+
+	// Generate report and save to JSON
+	type AttackReport struct {
+		Timestamp         string `json:"timestamp"`
+		Strategy          string `json:"strategy"`
+		TargetEdge        string `json:"target_edge"`
+		DeploySuccess     bool   `json:"deploy_success"`
+		UndeployedSlots   int    `json:"undeployed_slots"`
+		DeployError       string `json:"deploy_error,omitempty"`
+		ParsedResults     bool   `json:"parsed_results"`
+		Stars             int    `json:"stars"`
+		GoldStolen        int    `json:"gold_stolen"`
+		ElixirStolen      int    `json:"elixir_stolen"`
+		DarkElixirStolen  int    `json:"dark_elixir_stolen"`
+		TotalAttacks      int32  `json:"total_attacks_session"`
+	}
+
+	depErrStr := ""
+	if deployErr != nil {
+		depErrStr = deployErr.Error()
+	}
+
+	rep := AttackReport{
+		Timestamp:        time.Now().Format(time.RFC3339),
+		Strategy:         stratName,
+		TargetEdge:       targetEdge,
+		DeploySuccess:    deployErr == nil && remainingUndeployed == 0,
+		UndeployedSlots:  remainingUndeployed,
+		DeployError:      depErrStr,
+		ParsedResults:    parsedResults,
+		Stars:            battleStars,
+		GoldStolen:       battleGold,
+		ElixirStolen:     battleElixir,
+		DarkElixirStolen: battleDE,
+		TotalAttacks:     b.attackCount.Load(),
+	}
+
+	if repBytes, err := json.MarshalIndent(rep, "", "  "); err == nil {
+		_ = os.WriteFile("last_attack_report.json", repBytes, 0644)
+	}
+
+	deployStatus := "SUCCESS (100% Deployed)"
+	if !rep.DeploySuccess {
+		if remainingUndeployed > 0 {
+			deployStatus = fmt.Sprintf("FAILED (%d Slots Undeployed)", remainingUndeployed)
+		} else {
+			deployStatus = fmt.Sprintf("FAILED (%s)", depErrStr)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("=========================================")
+	fmt.Println("          BATTLE REPORT SUMMARY          ")
+	fmt.Println("=========================================")
+	fmt.Printf("Strategy:      %s\n", rep.Strategy)
+	fmt.Printf("Target Edge:   %s\n", rep.TargetEdge)
+	fmt.Printf("Deploy Health: %s\n", deployStatus)
+	fmt.Printf("Stars Earned:  %d ⭐\n", rep.Stars)
+	fmt.Println("Loot Collected:")
+	fmt.Printf("  - Gold:      %d\n", rep.GoldStolen)
+	fmt.Printf("  - Elixir:    %d\n", rep.ElixirStolen)
+	fmt.Printf("  - DE:        %d\n", rep.DarkElixirStolen)
+	fmt.Println("=========================================")
+	fmt.Println()
 	
 	// Professional Session Summary
 	b.logger.Info().
@@ -633,51 +731,76 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 }
 
 func (b *Bot) clickSequence() bool {
-	// Step 1: find and click the orange Attack button
-	if !b.findAndClick("btn_attack", "Attack", 3) {
+	// Step 1: Click the orange Attack button (retry up to 3 times)
+	attackClicked := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if b.findAndClick("btn_attack", "Attack", 1) {
+			attackClicked = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !attackClicked {
+		b.logger.Warn().Msg("could not find or click Attack button")
 		return false
 	}
-	time.Sleep(1200 * time.Millisecond) // Professional delay for menu slide-in
+	time.Sleep(1500 * time.Millisecond) // Wait for menu slide-in
 
-	// Wait for the attack menu to open
-	if !b.waitForButton("btn_find_match", 10*time.Second) {
-		b.logger.Warn().Msg("find match button did not appear")
+	// Step 2: Click the yellow Find Match button (retry up to 3 times)
+	findMatchClicked := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if b.findAndClick("btn_find_match", "Find Match", 1) {
+			findMatchClicked = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !findMatchClicked {
+		b.logger.Warn().Msg("could not find or click Find Match button")
 		return false
 	}
+	time.Sleep(1200 * time.Millisecond) // Wait for search screen/army bar
 
-	// Step 2: click the yellow Find Match button
-	if !b.findAndClick("btn_find_match", "Find Match", 3) {
+	// Step 3: Click the white army arrow to expand army selection (retry up to 3 times)
+	armyArrowClicked := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if b.findAndClick("btn_army_arrow", "Army Arrow", 1) {
+			armyArrowClicked = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !armyArrowClicked {
+		b.logger.Warn().Msg("could not find or click Army Arrow button")
 		return false
 	}
-	time.Sleep(1000 * time.Millisecond) // Wait for search screen/army bar
-
-	// Wait for army selector to appear
-	if !b.waitForButton("btn_army_arrow", 5*time.Second) {
-		b.logger.Warn().Msg("army arrow did not appear")
-		return false
-	}
-
-	// Step 3: click the white army arrow to expand army selection
-	b.findAndClick("btn_army_arrow", "Army Arrow", 2)
 	time.Sleep(800 * time.Millisecond) // Wait for expansion animation
 
-	// Wait for army 1 preset button
-	if !b.waitForButton("btn_army_1", 3*time.Second) {
+	// Step 4: Click army composition 1 (retry up to 3 times)
+	army1Clicked := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if b.findAndClick("btn_army_1", "Army 1", 1) {
+			army1Clicked = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !army1Clicked {
 		b.logger.Warn().Msg("army 1 button did not appear, continuing anyway")
 	}
-
-	// Step 4: click army composition 1
-	b.findAndClick("btn_army_1", "Army 1", 2)
 	time.Sleep(800 * time.Millisecond)
 
-	// Wait for the green battle button to become available
-	if !b.waitForButton("btn_battle", 10*time.Second) {
-		b.logger.Warn().Msg("battle button did not appear")
-		return false
+	// Step 5: Click the green Battle button (retry up to 3 times)
+	battleClicked := false
+	for attempt := 0; attempt < 3; attempt++ {
+		if b.findAndClick("btn_battle", "Battle", 1) {
+			battleClicked = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-
-	// Step 5: click the green Battle button
-	if !b.findAndClick("btn_battle", "Battle", 3) {
+	if !battleClicked {
+		b.logger.Warn().Msg("could not find or click Battle button")
 		return false
 	}
 
@@ -871,6 +994,15 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 		return true
 	}
 
+	// Tier 3 Fallback: Blind tap calibrated pinpoint coordinates
+	if pp, ok := villagePinpoints[templateName]; ok {
+		px, py := b.cal.ScaleRef(pp.X, pp.Y)
+		b.logger.Warn().Str("step", pp.Name).Msg("pinpoint color check and template match failed; executing blind tap fallback")
+		if err := b.client.Tap(px, py); err == nil {
+			return true
+		}
+	}
+
 	b.logger.Error().Str("step", stepName).Int("retries", maxRetries).Msg("failed after retries")
 	return false
 }
@@ -974,11 +1106,11 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 	return false
 }
 
-func (b *Bot) deployTroops(screen gocv.Mat) {
+func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
 	strat, err := strategy.ParseYAML(b.cfg.Attack.StrategyFile)
 	if err != nil {
 		b.logger.Warn().Err(err).Str("path", b.cfg.Attack.StrategyFile).Msg("could not load strategy")
-		return
+		return 0, err
 	}
 
 	b.logger.Info().
@@ -986,9 +1118,15 @@ func (b *Bot) deployTroops(screen gocv.Mat) {
 		Int("phases", len(strat.Phases)).
 		Msg("executing dynamic attack plan")
 
-	if err := b.attackExec.DeployDynamic(strat, screen); err != nil {
+	// Wait for clouds/battle transition to settle and troop bar to become responsive
+	time.Sleep(1500 * time.Millisecond)
+
+	remaining, err := b.attackExec.DeployDynamic(strat, screen)
+	if err != nil {
 		b.logger.Error().Err(err).Msg("dynamic deploy failed")
+		return remaining, err
 	}
+	return remaining, nil
 }
 
 func (b *Bot) Health() game.SystemHealth {

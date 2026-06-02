@@ -49,24 +49,27 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 		return StateUnknown, 0
 	}
 
-	// Normalize screen to reference height (732) to simplify rules and templates
-	norm := vision.ResizeToHeight(screen, 732)
-	defer norm.Close()
+	var norm gocv.Mat
+	defer func() {
+		if !norm.Closed() {
+			norm.Close()
+		}
+	}()
 
 	var scores []scoredState
 
 	for _, rule := range c.rules {
 		passed := 0
 		for _, chk := range rule.Checks {
-			// No scaling needed on normalized screen!
-			sx, sy := chk.X, chk.Y
-			if sx < 0 || sy < 0 || sx >= norm.Cols() || sy >= norm.Rows() {
+			// Scaled coordinates from reference coordinates (height 732/width 860) to actual physical screen
+			sx, sy := c.cal.ScaleRef(chk.X, chk.Y)
+			if sx < 0 || sy < 0 || sx >= screen.Cols() || sy >= screen.Rows() {
 				continue
 			}
 
-			b := norm.GetUCharAt(sy, sx*3)
-			g := norm.GetUCharAt(sy, sx*3+1)
-			r := norm.GetUCharAt(sy, sx*3+2)
+			b := screen.GetUCharAt(sy, sx*3)
+			g := screen.GetUCharAt(sy, sx*3+1)
+			r := screen.GetUCharAt(sy, sx*3+2)
 
 			dr := absDiff(int(r), int(chk.R))
 			dg := absDiff(int(g), int(chk.G))
@@ -91,10 +94,15 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 
 		templatePassed := false
 		bestConf := 0.0
-		if rule.Template != "" && c.templates != nil {
+		// Optimization: Only run template matching if pixel checks pass (if any)
+		// Or if the rule has no pixel checks (pixelPassed will be true).
+		if rule.Template != "" && c.templates != nil && pixelPassed {
 			tpl, ok := c.templates.Get(rule.Template)
 			if ok {
-				matches, err := vision.MatchMultiScale(norm, tpl, 0.15, 1.5, 25, c.cfg.TemplateThreshold)
+				if norm.Closed() || norm.Empty() {
+					norm = vision.ResizeToHeight(screen, 732)
+				}
+				matches, err := vision.MatchMultiScale(norm, tpl, 0.9, 1.1, 3, c.cfg.TemplateThreshold)
 				if err == nil && len(matches) > 0 {
 					bestConf = matches[0].Confidence
 					templatePassed = true
@@ -198,18 +206,22 @@ func (c *Classifier) buildRules() {
 			Template: "btn_next",
 			MinPass:  1,
 			Checks: []PixelCheck{
-				// Gold Icon Yellow (Top Left)
-				{35, 85, 0xFF, 0xC5, 0x09, 30},
-				// Elixir Icon Purple (Top Left)
-				{35, 115, 0xD6, 0x1A, 0xFF, 30},
+				// Gold Icon Yellow (Top Left) - handles bright and dark gold colors
+				{35, 85, 0xB2, 0x8D, 0x07, 50},
+				{35, 85, 0xFF, 0xC5, 0x09, 50},
 				
-				// End Battle (Red) - typical locations
-				{67, 570, 0xCE, 0x0D, 0x0E, 40},
-				{112, 408, 0xCE, 0x0D, 0x0E, 40},
+				// Elixir Icon Purple (Top Left) - handles bright and dark purple colors
+				{35, 115, 0x9C, 0x17, 0xB2, 50},
+				{35, 115, 0xD6, 0x1A, 0xFF, 50},
+				
+				// End Battle (Red) - typical locations (including double-row/shifted)
+				{34, 588, 0xAD, 0x09, 0x0F, 50},
+				{67, 570, 0xCE, 0x0D, 0x0E, 50},
+				{112, 408, 0xCE, 0x0D, 0x0E, 50},
 				
 				// Next Button (Orange/Yellow)
-				{813, 509, 0xFC, 0xBA, 0x36, 40},
-				{796, 564, 0xFC, 0xBA, 0x36, 40},
+				{813, 509, 0xFC, 0xBA, 0x36, 50},
+				{796, 564, 0xFC, 0xBA, 0x36, 50},
 			},
 		},
 		{
@@ -286,12 +298,18 @@ func (c *Classifier) buildRules() {
 			Weight:   60,
 			Desc:     "main village - builder info icon or attack button",
 			Template: "btn_attack",
-			MinPass:  2,
+			MinPass:  1,
 			Checks: []PixelCheck{
-				{255, 10, 0x7A, 0xBD, 0xE3, 15},
-				{40, 558, 0xFF, 0xAF, 0x00, 20},
-				{27, 558, 0x8D, 0x4B, 0x00, 20},
-				{560, 20, 0xFF, 0xEE, 0x00, 20},
+				// Gold storage icon (Top Right)
+				{830, 35, 0xB2, 0x90, 0x0F, 40},
+				
+				// Elixir storage icon (Top Right)
+				{830, 95, 0x54, 0x19, 0x59, 40},
+				
+				// Attack button orange/brown (Bottom Left) - supports Y=640 and Y=700 layouts
+				{40, 640, 0xAF, 0x81, 0x39, 40},
+				{40, 700, 0x91, 0x50, 0x2E, 40},
+				{40, 558, 0xFF, 0xAF, 0x00, 40},
 			},
 		},
 		{

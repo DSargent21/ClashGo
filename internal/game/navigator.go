@@ -300,7 +300,7 @@ func (n *Navigator) NavigateToBattle(ctx *GameContext) bool {
 				screen, err := n.client.CaptureToMat()
 				if err == nil {
 					defer screen.Close()
-					matches, err := vision.MatchMultiScale(screen, tpl, 0.2, 1.8, 20, 0.6)
+					matches, err := vision.MatchMultiScale(screen, tpl, 0.9*n.cal.ScaleY, 1.1*n.cal.ScaleY, 3, 0.6)
 					if err == nil && len(matches) > 0 {
 						sort.Slice(matches, func(i, j int) bool {
 							return matches[i].Confidence > matches[j].Confidence

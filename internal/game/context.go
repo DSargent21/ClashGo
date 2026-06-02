@@ -59,7 +59,7 @@ func NewGameContext() *GameContext {
 
 func (gc *GameContext) Close() error {
 	gc.Lock()
-	if !gc.screen.mat.Empty() {
+	if !gc.screen.mat.Closed() {
 		gc.screen.mat.Close()
 	}
 	gc.Unlock()

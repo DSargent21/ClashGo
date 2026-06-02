@@ -114,41 +114,32 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		result.Bonus.Gold > 0 || result.Bonus.Elixir > 0 || result.Bonus.DarkElixir > 0
 	
 	if isResultsScreen {
-		yellowPixels := []image.Point{}
 		startY, endY := int(140*lr.cal.ScaleY), int(260*lr.cal.ScaleY)
 		startX, endX := int(280*lr.cal.ScaleX), int(580*lr.cal.ScaleX)
-		
-		for y := startY; y < endY; y++ {
-			for x := startX; x < endX; x++ {
-				b := screen.GetUCharAt(y, x*3)
-				g := screen.GetUCharAt(y, x*3+1)
-				r := screen.GetUCharAt(y, x*3+2)
-				// Ultra-strict yellow for active stars
-				if r > 240 && g > 210 && b < 120 && r > b+100 {
-					yellowPixels = append(yellowPixels, image.Pt(x, y))
-				}
-			}
-		}
+		rect := image.Rect(startX, startY, endX, endY)
+		rect = lr.safeRect(screen, rect)
+		if !rect.Empty() {
+			subRegion := screen.Region(rect)
+			defer subRegion.Close()
 
-		if len(yellowPixels) > 0 {
-			clusters := [][]image.Point{}
-			clusterDist := 60 * lr.cal.ScaleX
-			for _, p := range yellowPixels {
-				found := false
-				for i, c := range clusters {
-					dist := math.Sqrt(math.Pow(float64(p.X-c[0].X), 2) + math.Pow(float64(p.Y-c[0].Y), 2))
-					if dist < clusterDist {
-						clusters[i] = append(clusters[i], p); found = true; break
-					}
+			lowerYellow := gocv.NewScalar(0, 210, 240, 0)
+			upperYellow := gocv.NewScalar(120, 255, 255, 0)
+
+			yellowMask := gocv.NewMat()
+			defer yellowMask.Close()
+			gocv.InRangeWithScalar(subRegion, lowerYellow, upperYellow, &yellowMask)
+
+			contours := gocv.FindContours(yellowMask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+			defer contours.Close()
+
+			validStars := 0
+			for i := 0; i < contours.Size(); i++ {
+				area := gocv.ContourArea(contours.At(i))
+				if area > 40 {
+					validStars++
 				}
-				if !found { clusters = append(clusters, []image.Point{p}) }
 			}
-			
-			validClusters := 0
-			for _, c := range clusters {
-				if len(c) > 50 { validClusters++ }
-			}
-			result.Stars = validClusters
+			result.Stars = validStars
 			if result.Stars > 3 { result.Stars = 3 }
 		}
 	}
@@ -366,7 +357,9 @@ func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 		scaledTpl := gocv.NewMat()
 		gocv.Resize(tpl, &scaledTpl, image.Point{X: bw, Y: bh}, 0, 0, gocv.InterpolationLinear)
 		res := gocv.NewMat()
-		gocv.MatchTemplate(bin, scaledTpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+		mask := gocv.NewMat()
+		gocv.MatchTemplate(bin, scaledTpl, &res, gocv.TmCcoeffNormed, mask)
+		mask.Close()
 		_, conf, _, _ := gocv.MinMaxLoc(res)
 		if float32(conf) > maxConf { maxConf = float32(conf); bestDigit = i }
 		res.Close(); scaledTpl.Close()

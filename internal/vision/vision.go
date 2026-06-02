@@ -27,9 +27,9 @@ func ResizeToHeight(src gocv.Mat, targetHeight int) gocv.Mat {
 }
 
 func MatchTemplate(screen, template gocv.Mat, threshold float32) ([]Match, error) {
-	// Standardize to multi-scale search to handle different screen densities
-	// Use a wider range (0.2 to 2.0) and more steps for better reliability
-	return MatchMultiScale(screen, template, 0.2, 2.0, 30, threshold)
+	// Standardize to multi-scale search to handle minor screen density differences.
+	// 0.8 to 1.2 at 5 steps is 6x faster and covers standard device scaling.
+	return MatchMultiScale(screen, template, 0.8, 1.2, 5, threshold)
 }
 
 func MatchTemplateBest(screen, template gocv.Mat, threshold float32) (image.Point, float64, error) {
@@ -267,20 +267,35 @@ func PixelSearch(screen gocv.Mat, rect image.Rectangle, r, g, b int, tolerance i
 	region := screen.Region(rect)
 	defer region.Close()
 
-	toleranceF := float64(tolerance)
+	lb := b - tolerance
+	if lb < 0 { lb = 0 }
+	lg := g - tolerance
+	if lg < 0 { lg = 0 }
+	lr := r - tolerance
+	if lr < 0 { lr = 0 }
 
-	for row := 0; row < region.Rows(); row++ {
-		for col := 0; col < region.Cols(); col++ {
-			b0 := region.GetUCharAt(row, col*3)
-			g0 := region.GetUCharAt(row, col*3+1)
-			r0 := region.GetUCharAt(row, col*3+2)
+	ub := b + tolerance
+	if ub > 255 { ub = 255 }
+	ug := g + tolerance
+	if ug > 255 { ug = 255 }
+	ur := r + tolerance
+	if ur > 255 { ur = 255 }
 
-			dr := math.Abs(float64(r0) - float64(r))
-			dg := math.Abs(float64(g0) - float64(g))
-			db := math.Abs(float64(b0) - float64(b))
-			if math.Sqrt(dr*dr+dg*dg+db*db) <= toleranceF {
-				return image.Pt(rect.Min.X+col, rect.Min.Y+row), nil
-			}
+	lower := gocv.NewScalar(float64(lb), float64(lg), float64(lr), 0)
+	upper := gocv.NewScalar(float64(ub), float64(ug), float64(ur), 0)
+
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.InRangeWithScalar(region, lower, upper, &mask)
+
+	contours := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+	defer contours.Close()
+
+	if contours.Size() > 0 {
+		c := contours.At(0)
+		if c.Size() > 0 {
+			pt := c.At(0)
+			return image.Pt(rect.Min.X+pt.X, rect.Min.Y+pt.Y), nil
 		}
 	}
 

@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
+	"math"
 	"math/rand"
 	"os"
 	"sort"
 	"strings"
 	"time"
-
-	"gocv.io/x/gocv"
 
 	"github.com/Ducky705/ClashGo/internal/adb"
 	"github.com/Ducky705/ClashGo/internal/config"
@@ -18,23 +18,40 @@ import (
 	"github.com/Ducky705/ClashGo/internal/vision"
 	"github.com/Ducky705/ClashGo/pkg/strategy"
 	"github.com/rs/zerolog"
+	"gocv.io/x/gocv"
 )
 
-type BaseCalibration struct {
-	BaseTop, BaseRight, BaseBottom, BaseLeft image.Point
-	FieldTop, FieldRight, FieldBottom, FieldLeft image.Point
-	BarY, Width, Height int
+type Executor struct {
+	client        *adb.Client
+	cal           *game.Calibration
+	cfg           *config.AttackConfig
+	logger        zerolog.Logger
+	classify      func(gocv.Mat) (game.GameState, int)
+	tappedSiegeXs map[int]bool
 }
 
 type PrecisionConfig struct {
-	Units        map[string]image.Point `json:"units"`
-	Edges        map[string]ManualEdge  `json:"edges"`
-	SpellEdgesA  map[string]ManualEdge  `json:"spell_edges_a"`
-	SpellEdgesB  map[string]ManualEdge  `json:"spell_edges_b"`
+	Edges        map[string]ManualEdge   `json:"edges"`
+	SpellEdgesA  map[string]ManualEdge   `json:"spell_edges_a"`
+	SpellEdgesB  map[string]ManualEdge   `json:"spell_edges_b"`
 	HeroTargets  map[string]image.Point  `json:"hero_targets"`
 	BarY         int                    `json:"bar_y"`
 	Width        int                    `json:"width"`
 	Height       int                    `json:"height"`
+}
+
+type BaseCalibration struct {
+	BaseTop      image.Point `json:"base_top"`
+	BaseRight    image.Point `json:"base_right"`
+	BaseBottom   image.Point `json:"base_bottom"`
+	BaseLeft     image.Point `json:"base_left"`
+	FieldTop     image.Point `json:"field_top"`
+	FieldRight   image.Point `json:"field_right"`
+	FieldBottom  image.Point `json:"field_bottom"`
+	FieldLeft    image.Point `json:"field_left"`
+	BarY         int         `json:"bar_y"`
+	Width        int         `json:"width"`
+	Height       int         `json:"height"`
 }
 
 type ManualEdge struct {
@@ -42,24 +59,26 @@ type ManualEdge struct {
 	P2 image.Point `json:"p2"`
 }
 
-type Executor struct {
-	client   *adb.Client
-	cal      *game.Calibration
-	cfg      *config.AttackConfig
-	classify func(gocv.Mat) (game.GameState, int)
-	logger   zerolog.Logger
-}
-
 func NewExecutor(client *adb.Client, cal *game.Calibration, cfg *config.AttackConfig, logger zerolog.Logger) *Executor {
+	// Create a default classifier if none provided or for internal use
+	classifier := game.NewClassifier(cal, game.ClassifierConfig{
+		ConfirmFrames:     1,
+		TemplateThreshold: 0.7,
+	}, logger)
+
 	return &Executor{
-		client: client,
-		cal:    cal,
-		cfg:    cfg,
-		logger: logger.With().Str("component", "attack_executor").Logger(),
+		client:        client,
+		cal:           cal,
+		cfg:           cfg,
+		logger:        logger.With().Str("component", "attack_executor").Logger(),
+		classify:      classifier.ClassifyState,
+		tappedSiegeXs: make(map[int]bool),
 	}
 }
 
-func (e *Executor) SetClassifier(fn func(gocv.Mat) (game.GameState, int)) { e.classify = fn }
+func (e *Executor) SetClassifier(fn func(gocv.Mat) (game.GameState, int)) {
+	e.classify = fn
+}
 
 func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
@@ -67,9 +86,8 @@ func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 	}
 
 	// Selection glow usually encompasses the whole icon or a large part of it
-	// Scale size based on screen height to be more robust
 	h := screen.Rows()
-	size := int(float64(h) * 0.04) // ~30px on 732h
+	size := int(float64(h) * 0.045) // Slightly larger: ~33px on 732h
 	region := image.Rect(x-size, y-size, x+size, y+size)
 	if region.Min.X < 0 { region.Min.X = 0 }
 	if region.Min.Y < 0 { region.Min.Y = 0 }
@@ -79,17 +97,13 @@ func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 	sub := screen.Region(region)
 	defer sub.Close()
 
-	// Convert to HSV for robust color detection
 	hsv := gocv.NewMat()
 	defer hsv.Close()
 	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
 
-	// Teal selection color in HSV:
-	// H: ~185° -> OpenCV Range (0-180): ~92
-	// S: ~80%  -> OpenCV Range (0-255): ~204
-	// V: ~55%  -> OpenCV Range (0-255): ~140
-	lower := gocv.NewScalar(80, 100, 50, 0)
-	upper := gocv.NewScalar(110, 255, 255, 0)
+	// Wider teal selection color in HSV to catch variations
+	lower := gocv.NewScalar(75, 80, 40, 0)
+	upper := gocv.NewScalar(115, 255, 255, 0)
 
 	mask := gocv.NewMat()
 	defer mask.Close()
@@ -98,8 +112,8 @@ func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 	count := gocv.CountNonZero(mask)
 	e.logger.Debug().Int("x", x).Int("y", y).Int("teal_pixels", count).Msg("selection verification")
 	
-	// Significant number of teal pixels relative to region size
-	threshold := (size * 2) * (size * 2) / 20 // ~5% of region
+	// Threshold: ~4% of region
+	threshold := int(float64(region.Dx()*region.Dy()) * 0.04)
 	return count > threshold
 }
 
@@ -118,14 +132,14 @@ func (e *Executor) Validate(s *strategy.DynamicStrategy) error {
 	return nil
 }
 
-func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) error {
+func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (int, error) {
 	w, h := screen.Cols(), screen.Rows()
 	targetEdge := s.TargetEdge
 
 	// Pre-flight validation
 	if err := e.Validate(s); err != nil {
 		e.logger.Error().Err(err).Msg("pre-flight validation failed")
-		return err
+		return 0, err
 	}
 
 	// 1. Load Precision Config
@@ -165,7 +179,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 	}
 
 	if !usePrecision {
-		return fmt.Errorf("precision config required (run cmd/precision_setup)")
+		return 0, fmt.Errorf("precision config required (run cmd/precision_setup)")
 	}
 
 	if strings.EqualFold(targetEdge, "Random") {
@@ -176,8 +190,52 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 
 	lastBar := gocv.NewMat()
 	defer func() {
-		if !lastBar.Empty() { lastBar.Close() }
+		if !lastBar.Closed() { lastBar.Close() }
 	}()
+
+	globalUsedSlots := make(map[int]bool)
+	e.tappedSiegeXs = make(map[int]bool)
+
+	// 1.5. Parse Troop Bar Layout and segment active slots into categories
+	slots := e.ParseLayout(screen, pCfg, w, h, mBarY)
+	
+	var siegeXs []int
+	for _, slot := range slots {
+		if slot.Category == "Siege" {
+			siegeXs = append(siegeXs, slot.X)
+		}
+	}
+
+	// Create slot map of category -> slice of slots (grouped by X coordinate, sorted left-to-right)
+	slotMap := make(map[string][]image.Point)
+	for _, slot := range slots {
+		slotMap[slot.Category] = append(slotMap[slot.Category], image.Pt(slot.X, slot.Y))
+	}
+
+	// 1.6. Save Visual Diagnostics Overlay
+	debugImg := screen.Clone()
+	defer debugImg.Close()
+	// Draw Y-bar limit
+	gocv.Line(&debugImg, image.Pt(0, mBarY), image.Pt(w, mBarY), color.RGBA{0, 0, 255, 255}, 2)
+	// Draw Green deployment edge
+	if edge, ok := pCfg.Edges[targetEdge]; ok {
+		gocv.Line(&debugImg, edge.P1, edge.P2, color.RGBA{0, 255, 0, 255}, 3)
+	}
+	// Draw categorized circles over detected active slots
+	for _, slot := range slots {
+		c := color.RGBA{255, 255, 255, 255} // Default white
+		switch slot.Category {
+		case "Troop": c = color.RGBA{255, 0, 0, 255} // Blue in BGR
+		case "Siege": c = color.RGBA{0, 255, 255, 255} // Yellow in BGR
+		case "Hero": c = color.RGBA{0, 255, 0, 255} // Green in BGR
+		case "Spell": c = color.RGBA{255, 0, 255, 255} // Purple in BGR
+		case "CC": c = color.RGBA{0, 165, 255, 255} // Orange in BGR
+		}
+		gocv.Circle(&debugImg, image.Pt(slot.X, slot.Y), 18, c, 2)
+		gocv.PutText(&debugImg, slot.Category, image.Pt(slot.X-15, slot.Y-25), gocv.FontHersheySimplex, 0.4, c, 1)
+	}
+	gocv.IMWrite("attack_deploy_debug.png", debugImg)
+	e.logger.Info().Msg("saved visual diagnostics to attack_deploy_debug.png")
 
 	for _, phase := range s.Phases {
 		e.logger.Info().Str("phase", phase.Name).Msg("attack phase")
@@ -216,9 +274,10 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 		}
 
 		isHeroesPhase := phase.Name == "Heroes"
+		usedSlots := make(map[int]bool) // x-coordinates of slots used in this phase
 		
 		// Capture ONCE at start of phase unless we need to refresh
-		if lastBar.Empty() {
+		if lastBar.Closed() || lastBar.Empty() {
 			var err error
 			lastBar, err = e.client.CaptureToMat()
 			if err != nil {
@@ -235,7 +294,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 			// For abilities, we usually need a fresh capture because the hero was just deployed
 			// But if we are in the collection phase of heroes, we don't want to refresh every time
 			if isAbility && !isHeroesPhase {
-				if !lastBar.Empty() { lastBar.Close() }
+				if !lastBar.Closed() { lastBar.Close() }
 				var err error
 				lastBar, err = e.client.CaptureToMat()
 				if err != nil {
@@ -244,7 +303,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 				}
 			}
 
-			if lastBar.Empty() {
+			if lastBar.Closed() || lastBar.Empty() {
 				var err error
 				lastBar, err = e.client.CaptureToMat()
 				if err != nil {
@@ -270,7 +329,21 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 				matches, _ := vision.MatchMultiScaleROI(screen, tpl, 0.2, 1.2, 20, currentThreshold, barROI)
 				if len(matches) > 0 {
 					sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
-					return &matches[0]
+					
+					// Filter out matches that overlap with already used slots
+					for _, m := range matches {
+						isUsed := false
+						for ux := range usedSlots {
+							// If the matched X is within 5% of screen width from a used slot, it's the same slot
+							if math.Abs(float64(m.Point.X-ux)) < float64(w)*0.05 {
+								isUsed = true
+								break
+							}
+						}
+						if !isUsed {
+							return &m
+						}
+					}
 				}
 				return nil
 			}
@@ -286,12 +359,44 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 			}
 			tpl.Close()
 
+			category := "Troop"
+			if isSpell {
+				category = "Spell"
+			} else if isHero {
+				category = "Hero"
+			} else if isSiege {
+				category = "Siege"
+			}
+
+			if match == nil && !isAbility {
+				// Fallback to dynamic layout parser mapping
+				if len(slotMap[category]) > 0 {
+					targetPt := slotMap[category][0]
+					slotMap[category] = slotMap[category][1:]
+					match = &vision.Match{
+						Point:      targetPt,
+						Confidence: 1.0,
+					}
+					e.logger.Info().Str("unit", unit.Name).Str("category", category).Interface("pos", targetPt).Msg("layout parser fallback mapping")
+				}
+			} else if match != nil {
+				// Remove matched X from slotMap to avoid double deployment
+				for idx, slot := range slotMap[category] {
+					if math.Abs(float64(match.Point.X-slot.X)) < float64(w)*0.05 {
+						slotMap[category] = append(slotMap[category][:idx], slotMap[category][idx+1:]...)
+						break
+					}
+				}
+			}
+
 			if isHeroesPhase && isHero && match != nil {
 				heroMatches = append(heroMatches, struct {
 					unit      strategy.Unit
 					match     *vision.Match
 					isAbility bool
 				}{unit, match, isAbility})
+				usedSlots[match.Point.X] = true
+				globalUsedSlots[match.Point.X] = true
 				continue // Process after collecting all heroes
 			}
 
@@ -302,6 +407,8 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 				continue
 			}
 
+			usedSlots[match.Point.X] = true
+			globalUsedSlots[match.Point.X] = true
 			e.deployUnit(unit, match, pCfg, targetEdge, w, h, isAbility)
 		}
 
@@ -346,7 +453,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 			// 3. Process abilities for active heroes only
 			if len(abilities) > 0 {
 				// Recapture ONCE for all abilities after all heroes are deployed
-				if !lastBar.Empty() { lastBar.Close() }
+				if !lastBar.Closed() { lastBar.Close() }
 				lastBar, _ = e.client.CaptureToMat()
 				
 				for _, ab := range abilities {
@@ -361,77 +468,116 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) e
 			}
 		}
 
-		if !lastBar.Empty() { lastBar.Close(); lastBar = gocv.NewMat() }
+		if !lastBar.Closed() { lastBar.Close(); lastBar = gocv.NewMat() }
 		
 		pDelay := time.Duration(phase.DelayAfterMS) * time.Millisecond
-		if phase.Name == "Heroes" || phase.Name == "Siege Machine" { pDelay = 5 * time.Millisecond }
-		if pDelay > 10 { pDelay = 10 } // Hard cap for speed
+		if phase.Name == "Heroes" || phase.Name == "Siege Machine" { pDelay = 1 * time.Millisecond }
+		if pDelay > 5 { pDelay = 5 } // Hard cap for speed
 		if pDelay > 0 {
-			// Add randomized delay variance (+/- 5ms)
-			variance := time.Duration(rand.Intn(11)-5) * time.Millisecond
-			time.Sleep(pDelay + variance)
+			time.Sleep(pDelay)
 		}
 	}
 	
-	// Final Sweep: Dump any remaining troops (e.g. promotional units)
-	e.dumpRemainingTroops(pCfg, targetEdge, w, h, mBarY)
+	// Final Sweep: Deploy any remaining event or mismatched troops in the bar
+	sweepScreen, err := e.client.CaptureToMat()
+	if err == nil {
+		e.SweepRemainingSlots(sweepScreen, pCfg, targetEdge, w, h, mBarY, globalUsedSlots, siegeXs)
+		sweepScreen.Close()
+	}
 
-	return nil
-}
-
-func (e *Executor) dumpRemainingTroops(pCfg PrecisionConfig, targetEdge string, w, h, mBarY int) {
-	e.logger.Info().Msg("starting final sweep for remaining troops")
-
-	// Calculate icon width spacing - roughly 12% of screen height is a safe bet for CoC icons
-	iconWidth := int(float64(h) * 0.12)
-	barCenterY := mBarY + (h-mBarY)/2
-
-	// Sweep across the bar
-	for x := iconWidth / 2; x < w; x += iconWidth {
-		// Tap the bar to select slot
-		e.client.TapFast(x, barCenterY, 3.0)
-		e.client.HumanSleep(50, 10)
-
-		// Capture and check if something is selected
-		screen, err := e.client.CaptureToMat()
+	// 5. Deployment Success Verifier & Retry Loop
+	e.logger.Info().Msg("verifying deployment success...")
+	var remainingCount int
+	for attempt := 1; attempt <= 2; attempt++ {
+		verifyScreen, err := e.client.CaptureToMat()
 		if err != nil {
-			continue
+			break
 		}
-
-		if e.isUnitSelected(screen, x, barCenterY) {
-			e.logger.Info().Int("x", x).Msg("found remaining troop, dumping...")
-			
-			// Get deployment points
-			var p1 image.Point
-			if pt, ok := pCfg.HeroTargets[targetEdge]; ok {
-				p1 = pt
-			} else if edge, ok := pCfg.Edges[targetEdge]; ok {
-				p1 = edge.P1
-			} else {
-				// Fallback to center of field if no edge config
-				p1 = image.Pt(w/2, h/2)
+		
+		// Re-scan active slots
+		var remainingActiveSlots []TroopSlot
+		verifySlots := e.ParseLayout(verifyScreen, pCfg, w, h, mBarY)
+		for _, slot := range verifySlots {
+			// Skip if it is a Siege slot to avoid triggering release
+			isSiegeSlot := false
+			for _, sx := range siegeXs {
+				if math.Abs(float64(slot.X-sx)) < float64(w)*0.04 {
+					isSiegeSlot = true
+					break
+				}
+			}
+			if isSiegeSlot {
+				continue
 			}
 
-			// Deploy until slot empty (max 10 batches to prevent infinite loop)
-			for batch := 0; batch < 10; batch++ {
-				for i := 0; i < 5; i++ {
-					e.client.TapFast(p1.X, p1.Y, 15.0)
-					e.client.HumanSleep(20, 5)
-				}
-				
-				// Re-verify selection
-				verify, _ := e.client.CaptureToMat()
-				if !verify.Empty() {
-					stillSelected := e.isUnitSelected(verify, x, barCenterY)
-					verify.Close()
-					if !stillSelected {
-						break
+			// Sweep any remaining slots that are not empty (excluding Heroes that are already deployed but show ability)
+			if slot.Category == "Troop" || slot.Category == "Spell" || slot.Category == "CC" {
+				remainingActiveSlots = append(remainingActiveSlots, slot)
+			}
+		}
+		verifyScreen.Close()
+
+		remainingCount = len(remainingActiveSlots)
+		if remainingCount == 0 {
+			e.logger.Info().Msg("all troops, spells, and CC successfully deployed!")
+			break
+		}
+
+		e.logger.Warn().Int("attempt", attempt).Int("remaining_slots", len(remainingActiveSlots)).Msg("detected undeployed units, retrying...")
+		
+		// Redeploy remaining slots
+		for _, slot := range remainingActiveSlots {
+			e.logger.Info().Int("x", slot.X).Str("category", slot.Category).Msg("re-deploying remaining slot")
+			
+			// Select the slot
+			e.client.TapFast(slot.X, slot.Y, 2.0)
+			e.client.HumanSleep(180, 30)
+			
+			// Deploy
+			var p1, p2 image.Point
+			if edge, ok := pCfg.Edges[targetEdge]; ok {
+				p1, p2 = edge.P1, edge.P2
+			} else {
+				p1 = image.Pt(w/2, h/2)
+				p2 = p1
+			}
+
+			maxRetryAttempts := 4
+			for batch := 0; batch < maxRetryAttempts; batch++ {
+				if p1 == p2 {
+					for i := 0; i < 4; i++ {
+						e.client.TapFast(p1.X, p1.Y, 12.0)
+						e.client.HumanSleep(60, 10)
+					}
+				} else {
+					steps := 8
+					for i := 0; i < steps; i++ {
+						pct := float64(i) / float64(steps-1)
+						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
+						e.client.TapFast(tx, ty, 15.0)
+						e.client.HumanSleep(60, 10)
 					}
 				}
+
+				checkMat, err := e.client.CaptureToMat()
+				if err != nil {
+					break
+				}
+				isEmpty := e.isSlotEmpty(checkMat, slot.X, slot.Y)
+				checkMat.Close()
+
+				if isEmpty {
+					break
+				}
+				// Re-select
+				e.client.TapFast(slot.X, slot.Y, 2.0)
+				e.client.HumanSleep(180, 30)
 			}
+			e.client.HumanSleep(150, 20)
 		}
-		screen.Close()
 	}
+
+	return remainingCount, nil
 }
 
 func (e *Executor) IsSlotEmpty(screen gocv.Mat, x, y int) bool {
@@ -443,9 +589,8 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 		return true
 	}
 
-	// Slot icon size roughly 12% of screen height
 	h := screen.Rows()
-	size := int(float64(h) * 0.03) // Small center sample
+	size := int(float64(h) * 0.015) // Small center sample (~11px for 732h)
 	region := image.Rect(x-size, y-size, x+size, y+size)
 	if region.Min.X < 0 { region.Min.X = 0 }
 	if region.Min.Y < 0 { region.Min.Y = 0 }
@@ -459,25 +604,38 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 	defer hsv.Close()
 	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
 
-	// Dark blue/grey background of empty slot
-	// H: ~210° (105 in OpenCV)
-	// S: Low saturation
-	// V: Low to mid brightness
-	lower := gocv.NewScalar(90, 20, 30, 0)
-	upper := gocv.NewScalar(130, 120, 100, 0)
+	brightNonGrass := 0
+	colorPixels := 0
+	total := hsv.Rows() * hsv.Cols()
 
-	mask := gocv.NewMat()
-	defer mask.Close()
-	gocv.InRangeWithScalar(hsv, lower, upper, &mask)
+	for row := 0; row < hsv.Rows(); row++ {
+		for col := 0; col < hsv.Cols(); col++ {
+			hu := hsv.GetUCharAt(row, col*3)
+			sa := hsv.GetUCharAt(row, col*3+1)
+			va := hsv.GetUCharAt(row, col*3+2)
+			isGrass := hu >= 35 && hu <= 85 && sa > 50
+			if va > 100 && !isGrass {
+				brightNonGrass++
+			}
+			// Color presence: saturation > 50 and value > 70, excluding grass
+			if sa > 50 && va > 70 && !isGrass {
+				colorPixels++
+			}
+		}
+	}
 
-	count := gocv.CountNonZero(mask)
-	total := sub.Rows() * sub.Cols()
-	ratio := float64(count) / float64(total)
+	ratio := float64(brightNonGrass) / float64(total)
+	colorRatio := float64(colorPixels) / float64(total)
+	e.logger.Debug().
+		Int("x", x).
+		Int("y", y).
+		Float64("card_ratio", ratio).
+		Float64("color_ratio", colorRatio).
+		Msg("slot card presence check")
 
-	e.logger.Debug().Int("x", x).Int("y", y).Float64("empty_ratio", ratio).Msg("slot empty check")
-	
-	// If >70% matches the empty slot color, it's empty
-	return ratio > 0.7
+	// Empty if either the slot card isn't present (ratio < 0.25) OR
+	// the card is greyed out (colorRatio < 0.08)
+	return ratio < 0.25 || colorRatio < 0.08
 }
 
 func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h int, isAbility bool) {
@@ -502,48 +660,40 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 
 		e.client.HumanSleep(30, 10)
-		for i := 0; i < 2; i++ {
-			e.client.TapFast(uPt.X, uPt.Y, 4.0)
-			e.client.HumanSleep(30, 10)
-		}
+		// Reduced to ONE tap for ability to prevent "over and over"
+		e.client.TapFast(uPt.X, uPt.Y, 4.0)
+		e.client.HumanSleep(30, 10)
 		return
 	}
 
-	selected := false
-	isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro")
-	
-	if isSpell || isSpamUnit {
-		// Spells and spam units need to be fast. Skip verification.
-		e.client.TapFast(uPt.X, uPt.Y, 3.5)
-		e.client.HumanSleep(30, 10)
-		selected = true
-	} else {
-		for i := 0; i < 2; i++ { // Reduced from 3
-			e.client.TapFast(uPt.X, uPt.Y, 3.5)
-			e.client.HumanSleep(50, 15) // Fast selection tap
+	// 1. Verify slot is not empty before selection
+	verify, err := e.client.CaptureToMat()
+	if err == nil {
+		defer verify.Close()
+		if e.isSlotEmpty(verify, uPt.X, uPt.Y) {
+			e.logger.Info().Str("unit", unit.Name).Msg("slot is empty/already deployed, skipping")
+			return
+		}
+	}
 
-			if isSiege {
-				e.client.HumanSleep(20, 10)
-				e.client.TapFast(uPt.X, uPt.Y, 3.5)
-				e.client.HumanSleep(50, 15)
-			}
-
-			// ONLY verify for heroes/siege if not in a hurry, otherwise just assume selected
-			// For now, let's just use a very fast check
-			verifyScreen, _ := e.client.CaptureToMat()
-			if !verifyScreen.Empty() {
-				if e.isUnitSelected(verifyScreen, uPt.X, uPt.Y) {
-					selected = true
-					verifyScreen.Close()
-					break
-				}
-				verifyScreen.Close()
+	// 2. Prevent retapping Siege slot
+	if isSiege {
+		for sx := range e.tappedSiegeXs {
+			if math.Abs(float64(uPt.X-sx)) < float64(w)*0.04 {
+				e.logger.Info().Str("unit", unit.Name).Msg("siege slot already tapped, skipping to avoid destruction")
+				return
 			}
 		}
 	}
 
-	if !selected && !isSpell && !isSpamUnit {
-		e.logger.Warn().Str("unit", unit.Name).Msg("could not verify selection (teal glow), trying to deploy anyway...")
+	isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro")
+	
+	// Select slot (idempotent, no glow check needed to avoid false-positives on blue units)
+	e.client.TapFast(uPt.X, uPt.Y, 2.0)
+	e.client.HumanSleep(180, 30)
+
+	if isSiege {
+		e.tappedSiegeXs[uPt.X] = true
 	}
 
 	if !isSpell && !isSpamUnit {
@@ -553,31 +703,53 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 	// Deployment Logic
 	isRage := strings.Contains(unitName, "rage")
 	isFreeze := strings.Contains(unitName, "ice") || strings.Contains(unitName, "freeze")
+	_ = isFreeze
 	isDragonDuke := strings.Contains(unitName, "duke")
 
 	if isSpell {
 		edgeA, okA := pCfg.SpellEdgesA[targetEdge]
 		edgeB, okB := pCfg.SpellEdgesB[targetEdge]
 		if okA && okB {
-			if isRage {
-				lines := []ManualEdge{edgeA, edgeB}
-				for _, edge := range lines {
-					p1, p2 := edge.P1, edge.P2
-					for i := 0; i < 3; i++ {
+			maxSpellAttempts := 4
+			for batch := 0; batch < maxSpellAttempts; batch++ {
+				if isRage {
+					e.logger.Info().Str("unit", unit.Name).Msg("deploying spell lines batch (Rage)")
+					lines := []ManualEdge{edgeA, edgeB}
+					for _, edge := range lines {
+						p1, p2 := edge.P1, edge.P2
+						for i := 0; i < 2; i++ { // 2 taps per line = 4 total per batch
+							pct := float64(i)
+							tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
+							e.client.TapFast(tx, ty, 8.0)
+							e.client.HumanSleep(40, 10)
+						}
+					}
+				} else { // Freeze or other spells
+					e.logger.Info().Str("unit", unit.Name).Msg("deploying spell line batch")
+					p1, p2 := edgeB.P1, edgeB.P2
+					for i := 0; i < 3; i++ { // 3 taps per batch
 						pct := float64(i) / 2.0
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
 						e.client.TapFast(tx, ty, 8.0)
-						e.client.HumanSleep(30, 10)
+						e.client.HumanSleep(40, 10)
 					}
 				}
-			} else if isFreeze {
-				p1, p2 := edgeB.P1, edgeB.P2
-				for i := 0; i < 3; i++ {
-					pct := float64(i) / 2.0
-					tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-					e.client.TapFast(tx, ty, 8.0)
-					e.client.HumanSleep(30, 10)
+
+				// Check if empty
+				checkMat, err := e.client.CaptureToMat()
+				if err != nil {
+					break
 				}
+				isEmpty := e.isSlotEmpty(checkMat, uPt.X, uPt.Y)
+				checkMat.Close()
+
+				if isEmpty {
+					e.logger.Info().Str("unit", unit.Name).Msg("spell slot empty, finished deploying")
+					break
+				}
+				e.logger.Info().Str("unit", unit.Name).Msg("spell slot not empty yet, selecting again and deploying next batch...")
+				e.client.TapFast(uPt.X, uPt.Y, 2.0)
+				e.client.HumanSleep(180, 30)
 			}
 		}
 	} else {
@@ -604,74 +776,51 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 			if edge, ok := pCfg.Edges[deploymentEdge]; ok { p1, p2 = edge.P1, edge.P2 }
 		}
 
-		steps := 1
-		if isSpamUnit {
-			steps = 15
-		} else if p1 != p2 {
-			steps = 12 // Default for standard units on a line
-		}
-
-		if p1 == p2 { // Point
-			e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying point")
-			for i := 0; i < steps; i++ {
-				// Periodically check if slot empty
-				if i > 0 && i%4 == 0 {
-					verify, err := e.client.CaptureToMat()
-					if err == nil {
-						isEmpty := e.isSlotEmpty(verify, uPt.X, uPt.Y)
-						verify.Close()
-						if isEmpty {
-							e.logger.Info().Str("unit", unit.Name).Msg("slot empty, breaking early")
-							break
-						}
+		if isHero || isSiege {
+			e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying hero/siege point")
+			e.client.TapFast(p1.X, p1.Y, 12.0)
+			e.client.HumanSleep(40, 10)
+		} else {
+			// Regular troops / spam units / event troops
+			maxAttempts := 6
+			for batch := 0; batch < maxAttempts; batch++ {
+				if p1 == p2 { // Point deployment batch
+					e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying troop point batch")
+					for i := 0; i < 6; i++ {
+						e.client.TapFast(p1.X, p1.Y, 12.0)
+						e.client.HumanSleep(40, 10)
+					}
+				} else { // Line deployment batch
+					e.logger.Info().Str("unit", unit.Name).Msg("deploying troop line batch")
+					steps := 8
+					for i := 0; i < steps; i++ {
+						pct := float64(i) / float64(steps-1)
+						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
+						e.client.TapFast(tx, ty, 15.0)
+						e.client.HumanSleep(60, 10)
 					}
 				}
 
-				e.client.TapFast(p1.X, p1.Y, 12.0)
-				if steps > 1 {
-					e.client.HumanSleep(15, 5) // Ultra fast deployment
+				// Check if slot is empty now
+				checkMat, err := e.client.CaptureToMat()
+				if err != nil {
+					break
 				}
-			}
-		} else { // Line (Simulated 2-Finger Alternating Taps)
-			e.logger.Info().Str("unit", unit.Name).Msg("deploying line (2-finger simulation)")
-			
-			// We split the steps into two interleaving streams to simulate two fingers
-			for i := 0; i < steps; i++ {
-				// Periodically check if slot empty
-				if i > 0 && i%4 == 0 {
-					verify, err := e.client.CaptureToMat()
-					if err == nil {
-						isEmpty := e.isSlotEmpty(verify, uPt.X, uPt.Y)
-						verify.Close()
-						if isEmpty {
-							e.logger.Info().Str("unit", unit.Name).Msg("slot empty, breaking early")
-							break
-						}
-					}
-				}
+				isEmpty := e.isSlotEmpty(checkMat, uPt.X, uPt.Y)
+				checkMat.Close()
 
-				// Alternating logic: Finger 1 (left side of progress), Finger 2 (right side of progress)
-				// This simulates two thumbs moving along the line.
-				var pct float64
-				if i%2 == 0 {
-					// Finger 1: even steps, scaled from 0 to 0.5
-					pct = (float64(i) / float64(steps-1)) * 0.5
-				} else {
-					// Finger 2: odd steps, scaled from 0.5 to 1.0
-					pct = 0.5 + ((float64(i-1) / float64(steps-1)) * 0.5)
+				if isEmpty {
+					e.logger.Info().Str("unit", unit.Name).Msg("troop slot empty, finished deploying")
+					break
 				}
-
-				tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-				e.client.TapFast(tx, ty, 15.0) // High spread for field deployment
 				
-				// Rapid alternation between "fingers" (shorter delay) vs between "sets"
-				if i%2 == 0 {
-					e.client.HumanSleep(10, 5) // Ultra fast tap between fingers
-				} else {
-					e.client.HumanSleep(25, 10) // Ultra fast human delay between dual taps
-				}
+				e.logger.Info().Str("unit", unit.Name).Msg("troop slot not empty yet, selecting again and deploying next batch...")
+				e.client.TapFast(uPt.X, uPt.Y, 2.0)
+				e.client.HumanSleep(180, 30)
 			}
 		}
+		// Ensure touch is fully released and processed by the system before any next card selection
+		e.client.HumanSleep(150, 20)
 	}
 }
 
@@ -719,7 +868,7 @@ func (e *Executor) ReturnHome() error {
 }
 
 func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
-	deadline := time.Now().Add(3 * time.Minute)
+	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -734,3 +883,252 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 		}
 	}
 }
+
+func (e *Executor) SweepRemainingSlots(screen gocv.Mat, pCfg PrecisionConfig, targetEdge string, w, h int, mBarY int, usedSlots map[int]bool, siegeXs []int) {
+	e.logger.Info().Msg("starting sweep of remaining/event slots...")
+	
+	// The center Y of the troop slots is roughly midway between mBarY and the screen bottom
+	slotY := mBarY + (h - mBarY)/2
+	
+	// We scan horizontally from X = 40 to w - 20 with a step of 75 pixels (scaled)
+	step := int(75.0 * e.cal.ScaleX)
+	startX := int(40.0 * e.cal.ScaleX)
+	
+	for x := startX; x < w - 20; x += step {
+		// Check if this X coordinate is already close to a slot we processed
+		alreadyUsed := false
+		for ux := range usedSlots {
+			if math.Abs(float64(x - ux)) < float64(w)*0.04 {
+				alreadyUsed = true
+				break
+			}
+		}
+		if alreadyUsed {
+			continue
+		}
+		
+		// If the slot at (x, slotY) is not empty, it contains a troop/spell to deploy!
+		if !e.isSlotEmpty(screen, x, slotY) {
+			// Skip if it is a Siege slot to avoid triggering release
+			isSiegeSlot := false
+			for _, sx := range siegeXs {
+				if math.Abs(float64(x-sx)) < float64(w)*0.04 {
+					isSiegeSlot = true
+					break
+				}
+			}
+			if isSiegeSlot {
+				continue
+			}
+
+			e.logger.Info().Int("x", x).Int("y", slotY).Msg("found undeployed/event troop slot during sweep, deploying...")
+			
+			// Select the slot (click it)
+			e.client.TapFast(x, slotY, 2.0)
+			e.client.HumanSleep(180, 30)
+			
+			// Determine deployment target (default to line spread along target edge)
+			var p1, p2 image.Point
+			if edge, ok := pCfg.Edges[targetEdge]; ok {
+				p1, p2 = edge.P1, edge.P2
+			} else {
+				p1 = image.Pt(w/2, h/2)
+				p2 = p1
+			}
+			
+			maxSweepAttempts := 4
+			for batch := 0; batch < maxSweepAttempts; batch++ {
+				if p1 == p2 {
+					steps := 4
+					for i := 0; i < steps; i++ {
+						e.client.TapFast(p1.X, p1.Y, 12.0)
+						e.client.HumanSleep(40, 10) // Small delay between taps to prevent gesture coalescing
+					}
+				} else {
+					steps := 8
+					for i := 0; i < steps; i++ {
+						pct := float64(i) / float64(steps-1)
+						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
+						e.client.TapFast(tx, ty, 15.0)
+						e.client.HumanSleep(60, 10)
+					}
+				}
+
+				checkMat, err := e.client.CaptureToMat()
+				if err != nil {
+					break
+				}
+				isEmpty := e.isSlotEmpty(checkMat, x, slotY)
+				checkMat.Close()
+
+				if isEmpty {
+					e.logger.Info().Int("x", x).Msg("swept slot empty, finished deploying")
+					break
+				}
+				// Re-select
+				e.client.TapFast(x, slotY, 2.0)
+				e.client.HumanSleep(180, 30)
+			}
+			
+			// Add to usedSlots so we don't double-process
+			usedSlots[x] = true
+			e.client.HumanSleep(150, 20) // Delay to ensure release before next selection
+		}
+	}
+}
+
+type TroopSlot struct {
+	X        int
+	Y        int
+	Category string // "Troop", "Siege", "Hero", "Spell", "CC"
+}
+
+func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBarY int) []TroopSlot {
+	// 1. Detect all active slots
+	slotY := mBarY + (h-mBarY)/2
+	step := int(75.0 * e.cal.ScaleX)
+	startX := int(40.0 * e.cal.ScaleX)
+
+	var activeXs []int
+	for x := startX; x < w-20; x += step {
+		if !e.isSlotEmpty(screen, x, slotY) {
+			activeXs = append(activeXs, x)
+		}
+	}
+	e.logger.Info().Ints("active_xs", activeXs).Msg("detected active slots in bar")
+
+	if len(activeXs) == 0 {
+		return nil
+	}
+
+	// 2. Identify Hero and Spell anchors using template matching
+	barROI := image.Rect(0, mBarY, w, h)
+	heroNames := []string{"barbarian_king", "archer_queen", "grand_warden", "minion_prince", "dragon_duke", "royal_champion"}
+	spellNames := []string{"rage_spell", "ice_spell", "freeze_spell", "heal_spell", "jump_spell", "poison_spell"}
+	siegeNames := []string{"stone_slammer", "battle_blimp", "wall_wrecker", "siege_barracks", "log_launcher"}
+
+	matchedHeroes := make(map[int]bool)
+	matchedSpells := make(map[int]bool)
+	matchedSieges := make(map[int]bool)
+
+	// Search Heroes
+	for _, name := range heroNames {
+		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
+		if tpl.Empty() {
+			continue
+		}
+		matches, _ := vision.MatchMultiScaleROI(screen, tpl, 0.2, 1.2, 20, 0.50, barROI)
+		tpl.Close()
+		for _, m := range matches {
+			matchedHeroes[m.Point.X] = true
+		}
+	}
+
+	// Search Spells
+	for _, name := range spellNames {
+		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
+		if tpl.Empty() {
+			continue
+		}
+		matches, _ := vision.MatchMultiScaleROI(screen, tpl, 0.2, 1.2, 20, 0.55, barROI)
+		tpl.Close()
+		for _, m := range matches {
+			matchedSpells[m.Point.X] = true
+		}
+	}
+
+	// Search Sieges
+	for _, name := range siegeNames {
+		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
+		if tpl.Empty() {
+			continue
+		}
+		matches, _ := vision.MatchMultiScaleROI(screen, tpl, 0.2, 1.2, 20, 0.55, barROI)
+		tpl.Close()
+		for _, m := range matches {
+			matchedSieges[m.Point.X] = true
+		}
+	}
+
+	// 3. Classify slots based on anchors
+	firstHeroX := 9999
+	lastHeroX := -1
+	for hx := range matchedHeroes {
+		if hx < firstHeroX { firstHeroX = hx }
+		if hx > lastHeroX { lastHeroX = hx }
+	}
+
+	firstSpellX := 9999
+	for sx := range matchedSpells {
+		if sx < firstSpellX { firstSpellX = sx }
+	}
+
+	// If anchors not found, use default layout thresholds
+	if firstHeroX == 9999 {
+		// Fallback: assume heroes start around 50% of the active slots
+		idx := len(activeXs) / 2
+		if idx < len(activeXs) {
+			firstHeroX = activeXs[idx]
+			lastHeroX = firstHeroX
+		}
+	}
+	if firstSpellX == 9999 {
+		// Fallback: assume spells are after heroes
+		firstSpellX = lastHeroX + int(70.0*e.cal.ScaleX)
+	}
+
+	var slots []TroopSlot
+	for _, x := range activeXs {
+		cat := "Troop"
+
+		isSiege := false
+		for sx := range matchedSieges {
+			if math.Abs(float64(x-sx)) < float64(w)*0.04 {
+				isSiege = true
+				break
+			}
+		}
+		if !isSiege && firstHeroX != 9999 && x < firstHeroX {
+			isLastBeforeHero := true
+			for _, otherX := range activeXs {
+				if otherX > x && otherX < firstHeroX {
+					isLastBeforeHero = false
+					break
+				}
+			}
+			if isLastBeforeHero && x != activeXs[0] {
+				isSiege = true
+			}
+		}
+
+		if x >= firstSpellX - int(30.0*e.cal.ScaleX) {
+			cat = "Spell"
+		} else if x >= firstHeroX - int(30.0*e.cal.ScaleX) && x <= lastHeroX + int(30.0*e.cal.ScaleX) {
+			cat = "Hero"
+		} else if isSiege {
+			cat = "Siege"
+		}
+
+		slots = append(slots, TroopSlot{
+			X:        x,
+			Y:        slotY,
+			Category: cat,
+		})
+		e.logger.Info().Int("x", x).Str("category", cat).Msg("classified slot")
+	}
+
+	// Classify last slot as CC if far right
+	if len(slots) > 0 {
+		lastIdx := len(slots) - 1
+		if slots[lastIdx].Category == "Spell" && slots[lastIdx].X > w - int(100.0*e.cal.ScaleX) {
+			slots[lastIdx].Category = "CC"
+			e.logger.Info().Int("x", slots[lastIdx].X).Msg("classified last slot as CC")
+		}
+	}
+
+	return slots
+}
+

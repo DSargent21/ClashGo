@@ -70,7 +70,6 @@ func (r *Recognizer) RegionMeanColor(mat gocv.Mat, rgn image.Rectangle) (R, G, B
 		return 0, 0, 0, 0
 	}
 
-	var sumR, sumG, sumB int64
 	count = rgn.Dx() * rgn.Dy()
 	if count <= 0 {
 		return 0, 0, 0, 0
@@ -79,21 +78,8 @@ func (r *Recognizer) RegionMeanColor(mat gocv.Mat, rgn image.Rectangle) (R, G, B
 	region := mat.Region(rgn)
 	defer region.Close()
 
-	for row := 0; row < region.Rows(); row++ {
-		for col := 0; col < region.Cols(); col++ {
-			b := region.GetUCharAt(row, col*3)
-			g := region.GetUCharAt(row, col*3+1)
-			r_ := region.GetUCharAt(row, col*3+2)
-			sumB += int64(b)
-			sumG += int64(g)
-			sumR += int64(r_)
-		}
-	}
-
-	return uint8(sumR / int64(count)),
-		uint8(sumG / int64(count)),
-		uint8(sumB / int64(count)),
-		count
+	mean := region.Mean()
+	return uint8(mean.Val3), uint8(mean.Val2), uint8(mean.Val1), count
 }
 
 func (r *Recognizer) ScanForColor(mat gocv.Mat, rgn image.Rectangle, expR, expG, expB uint8, tol int) []image.Point {

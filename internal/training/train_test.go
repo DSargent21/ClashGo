@@ -101,8 +101,8 @@ func TestSelectArmy1_Logic(t *testing.T) {
 		t.Fatalf("SelectArmy1 failed: %v", err)
 	}
 
-	// 3. Verify
-	if len(client.Taps) != 2 {
-		t.Errorf("expected 2 taps, got %d", len(client.Taps))
+	// 3. Verify (deprecated method now does nothing)
+	if len(client.Taps) != 0 {
+		t.Errorf("expected 0 taps, got %d", len(client.Taps))
 	}
 }

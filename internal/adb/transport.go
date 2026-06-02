@@ -5,6 +5,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,43 @@ func (t *Transport) execService(service string) ([]byte, error) {
 	return io.ReadAll(t.conn)
 }
 
+func (t *Transport) connectDeviceLocked() error {
+	addr := fmt.Sprintf("%s:%d", t.host, t.port)
+	conn, err := net.DialTimeout("tcp", addr, DialTimeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	service := "host:connect:" + t.deviceID
+	payload := fmt.Sprintf("%04x%s", len(service), service)
+	conn.SetWriteDeadline(time.Now().Add(t.timeout))
+	if _, err := conn.Write([]byte(payload)); err != nil {
+		return err
+	}
+
+	conn.SetReadDeadline(time.Now().Add(t.timeout))
+	status := make([]byte, 4)
+	if _, err := io.ReadFull(conn, status); err != nil {
+		return err
+	}
+
+	if string(status) != "OKAY" {
+		return fmt.Errorf("connect failed with status %s", string(status))
+	}
+
+	lenBytes := make([]byte, 4)
+	if _, err := io.ReadFull(conn, lenBytes); err != nil {
+		return err
+	}
+	var msgLen uint32
+	if _, err := fmt.Sscanf(string(lenBytes), "%04x", &msgLen); err == nil && msgLen < 4096 {
+		msg := make([]byte, msgLen)
+		_, _ = io.ReadFull(conn, msg)
+	}
+	return nil
+}
+
 func (t *Transport) connectLocked() error {
 	if t.closed.Load() {
 		return ErrTransportGone
@@ -71,7 +109,13 @@ func (t *Transport) connectLocked() error {
 	addr := fmt.Sprintf("%s:%d", t.host, t.port)
 	conn, err := net.DialTimeout("tcp", addr, DialTimeout)
 	if err != nil {
-		return fmt.Errorf("adb dial %s: %w", addr, err)
+		// Auto-start ADB server if connection is refused
+		_ = exec.Command("adb", "start-server").Run()
+		time.Sleep(500 * time.Millisecond) // brief wait for startup
+		conn, err = net.DialTimeout("tcp", addr, DialTimeout)
+		if err != nil {
+			return fmt.Errorf("adb dial %s (after start-server): %w", addr, err)
+		}
 	}
 
 	t.conn = conn
@@ -79,6 +123,23 @@ func (t *Transport) connectLocked() error {
 	if err := t.setTransportLocked(); err != nil {
 		conn.Close()
 		t.conn = nil
+
+		// If it's a TCP device, try connecting it to the ADB server and retry once
+		if strings.Contains(t.deviceID, ":") {
+			_ = t.connectDeviceLocked()
+			
+			// Retry connect to the target transport
+			conn2, err2 := net.DialTimeout("tcp", addr, DialTimeout)
+			if err2 == nil {
+				t.conn = conn2
+				if err := t.setTransportLocked(); err == nil {
+					return nil
+				}
+				conn2.Close()
+				t.conn = nil
+			}
+		}
+
 		return fmt.Errorf("set transport: %w", err)
 	}
 

@@ -31,6 +31,11 @@ func main() {
 	client := adb.NewClient(func(c *adb.Client) {
 		c.DeviceID = botCfg.Device.DeviceID
 	})
+	
+	if err := client.AutoDetectDevice(); err != nil {
+		log.Warn().Err(err).Msg("auto-detect failed, using default ID")
+	}
+
 	if err := client.Connect(); err != nil {
 		log.Fatal().Err(err).Msg("failed to connect to ADB")
 	}
@@ -73,7 +78,7 @@ func main() {
 
 	// 6. EXECUTE ATTACK
 	log.Info().Msg("executing dynamic deployment sequence...")
-	if err := executor.DeployDynamic(s, screen); err != nil {
+	if _, err := executor.DeployDynamic(s, screen); err != nil {
 		log.Fatal().Err(err).Msg("attack failed")
 	}
 

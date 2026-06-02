@@ -380,14 +380,7 @@ func (t *Trainer) readNumber(screen gocv.Mat, r image.Rectangle) int {
 	gocv.Threshold(gray, &thresh, 120, 255, gocv.ThresholdBinary)
 	defer thresh.Close()
 
-	totalDark := 0
-	for y := 0; y < thresh.Rows(); y++ {
-		for x := 0; x < thresh.Cols(); x++ {
-			if thresh.GetUCharAt(y, x) > 0 {
-				totalDark++
-			}
-		}
-	}
+	totalDark := gocv.CountNonZero(thresh)
 
 	avgDarkPerRow := float64(totalDark) / float64(thresh.Rows())
 	avgCharWidth := 15.0

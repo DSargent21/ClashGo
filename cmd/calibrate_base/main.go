@@ -8,22 +8,9 @@ import (
 	"os"
 	"sort"
 
+	"github.com/Ducky705/ClashGo/internal/attack"
 	"gocv.io/x/gocv"
 )
-
-type BaseCalibration struct {
-	BaseTop      image.Point `json:"base_top"`
-	BaseRight    image.Point `json:"base_right"`
-	BaseBottom   image.Point `json:"base_bottom"`
-	BaseLeft     image.Point `json:"base_left"`
-	FieldTop     image.Point `json:"field_top"`
-	FieldRight   image.Point `json:"field_right"`
-	FieldBottom  image.Point `json:"field_bottom"`
-	FieldLeft    image.Point `json:"field_left"`
-	BarY         int         `json:"bar_y"`
-	Width        int         `json:"width"`
-	Height       int         `json:"height"`
-}
 
 const Padding = 200
 
@@ -133,7 +120,7 @@ func sortPoints(pts []image.Point) (top, bottom, left, right image.Point) {
 }
 
 func saveCalibration(t1, b1, l1, r1, t2, b2, l2, r2 image.Point, bY, w, h int) {
-	cal := BaseCalibration{
+	cal := attack.BaseCalibration{
 		BaseTop: t1.Sub(image.Pt(Padding, Padding)), BaseBottom: b1.Sub(image.Pt(Padding, Padding)), 
 		BaseLeft: l1.Sub(image.Pt(Padding, Padding)), BaseRight: r1.Sub(image.Pt(Padding, Padding)),
 		FieldTop: t2.Sub(image.Pt(Padding, Padding)), FieldBottom: b2.Sub(image.Pt(Padding, Padding)), 
