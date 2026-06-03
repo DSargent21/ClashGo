@@ -60,7 +60,7 @@ func (t *Transport) execService(service string) ([]byte, error) {
 }
 
 func (t *Transport) connectDeviceLocked() error {
-	addr := fmt.Sprintf("%s:%d", t.host, t.port)
+	addr := net.JoinHostPort(t.host, fmt.Sprintf("%d", t.port))
 	conn, err := net.DialTimeout("tcp", addr, DialTimeout)
 	if err != nil {
 		return err
@@ -106,7 +106,7 @@ func (t *Transport) connectLocked() error {
 		t.conn = nil
 	}
 
-	addr := fmt.Sprintf("%s:%d", t.host, t.port)
+	addr := net.JoinHostPort(t.host, fmt.Sprintf("%d", t.port))
 	conn, err := net.DialTimeout("tcp", addr, DialTimeout)
 	if err != nil {
 		// Auto-start ADB server if connection is refused

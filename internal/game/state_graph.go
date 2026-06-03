@@ -223,10 +223,12 @@ func (g *StateGraph) Save(path string) error {
 	}
 
 	type savedEdge struct {
-		From, To int           `json:"from_to"`
-		Action   int           `json:"action"`
-		X, Y     int           `json:"coords"`
-		CostMs   int64         `json:"cost_ms"`
+		From   int   `json:"from"`
+		To     int   `json:"to"`
+		Action int   `json:"action"`
+		X      int   `json:"x"`
+		Y      int   `json:"y"`
+		CostMs int64 `json:"cost_ms"`
 	}
 
 	data := struct {
@@ -279,10 +281,12 @@ func (g *StateGraph) Load(path string) error {
 	}
 
 	type savedEdge struct {
-		From, To int `json:"from_to"`
-		Action   int `json:"action"`
-		X, Y     int `json:"coords"`
-		CostMs   int64 `json:"cost_ms"`
+		From   int   `json:"from"`
+		To     int   `json:"to"`
+		Action int   `json:"action"`
+		X      int   `json:"x"`
+		Y      int   `json:"y"`
+		CostMs int64 `json:"cost_ms"`
 	}
 
 	data := struct {

@@ -608,8 +608,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		time.Sleep(1500 * time.Millisecond)
 	}
 
-	b.logger.Info().Msg("battle complete, ending...")
-	b.attackExec.EndBattle()
+	b.logger.Info().Msg("battle deployment complete, waiting for battle to end naturally...")
 	
 	var battleStars int = 0
 	var battleGold int = 0
@@ -617,7 +616,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var battleDE int = 0
 	var parsedResults bool = false
 
-	if b.attackExec.WaitForBattleEnd(60 * time.Second) {
+	if b.attackExec.WaitForBattleEnd(4 * time.Minute) {
 		// Capture screen to read results
 		resultScreen, err := b.client.CaptureToMat()
 		if err == nil {

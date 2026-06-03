@@ -560,14 +560,14 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			// Skip if it is a Siege slot to avoid triggering release
 			isSiegeSlot := false
 			for _, sx := range siegeXs {
-				if math.Abs(float64(slot.X-sx)) < float64(w)*0.04 {
+				if math.Abs(float64(slot.X-sx)) < float64(w)*0.06 {
 					isSiegeSlot = true
 					break
 				}
 			}
 			if !isSiegeSlot {
 				for sx := range e.tappedSiegeXs {
-					if math.Abs(float64(slot.X-sx)) < float64(w)*0.04 {
+					if math.Abs(float64(slot.X-sx)) < float64(w)*0.06 {
 						isSiegeSlot = true
 						break
 					}
@@ -772,7 +772,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 	// 2. Prevent retapping Siege slot
 	if isSiege {
 		for sx := range e.tappedSiegeXs {
-			if math.Abs(float64(uPt.X-sx)) < float64(w)*0.04 {
+			if math.Abs(float64(uPt.X-sx)) < float64(w)*0.06 {
 				e.logger.Info().Str("unit", unit.Name).Msg("siege slot already tapped, skipping to avoid destruction")
 				return
 			}
@@ -965,7 +965,29 @@ func (e *Executor) MaximizeLineSpread(p1, p2 image.Point, w, mBarY int) (image.P
 	return p1, p2 // Simplified for now, just return as is
 }
 func (e *Executor) EndBattle() error {
-	ex, ey := e.cal.ScaleRef(34, 558)
+	ex, ey := e.cal.ScaleRef(34, 588)
+	screen, err := e.client.CaptureToMat()
+	if err == nil {
+		defer screen.Close()
+		positions := []image.Point{
+			{X: 34, Y: 588},
+			{X: 67, Y: 570},
+			{X: 112, Y: 408},
+		}
+		for _, pos := range positions {
+			sx, sy := e.cal.ScaleRef(pos.X, pos.Y)
+			if sx >= 0 && sy >= 0 && sx < screen.Cols() && sy < screen.Rows() {
+				b := screen.GetUCharAt(sy, sx*3)
+				g := screen.GetUCharAt(sy, sx*3+1)
+				r := screen.GetUCharAt(sy, sx*3+2)
+				if r > 130 && g < 110 && b < 110 {
+					ex, ey = sx, sy
+					e.logger.Info().Int("x", pos.X).Int("y", pos.Y).Msg("dynamically detected End Battle button location")
+					break
+				}
+			}
+		}
+	}
 	if err := e.client.TapHuman(ex, ey, 5.0); err != nil { return err }
 	time.Sleep(1000 * time.Millisecond) // Wait for confirmation dialog
 
@@ -977,7 +999,7 @@ func (e *Executor) EndBattle() error {
 }
 
 func (e *Executor) ReturnHome() error {
-	hx, hy := e.cal.ScaleRef(429, 582)
+	hx, hy := e.cal.ScaleRef(430, 566)
 	if err := e.client.TapHuman(hx, hy, 5.0); err != nil { return err }
 	time.Sleep(5 * time.Second)
 	screen, err := e.client.CaptureToMat()
@@ -1033,14 +1055,14 @@ func (e *Executor) SweepRemainingSlots(screen gocv.Mat, pCfg PrecisionConfig, ta
 			// Skip if it is a Siege slot to avoid triggering release
 			isSiegeSlot := false
 			for _, sx := range siegeXs {
-				if math.Abs(float64(x-sx)) < float64(w)*0.04 {
+				if math.Abs(float64(x-sx)) < float64(w)*0.06 {
 					isSiegeSlot = true
 					break
 				}
 			}
 			if !isSiegeSlot {
 				for sx := range e.tappedSiegeXs {
-					if math.Abs(float64(x-sx)) < float64(w)*0.04 {
+					if math.Abs(float64(x-sx)) < float64(w)*0.06 {
 						isSiegeSlot = true
 						break
 					}
@@ -1226,7 +1248,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 		isSiege := false
 		for sx := range matchedSieges {
-			if math.Abs(float64(x-sx)) < float64(w)*0.04 {
+			if math.Abs(float64(x-sx)) < float64(w)*0.06 {
 				isSiege = true
 				break
 			}

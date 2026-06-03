@@ -263,7 +263,7 @@ func (n *Navigator) NavigateToMainVillage(ctx *GameContext) bool {
 		action  TransitionAction
 		x, y    int
 	}{
-		{StateBattle, StateBattleEnd, ActionTap, 50, 548},
+		{StateBattle, StateBattleEnd, ActionTap, 34, 588},
 		{StateBattleEnd, StateReturnHome, ActionTap, 430, 566},
 		{StateReturnHome, StateMainVillage, ActionTap, 430, 566},
 		{StateArmyCamp, StateMainVillage, ActionBack, 0, 0},
@@ -275,7 +275,8 @@ func (n *Navigator) NavigateToMainVillage(ctx *GameContext) bool {
 			if step.action == ActionBack {
 				n.client.Back()
 			} else {
-				n.client.Tap(step.x, step.y)
+				sx, sy := n.cal.ScaleRef(step.x, step.y)
+				n.client.Tap(sx, sy)
 			}
 			time.Sleep(1500 * time.Millisecond)
 			return true

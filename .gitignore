@@ -1,43 +1,61 @@
-# Binaries
+# Binaries & OS
 bin/
 *.exe
 *.test
 *.prof
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# Project Debug/Temporary Assets
-debug_*.png
-*.bak
-assets/captures/
-assets/grab/
-assets/screenshots/
-assets/verify/
-assets/debug_seg/
-assets/templates_captured/
-test_data/
-captured_screen.png
-battle_end_capture.png
-loot_diag.png
-mock.log
-ClashGo
-coc-bot
-coc-bot-test
-adb_mock_v2.go
-full_mock_adb.go
-app.go
-cli.go
 
 # Local configurations
 config.json
 config.json.bak
 
-# IDEs
+# IDEs & Editor configs
 .vscode/
 .idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
 # Go
 vendor/
 go.sum
+
+# Compiled Application Binaries (Root & build)
+ClashGo
+cli
+coc-bot
+coc-bot-test
+main
+roidiag
+run_attack
+test_live_end
+verify_loot
+build/pinpoint_helper
+build/test_wall_steps
+build/darwin/
+adb_mock_v2.go
+full_mock_adb.go
+
+# Scratch/Temporary Directories
+scratch/
+mock.log
+web/node_modules/
+web/dist/
+web/package.json.md5
+
+# Strict Image Blocking (Prevent pushing images to GitHub)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+**/*.png
+**/*.jpg
+**/*.jpeg
+
+# Explicit exception for core vision template images
+!assets/templates/**/*.png
