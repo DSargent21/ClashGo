@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
+	"github.com/Ducky705/ClashGo/internal/adb"
 	"github.com/Ducky705/ClashGo/internal/bot"
 	"github.com/Ducky705/ClashGo/internal/config"
 	"github.com/labstack/echo/v4"
@@ -13,16 +17,18 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"gocv.io/x/gocv"
 )
 
 // App struct
 type App struct {
-	ctx    context.Context
-	bot    *bot.Bot
-	botCtx context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex
-	echo   *echo.Echo
+	ctx       context.Context
+	bot       *bot.Bot
+	botCtx    context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	echo      *echo.Echo
+	lastStats bot.BotStats
 }
 
 type WailsLogWriter struct {
@@ -85,7 +91,7 @@ type BotStatus struct {
 }
 
 // StartBot starts the bot with the given thresholds
-func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool) BotStatus {
+func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled bool) BotStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -93,11 +99,12 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool) BotStatus {
 		return BotStatus{Running: true, Message: "Bot already running"}
 	}
 
-	cfg := config.DefaultConfig()
+	cfg := config.LoadOrDefault("config.json")
 	cfg.Search.MinLootGold = gold
 	cfg.Search.MinLootElixir = elixir
 	cfg.Search.MinLootDarkElixir = dark
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
+	cfg.Search.Enabled = searchEnabled
 
 	b, err := bot.NewBot(cfg)
 	if err != nil {
@@ -132,7 +139,116 @@ func (a *App) StopBot() BotStatus {
 	return BotStatus{Running: false, Message: "Bot stopped"}
 }
 
-// GetConfig returns the current default config
-func (a *App) GetConfig() *config.BotConfig {
-	return config.DefaultConfig()
+// IsRunning returns if the bot is currently running
+func (a *App) IsRunning() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.bot != nil
 }
+
+// GetConfig returns the current config.json settings
+func (a *App) GetConfig() *config.BotConfig {
+	return config.LoadOrDefault("config.json")
+}
+
+// GetStats returns the bot's live runtime statistics
+func (a *App) GetStats() bot.BotStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.bot != nil {
+		a.lastStats = a.bot.Stats()
+	}
+	return a.lastStats
+}
+
+// GetAttackHistory returns persistent log of attacks
+func (a *App) GetAttackHistory() []bot.AttackReport {
+	data, err := os.ReadFile("attack_history.json")
+	if err != nil {
+		return []bot.AttackReport{}
+	}
+	var history []bot.AttackReport
+	if err := json.Unmarshal(data, &history); err != nil {
+		return []bot.AttackReport{}
+	}
+	return history
+}
+
+// GetLiveScreenshot captures the current frame via ADB and encodes it to base64
+func (a *App) GetLiveScreenshot() (string, error) {
+	a.mu.Lock()
+	var client *adb.Client
+	if a.bot != nil {
+		client = a.bot.GetClient()
+	}
+	a.mu.Unlock()
+
+	if client == nil {
+		cfg := config.LoadOrDefault("config.json")
+		client = adb.NewClient(
+			adb.WithHost(cfg.Device.ADBHost),
+			adb.WithPort(cfg.Device.ADBPort),
+		)
+		client.DeviceID = cfg.Device.DeviceID
+		if err := client.Connect(); err != nil {
+			return "", err
+		}
+		defer client.Close()
+	}
+
+	mat, err := client.CaptureToMat()
+	if err != nil {
+		return "", err
+	}
+	defer mat.Close()
+
+	if mat.Empty() {
+		return "", fmt.Errorf("empty mat captured")
+	}
+
+	buf, err := gocv.IMEncode(".jpg", mat)
+	if err != nil {
+		return "", err
+	}
+	defer buf.Close()
+
+	return base64.StdEncoding.EncodeToString(buf.GetBytes()), nil
+}
+
+// SaveConfig updates config.json settings
+func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool) error {
+	cfg := config.LoadOrDefault("config.json")
+	cfg.Search.MinLootGold = minGold
+	cfg.Search.MinLootElixir = minElixir
+	cfg.Search.MinLootDarkElixir = minDE
+	cfg.Upgrade.UpgradeWalls = upgradeWalls
+	cfg.Search.Enabled = searchEnabled
+	if strategyFile != "" {
+		cfg.Attack.StrategyFile = strategyFile
+	}
+
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile("config.json", bytes, 0644)
+}
+
+// GetStrategies lists available strategy files
+func (a *App) GetStrategies() []string {
+	var files []string
+	matches, err := filepath.Glob("assets/strategies/*.yaml")
+	if err == nil {
+		for _, m := range matches {
+			files = append(files, filepath.Base(filepath.ToSlash(m)))
+		}
+	}
+	csvMatches, err := filepath.Glob("assets/strategies/*.csv")
+	if err == nil {
+		for _, m := range csvMatches {
+			files = append(files, filepath.Base(filepath.ToSlash(m)))
+		}
+	}
+	return files
+}
+

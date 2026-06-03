@@ -43,6 +43,7 @@ type Bot struct {
 	logger     zerolog.Logger
 
 	attackCount atomic.Int32
+	skipsCount  atomic.Int32
 	totalGold   atomic.Int64
 	totalElixir atomic.Int64
 	totalDE     atomic.Int64
@@ -57,7 +58,7 @@ type Bot struct {
 	lastAction  time.Time
 	lastSequenceStart time.Time
 	stuckTimeout time.Duration
-	}
+}
 
 func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	zl := &adbLogAdapter{log: log.Logger}
@@ -559,9 +560,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			Int("de", loot.DarkElixir).
 			Msg("loot detected")
 
-		meetsReq := loot.Gold >= b.cfg.Search.MinLootGold &&
+		meetsReq := !b.cfg.Search.Enabled || (
+			loot.Gold >= b.cfg.Search.MinLootGold &&
 			loot.Elixir >= b.cfg.Search.MinLootElixir &&
-			loot.DarkElixir >= b.cfg.Search.MinLootDarkElixir
+			loot.DarkElixir >= b.cfg.Search.MinLootDarkElixir)
 
 		if meetsReq {
 			b.logger.Info().Msg("loot requirements met, starting attack!")
@@ -584,6 +586,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 		b.logger.Info().
 			Msg("loot too low, skipping base...")
+		b.skipsCount.Add(1)
 
 		screen.Close() // Close before findAndClick which does its own capture
 
@@ -664,22 +667,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	b.attackCount.Add(1)
 
-	// Generate report and save to JSON
-	type AttackReport struct {
-		Timestamp         string `json:"timestamp"`
-		Strategy          string `json:"strategy"`
-		TargetEdge        string `json:"target_edge"`
-		DeploySuccess     bool   `json:"deploy_success"`
-		UndeployedSlots   int    `json:"undeployed_slots"`
-		DeployError       string `json:"deploy_error,omitempty"`
-		ParsedResults     bool   `json:"parsed_results"`
-		Stars             int    `json:"stars"`
-		GoldStolen        int    `json:"gold_stolen"`
-		ElixirStolen      int    `json:"elixir_stolen"`
-		DarkElixirStolen  int    `json:"dark_elixir_stolen"`
-		TotalAttacks      int32  `json:"total_attacks_session"`
-	}
-
 	depErrStr := ""
 	if deployErr != nil {
 		depErrStr = deployErr.Error()
@@ -702,6 +689,19 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	if repBytes, err := json.MarshalIndent(rep, "", "  "); err == nil {
 		_ = os.WriteFile("last_attack_report.json", repBytes, 0644)
+	}
+
+	// Update persistent history file
+	var history []AttackReport
+	if histData, err := os.ReadFile("attack_history.json"); err == nil {
+		_ = json.Unmarshal(histData, &history)
+	}
+	history = append([]AttackReport{rep}, history...)
+	if len(history) > 50 {
+		history = history[:50]
+	}
+	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
+		_ = os.WriteFile("attack_history.json", histBytes, 0644)
 	}
 
 	deployStatus := "SUCCESS (100% Deployed)"
@@ -1145,19 +1145,55 @@ func (b *Bot) Health() game.SystemHealth {
 	}
 }
 
+func (b *Bot) GetClient() *adb.Client {
+	return b.client
+}
+
 func (b *Bot) Stats() BotStats {
 	return BotStats{
 		AttacksCompleted: b.attackCount.Load(),
-		Uptime:            time.Since(b.startedAt),
-		AdbHealth:         b.client.Health(),
+		SearchSkips:      b.skipsCount.Load(),
+		TotalGold:        b.totalGold.Load(),
+		TotalElixir:      b.totalElixir.Load(),
+		TotalDE:          b.totalDE.Load(),
+		Stars0:           b.stars0.Load(),
+		Stars1:           b.stars1.Load(),
+		Stars2:           b.stars2.Load(),
+		Stars3:           b.stars3.Load(),
+		Uptime:           time.Since(b.startedAt),
+		AdbHealth:        b.client.Health(),
 	}
 }
 
 type BotStats struct {
-	AttacksCompleted int32
-	Uptime           time.Duration
-	AdbHealth        adb.Health
+	AttacksCompleted int32         `json:"attacks_completed"`
+	SearchSkips      int32         `json:"search_skips"`
+	TotalGold        int64         `json:"total_gold"`
+	TotalElixir      int64         `json:"total_elixir"`
+	TotalDE          int64         `json:"total_de"`
+	Stars0           int32         `json:"stars_0"`
+	Stars1           int32         `json:"stars_1"`
+	Stars2           int32         `json:"stars_2"`
+	Stars3           int32         `json:"stars_3"`
+	Uptime           time.Duration `json:"uptime"`
+	AdbHealth        adb.Health    `json:"adb_health"`
 }
+
+type AttackReport struct {
+	Timestamp        string `json:"timestamp"`
+	Strategy         string `json:"strategy"`
+	TargetEdge       string `json:"target_edge"`
+	DeploySuccess    bool   `json:"deploy_success"`
+	UndeployedSlots  int    `json:"undeployed_slots"`
+	DeployError      string `json:"deploy_error,omitempty"`
+	ParsedResults    bool   `json:"parsed_results"`
+	Stars            int    `json:"stars"`
+	GoldStolen       int    `json:"gold_stolen"`
+	ElixirStolen     int    `json:"elixir_stolen"`
+	DarkElixirStolen int    `json:"dark_elixir_stolen"`
+	TotalAttacks     int32  `json:"total_attacks_session"`
+}
+
 
 type adbLogAdapter struct {
 	log zerolog.Logger

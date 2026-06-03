@@ -1,3 +1,138 @@
+export namespace adb {
+	
+	export class Health {
+	    // Go type: time
+	    LastCapture: any;
+	    AvgCaptureMs: number;
+	    ConsecutiveFails: number;
+	    CapturesTotal: number;
+	    ErrorsTotal: number;
+	    LastError: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Health(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.LastCapture = this.convertValues(source["LastCapture"], null);
+	        this.AvgCaptureMs = source["AvgCaptureMs"];
+	        this.ConsecutiveFails = source["ConsecutiveFails"];
+	        this.CapturesTotal = source["CapturesTotal"];
+	        this.ErrorsTotal = source["ErrorsTotal"];
+	        this.LastError = source["LastError"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace bot {
+	
+	export class AttackReport {
+	    timestamp: string;
+	    strategy: string;
+	    target_edge: string;
+	    deploy_success: boolean;
+	    undeployed_slots: number;
+	    deploy_error?: string;
+	    parsed_results: boolean;
+	    stars: number;
+	    gold_stolen: number;
+	    elixir_stolen: number;
+	    dark_elixir_stolen: number;
+	    total_attacks_session: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AttackReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.timestamp = source["timestamp"];
+	        this.strategy = source["strategy"];
+	        this.target_edge = source["target_edge"];
+	        this.deploy_success = source["deploy_success"];
+	        this.undeployed_slots = source["undeployed_slots"];
+	        this.deploy_error = source["deploy_error"];
+	        this.parsed_results = source["parsed_results"];
+	        this.stars = source["stars"];
+	        this.gold_stolen = source["gold_stolen"];
+	        this.elixir_stolen = source["elixir_stolen"];
+	        this.dark_elixir_stolen = source["dark_elixir_stolen"];
+	        this.total_attacks_session = source["total_attacks_session"];
+	    }
+	}
+	export class BotStats {
+	    attacks_completed: number;
+	    search_skips: number;
+	    total_gold: number;
+	    total_elixir: number;
+	    total_de: number;
+	    stars_0: number;
+	    stars_1: number;
+	    stars_2: number;
+	    stars_3: number;
+	    uptime: number;
+	    adb_health: adb.Health;
+	
+	    static createFrom(source: any = {}) {
+	        return new BotStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.attacks_completed = source["attacks_completed"];
+	        this.search_skips = source["search_skips"];
+	        this.total_gold = source["total_gold"];
+	        this.total_elixir = source["total_elixir"];
+	        this.total_de = source["total_de"];
+	        this.stars_0 = source["stars_0"];
+	        this.stars_1 = source["stars_1"];
+	        this.stars_2 = source["stars_2"];
+	        this.stars_3 = source["stars_3"];
+	        this.uptime = source["uptime"];
+	        this.adb_health = this.convertValues(source["adb_health"], adb.Health);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
 export namespace config {
 	
 	export class Duration {
@@ -178,6 +313,7 @@ export namespace config {
 	    width: number;
 	    height: number;
 	    dpi: number;
+	    restart_on_startup: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new DeviceConfig(source);
@@ -194,6 +330,7 @@ export namespace config {
 	        this.width = source["width"];
 	        this.height = source["height"];
 	        this.dpi = source["dpi"];
+	        this.restart_on_startup = source["restart_on_startup"];
 	    }
 	}
 	export class BotConfig {
@@ -236,6 +373,7 @@ export namespace config {
 		    return a;
 		}
 	}
+	
 	
 	
 	
