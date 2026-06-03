@@ -498,3 +498,61 @@ func PixelColor(c [3]uint8) (r, g, b int) {
 	r = int(c[2])
 	return
 }
+
+// DrawOverlay visualizes successful template matches, regions of interest, and OCR bounding boxes.
+func DrawOverlay(src gocv.Mat, rois []image.Rectangle, matches []Match, labels []string) gocv.Mat {
+	dst := src.Clone()
+	for _, roi := range rois {
+		gocv.Rectangle(&dst, roi, color.RGBA{255, 165, 0, 255}, 2)
+	}
+	for i, m := range matches {
+		col := color.RGBA{0, 255, 0, 255}
+		if m.Confidence < 0.8 {
+			col = color.RGBA{255, 0, 0, 255}
+		}
+		r := image.Rect(m.Point.X-15, m.Point.Y-15, m.Point.X+15, m.Point.Y+15)
+		gocv.Rectangle(&dst, r, col, 2)
+		if i < len(labels) {
+			text := fmt.Sprintf("%s (%.2f)", labels[i], m.Confidence)
+			gocv.PutText(&dst, text, image.Pt(m.Point.X+20, m.Point.Y), gocv.FontHersheyPlain, 1.0, col, 2)
+		}
+	}
+	return dst
+}
+
+// GenerateFilterPipelineImage arranges Source, Grayscale, and Thresholded outputs side-by-side.
+func GenerateFilterPipelineImage(src gocv.Mat, gray gocv.Mat, thresh gocv.Mat) gocv.Mat {
+	h, w := src.Rows(), src.Cols()
+	grayBGR := gocv.NewMat()
+	threshBGR := gocv.NewMat()
+	defer grayBGR.Close()
+	defer threshBGR.Close()
+
+	gocv.CvtColor(gray, &grayBGR, gocv.ColorGrayToBGR)
+	gocv.CvtColor(thresh, &threshBGR, gocv.ColorGrayToBGR)
+
+	canvas := gocv.NewMatWithSize(h, w*3, gocv.MatTypeCV8UC3)
+	
+	r1 := image.Rect(0, 0, w, h)
+	r2 := image.Rect(w, 0, w*2, h)
+	r3 := image.Rect(w*2, 0, w*3, h)
+
+	srcPart := canvas.Region(r1)
+	src.CopyTo(&srcPart)
+	srcPart.Close()
+
+	grayPart := canvas.Region(r2)
+	grayBGR.CopyTo(&grayPart)
+	grayPart.Close()
+
+	threshPart := canvas.Region(r3)
+	threshBGR.CopyTo(&threshPart)
+	threshPart.Close()
+
+	gocv.PutText(&canvas, "1. Source Image", image.Pt(10, 30), gocv.FontHersheySimplex, 0.8, color.RGBA{0, 255, 255, 255}, 2)
+	gocv.PutText(&canvas, "2. Grayscale Luma", image.Pt(w+10, 30), gocv.FontHersheySimplex, 0.8, color.RGBA{0, 255, 255, 255}, 2)
+	gocv.PutText(&canvas, "3. Binarized (Thresh)", image.Pt(w*2+10, 30), gocv.FontHersheySimplex, 0.8, color.RGBA{0, 255, 255, 255}, 2)
+
+	return canvas
+}
+

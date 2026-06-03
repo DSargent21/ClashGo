@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGo/internal/vision"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
@@ -305,6 +306,38 @@ func runSingleTest(path string, classifier *game.Classifier, lootRec *game.LootR
 				battle.Loot.Gold, battle.Loot.Elixir, battle.Loot.DarkElixir,
 				tc.ExpectedBattle.Loot.Gold, tc.ExpectedBattle.Loot.Elixir, tc.ExpectedBattle.Loot.DarkElixir))
 		}
+	}
+
+	if !res.Passed {
+		diagDir := filepath.Join("debug_rois", strings.TrimSuffix(filepath.Base(path), ".vtest.json"))
+		os.MkdirAll(diagDir, 0755)
+
+		gray := gocv.NewMat()
+		gocv.CvtColor(img, &gray, gocv.ColorBGRToGray)
+		defer gray.Close()
+
+		for _, tVal := range []float32{145, 175, 205} {
+			thresh := gocv.NewMat()
+			gocv.Threshold(gray, &thresh, tVal, 255, gocv.ThresholdBinary)
+			
+			canvas := vision.GenerateFilterPipelineImage(img, gray, thresh)
+			gocv.IMWrite(filepath.Join(diagDir, fmt.Sprintf("pipeline_t%d.png", int(tVal))), canvas)
+			
+			canvas.Close()
+			thresh.Close()
+		}
+
+		meta := map[string]interface{}{
+			"test_name":  res.Name,
+			"state_got":  res.StateGot,
+			"state_want": res.StateWant,
+			"loot_got":   res.LootGot,
+			"loot_want":  res.LootWant,
+			"errors":     res.Errors,
+			"timestamp":  time.Now().Format(time.RFC3339),
+		}
+		metaData, _ := json.MarshalIndent(meta, "", "  ")
+		os.WriteFile(filepath.Join(diagDir, "run_meta.json"), metaData, 0644)
 	}
 
 	return res

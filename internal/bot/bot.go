@@ -122,21 +122,25 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		packageName = "com.supercell.clashofclans"
 	}
 	
-	// Always close the app to start out for a clean state
-	log.Info().Str("package", packageName).Msg("ensuring clean state by restarting game...")
-	if err := client.ForceStop(packageName); err != nil {
-		log.Warn().Err(err).Msg("failed to force stop game during startup")
-	}
-	time.Sleep(2 * time.Second)
+	if cfg.Device.RestartOnStartup {
+		// Always close the app to start out for a clean state
+		log.Info().Str("package", packageName).Msg("ensuring clean state by restarting game...")
+		if err := client.ForceStop(packageName); err != nil {
+			log.Warn().Err(err).Msg("failed to force stop game during startup")
+		}
+		time.Sleep(2 * time.Second)
 
-	log.Info().Str("package", packageName).Msg("launching game...")
-	if err := client.StartApp(packageName); err != nil {
-		return nil, fmt.Errorf("failed to start game: %w", err)
-	}
+		log.Info().Str("package", packageName).Msg("launching game...")
+		if err := client.StartApp(packageName); err != nil {
+			return nil, fmt.Errorf("failed to start game: %w", err)
+		}
 
-	// Brief wait for game to start rendering, then rely on template polling
-	log.Info().Msg("waiting for game to settle...")
-	time.Sleep(15 * time.Second)
+		// Brief wait for game to start rendering, then rely on template polling
+		log.Info().Msg("waiting for game to settle...")
+		time.Sleep(15 * time.Second)
+	} else {
+		log.Info().Msg("skipping game restart on startup (restart_on_startup=false)")
+	}
 
 	log.Info().Msg("starting calibration...")
 	calibrator := game.NewCalibrator(client)
@@ -654,6 +658,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	}
 
 	b.attackExec.ReturnHome()
+
+	if b.cfg.Upgrade.UpgradeWalls {
+		b.UpgradeWalls(gc)
+	}
 
 	b.attackCount.Add(1)
 

@@ -299,11 +299,13 @@ func (c *Classifier) buildRules() {
 			Template: "btn_attack",
 			MinPass:  1,
 			Checks: []PixelCheck{
-				// Gold storage icon (Top Right)
+				// Gold storage icon (Top Right) - dark and bright versions
 				{830, 35, 0xB2, 0x90, 0x0F, 40},
+				{830, 35, 255, 208, 22, 40},
 				
-				// Elixir storage icon (Top Right)
+				// Elixir storage icon (Top Right) - dark and bright versions
 				{830, 95, 0x54, 0x19, 0x59, 40},
+				{830, 95, 125, 37, 127, 40},
 				
 				// Attack button orange/brown (Bottom Left) - supports Y=640 and Y=700 layouts
 				{40, 640, 0xAF, 0x81, 0x39, 40},

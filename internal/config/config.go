@@ -12,19 +12,21 @@ type BotConfig struct {
 	Training  TrainingConfig  `json:"training"`
 	Attack    AttackConfig    `json:"attack"`
 	Search    SearchConfig    `json:"search"`
+	Upgrade   UpgradeConfig   `json:"upgrade"`
 	Debug     DebugConfig     `json:"debug"`
 }
 
 type DeviceConfig struct {
-	ADBHost     string `json:"adb_host"`
-	ADBPort     int    `json:"adb_port"`
-	DeviceID    string `json:"device_id"`
-	PackageName string `json:"package_name"`
-	ZoomOutKey  string `json:"zoom_out_key"` // Key to press for zoom out (e.g., "-")
-	ZoomInKey   string `json:"zoom_in_key"`  // Key to press for zoom in (e.g., "+")
-	Width       int    `json:"width"`
-	Height      int    `json:"height"`
-	DPI         int    `json:"dpi"`
+	ADBHost          string `json:"adb_host"`
+	ADBPort          int    `json:"adb_port"`
+	DeviceID         string `json:"device_id"`
+	PackageName      string `json:"package_name"`
+	ZoomOutKey       string `json:"zoom_out_key"` // Key to press for zoom out (e.g., "-")
+	ZoomInKey        string `json:"zoom_in_key"`  // Key to press for zoom in (e.g., "+")
+	Width            int    `json:"width"`
+	Height           int    `json:"height"`
+	DPI              int    `json:"dpi"`
+	RestartOnStartup bool   `json:"restart_on_startup"`
 }
 
 type TrainingConfig struct {
@@ -73,6 +75,10 @@ type DebugConfig struct {
 	StateDebug      bool `json:"state_debug"`
 }
 
+type UpgradeConfig struct {
+	UpgradeWalls bool `json:"upgrade_walls"`
+}
+
 type Duration struct {
 	time.Duration
 }
@@ -91,15 +97,16 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 func DefaultConfig() *BotConfig {
 	return &BotConfig{
 		Device: DeviceConfig{
-			ADBHost:     "127.0.0.1",
-			ADBPort:     5037,
-			DeviceID:    "localhost:5555",
-			PackageName: "com.supercell.clashofclans",
-			ZoomOutKey:  "i",
-			ZoomInKey:   "o",
-			Width:       860,
-			Height:      732,
-			DPI:         160,
+			ADBHost:          "127.0.0.1",
+			ADBPort:          5037,
+			DeviceID:         "localhost:5555",
+			PackageName:      "com.supercell.clashofclans",
+			ZoomOutKey:       "i",
+			ZoomInKey:        "o",
+			Width:            860,
+			Height:           732,
+			DPI:              160,
+			RestartOnStartup: true,
 		},
 		Training: TrainingConfig{
 			Enabled:            true,
@@ -128,6 +135,9 @@ func DefaultConfig() *BotConfig {
 			MinLootGold:   750000,
 			MinLootElixir: 750000,
 			MinLootDarkElixir: 2000,
+		},
+		Upgrade: UpgradeConfig{
+			UpgradeWalls: false,
 		},
 		Debug: DebugConfig{
 			CaptureDebug:   false,
