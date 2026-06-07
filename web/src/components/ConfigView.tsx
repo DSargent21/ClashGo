@@ -43,26 +43,26 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   return (
     <div className="max-w-4xl mx-auto">
 
-      <form onSubmit={onSave} className="space-y-10">
+      <form onSubmit={onSave} className="space-y-12">
         {/* Resource Thresholds */}
-        <div className="bg-white p-10 rounded-[2.5rem] border border-zinc-100/50 shadow-premium space-y-10">
+        <div className="bg-white dark:bg-zinc-900 p-10 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none space-y-12 transition-all duration-500">
           <div className="flex justify-between items-start">
             <div>
-              <h3 className="text-xl font-bold text-zinc-950 mb-1.5">Target Parameters</h3>
-              <p className="text-xs text-zinc-400 font-medium">Minimum resources required for deployment.</p>
+              <h3 className="text-2xl font-bold text-zinc-950 dark:text-white mb-2 tracking-tight">Deployment Directives</h3>
+              <p className="text-sm text-zinc-400 dark:text-zinc-500 font-medium">Define minimum engagement parameters.</p>
             </div>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
             {[
-              { label: 'Minimum Gold', value: goldThreshold, setter: setGoldThreshold, icon: 'payments', color: 'text-amber-500', bg: 'bg-amber-50/50' },
-              { label: 'Minimum Elixir', value: elixirThreshold, setter: setElixirThreshold, icon: 'water_drop', color: 'text-fuchsia-500', bg: 'bg-fuchsia-50/50' },
-              { label: 'Minimum Dark Elixir', value: deThreshold, setter: setDeThreshold, icon: 'database', color: 'text-zinc-950', bg: 'bg-zinc-100/50' }
+              { label: 'Minimum Gold', value: goldThreshold, setter: setGoldThreshold, icon: 'payments', color: 'text-amber-500', bg: 'bg-amber-500/10' },
+              { label: 'Minimum Elixir', value: elixirThreshold, setter: setElixirThreshold, icon: 'water_drop', color: 'text-fuchsia-500', bg: 'bg-fuchsia-500/10' },
+              { label: 'Minimum Dark Elixir', value: deThreshold, setter: setDeThreshold, icon: 'database', color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800' }
             ].map((item, idx) => (
-              <div key={idx} className="space-y-3">
-                <label className="flex items-center gap-2.5 text-[10px] font-black text-zinc-400 uppercase tracking-widest px-1">
-                  <div className={`w-6 h-6 rounded-lg ${item.bg} flex items-center justify-center`}>
-                    <span className={`material-symbols-outlined text-sm ${item.color}`}>{item.icon}</span>
+              <div key={idx} className="space-y-4">
+                <label className="flex items-center gap-3 text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
+                  <div className={`w-8 h-8 rounded-xl ${item.bg} flex items-center justify-center border border-zinc-100/10`}>
+                    <span className={`material-symbols-outlined text-base ${item.color}`}>{item.icon}</span>
                   </div>
                   {item.label}
                 </label>
@@ -72,42 +72,42 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     value={item.value} 
                     onChange={e => item.setter(parseInt(e.target.value) || 0)}
                     disabled={!searchEnabled}
-                    className={`w-full bg-zinc-50/50 border border-zinc-100 rounded-2xl py-4 px-5 text-sm font-bold text-zinc-900 focus:outline-none focus:ring-4 focus:ring-zinc-950/5 focus:border-zinc-300 transition-all tabular-nums ${!searchEnabled ? 'opacity-40 cursor-not-allowed' : 'group-hover:bg-white'}`}
+                    className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-5 px-6 text-base font-bold text-zinc-900 dark:text-white focus:outline-none focus:ring-4 focus:ring-zinc-950/5 dark:focus:ring-white/5 focus:border-zinc-300 dark:focus:border-zinc-700 transition-all tabular-nums ${!searchEnabled ? 'opacity-30 cursor-not-allowed' : 'group-hover:bg-white dark:group-hover:bg-zinc-950/60'}`}
                   />
                 </div>
               </div>
             ))}
 
             
-            <div className="space-y-3">
-              <label className="flex items-center gap-2.5 text-[10px] font-black text-zinc-400 uppercase tracking-widest px-1">
-                <div className="w-6 h-6 rounded-lg bg-zinc-50 flex items-center justify-center text-zinc-400">
-                  <span className="material-symbols-outlined text-sm">precision_manufacturing</span>
+            <div className="space-y-4">
+              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
+                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-400 dark:text-zinc-500 border border-zinc-100/10">
+                  <span className="material-symbols-outlined text-base">precision_manufacturing</span>
                 </div>
-                Deployment Strategy
+                Tactical Protocol
               </label>
               <div className="relative" ref={dropdownRef}>
                 <div 
                   onClick={() => searchEnabled && setIsOpen(!isOpen)}
-                  className={`w-full bg-zinc-50/50 border border-zinc-100 rounded-2xl py-4 px-5 text-sm font-bold text-zinc-900 cursor-pointer flex justify-between items-center transition-all ${isOpen ? 'ring-4 ring-zinc-950/5 border-zinc-300 bg-white' : 'hover:bg-white'} ${!searchEnabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-5 px-6 text-base font-bold text-zinc-900 dark:text-white cursor-pointer flex justify-between items-center transition-all ${isOpen ? 'ring-4 ring-zinc-950/5 dark:ring-white/5 border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950/60' : 'hover:bg-white dark:hover:bg-zinc-950/60'} ${!searchEnabled ? 'opacity-30 cursor-not-allowed' : ''}`}
                 >
                   <span className="truncate">
                     {selectedStrategy ? selectedStrategy.split('/').pop()?.replace('.yaml', '').replace('.csv', '') : 'Standard Protocol'}
                   </span>
-                  <span className={`material-symbols-outlined text-zinc-400 transition-transform duration-300 ${isOpen ? 'rotate-180 text-zinc-950' : ''}`}>
+                  <span className={`material-symbols-outlined text-zinc-400 transition-transform duration-500 ${isOpen ? 'rotate-180 text-zinc-950 dark:text-white' : ''}`}>
                     expand_more
                   </span>
                 </div>
 
                 {isOpen && searchEnabled && (
-                  <div className="absolute top-[calc(100%+8px)] left-0 w-full bg-white border border-zinc-100 rounded-2xl shadow-premium-lg z-50 py-2 overflow-hidden">
-                    {strategies.filter(s => s.includes('auto_edrag_rush')).map((s, idx) => {
+                  <div className="absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">
+                    {strategies.filter(s => s.includes('auto_edrag_rush') || s.includes('default')).map((s, idx) => {
                       const isActive = selectedStrategy.endsWith(s);
                       return (
                         <div 
                           key={idx}
                           onClick={() => { setSelectedStrategy(s); setIsOpen(false); }}
-                          className={`px-5 py-3 text-sm font-bold cursor-pointer transition-colors ${isActive ? 'bg-zinc-50 text-zinc-950' : 'text-zinc-500 hover:bg-zinc-50 hover:text-zinc-950'}`}
+                          className={`px-6 py-3.5 text-sm font-bold cursor-pointer transition-colors ${isActive ? 'bg-zinc-50 dark:bg-zinc-800 text-zinc-950 dark:text-white' : 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 hover:text-zinc-950 dark:hover:text-white'}`}
                         >
                           {s.replace('.yaml', '').replace('.csv', '')}
                         </div>
@@ -121,38 +121,38 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
         </div>
 
         {/* Operational Toggles */}
-        <div className="bg-white p-10 rounded-[2.5rem] border border-zinc-100/50 shadow-premium space-y-8">
+        <div className="bg-white dark:bg-zinc-900 p-10 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none space-y-10 transition-all duration-500">
           <div className="flex items-center justify-between group cursor-pointer" onClick={() => setSearchEnabled(!searchEnabled)}>
             <div className="max-w-[80%]">
-              <span className="block text-base font-bold text-zinc-950 mb-0.5">Matchmaking Filters</span>
-              <span className="block text-xs text-zinc-400 font-medium">Verify loot requirements before attacking.</span>
+              <span className="block text-lg font-bold text-zinc-950 dark:text-white mb-1 tracking-tight">Active Matchmaking</span>
+              <span className="block text-sm text-zinc-400 dark:text-zinc-500 font-medium">Enable real-time base filtering and loot analysis.</span>
             </div>
-            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${searchEnabled ? 'bg-zinc-950' : 'bg-zinc-100'}`}>
-               <div className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all duration-500 shadow-sm ${searchEnabled ? 'left-8' : 'left-1'}`}></div>
+            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${searchEnabled ? 'bg-zinc-950 dark:bg-zinc-100' : 'bg-zinc-100 dark:bg-zinc-800'}`}>
+               <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${searchEnabled ? 'left-8 bg-white dark:bg-zinc-900' : 'left-1 bg-white'}`}></div>
             </div>
           </div>
 
-          <div className="h-px bg-zinc-50 w-full"></div>
+          <div className="h-px bg-zinc-50 dark:bg-zinc-800/50 w-full"></div>
 
           <div className="flex items-center justify-between group cursor-pointer" onClick={() => setUpgradeWalls(!upgradeWalls)}>
             <div className="max-w-[80%]">
-              <span className="block text-base font-bold text-zinc-950 mb-0.5">Wall Upgrades</span>
-              <span className="block text-xs text-zinc-400 font-medium">Automatically upgrade walls when builders are idle.</span>
+              <span className="block text-lg font-bold text-zinc-950 dark:text-white mb-1 tracking-tight">Structural Optimization</span>
+              <span className="block text-sm text-zinc-400 dark:text-zinc-500 font-medium">Automatically deploy builders for wall maintenance.</span>
             </div>
-            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${upgradeWalls ? 'bg-zinc-950' : 'bg-zinc-100'}`}>
-               <div className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all duration-500 shadow-sm ${upgradeWalls ? 'left-8' : 'left-1'}`}></div>
+            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${upgradeWalls ? 'bg-zinc-950 dark:bg-zinc-100' : 'bg-zinc-100 dark:bg-zinc-800'}`}>
+               <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${upgradeWalls ? 'left-8 bg-white dark:bg-zinc-900' : 'left-1 bg-white'}`}></div>
             </div>
           </div>
         </div>
 
 
-        <div className="flex justify-end pt-4">
+        <div className="flex justify-end pt-6">
           <button 
             type="submit"
-            className="h-16 px-12 bg-zinc-950 text-white font-black text-xs uppercase tracking-[0.2em] rounded-2xl hover:bg-zinc-800 transition-all shadow-premium-hover active:scale-[0.98] group flex items-center gap-3"
+            className="h-20 px-16 bg-zinc-950 dark:bg-zinc-50 text-white dark:text-zinc-950 font-black text-xs uppercase tracking-[0.3em] rounded-3xl hover:bg-zinc-800 dark:hover:bg-white transition-all shadow-premium-hover dark:shadow-none active:scale-[0.98] group flex items-center gap-4 border border-transparent dark:border-white/10"
           >
-            Deploy Configuration
-            <span className="material-symbols-outlined text-sm group-hover:translate-x-1 transition-transform">bolt</span>
+            Update Directives
+            <span className="material-symbols-outlined text-lg group-hover:translate-x-1 transition-transform">bolt</span>
           </button>
         </div>
       </form>

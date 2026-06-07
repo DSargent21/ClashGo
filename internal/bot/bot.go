@@ -819,7 +819,7 @@ func (b *Bot) clickSequence() bool {
 		b.logger.Warn().Msg("could not find or click Find Match button")
 		return false
 	}
-	time.Sleep(1200 * time.Millisecond) // Wait for search screen/army bar
+	time.Sleep(1500 * time.Millisecond) // Wait for search screen/army bar
 
 	// Step 3: Click the white army arrow to expand army selection (retry up to 3 times)
 	armyArrowClicked := false
@@ -834,7 +834,7 @@ func (b *Bot) clickSequence() bool {
 		b.logger.Warn().Msg("could not find or click Army Arrow button")
 		return false
 	}
-	time.Sleep(800 * time.Millisecond) // Wait for expansion animation
+	time.Sleep(1200 * time.Millisecond) // Wait for expansion animation
 
 	// Step 4: Click army composition 1 (retry up to 3 times)
 	army1Clicked := false
@@ -848,7 +848,7 @@ func (b *Bot) clickSequence() bool {
 	if !army1Clicked {
 		b.logger.Warn().Msg("army 1 button did not appear, continuing anyway")
 	}
-	time.Sleep(800 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond)
 
 	// Step 5: Click the green Battle button (retry up to 3 times)
 	battleClicked := false
@@ -884,11 +884,11 @@ func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
 	case "btn_find_match":
 		roi = image.Rect(50, 400, 400, 600) // left-middle
 	case "btn_battle":
-		roi = image.Rect(400, 450, 860, 732)
+		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
 	case "btn_army_arrow":
 		roi = image.Rect(300, 100, 700, 300) // top-center
 	case "btn_army_1":
-		roi = image.Rect(200, 150, 600, 400) // top-center/left
+		roi = image.Rect(200, 100, 600, 400) // top-center/left
 	case "btn_next":
 		roi = image.Rect(600, 450, 860, 732)
 	default:
@@ -932,7 +932,7 @@ type Pinpoint struct {
 var villagePinpoints = map[string]Pinpoint{
 	"btn_attack":     {X: 64, Y: 700, Name: "Attack"},
 	"btn_find_match": {X: 165, Y: 495, Name: "Find Match"},
-	"btn_battle":     {X: 525, Y: 615, Name: "Battle"},
+	"btn_battle":     {X: 725, Y: 535, Name: "Battle"},
 	"btn_army_arrow": {X: 512, Y: 189, Name: "Army Arrow"},
 	"btn_army_1":     {X: 402, Y: 247, Name: "Army 1"},
 	"btn_next":       {X: 796, Y: 565, Name: "Next Match"}, // Verified coordinate
@@ -948,7 +948,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 		if err == nil {
 			px, py := b.cal.ScaleRef(pp.X, pp.Y)
 			// Bypass color check for menu elements with inconsistent backgrounds
-			isMenuElement := templateName == "btn_army_arrow" || templateName == "btn_army_1"
+			isMenuElement := templateName == "btn_army_arrow"
 			
 			// Professional Resilience: Check multiple colors for the button
 			matched := isMenuElement || b.isOrange(screen, px, py) || b.isYellow(screen, px, py) || b.isGreen(screen, px, py) || b.isWhite(screen, px, py) || b.isSilver(screen, px, py)
@@ -988,11 +988,11 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	case "btn_find_match":
 		roi = image.Rect(50, 400, 400, 600) // left-middle
 	case "btn_battle":
-		roi = image.Rect(400, 450, 860, 732)
+		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
 	case "btn_army_arrow":
 		roi = image.Rect(300, 100, 700, 300) // top-center
 	case "btn_army_1":
-		roi = image.Rect(200, 150, 600, 400) // top-center/left
+		roi = image.Rect(200, 100, 600, 400) // top-center/left
 	case "btn_next":
 		roi = image.Rect(600, 450, 860, 732)
 	default:
@@ -1018,6 +1018,19 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			screen.Close()
 			time.Sleep(500 * time.Millisecond)
 			continue
+		}
+
+		// Tier 1.5 Fallback: Try a secondary pinpoint for Battle button if it's next to Army 1
+		if templateName == "btn_battle" && retry == 0 {
+			altX, altY := b.cal.ScaleRef(525, 247) // Higher Y coordinate, same X as Slot 1 Battle
+			if b.isGreen(screen, altX, altY) {
+				screen.Close()
+				b.logger.Info().Str("step", stepName).Msg("secondary pinpoint match (upper battle), clicking...")
+				if err := b.client.Tap(altX, altY); err == nil {
+					return true
+				}
+				screen, _ = b.client.CaptureToMat() // Re-capture if tap failed somehow
+			}
 		}
 
 		// Use specialized ROI for matching (Optimized: 5 steps)
@@ -1161,6 +1174,10 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 			b.logger.Info().Msg("in clouds/loading...")
 			time.Sleep(1 * time.Second)
 			continue
+		case state == game.StateArmySelection:
+			b.logger.Info().Msg("still in army selection, retrying battle click...")
+			b.findAndClick("btn_battle", "Battle Retry", 1)
+			time.Sleep(1 * time.Second)
 		default:
 			b.logger.Info().Str("state", state.String()).Msg("waiting for battle state (searching)...")
 			b.dismissInterruptions()

@@ -20,7 +20,21 @@ function App() {
   const [running, setRunning] = useState(false);
   const [statusMsg, setStatusMsg] = useState('SYSTEM STABLE');
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    return localStorage.getItem('darkMode') === 'true' || 
+      (!('darkMode' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  });
   
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('darkMode', 'true');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('darkMode', 'false');
+    }
+  }, [darkMode]);
+
   // Config parameters
   const [goldThreshold, setGoldThreshold] = useState(750000);
   const [elixirThreshold, setElixirThreshold] = useState(750000);
@@ -216,11 +230,11 @@ function App() {
 
   return (
 
-    <div className="app-shell" style={{ display: 'flex', width: '100vw', height: '100vh', backgroundColor: '#FAFAFA' }}>
+    <div className="app-shell bg-zinc-50 dark:bg-zinc-950 text-zinc-950 dark:text-zinc-50 transition-colors duration-500" style={{ display: 'flex', width: '100vw', height: '100vh' }}>
       <Sidebar {...sidebarProps} />
 
       <main 
-        className={`flex-1 transition-[margin-left] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] min-h-screen overflow-y-auto ${sidebarExpanded ? 'ml-64' : 'ml-20'}`}
+        className={`flex-1 bg-zinc-50 dark:bg-zinc-950 transition-[margin-left,background-color] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] min-h-screen overflow-y-auto ${sidebarExpanded ? 'ml-64' : 'ml-20'}`}
       >
         <div className="draggable sticky top-0 left-0 right-0 h-12 z-40 bg-transparent pointer-events-auto" />
         <div className="max-w-[1600px] mx-auto p-4 md:p-8 lg:p-12 xl:p-20 pt-0 -mt-12">
@@ -229,17 +243,20 @@ function App() {
           <div className="space-y-1">
             <div className="flex items-center gap-3">
               <div className="flex gap-1">
-                <span className="w-1 h-1 bg-zinc-950 rounded-full animate-pulse"></span>
-                <span className="w-1 h-1 bg-zinc-300 rounded-full"></span>
+                <span className="w-1.5 h-1.5 bg-zinc-950 dark:bg-white rounded-full animate-pulse"></span>
+                <span className="w-1.5 h-1.5 bg-zinc-300 dark:bg-zinc-800 rounded-full"></span>
               </div>
-              <h2 className="text-[10px] text-zinc-400 uppercase tracking-[0.3em] font-black">Operation: ClashGO</h2>
+              <h2 className="text-[11px] text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.4em] font-black">Operation: ClashGO</h2>
             </div>
-            <h1 className="font-headline text-4xl font-bold tracking-tight capitalize text-zinc-950">{tab}</h1>
+            <h1 className="font-headline text-5xl font-bold tracking-tight capitalize text-zinc-950 dark:text-white">{tab}</h1>
           </div>
           <div className="flex gap-4">
-            <div className="bg-white px-5 py-3 rounded-2xl border border-zinc-100/50 flex items-center gap-3 shadow-premium no-drag">
-              <div className={`w-2 h-2 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)] ${stats.adb_health.consecutive_fails === 0 ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></div>
-              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Node: {adbHost}</span>
+            <div className="bg-white dark:bg-zinc-900/40 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md">
+              <div className="relative">
+                <div className={`w-2.5 h-2.5 rounded-full ${stats.adb_health.consecutive_fails === 0 ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></div>
+                {stats.adb_health.consecutive_fails === 0 && <div className="absolute inset-0 w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping opacity-20"></div>}
+              </div>
+              <span className="text-[11px] font-black uppercase tracking-widest text-zinc-500 dark:text-zinc-400">Node: {adbHost}</span>
             </div>
           </div>
         </header>
@@ -257,7 +274,7 @@ function App() {
           />
         )}
 
-        {tab === 'settings' && <SettingsView stats={stats} adbPort={adbPort} />}
+        {tab === 'settings' && <SettingsView stats={stats} adbPort={adbPort} darkMode={darkMode} setDarkMode={setDarkMode} />}
         </div>
       </main>
 

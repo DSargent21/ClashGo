@@ -33,15 +33,13 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
 
   return (
     <aside 
-      className={`fixed left-0 top-0 h-full bg-white border-r border-zinc-100/50 z-50 transition-[width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] group ${expanded ? 'w-64 shadow-premium-lg' : 'w-20'}`}
+      className={`fixed left-0 top-0 h-full bg-white dark:bg-zinc-900 border-r border-zinc-100/50 dark:border-zinc-800/50 z-50 transition-[width,background-color] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] group ${expanded ? 'w-64 shadow-premium-lg dark:shadow-none' : 'w-20'}`}
       style={{ 
         position: 'fixed', 
         left: 0, 
         top: 0, 
         height: '100%', 
         width: expanded ? '256px' : '80px',
-        backgroundColor: 'white',
-        borderRight: '1px solid rgba(244, 244, 245, 0.5)',
         zIndex: 50,
         willChange: 'width'
       }}
@@ -52,12 +50,12 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
       <div className="flex flex-col h-full py-8 px-4 relative z-20">
         <div className="flex items-center mb-10 px-0 overflow-hidden draggable">
           <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center no-drag">
-            <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center shadow-premium border border-zinc-100">
-              <img src={logo} alt="Logo" className="w-7 h-7 object-contain" style={{ width: '28px', height: '28px' }} />
+            <div className="w-10 h-10 bg-white dark:bg-zinc-800 rounded-xl flex items-center justify-center shadow-premium dark:shadow-none border border-zinc-100 dark:border-zinc-700">
+              <img src={logo} alt="Logo" className="w-7 h-7 object-contain dark:invert" style={{ width: '28px', height: '28px' }} />
             </div>
           </div>
           <div className={`transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ml-2 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'}`}>
-            <h1 className="font-headline text-lg font-bold tracking-tight whitespace-nowrap text-zinc-950">Clash<span className="text-zinc-400 font-medium ml-0.5">GO</span></h1>
+            <h1 className="font-headline text-lg font-bold tracking-tight whitespace-nowrap text-zinc-950 dark:text-white">Clash<span className="text-zinc-400 dark:text-zinc-500 font-medium ml-0.5">GO</span></h1>
           </div>
         </div>
 
@@ -68,12 +66,12 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
               onClick={() => setTab(item.id)}
               className={`w-full flex items-center h-11 rounded-xl transition-all duration-200 relative group/btn ${
                 tab === item.id 
-                ? 'bg-zinc-950 text-white shadow-premium' 
-                : 'text-zinc-500 hover:bg-zinc-100/80 hover:text-zinc-900'
+                ? 'bg-zinc-950 dark:bg-zinc-800 text-white dark:text-zinc-100 shadow-premium dark:shadow-none' 
+                : 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100/80 dark:hover:bg-zinc-800/40 hover:text-zinc-900 dark:hover:text-zinc-100'
               }`}
             >
               <div className="w-11 h-11 flex-shrink-0 flex items-center justify-center">
-                <span className={`material-symbols-outlined text-[20px] transition-transform duration-200 ${tab === item.id ? 'scale-100' : 'group-hover/btn:scale-110'}`}>
+                <span className={`material-symbols-outlined text-[20px] transition-transform duration-200 ${tab === item.id ? 'scale-110' : 'group-hover/btn:scale-110'}`}>
                   {item.icon}
                 </span>
               </div>
@@ -89,8 +87,8 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
             onClick={running ? onStop : onStart}
             className={`w-full h-12 rounded-2xl font-black text-[10px] tracking-[0.2em] transition-all duration-300 flex items-center relative overflow-hidden group/start ${
               running 
-              ? 'bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-100' 
-              : 'bg-zinc-950 text-white hover:bg-zinc-800 shadow-premium'
+              ? 'bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/50 border border-rose-100 dark:border-rose-900/30' 
+              : 'bg-zinc-950 dark:bg-zinc-800 text-white dark:text-zinc-100 hover:bg-zinc-800 dark:hover:bg-zinc-700 shadow-premium dark:shadow-none border border-transparent dark:border-zinc-700/50'
             }`}
           >
             <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center z-10 transition-transform duration-300 group-hover/start:scale-110">

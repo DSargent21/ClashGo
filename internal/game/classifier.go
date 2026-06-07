@@ -359,6 +359,20 @@ func (c *Classifier) buildRules() {
 			},
 		},
 		{
+			State:    StateArmySelection,
+			Priority: 48,
+			Weight:   100,
+			Desc:     "army selection menu - white arrow or battle button",
+			Template: "btn_battle",
+			MinPass:  1,
+			Checks: []PixelCheck{
+				// White arrow in army bar expansion
+				{512, 189, 0xFF, 0xFF, 0xFF, 30},
+				// Green Battle button center (REF: 725, 535)
+				{725, 535, 0x88, 0xD0, 0x39, 40},
+			},
+		},
+		{
 			State:    StateLoading,
 			Priority: 45,
 			Weight:   45,

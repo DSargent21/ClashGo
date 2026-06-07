@@ -4,7 +4,7 @@
   font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color-scheme: light;
+  color-scheme: light dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -28,11 +28,9 @@
 .app-shell {
     width: 100vw;
     height: 100vh;
-    background: #FAFAFA;
     position: relative;
     overflow: hidden;
     display: flex;
-    color: #09090b;
 }
 
 .terminal-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
