@@ -750,8 +750,8 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		_ = json.Unmarshal(histData, &history)
 	}
 	history = append([]AttackReport{rep}, history...)
-	if len(history) > 50 {
-		history = history[:50]
+	if len(history) > 500 {
+		history = history[:500]
 	}
 	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
 		_ = os.WriteFile("attack_history.json", histBytes, 0644)

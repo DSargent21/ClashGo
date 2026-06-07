@@ -29,22 +29,34 @@ type App struct {
 	mu        sync.Mutex
 	echo      *echo.Echo
 	lastStats bot.BotStats
+	logBuffer []string
 }
 
 type WailsLogWriter struct {
-	ctx context.Context
+	app *App
 }
 
 func (w *WailsLogWriter) Write(p []byte) (n int, err error) {
-	if w.ctx != nil {
-		runtime.EventsEmit(w.ctx, "bot_log", string(p))
+	msg := string(p)
+	if w.app.ctx != nil {
+		runtime.EventsEmit(w.app.ctx, "bot_log", msg)
 	}
+	
+	w.app.mu.Lock()
+	w.app.logBuffer = append(w.app.logBuffer, msg)
+	if len(w.app.logBuffer) > 100 {
+		w.app.logBuffer = w.app.logBuffer[len(w.app.logBuffer)-100:]
+	}
+	w.app.mu.Unlock()
+	
 	return len(p), nil
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{
+		logBuffer: make([]string, 0, 100),
+	}
 }
 
 // startup is called when the app starts. The context is saved
@@ -52,8 +64,13 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
+	// Load previous stats from disk
+	if data, err := os.ReadFile("stats.json"); err == nil {
+		_ = json.Unmarshal(data, &a.lastStats)
+	}
+
 	// Setup log bridge
-	wailsWriter := &WailsLogWriter{ctx: ctx}
+	wailsWriter := &WailsLogWriter{app: a}
 	consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"}
 	multi := zerolog.MultiLevelWriter(consoleWriter, wailsWriter)
 	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
@@ -136,6 +153,27 @@ func (a *App) StopBot() BotStatus {
 		return BotStatus{Running: false, Message: "Bot not running"}
 	}
 
+	// Capture and accumulate final stats before stopping
+	current := a.bot.Stats()
+	a.lastStats = bot.BotStats{
+		AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
+		SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
+		TotalGold:        a.lastStats.TotalGold + current.TotalGold,
+		TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
+		TotalDE:          a.lastStats.TotalDE + current.TotalDE,
+		Stars0:           a.lastStats.Stars0 + current.Stars0,
+		Stars1:           a.lastStats.Stars1 + current.Stars1,
+		Stars2:           a.lastStats.Stars2 + current.Stars2,
+		Stars3:           a.lastStats.Stars3 + current.Stars3,
+		Uptime:           a.lastStats.Uptime + current.Uptime,
+		AdbHealth:        current.AdbHealth,
+	}
+
+	// Persist stats to disk
+	if bytes, err := json.MarshalIndent(a.lastStats, "", "  "); err == nil {
+		_ = os.WriteFile("stats.json", bytes, 0644)
+	}
+
 	a.cancel()
 	a.bot.Stop()
 	a.bot = nil
@@ -159,10 +197,35 @@ func (a *App) GetConfig() *config.BotConfig {
 func (a *App) GetStats() bot.BotStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	
+	res := a.lastStats
 	if a.bot != nil {
-		a.lastStats = a.bot.Stats()
+		current := a.bot.Stats()
+		res = bot.BotStats{
+			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
+			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
+			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
+			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
+			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
+			Stars0:           a.lastStats.Stars0 + current.Stars0,
+			Stars1:           a.lastStats.Stars1 + current.Stars1,
+			Stars2:           a.lastStats.Stars2 + current.Stars2,
+			Stars3:           a.lastStats.Stars3 + current.Stars3,
+			Uptime:           a.lastStats.Uptime + current.Uptime,
+			AdbHealth:        current.AdbHealth,
+		}
 	}
-	return a.lastStats
+	return res
+}
+
+// GetLogs returns the buffered logs
+func (a *App) GetLogs() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Return a copy to avoid race conditions
+	res := make([]string, len(a.logBuffer))
+	copy(res, a.logBuffer)
+	return res
 }
 
 // GetAttackHistory returns persistent log of attacks

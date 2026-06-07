@@ -16,16 +16,16 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats }) => {
   const totalAttacks = stats.stars_3 + stats.stars_2 + stats.stars_1 + stats.stars_0;
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-10 max-w-6xl mx-auto">
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 max-w-6xl mx-auto">
 
-      <div className="bg-white dark:bg-zinc-900 p-10 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none group transition-all duration-500">
-        <div className="flex justify-between items-center mb-12">
-          <h3 className="text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">Deployment Success</h3>
+      <div className="bg-white dark:bg-zinc-900 p-8 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none group transition-all duration-500">
+        <div className="flex justify-between items-center mb-8">
+          <h3 className="text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">Attack Success</h3>
           <div className="w-12 h-12 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm transition-transform group-hover:scale-110">
             <span className="material-symbols-outlined text-zinc-400 dark:text-zinc-500">equalizer</span>
           </div>
         </div>
-        <div className="space-y-10">
+        <div className="space-y-6">
           {starData.map((item, idx) => {
             const percent = totalAttacks > 0 ? Math.round((item.count / totalAttacks) * 100) : 0;
             return (
@@ -46,18 +46,18 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats }) => {
         </div>
       </div>
 
-      <div className="bg-white dark:bg-zinc-900 p-10 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none transition-all duration-500">
-        <div className="flex justify-between items-center mb-12">
-          <h3 className="text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">Performance Delta</h3>
+      <div className="bg-white dark:bg-zinc-900 p-8 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none transition-all duration-500">
+        <div className="flex justify-between items-center mb-8">
+          <h3 className="text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">Financial Performance</h3>
           <div className="w-12 h-12 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm">
             <span className="material-symbols-outlined text-zinc-400 dark:text-zinc-500">insights</span>
           </div>
         </div>
-        <div className="space-y-12">
+        <div className="space-y-8">
           {[
-            { label: 'Total Node Revenue', value: (stats.total_gold + stats.total_elixir).toLocaleString(), icon: 'account_balance_wallet', color: 'text-zinc-950 dark:text-zinc-100' },
-            { label: 'Gold Capture Rate', value: stats.attacks_completed > 0 ? Math.round(stats.total_gold / stats.attacks_completed).toLocaleString() : '0', icon: 'payments', color: 'text-amber-500' },
-            { label: 'Elixir Capture Rate', value: stats.attacks_completed > 0 ? Math.round(stats.total_elixir / stats.attacks_completed).toLocaleString() : '0', icon: 'water_drop', color: 'text-fuchsia-500' }
+            { label: 'Total Revenue', value: (stats.total_gold + stats.total_elixir).toLocaleString(), icon: 'account_balance_wallet', color: 'text-zinc-950 dark:text-zinc-100' },
+            { label: 'Avg Gold / Attack', value: stats.attacks_completed > 0 ? Math.round(stats.total_gold / stats.attacks_completed).toLocaleString() : '0', icon: 'payments', color: 'text-amber-500' },
+            { label: 'Avg Elixir / Attack', value: stats.attacks_completed > 0 ? Math.round(stats.total_elixir / stats.attacks_completed).toLocaleString() : '0', icon: 'water_drop', color: 'text-fuchsia-500' }
           ].map((m, i) => (
             <div key={i} className="flex justify-between items-center group">
               <div className="flex items-center gap-6">
