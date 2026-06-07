@@ -111,6 +111,10 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 		return BotStatus{Running: false, Message: fmt.Sprintf("Error: %v", err)}
 	}
 
+	b.OnFrame = func(frame string) {
+		runtime.EventsEmit(a.ctx, "live_feed", frame)
+	}
+
 	a.bot = b
 	a.botCtx, a.cancel = context.WithCancel(context.Background())
 
@@ -179,6 +183,13 @@ func (a *App) GetLiveScreenshot() (string, error) {
 	a.mu.Lock()
 	var client *adb.Client
 	if a.bot != nil {
+		// Optimization: If the bot is running, it's already capturing frames.
+		// Return the latest processed frame instead of triggering a new ADB capture.
+		frame := a.bot.GetLastFrame()
+		if frame != "" {
+			a.mu.Unlock()
+			return frame, nil
+		}
 		client = a.bot.GetClient()
 	}
 	a.mu.Unlock()
@@ -217,6 +228,9 @@ func (a *App) GetLiveScreenshot() (string, error) {
 
 // SaveConfig updates config.json settings
 func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	cfg := config.LoadOrDefault("config.json")
 	cfg.Search.MinLootGold = minGold
 	cfg.Search.MinLootElixir = minElixir
@@ -225,6 +239,11 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	cfg.Search.Enabled = searchEnabled
 	if strategyFile != "" {
 		cfg.Attack.StrategyFile = strategyFile
+	}
+
+	// Update running bot in real-time if it exists
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
 	}
 
 	bytes, err := json.MarshalIndent(cfg, "", "  ")

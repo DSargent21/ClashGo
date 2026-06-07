@@ -177,6 +177,20 @@ type scoredState struct {
 func (c *Classifier) buildRules() {
 	baseRules := []StateRule{
 		{
+			State:    StateWelcomeBack,
+			Priority: 101,
+			Weight:   110,
+			Desc:     "welcome back chief popup",
+			Template: "btn_okay",
+			MinPass:  1,
+			Checks: []PixelCheck{
+				// Red banner top
+				{430, 235, 0xCB, 0x14, 0x11, 30},
+				{330, 235, 0xCB, 0x14, 0x11, 30},
+				{530, 235, 0xCB, 0x14, 0x11, 30},
+			},
+		},
+		{
 			State:    StateGemDialog,
 			Priority: 100,
 			Weight:   100,

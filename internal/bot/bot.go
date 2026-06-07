@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -57,10 +58,15 @@ type Bot struct {
 	startedAt   time.Time
 	lastAction  time.Time
 	lastSequenceStart time.Time
-	stuckTimeout time.Duration
-}
+	stuckTimeout      time.Duration
 
-func NewBot(cfg *config.BotConfig) (*Bot, error) {
+	lastFrame      atomic.Value // Stores the latest base64 encoded frame
+	lastFrameTime  time.Time
+
+	OnFrame func(string)
+	}
+
+	func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	zl := &adbLogAdapter{log: log.Logger}
 
 	client := adb.NewClient(
@@ -189,6 +195,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		stuckTimeout:      60 * time.Second,
 	}
 
+	b.lastFrame.Store("")
 
 	b.classifier = game.NewClassifier(cal, game.DefaultClassifierConfig(), b.logger)
 	if b.templates != nil {
@@ -245,22 +252,45 @@ func (b *Bot) captureLoop() {
 	}
 	frames := make(chan frame, 1)
 
-	// Producer
+	// Single Producer: Throttled to ~2 FPS for absolute minimum CPU impact
 	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
 		for {
 			select {
 			case <-b.ctx.Done():
 				return
-			default:
+			case <-ticker.C:
 				start := time.Now()
 				screen, err := b.client.CaptureToMat()
 				dur := time.Since(start)
+
+				if err == nil && !screen.Empty() {
+					// Feed update only if listener is active to save encoding CPU
+					if b.OnFrame != nil {
+						// Balanced Tactical Feed: 50% scale + 75 quality
+						small := gocv.NewMat()
+						gocv.Resize(screen, &small, image.Point{}, 0.5, 0.5, gocv.InterpolationLinear)
+						
+						go func(m gocv.Mat) {
+							defer m.Close()
+							buf, err := gocv.IMEncodeWithParams(".jpg", m, []int{gocv.IMWriteJpegQuality, 75})
+							if err == nil {
+								encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
+								b.lastFrame.Store(encoded)
+								b.OnFrame(encoded)
+								buf.Close()
+							}
+						}(small)
+					}
+				}
 
 				select {
 				case frames <- frame{mat: screen, err: err, dur: dur}:
 				default:
 					if err == nil && !screen.Empty() {
-						screen.Close() // Drop frame if consumer is too slow
+						screen.Close()
 					}
 				}
 			}
@@ -271,6 +301,14 @@ func (b *Bot) captureLoop() {
 	for {
 		select {
 		case <-b.ctx.Done():
+			// Clean up
+			select {
+			case f := <-frames:
+				if !f.mat.Empty() {
+					f.mat.Close()
+				}
+			default:
+			}
 			return
 		case f := <-frames:
 			b.checkStuck(gc)
@@ -341,14 +379,19 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	if err != nil {
 		gc.RecordCaptureError()
 		b.logger.Debug().Err(err).Msg("capture failed")
+		if !screen.Empty() {
+			screen.Close()
+		}
 		return
 	}
 	if screen.Empty() {
+		screen.Close()
 		return
 	}
 
 	state, score := b.classify(screen)
 
+	// UpdateScreen takes ownership and will handle closing previous mat
 	gc.UpdateScreen(screen, captureMs)
 
 	// Update lastAction only on state transition. 
@@ -391,7 +434,8 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	}
 
 	// Primary detection: try to find the attack button via template matching
-	if b.findAttackButton(screen, 0.45) {
+	// Only start attack if we are reasonably sure we're in the Main Village
+	if (gc.State == game.StateMainVillage || gc.State == game.StateUnknown) && b.findAttackButton(screen, 0.45) {
 		b.logger.Info().Msg("attack button detected, starting sequence")
 		b.lastSequenceStart = time.Now()
 		go b.executeAttackSequence(gc)
@@ -432,7 +476,8 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 		int(float64(roi.Max.Y)*b.cal.ScaleY),
 	)
 
-	matches, err := vision.MatchMultiScaleROI(screen, tpl, 0.2, 2.0, 30, threshold, physROI)
+	// Optimization: Reduced steps from 30 to 5 for high-speed performance
+	matches, err := vision.MatchMultiScaleROI(screen, tpl, 0.2, 2.0, 5, threshold, physROI)
 	if err != nil || len(matches) == 0 {
 		if err != nil {
 			b.logger.Debug().Err(err).Msg("btn_attack template match error")
@@ -659,7 +704,15 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 	}
 
-	b.attackExec.ReturnHome()
+	if err := b.attackExec.ReturnHome(); err != nil {
+		b.logger.Warn().Err(err).Msg("ReturnHome failed, attempting template fallback")
+		for i := 0; i < 3; i++ {
+			if b.findAndClick("btn_return_home", "Return Home", 1) {
+				break
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
 
 	if b.cfg.Upgrade.UpgradeWalls {
 		b.UpgradeWalls(gc)
@@ -857,8 +910,8 @@ func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		// Expand scale range for UI buttons and use ROI
-		matches, _ := vision.MatchMultiScaleROI(screen, tpl, 0.2, 1.8, 30, 0.5, physROI)
+		// Expand scale range for UI buttons and use ROI (Optimized: 5 steps)
+		matches, _ := vision.MatchMultiScaleROI(screen, tpl, 0.2, 1.8, 5, 0.5, physROI)
 		screen.Close()
 		if len(matches) > 0 {
 			return true
@@ -883,6 +936,8 @@ var villagePinpoints = map[string]Pinpoint{
 	"btn_army_arrow": {X: 512, Y: 189, Name: "Army Arrow"},
 	"btn_army_1":     {X: 402, Y: 247, Name: "Army 1"},
 	"btn_next":       {X: 796, Y: 565, Name: "Next Match"}, // Verified coordinate
+	"btn_return_home":{X: 430, Y: 566, Name: "Return Home"},
+	"btn_okay":       {X: 430, Y: 520, Name: "Okay"},
 }
 
 func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
@@ -965,8 +1020,8 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			continue
 		}
 
-		// Use specialized ROI for matching
-		matches, err := vision.MatchMultiScaleROI(screen, tpl, 0.2, 2.0, 30, 0.45, physROI)
+		// Use specialized ROI for matching (Optimized: 5 steps)
+		matches, err := vision.MatchMultiScaleROI(screen, tpl, 0.2, 2.0, 5, 0.45, physROI)
 		screen.Close()
 
 		if err != nil {
@@ -1077,6 +1132,10 @@ func (b *Bot) dismissInterruptions() {
 		b.client.Back()
 	case game.StateGemDialog, game.StateShieldInfo:
 		b.client.TapRandomized(175, 30)
+	case game.StateWelcomeBack:
+		// Okay button center-ish tap
+		ox, oy := b.cal.ScaleRef(430, 520)
+		b.client.TapRandomized(ox, oy)
 	case game.StateChatOpen:
 		b.client.Back()
 	}
@@ -1145,8 +1204,27 @@ func (b *Bot) Health() game.SystemHealth {
 	}
 }
 
+func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
+	b.cfg = cfg
+	if b.attackExec != nil {
+		b.attackExec.UpdateConfig(&cfg.Attack)
+	}
+	if b.trainer != nil {
+		b.trainer.UpdateConfig(&cfg.Training)
+	}
+	b.logger.Info().Msg("bot configuration updated in real-time")
+}
+
 func (b *Bot) GetClient() *adb.Client {
 	return b.client
+}
+
+func (b *Bot) GetLastFrame() string {
+	val := b.lastFrame.Load()
+	if val == nil {
+		return ""
+	}
+	return val.(string)
 }
 
 func (b *Bot) Stats() BotStats {

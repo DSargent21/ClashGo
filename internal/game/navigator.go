@@ -118,6 +118,8 @@ func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 			n.dismissObstacle()
 		case StateGemDialog:
 			n.dismissGemDialog()
+		case StateWelcomeBack:
+			n.dismissWelcomeBack()
 		case StateShieldInfo:
 			n.dismissShieldInfo()
 		case StateChatOpen:
@@ -144,6 +146,32 @@ func (n *Navigator) dismissObstacle() {
 		time.Sleep(500 * time.Millisecond)
 	}
 	n.client.Back()
+}
+
+func (n *Navigator) dismissWelcomeBack() {
+	if n.templates != nil {
+		tpl, ok := n.templates.Get("btn_okay")
+		if ok {
+			norm, physScale, err := n.captureNormalized()
+			if err == nil {
+				defer norm.Close()
+				// The button is usually in the lower half of the screen
+				searchRect := image.Rect(200, 350, 660, 650)
+				pt, conf, err := vision.MatchTemplateRegion(norm, tpl, searchRect, 0.6)
+				if err == nil && conf > 0.6 {
+					ax := int(float64(pt.X) * physScale)
+					ay := int(float64(pt.Y) * physScale)
+					n.client.Tap(ax, ay)
+					time.Sleep(1000 * time.Millisecond)
+					return
+				}
+			}
+		}
+	}
+	// Fallback to center-ish tap
+	sx, sy := n.cal.ScaleRef(430, 520)
+	n.client.TapRandomized(sx, sy)
+	time.Sleep(1000 * time.Millisecond)
 }
 
 func (n *Navigator) dismissGemDialog() {

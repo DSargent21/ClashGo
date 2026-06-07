@@ -62,17 +62,22 @@ func WithDeviceID(id string) Option {
 }
 
 type Health struct {
-	LastCapture      time.Time
-	AvgCaptureMs     float64
-	ConsecutiveFails int
-	CapturesTotal    uint64
-	ErrorsTotal      uint64
-	LastError        string
+	LastCapture      time.Time `json:"last_capture"`
+	AvgCaptureMs     float64   `json:"avg_capture_ms"`
+	ConsecutiveFails int       `json:"consecutive_fails"`
+	CapturesTotal    uint64    `json:"captures_total"`
+	ErrorsTotal      uint64    `json:"errors_total"`
+	LastError        string    `json:"last_error"`
 }
 
 func (h *Health) RecordSuccess(d time.Duration) {
 	h.LastCapture = time.Now()
-	h.AvgCaptureMs = h.AvgCaptureMs*0.9 + d.Seconds()*1000*0.1
+	ms := d.Seconds() * 1000
+	if h.AvgCaptureMs == 0 {
+		h.AvgCaptureMs = ms
+	} else {
+		h.AvgCaptureMs = h.AvgCaptureMs*0.9 + ms*0.1
+	}
 	h.ConsecutiveFails = 0
 }
 

@@ -118,8 +118,8 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 				continue
 			}
 
-			// Search for Wall text with a robust threshold of 0.82 and 60 scale steps to avoid false positives
-			matches, _ := vision.MatchMultiScaleROI(screen, wallTpl, 0.3, 1.5, 60, 0.82, menuROI)
+			// Search for Wall text with a robust threshold of 0.78 and 60 scale steps to avoid false positives
+			matches, _ := vision.MatchMultiScaleROI(screen, wallTpl, 0.3, 1.5, 60, 0.78, menuROI)
 			screen.Close()
 
 			if len(matches) > 0 {

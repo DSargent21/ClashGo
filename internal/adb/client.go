@@ -20,24 +20,9 @@ type Client struct {
 	log      Logger
 
 	transport *Transport
-	health   Health
-	mu       sync.Mutex
-	closed   bool
-}
-
-type adbLogAdapter struct {
-	log Logger
-}
-
-func (a *adbLogAdapter) Debug() bool { return a.log.Debug() }
-func (a *adbLogAdapter) Debugf(format string, v ...any) {
-	a.log.Debugf(format, v...)
-}
-func (a *adbLogAdapter) Info(msg string)  { a.log.Info(msg) }
-func (a *adbLogAdapter) Warn(msg string)  { a.log.Warn(msg) }
-func (a *adbLogAdapter) Error(msg string) { a.log.Error(msg) }
-func (a *adbLogAdapter) WithFields(fields map[string]any) Logger {
-	return &adbLogAdapter{log: a.log.WithFields(fields)}
+	health    Health
+	mu        sync.Mutex
+	closed    bool
 }
 
 func NewClient(opts ...Option) *Client {
@@ -55,14 +40,11 @@ func NewClient(opts ...Option) *Client {
 }
 
 func (c *Client) connectTransport() error {
-	zl := &adbLogAdapter{log: c.log}
-
 	t, err := NewTransport(c.DeviceID, c.host, c.port, c.timeout)
 	if err != nil {
 		return err
 	}
 	c.transport = t
-	_ = zl
 	return nil
 }
 

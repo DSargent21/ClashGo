@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <title>ClashGo Command Center</title>
+    <title>Vanguard Mission Control</title>
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
     <script>
       tailwind.config = {
@@ -14,20 +14,9 @@
               body: ["Inter", "sans-serif"],
               label: ["Inter", "sans-serif"],
             },
-            fontSize: {
-              'headline-md': ['1.5rem', { lineHeight: '2rem', letterSpacing: '-0.025em' }],
-              'label-sm': ['0.875rem', { lineHeight: '1.25rem', letterSpacing: '0.05em' }],
-              'body-md': ['1rem', { lineHeight: '1.5rem' }],
-            },
-            spacing: {
-              'gutter': '24px',
-            },
             colors: {
               primary: "#09090b",
               "on-primary": "#ffffff",
-              "ethereal-cyan": "#09090b",
-              "ethereal-violet": "#09090b",
-              "ethereal-blue": "#09090b",
               "border-subtle": "rgba(0, 0, 0, 0.08)",
               "surface-container-low": "#f4f4f5",
               "surface-container-high": "#e4e4e7",
@@ -38,10 +27,12 @@
         }
       }
     </script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist:wght@100;300;400;500;600;700;800;900&display=swap" rel="stylesheet"/>
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Geist:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet"/>
 </head>
-<body>
+<body class="bg-[#FAFAFA]">
 <div id="root"></div>
 <script src="./src/main.tsx" type="module"></script>
 </body>

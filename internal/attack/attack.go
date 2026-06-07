@@ -80,6 +80,10 @@ func (e *Executor) SetClassifier(fn func(gocv.Mat) (game.GameState, int)) {
 	e.classify = fn
 }
 
+func (e *Executor) UpdateConfig(cfg *config.AttackConfig) {
+	e.cfg = cfg
+}
+
 func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
 		return false
@@ -713,8 +717,8 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 		Msg("slot card presence check")
 
 	// Empty if either the slot card isn't present (ratio < 0.25) OR
-	// the card is greyed out (colorRatio < 0.08)
-	return ratio < 0.25 || colorRatio < 0.08
+	// the card is greyed out (colorRatio < 0.10)
+	return ratio < 0.25 || colorRatio < 0.10
 }
 
 func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h int, isAbility bool, currentScreen gocv.Mat) {
@@ -1176,6 +1180,9 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 	// Search Heroes
 	for _, name := range heroNames {
 		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
+			continue
+		}
 		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
 		if tpl.Empty() {
 			continue
@@ -1190,6 +1197,9 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 	// Search Spells
 	for _, name := range spellNames {
 		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
+			continue
+		}
 		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
 		if tpl.Empty() {
 			continue
@@ -1204,6 +1214,9 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 	// Search Sieges
 	for _, name := range siegeNames {
 		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
+			continue
+		}
 		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
 		if tpl.Empty() {
 			continue

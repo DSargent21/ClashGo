@@ -37,8 +37,8 @@ func main() {
 		Mac: &mac.Options{
 			TitleBar: &mac.TitleBar{
 				TitlebarAppearsTransparent: true,
-				HideTitle:                  false,
-				FullSizeContent:            false,
+				HideTitle:                  true,
+				FullSizeContent:            true,
 				UseToolbar:                 false,
 				HideToolbarSeparator:       true,
 			},

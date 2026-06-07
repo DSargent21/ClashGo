@@ -63,6 +63,12 @@ func (t *Trainer) SetTemplates(ts *game.TemplateStore) {
 	t.templates = ts
 }
 
+func (t *Trainer) UpdateConfig(cfg *config.TrainingConfig) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cfg = cfg
+}
+
 func (t *Trainer) IdentifyTroops(screen gocv.Mat) ([]TroopCount, error) {
 	if t.templates == nil {
 		return nil, fmt.Errorf("templates not loaded")

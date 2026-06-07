@@ -2,12 +2,12 @@ export namespace adb {
 	
 	export class Health {
 	    // Go type: time
-	    LastCapture: any;
-	    AvgCaptureMs: number;
-	    ConsecutiveFails: number;
-	    CapturesTotal: number;
-	    ErrorsTotal: number;
-	    LastError: string;
+	    last_capture: any;
+	    avg_capture_ms: number;
+	    consecutive_fails: number;
+	    captures_total: number;
+	    errors_total: number;
+	    last_error: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Health(source);
@@ -15,12 +15,12 @@ export namespace adb {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.LastCapture = this.convertValues(source["LastCapture"], null);
-	        this.AvgCaptureMs = source["AvgCaptureMs"];
-	        this.ConsecutiveFails = source["ConsecutiveFails"];
-	        this.CapturesTotal = source["CapturesTotal"];
-	        this.ErrorsTotal = source["ErrorsTotal"];
-	        this.LastError = source["LastError"];
+	        this.last_capture = this.convertValues(source["last_capture"], null);
+	        this.avg_capture_ms = source["avg_capture_ms"];
+	        this.consecutive_fails = source["consecutive_fails"];
+	        this.captures_total = source["captures_total"];
+	        this.errors_total = source["errors_total"];
+	        this.last_error = source["last_error"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
