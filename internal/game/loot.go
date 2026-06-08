@@ -174,7 +174,12 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 			res.Close()
 
 			if maxConf > 0.7 {
-				rect := image.Rect(maxLoc.X+tpl.Cols()+2, maxLoc.Y-2, maxLoc.X+tpl.Cols()+200, maxLoc.Y+tpl.Rows()+2)
+				rect := image.Rect(
+					maxLoc.X+tpl.Cols()+int(2*lr.cal.ScaleX),
+					maxLoc.Y-int(2*lr.cal.ScaleY),
+					maxLoc.X+tpl.Cols()+int(250*lr.cal.ScaleX),
+					maxLoc.Y+tpl.Rows()+int(2*lr.cal.ScaleY),
+				)
 				results[i] = lr.readRow(region, rect)
 				continue
 			}
@@ -210,9 +215,14 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 			res.Close()
 
 			if maxConf > 0.8 {
-				// Anchor to icon. Starting ROI directly inside the icon area (maxLoc.X + 4)
+				// Anchor to icon. Starting ROI directly inside the icon area
 				// because readRow uses Color/Saturation to skip the actual icon bits.
-				rect := image.Rect(maxLoc.X+4, maxLoc.Y-5, maxLoc.X+450, maxLoc.Y+tpl.Rows()+5)
+				rect := image.Rect(
+					maxLoc.X+int(4*lr.cal.ScaleX),
+					maxLoc.Y-int(5*lr.cal.ScaleY),
+					maxLoc.X+int(450*lr.cal.ScaleX),
+					maxLoc.Y+tpl.Rows()+int(5*lr.cal.ScaleY),
+				)
 				results[i] = lr.readRow(screen, rect)
 				continue
 			}
@@ -251,11 +261,16 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		var detected []detectedDigit
 		for i := 0; i < contours.Size(); i++ {
 			rect := gocv.BoundingRect(contours.At(i))
-			if rect.Dy() < 10 || rect.Dy() > 30 || rect.Dx() < 1 || rect.Dx() > 35 { continue }
+			minH := int(10 * lr.cal.ScaleY)
+			maxH := int(35 * lr.cal.ScaleY)
+			minW := int(1 * lr.cal.ScaleX)
+			maxW := int(35 * lr.cal.ScaleX)
+			
+			if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW { continue }
 			
 			// Vertical alignment check
 			blobCenterY := rect.Min.Y + rect.Dy()/2
-			if math.Abs(float64(blobCenterY-roiCenterY)) > float64(gray.Rows())/2.5 { continue }
+			if math.Abs(float64(blobCenterY-roiCenterY)) > float64(gray.Rows())/2.0 { continue }
 
 			// Color Filter: Digits are strictly white/grey (Low Saturation)
 			blobHSV := hsv.Region(rect)
@@ -290,13 +305,14 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 				if !found { cleaned = append(cleaned, d) }
 			}
 
-			// Cluster Detection: Find the group of digits with small gaps (<10px)
+			// Cluster Detection: Find the group of digits with small gaps
 			var clusters [][]detectedDigit
 			if len(cleaned) > 0 {
 				current := []detectedDigit{cleaned[0]}
+				maxGap := int(35 * lr.cal.ScaleX)
 				for i := 1; i < len(cleaned); i++ {
 					gap := cleaned[i].rect.Min.X - cleaned[i-1].rect.Max.X
-					if gap <= 35 {
+					if gap <= maxGap {
 						current = append(current, cleaned[i])
 					} else {
 						clusters = append(clusters, current)
@@ -362,7 +378,9 @@ func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 	
 	// Thin vertical blobs are almost always '1'
 	if bestDigit == -1 || maxConf < 0.55 {
-		if bw >= 1 && bw <= 6 && bh >= 12 { // Narrower and taller
+		minH1 := int(12 * lr.cal.ScaleY)
+		maxW1 := int(6 * lr.cal.ScaleX)
+		if bw >= 1 && bw <= maxW1 && bh >= minH1 { // Narrower and taller
 			fill := float64(gocv.CountNonZero(bin)) / float64(bw*bh)
 			if fill > 0.65 { return detectedDigit{digit: 1, conf: 0.6} }
 		}

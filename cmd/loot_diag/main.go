@@ -133,7 +133,7 @@ func main() {
 	}
 
 	for _, r := range rois {
-		rect := image.Rect(int(44*cal.ScaleX), int(float64(r.y1-2)*cal.ScaleY), int(420*cal.ScaleX), int(float64(r.y2+2)*cal.ScaleY))
+		rect := image.Rect(int(44*cal.ScaleX), int(float64(r.y1-2)*cal.ScaleY), int(450*cal.ScaleX), int(float64(r.y2+2)*cal.ScaleY))
 		drawROI(diag, rect, r.c, fmt.Sprintf("%s: %d", r.name, r.val))
 	}
 
