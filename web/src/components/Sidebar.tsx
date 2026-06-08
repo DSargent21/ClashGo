@@ -51,7 +51,12 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
         <div className="flex items-center mb-10 px-0 overflow-hidden draggable">
           <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center no-drag">
             <div className="w-10 h-10 bg-white dark:bg-zinc-800 rounded-xl flex items-center justify-center shadow-premium dark:shadow-none border border-zinc-100 dark:border-zinc-700">
-              <img src={logo} alt="Logo" className="w-7 h-7 object-contain dark:opacity-80" style={{ width: '28px', height: '28px' }} />
+              <img 
+                src={logo} 
+                alt="Logo" 
+                className="w-7 h-7 object-contain dark:invert dark:brightness-60" 
+                style={{ width: '28px', height: '28px' }} 
+              />
             </div>
           </div>
           <div className={`transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ml-2 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'}`}>
