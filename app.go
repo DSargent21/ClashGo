@@ -149,14 +149,13 @@ func (a *App) saveStats() {
 	}
 	a.mu.Unlock()
 
-	// Persist stats to disk
 	bytes, err := json.MarshalIndent(stats, "", "  ")
 	if err != nil {
 		log.Error().Err(err).Msg("failed to marshal stats")
 		return
 	}
 
-	if err := os.WriteFile("stats.json", bytes, 0644); err != nil {
+	if err := bot.AsyncWriteFile("stats.json", bytes, 0644); err != nil {
 		log.Error().Err(err).Msg("failed to write stats.json")
 	}
 }
@@ -225,35 +224,57 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
 	cfg.Search.Enabled = searchEnabled
 
-	b, err := bot.NewBot(cfg)
-	if err != nil {
-		return BotStatus{Running: false, Message: fmt.Sprintf("Error: %v", err)}
-	}
-
-	b.OnFrame = func(frame string) {
-		runtime.EventsEmit(a.ctx, "live_feed", frame)
-	}
-
-	b.OnStatsUpdate = func() {
-		a.saveStats()
-	}
-
-	a.bot = b
+	// Create a placeholder to indicate the bot is starting
 	a.botCtx, a.cancel = context.WithCancel(context.Background())
 
 	go func() {
+		b, err := bot.NewBot(cfg)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to initialize bot")
+			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Initialization Error: %v", err))
+			
+			a.mu.Lock()
+			a.cancel()
+			a.bot = nil
+			a.mu.Unlock()
+			return
+		}
+
+		b.OnFrame = func(frame string) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "live_feed", frame)
+			}
+		}
+
+		b.OnStatsUpdate = func() {
+			a.saveStats()
+		}
+
+		a.mu.Lock()
+		a.bot = b
+		a.mu.Unlock()
+
 		if err := a.bot.Start(); err != nil {
-			runtime.EventsEmit(a.ctx, "bot_error", err.Error())
+			log.Error().Err(err).Msg("failed to start bot")
+			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Start Error: %v", err))
+			
+			a.mu.Lock()
+			a.bot = nil
+			a.mu.Unlock()
 		}
 	}()
 
-	return BotStatus{Running: true, Message: "Bot started"}
+	return BotStatus{Running: true, Message: "Bot initialization started in background"}
 }
 
 // StopBot stops the bot
 func (a *App) StopBot() BotStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if a.cancel != nil {
+		a.cancel()
+	}
 
 	if a.bot == nil {
 		return BotStatus{Running: false, Message: "Bot not running"}

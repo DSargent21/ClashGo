@@ -1,0 +1,48 @@
+{
+  "slots": [
+    {
+      "x": 62,
+      "name": "Electro Dragon"
+    },
+    {
+      "x": 134,
+      "name": "Balloon"
+    },
+    {
+      "x": 212,
+      "name": "Siege Machine"
+    },
+    {
+      "x": 287,
+      "name": "Barbarian King"
+    },
+    {
+      "x": 360,
+      "name": "Minion Prince"
+    },
+    {
+      "x": 433,
+      "name": "Grand Warden"
+    },
+    {
+      "x": 511,
+      "name": "Royal Champion"
+    },
+    {
+      "x": 584,
+      "name": "Rage Spell"
+    },
+    {
+      "x": 657,
+      "name": "Ice Spell"
+    },
+    {
+      "x": 730,
+      "name": "Empty"
+    },
+    {
+      "x": 798,
+      "name": "Empty"
+    }
+  ]
+}

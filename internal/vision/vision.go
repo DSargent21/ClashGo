@@ -45,16 +45,18 @@ func MatchMultiScale(screen, template gocv.Mat, minScale, maxScale float64, step
 }
 
 func MatchMultiScaleROI(screen, template gocv.Mat, minScale, maxScale float64, steps int, threshold float32, roi image.Rectangle) ([]Match, error) {
+	return MatchMultiScaleROICached(screen, template, "", minScale, maxScale, steps, threshold, roi)
+}
+
+func MatchMultiScaleROICached(screen, template gocv.Mat, templateName string, minScale, maxScale float64, steps int, threshold float32, roi image.Rectangle) ([]Match, error) {
 	if screen.Empty() || template.Empty() {
 		return nil, fmt.Errorf("empty image or template")
 	}
 
-	// Safety check: ensure template is not larger than screen
 	if template.Cols() > screen.Cols() || template.Rows() > screen.Rows() {
 		return nil, nil
 	}
 
-	// Clamp ROI to screen bounds
 	if roi.Min.X < 0 {
 		roi.Min.X = 0
 	}
@@ -74,7 +76,7 @@ func MatchMultiScaleROI(screen, template gocv.Mat, minScale, maxScale float64, s
 
 	searchArea := screen.Region(roi)
 	defer searchArea.Close()
-	
+
 	if searchArea.Empty() {
 		return nil, nil
 	}
@@ -82,55 +84,67 @@ func MatchMultiScaleROI(screen, template gocv.Mat, minScale, maxScale float64, s
 	bestConfidence := -1.0
 	var bestMatch *Match
 
-	// Optimization: if steps is 1, just use minScale
 	if steps <= 1 {
 		steps = 1
 	}
 
+	var scaledTemplates []gocv.Mat
+	if templateName != "" {
+		scaledTemplates = GetScaledTemplates(templateName, template, minScale, maxScale, steps)
+		steps = len(scaledTemplates)
+	}
+
 	for i := 0; i < steps; i++ {
-		scale := minScale
-		if steps > 1 {
-			scale = minScale + (maxScale-minScale)*float64(i)/float64(steps-1)
-		}
+		matchFound := func(i int) bool {
+			var scaledTpl gocv.Mat
+			var scale float64
 
-		scaledTpl := gocv.NewMat()
-		gocv.Resize(template, &scaledTpl, image.Point{}, scale, scale, gocv.InterpolationLinear)
-
-		if scaledTpl.Empty() || scaledTpl.Cols() > searchArea.Cols() || scaledTpl.Rows() > searchArea.Rows() {
-			scaledTpl.Close()
-			continue
-		}
-
-		if scaledTpl.Cols() < 2 || scaledTpl.Rows() < 2 {
-			scaledTpl.Close()
-			continue
-		}
-
-		res := gocv.NewMat()
-		mask := gocv.NewMat()
-		gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, mask)
-		mask.Close()
-
-		if res.Empty() {
-			res.Close()
-			scaledTpl.Close()
-			continue
-		}
-
-		_, maxVal, _, maxLoc := gocv.MinMaxLoc(res)
-		if float64(maxVal) > bestConfidence {
-			bestConfidence = float64(maxVal)
-			cx := maxLoc.X + scaledTpl.Cols()/2 + roi.Min.X
-			cy := maxLoc.Y + scaledTpl.Rows()/2 + roi.Min.Y
-			bestMatch = &Match{
-				Point:      image.Pt(cx, cy),
-				Confidence: float64(maxVal),
-				Scale:      scale,
+			if templateName != "" && i < len(scaledTemplates) {
+				scaledTpl = scaledTemplates[i]
+				scale = minScale
+				if steps > 1 {
+					scale = minScale + (maxScale-minScale)*float64(i)/float64(steps-1)
+				}
+			} else {
+				scale = minScale
+				if steps > 1 {
+					scale = minScale + (maxScale-minScale)*float64(i)/float64(steps-1)
+				}
+				scaledTpl = gocv.NewMat()
+				gocv.Resize(template, &scaledTpl, image.Point{}, scale, scale, gocv.InterpolationLinear)
+				defer scaledTpl.Close()
 			}
-		}
 
-		res.Close()
-		scaledTpl.Close()
+			if scaledTpl.Empty() || scaledTpl.Cols() > searchArea.Cols() || scaledTpl.Rows() > searchArea.Rows() {
+				return false
+			}
+
+			if scaledTpl.Cols() < 2 || scaledTpl.Rows() < 2 {
+				return false
+			}
+
+			res := GetMat(searchArea.Rows()-scaledTpl.Rows()+1, searchArea.Cols()-scaledTpl.Cols()+1, gocv.MatTypeCV32FC1)
+			defer PutMat(res)
+			gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+
+			if res.Empty() {
+				return false
+			}
+
+			_, maxVal, _, maxLoc := gocv.MinMaxLoc(res)
+			if float64(maxVal) > bestConfidence {
+				bestConfidence = float64(maxVal)
+				cx := maxLoc.X + scaledTpl.Cols()/2 + roi.Min.X
+				cy := maxLoc.Y + scaledTpl.Rows()/2 + roi.Min.Y
+				bestMatch = &Match{
+					Point:      image.Pt(cx, cy),
+					Confidence: float64(maxVal),
+					Scale:      scale,
+				}
+			}
+			return true
+		}(i)
+		_ = matchFound
 	}
 
 	if bestMatch != nil && bestMatch.Confidence >= float64(threshold) {
@@ -148,6 +162,10 @@ func MatchMultiScaleAll(screen, template gocv.Mat, minScale, maxScale float64, s
 }
 
 func MatchMultiScaleAllROI(screen, template gocv.Mat, minScale, maxScale float64, steps int, threshold float32, roi image.Rectangle) ([]Match, error) {
+	return MatchMultiScaleAllROICached(screen, template, "", minScale, maxScale, steps, threshold, roi)
+}
+
+func MatchMultiScaleAllROICached(screen, template gocv.Mat, templateName string, minScale, maxScale float64, steps int, threshold float32, roi image.Rectangle) ([]Match, error) {
 	if screen.Empty() || template.Empty() {
 		return nil, fmt.Errorf("empty image or template")
 	}
@@ -170,64 +188,75 @@ func MatchMultiScaleAllROI(screen, template gocv.Mat, minScale, maxScale float64
 	}
 
 	var allMatches []Match
+	var scaledTemplates []gocv.Mat
+	if templateName != "" {
+		scaledTemplates = GetScaledTemplates(templateName, template, minScale, maxScale, steps)
+		steps = len(scaledTemplates)
+	}
 
 	for i := 0; i < steps; i++ {
-		scale := minScale
-		if steps > 1 {
-			scale = minScale + (maxScale-minScale)*float64(i)/float64(steps-1)
-		}
+		matchFound := func(i int) bool {
+			var scaledTpl gocv.Mat
+			var scale float64
 
-		scaledTpl := gocv.NewMat()
-		gocv.Resize(template, &scaledTpl, image.Point{}, scale, scale, gocv.InterpolationLinear)
-
-		if scaledTpl.Empty() || scaledTpl.Cols() > searchArea.Cols() || scaledTpl.Rows() > searchArea.Rows() {
-			scaledTpl.Close()
-			continue
-		}
-		if scaledTpl.Cols() < 2 || scaledTpl.Rows() < 2 {
-			scaledTpl.Close()
-			continue
-		}
-
-		res := gocv.NewMat()
-		gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
-
-		if res.Empty() {
-			res.Close()
-			scaledTpl.Close()
-			continue
-		}
-
-		// Iteratively find the best match, record it, and mask it out.
-		for {
-			_, maxVal, _, maxLoc := gocv.MinMaxLoc(res)
-			if float64(maxVal) < float64(threshold) {
-				break
+			if templateName != "" && i < len(scaledTemplates) {
+				scaledTpl = scaledTemplates[i]
+				scale = minScale
+				if steps > 1 {
+					scale = minScale + (maxScale-minScale)*float64(i)/float64(steps-1)
+				}
+			} else {
+				scale = minScale
+				if steps > 1 {
+					scale = minScale + (maxScale-minScale)*float64(i)/float64(steps-1)
+				}
+				scaledTpl = gocv.NewMat()
+				gocv.Resize(template, &scaledTpl, image.Point{}, scale, scale, gocv.InterpolationLinear)
+				defer scaledTpl.Close()
 			}
-			cx := maxLoc.X + scaledTpl.Cols()/2 + roi.Min.X
-			cy := maxLoc.Y + scaledTpl.Rows()/2 + roi.Min.Y
-			allMatches = append(allMatches, Match{
-				Point:      image.Pt(cx, cy),
-				Confidence: float64(maxVal),
-				Scale:      scale,
-			})
 
-			// Suppress this region in the result matrix so MinMaxLoc finds the
-			// next peak. Suppression radius = 1 template width.
-			suppress := image.Rect(
-				maxLoc.X-scaledTpl.Cols()/2,
-				maxLoc.Y-scaledTpl.Rows()/2,
-				maxLoc.X+scaledTpl.Cols()/2,
-				maxLoc.Y+scaledTpl.Rows()/2,
-			)
-			suppress = suppress.Intersect(image.Rect(0, 0, res.Cols(), res.Rows()))
-			if suppress.Dx() > 0 && suppress.Dy() > 0 {
-				gocv.Rectangle(&res, suppress, color.RGBA{0, 0, 0, 255}, -1)
+			if scaledTpl.Empty() || scaledTpl.Cols() > searchArea.Cols() || scaledTpl.Rows() > searchArea.Rows() {
+				return false
 			}
-		}
+			if scaledTpl.Cols() < 2 || scaledTpl.Rows() < 2 {
+				return false
+			}
 
-		res.Close()
-		scaledTpl.Close()
+			res := GetMat(searchArea.Rows()-scaledTpl.Rows()+1, searchArea.Cols()-scaledTpl.Cols()+1, gocv.MatTypeCV32FC1)
+			defer PutMat(res)
+			gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+
+			if res.Empty() {
+				return false
+			}
+
+			for {
+				_, maxVal, _, maxLoc := gocv.MinMaxLoc(res)
+				if float64(maxVal) < float64(threshold) {
+					break
+				}
+				cx := maxLoc.X + scaledTpl.Cols()/2 + roi.Min.X
+				cy := maxLoc.Y + scaledTpl.Rows()/2 + roi.Min.Y
+				allMatches = append(allMatches, Match{
+					Point:      image.Pt(cx, cy),
+					Confidence: float64(maxVal),
+					Scale:      scale,
+				})
+
+				suppress := image.Rect(
+					maxLoc.X-scaledTpl.Cols()/2,
+					maxLoc.Y-scaledTpl.Rows()/2,
+					maxLoc.X+scaledTpl.Cols()/2,
+					maxLoc.Y+scaledTpl.Rows()/2,
+				)
+				suppress = suppress.Intersect(image.Rect(0, 0, res.Cols(), res.Rows()))
+				if suppress.Dx() > 0 && suppress.Dy() > 0 {
+					gocv.Rectangle(&res, suppress, color.RGBA{0, 0, 0, 255}, -1)
+				}
+			}
+			return true
+		}(i)
+		_ = matchFound
 	}
 
 	if len(allMatches) > 0 {

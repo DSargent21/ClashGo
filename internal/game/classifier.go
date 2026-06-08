@@ -118,8 +118,9 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 			totalScore += rule.Weight // Add weight exactly once
 			
 			scores = append(scores, scoredState{
-				State: rule.State,
-				Score: totalScore,
+				State:    rule.State,
+				Score:    totalScore,
+				Priority: rule.Priority,
 			})
 		}
 	}
@@ -130,6 +131,9 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 	}
 
 	sort.Slice(scores, func(i, j int) bool {
+		if scores[i].Priority != scores[j].Priority {
+			return scores[i].Priority > scores[j].Priority
+		}
 		return scores[i].Score > scores[j].Score
 	})
 
@@ -170,15 +174,39 @@ func (c *Classifier) ForceState(state GameState) {
 }
 
 type scoredState struct {
-	State GameState
-	Score int
+	State    GameState
+	Score    int
+	Priority int
 }
 
 func (c *Classifier) buildRules() {
 	baseRules := []StateRule{
 		{
+			State:    StateLoading,
+			Priority: 99,
+			Weight:   99,
+			Desc:     "loading screen",
+			MinPass:  1,
+			Checks: []PixelCheck{
+				{324, 499, 0xCB, 0xCD, 0xD3, 15},
+			},
+		},
+		{
+			State:    StateSearchMap,
+			Priority: 98,
+			Weight:   98,
+			Desc:     "search map - clouds",
+			MinPass:  1,
+			Checks: []PixelCheck{
+				{290, 366, 0xFF, 0xFF, 0xFF, 30},
+				{135, 204, 0xEE, 0xF5, 0xFF, 30},
+				{405, 509, 0xEE, 0xF5, 0xFF, 30},
+				{38, 603, 0x0A, 0x22, 0x3F, 25},
+			},
+		},
+		{
 			State:    StateWelcomeBack,
-			Priority: 101,
+			Priority: 97,
 			Weight:   110,
 			Desc:     "welcome back chief popup",
 			Template: "btn_okay",
@@ -192,7 +220,7 @@ func (c *Classifier) buildRules() {
 		},
 		{
 			State:    StateGemDialog,
-			Priority: 100,
+			Priority: 96,
 			Weight:   100,
 			Desc:     "gem purchase popup",
 			MinPass:  3,
@@ -283,19 +311,6 @@ func (c *Classifier) buildRules() {
 			},
 		},
 		{
-			State:    StateSearchMap,
-			Priority: 70,
-			Weight:   70,
-			Desc:     "search map - clouds",
-			MinPass:  1,
-			Checks: []PixelCheck{
-				{290, 366, 0xFF, 0xFF, 0xFF, 30},
-				{135, 204, 0xEE, 0xF5, 0xFF, 30},
-				{405, 509, 0xEE, 0xF5, 0xFF, 30},
-				{38, 603, 0x0A, 0x22, 0x3F, 25},
-			},
-		},
-		{
 			State:    StateBuilderBase,
 			Priority: 65,
 			Weight:   65,
@@ -360,7 +375,7 @@ func (c *Classifier) buildRules() {
 		},
 		{
 			State:    StateArmySelection,
-			Priority: 48,
+			Priority: 86,
 			Weight:   100,
 			Desc:     "army selection menu - white arrow or battle button",
 			Template: "btn_battle",
@@ -370,16 +385,6 @@ func (c *Classifier) buildRules() {
 				{512, 189, 0xFF, 0xFF, 0xFF, 30},
 				// Green Battle button center (REF: 725, 535)
 				{725, 535, 0x88, 0xD0, 0x39, 40},
-			},
-		},
-		{
-			State:    StateLoading,
-			Priority: 45,
-			Weight:   45,
-			Desc:     "loading screen",
-			MinPass:  1,
-			Checks: []PixelCheck{
-				{324, 499, 0xCB, 0xCD, 0xD3, 15},
 			},
 		},
 	}

@@ -119,7 +119,7 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 			}
 
 			// Search for Wall text with a robust threshold of 0.78 and 60 scale steps to avoid false positives
-			matches, _ := vision.MatchMultiScaleROI(screen, wallTpl, 0.3, 1.5, 60, 0.78, menuROI)
+			matches, _ := vision.MatchMultiScaleROICached(screen, wallTpl, "text_wall", 0.3, 1.5, 60, 0.78, menuROI)
 			screen.Close()
 
 			if len(matches) > 0 {
@@ -175,7 +175,7 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 
 		// ROI: bottom half of the screen
 		bottomROI := image.Rect(0, int(400 * b.cal.ScaleY), screen.Cols(), screen.Rows())
-		rawMatches, _ := vision.MatchMultiScaleAllROI(screen, upgradeTpl, 0.3, 1.5, 60, 0.72, bottomROI)
+		rawMatches, _ := vision.MatchMultiScaleAllROICached(screen, upgradeTpl, "btn_upgrade_wall", 0.3, 1.5, 60, 0.72, bottomROI)
 		screen.Close()
 
 		// Filter and group matches to get unique buttons
@@ -236,7 +236,7 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 				continue
 			}
 
-			confirmMatches, _ := vision.MatchMultiScaleROI(confirmScreen, confirmTpl, 0.3, 1.5, 60, 0.70, bottomROI)
+			confirmMatches, _ := vision.MatchMultiScaleROICached(confirmScreen, confirmTpl, "btn_confirm_upgrade", 0.3, 1.5, 60, 0.70, bottomROI)
 
 			if len(confirmMatches) > 0 {
 				bestConfirm := confirmMatches[0]
