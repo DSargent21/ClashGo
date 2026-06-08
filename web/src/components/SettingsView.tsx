@@ -6,9 +6,10 @@ interface SettingsViewProps {
   adbPort: number;
   darkMode: boolean;
   setDarkMode: (val: boolean) => void;
+  onResetStats: () => void;
 }
 
-const SettingsView: React.FC<SettingsViewProps> = React.memo(({ stats, adbPort, darkMode, setDarkMode }) => {
+const SettingsView: React.FC<SettingsViewProps> = React.memo(({ stats, adbPort, darkMode, setDarkMode, onResetStats }) => {
   return (
     <div className="bg-white dark:bg-zinc-900 p-10 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none max-w-2xl mx-auto transition-all duration-500">
 
@@ -70,6 +71,25 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({ stats, adbPort, 
             </div>
           </div>
         ))}
+
+        {/* Reset Section */}
+        <div className="pt-8 mt-8 border-t border-zinc-50 dark:border-zinc-800/50">
+           <button 
+             onClick={onResetStats}
+             className="w-full flex justify-between items-center bg-rose-50/50 dark:bg-rose-950/10 p-6 rounded-2xl border border-rose-100/50 dark:border-rose-900/20 hover:bg-rose-100/50 dark:hover:bg-rose-950/20 transition-all duration-300 group"
+           >
+             <div className="flex items-center gap-5">
+               <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-rose-100 dark:border-rose-900 group-hover:scale-105 transition-all duration-300 shadow-sm">
+                 <span className="material-symbols-outlined text-xl text-rose-500 dark:text-rose-400" style={{ fontVariationSettings: "'FILL' 1" }}>delete_forever</span>
+               </div>
+               <div className="flex flex-col text-left">
+                 <span className="text-[10px] font-black text-rose-400 dark:text-rose-500 uppercase tracking-[0.2em] mb-0.5">Danger Zone</span>
+                 <span className="text-sm font-bold text-rose-600 dark:text-rose-400">Reset All Statistics</span>
+               </div>
+             </div>
+             <span className="material-symbols-outlined text-rose-300 dark:text-rose-800 group-hover:translate-x-1 transition-transform">chevron_right</span>
+           </button>
+        </div>
       </div>
     </div>
   );

@@ -63,10 +63,11 @@ type Bot struct {
 	lastFrame      atomic.Value // Stores the latest base64 encoded frame
 	lastFrameTime  time.Time
 
-	OnFrame func(string)
-	}
+	OnFrame       func(string)
+	OnStatsUpdate func()
+}
 
-	func NewBot(cfg *config.BotConfig) (*Bot, error) {
+func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	zl := &adbLogAdapter{log: log.Logger}
 
 	client := adb.NewClient(
@@ -632,6 +633,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		b.logger.Info().
 			Msg("loot too low, skipping base...")
 		b.skipsCount.Add(1)
+		if b.OnStatsUpdate != nil {
+			b.OnStatsUpdate()
+		}
 
 		screen.Close() // Close before findAndClick which does its own capture
 
@@ -691,6 +695,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				case 1: b.stars1.Add(1)
 				case 2: b.stars2.Add(1)
 				case 3: b.stars3.Add(1)
+				}
+				
+				if b.OnStatsUpdate != nil {
+					b.OnStatsUpdate()
 				}
 				
 				b.logger.Info().

@@ -66,7 +66,14 @@ func (a *App) startup(ctx context.Context) {
 
 	// Load previous stats from disk
 	if data, err := os.ReadFile("stats.json"); err == nil {
-		_ = json.Unmarshal(data, &a.lastStats)
+		if err := json.Unmarshal(data, &a.lastStats); err != nil {
+			log.Error().Err(err).Msg("failed to load stats.json")
+		}
+	}
+
+	// Sync stats from history if stats.json was missing or empty but history exists
+	if a.lastStats.AttacksCompleted == 0 {
+		a.rebuildStatsFromHistory()
 	}
 
 	// Setup log bridge
@@ -77,6 +84,93 @@ func (a *App) startup(ctx context.Context) {
 
 	// Start Web Server for Remote Access
 	go a.startWebServer()
+}
+
+func (a *App) rebuildStatsFromHistory() {
+	history := a.GetAttackHistory()
+	if len(history) == 0 {
+		return
+	}
+
+	var gold, elixir, de int64
+	var s0, s1, s2, s3 int32
+	for _, rep := range history {
+		gold += int64(rep.GoldStolen)
+		elixir += int64(rep.ElixirStolen)
+		de += int64(rep.DarkElixirStolen)
+		switch rep.Stars {
+		case 0:
+			s0++
+		case 1:
+			s1++
+		case 2:
+			s2++
+		case 3:
+			s3++
+		}
+	}
+
+	a.mu.Lock()
+	a.lastStats = bot.BotStats{
+		AttacksCompleted: int32(len(history)),
+		TotalGold:        gold,
+		TotalElixir:      elixir,
+		TotalDE:          de,
+		Stars0:           s0,
+		Stars1:           s1,
+		Stars2:           s2,
+		Stars3:           s3,
+	}
+	a.mu.Unlock()
+	a.saveStats()
+}
+
+func (a *App) shutdown(ctx context.Context) {
+	a.saveStats()
+}
+
+func (a *App) saveStats() {
+	a.mu.Lock()
+	stats := a.lastStats
+	if a.bot != nil {
+		current := a.bot.Stats()
+		stats = bot.BotStats{
+			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
+			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
+			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
+			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
+			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
+			Stars0:           a.lastStats.Stars0 + current.Stars0,
+			Stars1:           a.lastStats.Stars1 + current.Stars1,
+			Stars2:           a.lastStats.Stars2 + current.Stars2,
+			Stars3:           a.lastStats.Stars3 + current.Stars3,
+			Uptime:           a.lastStats.Uptime + current.Uptime,
+		}
+	}
+	a.mu.Unlock()
+
+	// Persist stats to disk
+	bytes, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		log.Error().Err(err).Msg("failed to marshal stats")
+		return
+	}
+
+	if err := os.WriteFile("stats.json", bytes, 0644); err != nil {
+		log.Error().Err(err).Msg("failed to write stats.json")
+	}
+}
+
+func (a *App) ResetStats() {
+	a.mu.Lock()
+	a.lastStats = bot.BotStats{}
+	if a.bot != nil {
+		// We can't easily reset atomic counters in a running bot without adding a Reset method there too.
+		// For now, stopping the bot might be required for a full reset, or we just clear the persistent part.
+	}
+	a.mu.Unlock()
+	_ = os.Remove("stats.json")
+	_ = os.Remove("attack_history.json")
 }
 
 func (a *App) startWebServer() {
@@ -90,6 +184,14 @@ func (a *App) startWebServer() {
 		defer a.mu.Unlock()
 		running := a.bot != nil
 		return c.JSON(200, map[string]interface{}{"running": running})
+	})
+
+	e.GET("/stats", func(c echo.Context) error {
+		return c.JSON(200, a.GetStats())
+	})
+
+	e.GET("/history", func(c echo.Context) error {
+		return c.JSON(200, a.GetAttackHistory())
 	})
 
 	// Static assets from embed would be ideal, but for now just API
@@ -132,6 +234,10 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 		runtime.EventsEmit(a.ctx, "live_feed", frame)
 	}
 
+	b.OnStatsUpdate = func() {
+		a.saveStats()
+	}
+
 	a.bot = b
 	a.botCtx, a.cancel = context.WithCancel(context.Background())
 
@@ -169,17 +275,17 @@ func (a *App) StopBot() BotStatus {
 		AdbHealth:        current.AdbHealth,
 	}
 
-	// Persist stats to disk
-	if bytes, err := json.MarshalIndent(a.lastStats, "", "  "); err == nil {
-		_ = os.WriteFile("stats.json", bytes, 0644)
-	}
-
 	a.cancel()
 	a.bot.Stop()
 	a.bot = nil
 
+	a.mu.Unlock()
+	a.saveStats()
+	a.mu.Lock()
+
 	return BotStatus{Running: false, Message: "Bot stopped"}
 }
+
 
 // IsRunning returns if the bot is currently running
 func (a *App) IsRunning() bool {

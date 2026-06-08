@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   StartBot, StopBot, GetConfig, GetStats, 
   GetAttackHistory, GetLiveScreenshot, SaveConfig, 
-  GetStrategies, IsRunning, GetLogs
+  GetStrategies, IsRunning, GetLogs, ResetStats
 } from '../wailsjs/go/main/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { BotStats, AttackReport, TabType } from './types';
@@ -208,6 +208,31 @@ function App() {
 
   const clearLogs = useCallback(() => setLogs([]), []);
 
+  const resetStats = useCallback(async () => {
+    if (window.confirm('Are you sure you want to reset all persistent stats and history?')) {
+      try {
+        await ResetStats();
+        setHistory([]);
+        setStats({
+          attacks_completed: 0,
+          search_skips: 0,
+          total_gold: 0,
+          total_elixir: 0,
+          total_de: 0,
+          stars_0: 0,
+          stars_1: 0,
+          stars_2: 0,
+          stars_3: 0,
+          uptime: 0,
+          adb_health: { avg_capture_ms: 0, consecutive_fails: 0 }
+        });
+        setStatusMsg('STATS RESET');
+      } catch (err) {
+        console.error("Failed to reset stats:", err);
+      }
+    }
+  }, []);
+
   const sidebarProps = useMemo(() => ({
     tab, setTab, 
     expanded: sidebarExpanded, setExpanded: setSidebarExpanded,
@@ -280,7 +305,7 @@ function App() {
           />
         )}
 
-        {tab === 'settings' && <SettingsView stats={stats} adbPort={adbPort} darkMode={darkMode} setDarkMode={setDarkMode} />}
+        {tab === 'settings' && <SettingsView stats={stats} adbPort={adbPort} darkMode={darkMode} setDarkMode={setDarkMode} onResetStats={resetStats} />}
         </div>
       </main>
 
