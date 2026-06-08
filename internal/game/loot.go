@@ -1,9 +1,11 @@
 package game
 
 import (
+	"encoding/json"
 	"fmt"
 	"image"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -89,10 +91,9 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		{"de", 100, 395, 450, 420},
 	}
 	battleSearch := image.Rect(
-		int(20*lr.cal.ScaleX), int(300*lr.cal.ScaleY),
-		int(480*lr.cal.ScaleX), int(450*lr.cal.ScaleY),
+		int(20*lr.cal.ScaleX), int(200*lr.cal.ScaleY), // Expanded Y
+		int(480*lr.cal.ScaleX), int(550*lr.cal.ScaleY),
 	)
-	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
 
 	// Bonus Loot (Right column box)
 	bonusRois := []struct {
@@ -104,9 +105,34 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		{"de", 550, 432, 720, 450},
 	}
 	bonusSearch := image.Rect(
-		int(500*lr.cal.ScaleX), int(350*lr.cal.ScaleY),
-		int(780*lr.cal.ScaleX), int(500*lr.cal.ScaleY),
+		int(500*lr.cal.ScaleX), int(200*lr.cal.ScaleY), // Expanded Y
+		int(800*lr.cal.ScaleX), int(600*lr.cal.ScaleY), // Expanded X/Y
 	)
+
+	// Load custom ROIs if they exist
+	if data, err := os.ReadFile("assets/battle_loot_rois.json"); err == nil {
+		var custom struct {
+			BattleSearch struct{ X1, Y1, X2, Y2 int } `json:"battleSearch"`
+			BonusSearch  struct{ X1, Y1, X2, Y2 int } `json:"bonusSearch"`
+		}
+		if json.Unmarshal(data, &custom) == nil {
+			battleSearch = image.Rect(
+				int(float64(custom.BattleSearch.X1)*lr.cal.ScaleX),
+				int(float64(custom.BattleSearch.Y1)*lr.cal.ScaleY),
+				int(float64(custom.BattleSearch.X2)*lr.cal.ScaleX),
+				int(float64(custom.BattleSearch.Y2)*lr.cal.ScaleY),
+			)
+			bonusSearch = image.Rect(
+				int(float64(custom.BonusSearch.X1)*lr.cal.ScaleX),
+				int(float64(custom.BonusSearch.Y1)*lr.cal.ScaleY),
+				int(float64(custom.BonusSearch.X2)*lr.cal.ScaleX),
+				int(float64(custom.BonusSearch.Y2)*lr.cal.ScaleY),
+			)
+			lr.logger.Info().Msg("Loaded custom battle loot ROIs from assets/battle_loot_rois.json")
+		}
+	}
+
+	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
 	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois)
 
 	// Star Detection (Search for yellow pixel clusters in the center-top results area)
@@ -173,12 +199,14 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 			_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
 			res.Close()
 
-			if maxConf > 0.7 {
+			if maxConf > 0.65 {
+				// Robust anchor: start slightly inside the icon to catch digits immediately after.
+				// readRow uses color/saturation filtering to ignore the actual icon pixels.
 				rect := image.Rect(
-					maxLoc.X+tpl.Cols()+int(2*lr.cal.ScaleX),
-					maxLoc.Y-int(2*lr.cal.ScaleY),
-					maxLoc.X+tpl.Cols()+int(250*lr.cal.ScaleX),
-					maxLoc.Y+tpl.Rows()+int(2*lr.cal.ScaleY),
+					maxLoc.X+int(4*lr.cal.ScaleX),
+					maxLoc.Y-int(5*lr.cal.ScaleY),
+					maxLoc.X+int(350*lr.cal.ScaleX), // Large enough to cover all digits
+					maxLoc.Y+tpl.Rows()+int(5*lr.cal.ScaleY),
 				)
 				results[i] = lr.readRow(region, rect)
 				continue
