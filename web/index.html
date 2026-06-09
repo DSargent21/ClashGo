@@ -8,6 +8,27 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Geist:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet"/>
+    <script>
+        (function() {
+            try {
+                const darkMode = localStorage.getItem('darkMode');
+                const supportDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches === true;
+                if (darkMode === 'true' || (darkMode === null && supportDarkMode)) {
+                    document.documentElement.classList.add('dark');
+                } else {
+                    document.documentElement.classList.remove('dark');
+                }
+            } catch (e) {}
+        })();
+    </script>
+    <style>
+        html, body {
+            background-color: #fafafa;
+        }
+        html.dark, html.dark body {
+            background-color: #09090b;
+        }
+    </style>
 </head>
 <body>
 <div id="root"></div>

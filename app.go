@@ -64,17 +64,9 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// Load previous stats from disk
-	if data, err := os.ReadFile("stats.json"); err == nil {
-		if err := json.Unmarshal(data, &a.lastStats); err != nil {
-			log.Error().Err(err).Msg("failed to load stats.json")
-		}
-	}
-
-	// Sync stats from history if stats.json was missing or empty but history exists
-	if a.lastStats.AttacksCompleted == 0 {
-		a.rebuildStatsFromHistory()
-	}
+	// Ensure fresh stats and history every boot
+	_ = os.Remove("stats.json")
+	_ = os.Remove("attack_history.json")
 
 	// Setup log bridge
 	wailsWriter := &WailsLogWriter{app: a}
@@ -84,45 +76,6 @@ func (a *App) startup(ctx context.Context) {
 
 	// Start Web Server for Remote Access
 	go a.startWebServer()
-}
-
-func (a *App) rebuildStatsFromHistory() {
-	history := a.GetAttackHistory()
-	if len(history) == 0 {
-		return
-	}
-
-	var gold, elixir, de int64
-	var s0, s1, s2, s3 int32
-	for _, rep := range history {
-		gold += int64(rep.GoldStolen)
-		elixir += int64(rep.ElixirStolen)
-		de += int64(rep.DarkElixirStolen)
-		switch rep.Stars {
-		case 0:
-			s0++
-		case 1:
-			s1++
-		case 2:
-			s2++
-		case 3:
-			s3++
-		}
-	}
-
-	a.mu.Lock()
-	a.lastStats = bot.BotStats{
-		AttacksCompleted: int32(len(history)),
-		TotalGold:        gold,
-		TotalElixir:      elixir,
-		TotalDE:          de,
-		Stars0:           s0,
-		Stars1:           s1,
-		Stars2:           s2,
-		Stars3:           s3,
-	}
-	a.mu.Unlock()
-	a.saveStats()
 }
 
 func (a *App) shutdown(ctx context.Context) {

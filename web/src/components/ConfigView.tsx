@@ -55,9 +55,9 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {[
-              { label: 'Min Gold', value: goldThreshold, setter: setGoldThreshold, icon: 'payments', color: 'text-amber-500', bg: 'bg-amber-500/10' },
+              { label: 'Min Gold', value: goldThreshold, setter: setGoldThreshold, icon: 'monetization_on', color: 'text-amber-500', bg: 'bg-amber-500/10' },
               { label: 'Min Elixir', value: elixirThreshold, setter: setElixirThreshold, icon: 'water_drop', color: 'text-fuchsia-500', bg: 'bg-fuchsia-500/10' },
-              { label: 'Min Dark Elixir', value: deThreshold, setter: setDeThreshold, icon: 'database', color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800' }
+              { label: 'Min Dark Elixir', value: deThreshold, setter: setDeThreshold, icon: 'water_drop', color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800' }
             ].map((item, idx) => (
               <div key={idx} className="space-y-4">
                 <label className="flex items-center gap-3 text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">

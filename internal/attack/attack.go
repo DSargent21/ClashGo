@@ -590,6 +590,18 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		
 		// Redeploy remaining slots
 		for _, slot := range remainingActiveSlots {
+			// Skip if this slot was a hero we already deployed (hero cards stay on bar)
+			isDeployedHero := false
+			for _, hp := range deployedHeroSlots {
+				if math.Abs(float64(slot.X-hp.X)) < float64(w)*0.04 {
+					isDeployedHero = true
+					break
+				}
+			}
+			if isDeployedHero {
+				continue
+			}
+
 			e.logger.Info().Int("x", slot.X).Str("category", slot.Category).Msg("re-deploying remaining slot")
 			
 			// Select the slot

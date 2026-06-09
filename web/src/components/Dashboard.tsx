@@ -44,9 +44,9 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       {/* Metrics Row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         {[
-          { label: 'Gold Looted', value: stats.total_gold, color: 'text-amber-500', bg: 'bg-amber-500/10', icon: 'payments', rate: getRate(stats.total_gold) },
+          { label: 'Gold Looted', value: stats.total_gold, color: 'text-amber-500', bg: 'bg-amber-500/10', icon: 'monetization_on', rate: getRate(stats.total_gold) },
           { label: 'Elixir Looted', value: stats.total_elixir, color: 'text-fuchsia-500', bg: 'bg-fuchsia-500/10', icon: 'water_drop', rate: getRate(stats.total_elixir) },
-          { label: 'Dark Elixir', value: stats.total_de, color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800', icon: 'database', rate: getRate(stats.total_de) }
+          { label: 'Dark Elixir', value: stats.total_de, color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800', icon: 'water_drop', rate: getRate(stats.total_de) }
         ].map((item, idx) => (
           <div key={idx} className="bg-white dark:bg-zinc-900 p-6 rounded-[2.5rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none hover:shadow-premium-hover dark:hover:bg-zinc-800/50 transition-all duration-300 group">
             <div className="flex items-center justify-between mb-5">
@@ -92,16 +92,16 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                   <tr key={i} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/40 transition-colors group">
                     <td className="px-10 py-4">
                       <div className="flex gap-6">
-                        <div className="flex items-center gap-2.5 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                          <div className="w-2 h-2 bg-amber-400 rounded-full shadow-[0_0_8px_rgba(251,191,36,0.3)]"></div> 
+                        <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
+                          <span className="material-symbols-outlined text-amber-500 text-base">monetization_on</span> 
                           {rep.gold_stolen.toLocaleString()}
                         </div>
-                        <div className="flex items-center gap-2.5 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                          <div className="w-2 h-2 bg-fuchsia-400 rounded-full shadow-[0_0_8px_rgba(192,38,211,0.3)]"></div> 
+                        <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
+                          <span className="material-symbols-outlined text-fuchsia-500 text-base">water_drop</span> 
                           {rep.elixir_stolen.toLocaleString()}
                         </div>
-                        <div className="flex items-center gap-2.5 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                          <div className="w-2 h-2 bg-zinc-900 dark:bg-zinc-400 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.1)]"></div> 
+                        <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
+                          <span className="material-symbols-outlined text-zinc-900 dark:text-zinc-400 text-base">water_drop</span> 
                           {rep.dark_elixir_stolen.toLocaleString()}
                         </div>
                       </div>
