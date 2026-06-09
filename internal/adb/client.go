@@ -264,6 +264,7 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 
 // Tap performs a direct ADB tap.
 func (c *Client) Tap(x, y int) error {
+	c.log.Info(fmt.Sprintf("ADB TAP: (%d, %d)", x, y))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

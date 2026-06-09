@@ -930,9 +930,9 @@ func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
 	case "btn_battle":
 		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
 	case "btn_army_arrow":
-		roi = image.Rect(300, 100, 700, 300) // top-center
+		roi = image.Rect(350, 100, 700, 300) // top-center
 	case "btn_army_1":
-		roi = image.Rect(200, 100, 600, 400) // top-center/left
+		roi = image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
 	case "btn_next":
 		roi = image.Rect(600, 450, 860, 732)
 	default:
@@ -977,46 +977,24 @@ var villagePinpoints = map[string]Pinpoint{
 	"btn_find_match": {X: 158, Y: 494, Name: "Find Match"},
 	"btn_battle":     {X: 731, Y: 537, Name: "Battle"},
 	"btn_army_arrow": {X: 514, Y: 192, Name: "Army Arrow"},
-	"btn_army_1":     {X: 513, Y: 250, Name: "Army 1"},
+	"btn_army_1":     {X: 513, Y: 230, Name: "Army 1"},
 	"btn_next":       {X: 794, Y: 577, Name: "Next Match"},
 	"btn_return_home":{X: 431, Y: 581, Name: "Return Home"},
 	"btn_okay":       {X: 430, Y: 520, Name: "Okay"},
 }
 
 func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
-	// Professional High-Speed Path: Check Pinpoint first
+	// Step 1: Pinpoint Match (Fast Path - Trust Coordinates)
 	if pp, ok := villagePinpoints[templateName]; ok {
-		// Take a quick capture to verify pinpoint
-		screen, err := b.client.CaptureToMat()
-		if err == nil {
-			px, py := b.cal.ScaleRef(pp.X, pp.Y)
-			// Bypass color check for menu elements with inconsistent backgrounds
-			isMenuElement := templateName == "btn_army_arrow"
-			
-			// Professional Resilience: Check multiple colors for the button
-			matched := isMenuElement || b.isOrange(screen, px, py) || b.isYellow(screen, px, py) || b.isGreen(screen, px, py) || b.isWhite(screen, px, py) || b.isSilver(screen, px, py)
-			
-			if !matched && templateName == "btn_next" {
-				// Secondary check for Next button: test slightly to the left (hitting the silver text)
-				altX, altY := b.cal.ScaleRef(pp.X-60, pp.Y)
-				matched = b.isSilver(screen, altX, altY) || b.isWhite(screen, altX, altY)
-				if matched {
-					px, py = altX, altY // Use the confirmed point
-				}
-			}
-
-			if matched {
-				screen.Close()
-				b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
-				if err := b.client.Tap(px, py); err == nil {
-					return true
-				}
-			}
-			screen.Close()
+		px, py := b.cal.ScaleRef(pp.X, pp.Y)
+		b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
+		if err := b.client.Tap(px, py); err == nil {
+			time.Sleep(1000 * time.Millisecond) // Wait for UI transition
+			return true
 		}
 	}
 
-	// Fallback Path: Template Matching (Robust but slower)
+	// Step 2: Fallback Path: Template Matching (Robust but slower)
 	tpl, ok := b.templates.Get(templateName)
 	if !ok {
 		b.logger.Error().Str("template", templateName).Msg("template not loaded")
@@ -1033,9 +1011,9 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	case "btn_battle":
 		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
 	case "btn_army_arrow":
-		roi = image.Rect(300, 100, 700, 300) // top-center
+		roi = image.Rect(350, 100, 700, 300) // top-center
 	case "btn_army_1":
-		roi = image.Rect(200, 100, 600, 400) // top-center/left
+		roi = image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
 	case "btn_next":
 		roi = image.Rect(600, 450, 860, 732)
 	default:
@@ -1103,6 +1081,10 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			Float64("conf", best.Confidence).
 			Int("x", px).Int("y", py).
 			Msg("clicking (fallback match)")
+		
+		if b.cfg.Debug.SaveScreenshots {
+			gocv.IMWrite(fmt.Sprintf("diag_fallback_%s.png", templateName), screen)
+		}
 
 		if err := b.client.Tap(px, py); err != nil {
 			b.logger.Error().Err(err).Msg("tap failed")
