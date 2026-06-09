@@ -368,7 +368,7 @@ func (a *App) GetLiveScreenshot() (string, error) {
 }
 
 // SaveConfig updates config.json settings
-func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool) error {
+func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool, stall int) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -378,6 +378,7 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	cfg.Search.MinLootDarkElixir = minDE
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
 	cfg.Search.Enabled = searchEnabled
+	cfg.Attack.StallTimerSeconds = stall
 	if strategyFile != "" {
 		cfg.Attack.StrategyFile = strategyFile
 	}

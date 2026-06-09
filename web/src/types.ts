@@ -43,6 +43,7 @@ export interface BotConfig {
   };
   attack: {
     strategy_file: string;
+    stall_timer_seconds: number;
   };
 }
 

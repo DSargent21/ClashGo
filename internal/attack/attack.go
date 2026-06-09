@@ -41,18 +41,12 @@ type PrecisionConfig struct {
 	Height       int                    `json:"height"`
 }
 
-type BaseCalibration struct {
-	BaseTop      image.Point `json:"base_top"`
-	BaseRight    image.Point `json:"base_right"`
-	BaseBottom   image.Point `json:"base_bottom"`
-	BaseLeft     image.Point `json:"base_left"`
-	FieldTop     image.Point `json:"field_top"`
-	FieldRight   image.Point `json:"field_right"`
-	FieldBottom  image.Point `json:"field_bottom"`
-	FieldLeft    image.Point `json:"field_left"`
-	BarY         int         `json:"bar_y"`
-	Width        int         `json:"width"`
-	Height       int         `json:"height"`
+type StallConfig struct {
+	PercentROI  image.Rectangle `json:"percent_roi"`
+	EndButton   image.Point     `json:"end_button"`
+	ConfirmBtn  image.Point     `json:"confirm_btn"`
+	RefWidth    int             `json:"ref_width"`
+	RefHeight   int             `json:"ref_height"`
 }
 
 type ManualEdge struct {
@@ -995,25 +989,38 @@ func (e *Executor) MaximizeLineSpread(p1, p2 image.Point, w, mBarY int) (image.P
 	return p1, p2 // Simplified for now, just return as is
 }
 func (e *Executor) EndBattle() error {
+	// Try to load StallConfig for pinpoint accuracy
+	var sCfg StallConfig
+	pinpoint := false
+	if data, err := os.ReadFile("assets/stall_config.json"); err == nil && json.Unmarshal(data, &sCfg) == nil {
+		pinpoint = true
+	}
+
 	ex, ey := e.cal.ScaleRef(34, 588)
-	screen, err := e.client.CaptureToMat()
-	if err == nil {
-		defer screen.Close()
-		positions := []image.Point{
-			{X: 34, Y: 588},
-			{X: 67, Y: 570},
-			{X: 112, Y: 408},
-		}
-		for _, pos := range positions {
-			sx, sy := e.cal.ScaleRef(pos.X, pos.Y)
-			if sx >= 0 && sy >= 0 && sx < screen.Cols() && sy < screen.Rows() {
-				b := screen.GetUCharAt(sy, sx*3)
-				g := screen.GetUCharAt(sy, sx*3+1)
-				r := screen.GetUCharAt(sy, sx*3+2)
-				if r > 130 && g < 110 && b < 110 {
-					ex, ey = sx, sy
-					e.logger.Info().Int("x", pos.X).Int("y", pos.Y).Msg("dynamically detected End Battle button location")
-					break
+	if pinpoint {
+		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
+		ex, ey = int(float64(sCfg.EndButton.X)*scaleX), int(float64(sCfg.EndButton.Y)*scaleY)
+		e.logger.Info().Int("x", ex).Int("y", ey).Msg("using pinpoint End Battle button")
+	} else {
+		screen, err := e.client.CaptureToMat()
+		if err == nil {
+			defer screen.Close()
+			positions := []image.Point{
+				{X: 34, Y: 588},
+				{X: 67, Y: 570},
+				{X: 112, Y: 408},
+			}
+			for _, pos := range positions {
+				sx, sy := e.cal.ScaleRef(pos.X, pos.Y)
+				if sx >= 0 && sy >= 0 && sx < screen.Cols() && sy < screen.Rows() {
+					b := screen.GetUCharAt(sy, sx*3)
+					g := screen.GetUCharAt(sy, sx*3+1)
+					r := screen.GetUCharAt(sy, sx*3+2)
+					if r > 130 && g < 110 && b < 110 {
+						ex, ey = sx, sy
+						e.logger.Info().Int("x", pos.X).Int("y", pos.Y).Msg("dynamically detected End Battle button location")
+						break
+					}
 				}
 			}
 		}
@@ -1021,8 +1028,13 @@ func (e *Executor) EndBattle() error {
 	if err := e.client.TapHuman(ex, ey, 5.0); err != nil { return err }
 	time.Sleep(1000 * time.Millisecond) // Wait for confirmation dialog
 
-	// Tap green "End Battle" or "Okay" confirmation button (approx 520, 430)
+	// Tap green "End Battle" or "Okay" confirmation button
 	okX, okY := e.cal.ScaleRef(520, 430)
+	if pinpoint {
+		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
+		okX, okY = int(float64(sCfg.ConfirmBtn.X)*scaleX), int(float64(sCfg.ConfirmBtn.Y)*scaleY)
+		e.logger.Info().Int("x", okX).Int("y", okY).Msg("using pinpoint Confirm button")
+	}
 	if err := e.client.TapHuman(okX, okY, 5.0); err != nil { return err }
 	time.Sleep(2000 * time.Millisecond) // Wait for screen transition
 	return nil
@@ -1044,6 +1056,40 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
+
+	// Stall Detection State
+	lastPct := 0
+	lastPctTime := time.Now()
+	stallLimit := time.Duration(e.cfg.StallTimerSeconds) * time.Second
+
+	// Load Stall Config for ROI
+	var sCfg StallConfig
+	hasStallROI := false
+	if data, err := os.ReadFile("assets/stall_config.json"); err == nil && json.Unmarshal(data, &sCfg) == nil {
+		hasStallROI = !sCfg.PercentROI.Empty()
+	}
+
+	// Prepare OCR
+	tStore, err := game.NewTemplateStore("assets/templates")
+	if err != nil {
+		e.logger.Error().Err(err).Msg("failed to create template store for stall detection")
+		return false
+	}
+	tStore.LoadTemplates()
+	lootRec := game.NewLootRecognizer(e.cal, tStore, e.logger)
+	defer lootRec.Close()
+
+	var pRoi image.Rectangle
+	if hasStallROI {
+		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
+		pRoi = image.Rect(
+			int(float64(sCfg.PercentROI.Min.X)*scaleX),
+			int(float64(sCfg.PercentROI.Min.Y)*scaleY),
+			int(float64(sCfg.PercentROI.Max.X)*scaleX),
+			int(float64(sCfg.PercentROI.Max.Y)*scaleY),
+		)
+	}
+
 	for {
 		select {
 		case <-ticker.C:
@@ -1052,11 +1098,31 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 				continue
 			}
 			state, _ := e.classify(screen)
-			screen.Close() // Explicit close to avoid leak in loop
-			
+
 			if state == game.StateBattleEnd || state == game.StateReturnHome {
+				screen.Close()
 				return true
 			}
+
+			// Check Stall
+			if e.cfg.StallTimerSeconds > 0 && hasStallROI {
+				currentPct := lootRec.ReadDestructionPercentage(screen, pRoi)
+				if currentPct > lastPct {
+					lastPct = currentPct
+					lastPctTime = time.Now()
+					e.logger.Info().Int("percent", currentPct).Msg("destruction increased, resetting stall timer")
+				} else {
+					elapsed := time.Since(lastPctTime)
+					if elapsed > stallLimit {
+						e.logger.Warn().Int("last_pct", lastPct).Dur("elapsed", elapsed).Msg("stall detected, ending battle!")
+						screen.Close()
+						e.EndBattle()
+						return true
+					}
+				}
+			}
+
+			screen.Close()
 			if time.Now().After(deadline) {
 				return false
 			}

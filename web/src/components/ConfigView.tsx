@@ -117,6 +117,24 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 )}
               </div>
             </div>
+
+            <div className="space-y-4">
+              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
+                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-400 dark:text-zinc-500 border border-zinc-100/10">
+                  <span className="material-symbols-outlined text-base">timer</span>
+                </div>
+                Stall Timer (Seconds)
+              </label>
+              <div className="relative group">
+                <input 
+                  type="number" 
+                  value={stallTimer} 
+                  onChange={e => setStallTimer(parseInt(e.target.value) || 0)}
+                  className="w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white focus:outline-none focus:ring-4 focus:ring-zinc-950/5 dark:focus:ring-white/5 focus:border-zinc-300 dark:focus:border-zinc-700 transition-all tabular-nums group-hover:bg-white dark:group-hover:bg-zinc-950/60"
+                  placeholder="0 to disable"
+                />
+              </div>
+            </div>
           </div>
         </div>
 

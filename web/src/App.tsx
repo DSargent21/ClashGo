@@ -178,14 +178,14 @@ function App() {
     setRunning(true);
     setStatusMsg('INITIALIZING...');
     try {
-      const res = await StartBot(goldThreshold, elixirThreshold, deThreshold, upgradeWalls, searchEnabled);
+      const res = await StartBot(goldThreshold, elixirThreshold, deThreshold, upgradeWalls, searchEnabled, stallTimer);
       setRunning(res.running);
       setStatusMsg(res.message.toUpperCase());
     } catch (err) {
       setRunning(false);
       setStatusMsg('START FAILED');
     }
-  }, [goldThreshold, elixirThreshold, deThreshold, upgradeWalls, searchEnabled]);
+  }, [goldThreshold, elixirThreshold, deThreshold, upgradeWalls, searchEnabled, stallTimer]);
 
 
   const stopEngine = useCallback(async () => {
@@ -198,13 +198,13 @@ function App() {
     e.preventDefault();
     try {
       const stratPath = selectedStrategy ? `assets/strategies/${selectedStrategy}` : '';
-      await SaveConfig(goldThreshold, elixirThreshold, deThreshold, upgradeWalls, stratPath, searchEnabled);
+      await SaveConfig(goldThreshold, elixirThreshold, deThreshold, upgradeWalls, stratPath, searchEnabled, stallTimer);
       setStatusMsg('CONFIG SAVED');
       setTimeout(() => setStatusMsg(prev => prev === 'CONFIG SAVED' ? (running ? 'RUNNING' : 'SYSTEM STABLE') : prev), 2000);
     } catch (err: any) {
       setStatusMsg('SAVE FAILED');
     }
-  }, [goldThreshold, elixirThreshold, deThreshold, upgradeWalls, selectedStrategy, searchEnabled, running]);
+  }, [goldThreshold, elixirThreshold, deThreshold, upgradeWalls, selectedStrategy, searchEnabled, running, stallTimer]);
 
   const clearLogs = useCallback(() => setLogs([]), []);
 
@@ -311,6 +311,11 @@ function App() {
 
 
     </div>
+  );
+}
+
+export default App;
+ </div>
   );
 }
 

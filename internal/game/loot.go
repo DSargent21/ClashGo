@@ -74,6 +74,13 @@ func (lr *LootRecognizer) ReadAvailableLoot(screen gocv.Mat) (Resources, error) 
 	return report.Resources, nil
 }
 
+func (lr *LootRecognizer) ReadDestructionPercentage(screen gocv.Mat, roi image.Rectangle) int {
+	if roi.Empty() {
+		return 0
+	}
+	return lr.readRow(screen, roi)
+}
+
 func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error) {
 	gray := gocv.NewMat()
 	gocv.CvtColor(screen, &gray, gocv.ColorBGRToGray)
