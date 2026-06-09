@@ -135,34 +135,52 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
 	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois)
 
-	// Star Detection (Search for yellow pixel clusters in the center-top results area)
-	startY, endY := int(140*lr.cal.ScaleY), int(260*lr.cal.ScaleY)
-	startX, endX := int(280*lr.cal.ScaleX), int(580*lr.cal.ScaleX)
-	rect := image.Rect(startX, startY, endX, endY)
-	rect = lr.safeRect(screen, rect)
-	if !rect.Empty() {
-		subRegion := screen.Region(rect)
-		defer subRegion.Close()
+	// Star Detection: Use brightness at 3 specific points (Left, Middle, Right stars).
+	// Filled stars (yellow/gold/silver) are bright; empty stars are dark.
+	starPoints := []image.Point{
+		{X: 365, Y: 220}, // Left
+		{X: 430, Y: 190}, // Middle
+		{X: 495, Y: 220}, // Right
+	}
 
-		lowerYellow := gocv.NewScalar(0, 150, 170, 0)
-		upperYellow := gocv.NewScalar(120, 255, 255, 0)
-
-		yellowMask := gocv.NewMat()
-		defer yellowMask.Close()
-		gocv.InRangeWithScalar(subRegion, lowerYellow, upperYellow, &yellowMask)
-
-		contours := gocv.FindContours(yellowMask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
-		defer contours.Close()
-
-		validStars := 0
-		for i := 0; i < contours.Size(); i++ {
-			area := gocv.ContourArea(contours.At(i))
-			if area > 40 {
-				validStars++
-			}
+	// Load custom star points if they exist
+	if data, err := os.ReadFile("assets/star_points.json"); err == nil {
+		var custom struct {
+			Stars []struct{ X, Y int } `json:"stars"`
 		}
-		result.Stars = validStars
-		if result.Stars > 3 { result.Stars = 3 }
+		if json.Unmarshal(data, &custom) == nil && len(custom.Stars) == 3 {
+			for i := 0; i < 3; i++ {
+				starPoints[i] = image.Pt(custom.Stars[i].X, custom.Stars[i].Y)
+			}
+			lr.logger.Info().Msg("Loaded custom star points from assets/star_points.json")
+		}
+	}
+
+	validStars := 0
+	for _, pt := range starPoints {
+		// Scale to current resolution
+		sx := int(float64(pt.X) * lr.cal.ScaleX)
+		sy := int(float64(pt.Y) * lr.cal.ScaleY)
+
+		// Define a tiny 5x5 ROI around the point
+		rect := image.Rect(sx-2, sy-2, sx+3, sy+3)
+		rect = lr.safeRect(screen, rect)
+		if rect.Empty() {
+			continue
+		}
+
+		sub := gray.Region(rect)
+		mean := sub.Mean().Val1
+		sub.Close()
+
+		// A filled star center is bright (>100), an empty one is dark.
+		if mean > 100 {
+			validStars++
+		}
+	}
+	result.Stars = validStars
+	if result.Stars > 3 {
+		result.Stars = 3
 	}
 
 	return result, nil
