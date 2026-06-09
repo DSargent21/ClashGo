@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"gocv.io/x/gocv"
-	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGO/internal/game"
 )
 
 func main() {

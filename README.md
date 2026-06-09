@@ -1,4 +1,4 @@
-# ClashGo: Vanguard CoC Bot
+# ClashGO
 
 A professional, high-performance Go port of the Clash of Clans AutoIt bot, optimized for Apple Silicon Macs using Android Debug Bridge (ADB).
 

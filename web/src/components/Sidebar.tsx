@@ -1,6 +1,6 @@
 import React from 'react';
 import { TabType } from '../types';
-import logo from '../assets/images/vanguard-logo.png';
+import logo from '../assets/images/clashgo-logo.png';
 
 interface SidebarProps {
   tab: TabType;

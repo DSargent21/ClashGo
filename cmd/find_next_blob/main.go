@@ -5,8 +5,8 @@ import (
 	"image"
 	"os"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/config"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/config"
 	"gocv.io/x/gocv"
 )
 

@@ -10,12 +10,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/Ducky705/ClashGo/internal/vision"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/attack"
-	"github.com/Ducky705/ClashGo/pkg/strategy"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/vision"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/attack"
+	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
@@ -38,7 +38,7 @@ type PrecisionConfig struct {
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("============================================")
-	fmt.Println("   ClashGo Interactive Deployment Debugger   ")
+	fmt.Println("   ClashGO Interactive Deployment Debugger   ")
 	fmt.Println("============================================")
 
 	// 1. Initialize ADB Client

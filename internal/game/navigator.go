@@ -10,7 +10,7 @@ import (
 
 	"gocv.io/x/gocv"
 
-	"github.com/Ducky705/ClashGo/internal/vision"
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
 )
 

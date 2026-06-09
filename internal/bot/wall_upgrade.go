@@ -8,8 +8,8 @@ import (
 
 	"gocv.io/x/gocv"
 
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/Ducky705/ClashGo/internal/vision"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/vision"
 )
 
 // UpgradeWalls executes the automated wall upgrade sequence repeatedly until no more affordable options exist.

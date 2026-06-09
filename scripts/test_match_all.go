@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Ducky705/ClashGo/internal/vision"
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"gocv.io/x/gocv"
 )
 

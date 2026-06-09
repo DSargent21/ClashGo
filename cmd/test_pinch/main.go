@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
-	"github.com/Ducky705/ClashGo/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/adb"
 )
 
 func main() {

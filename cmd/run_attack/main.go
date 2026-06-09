@@ -4,11 +4,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/attack"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/Ducky705/ClashGo/pkg/strategy"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/attack"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )

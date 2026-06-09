@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/bot"
-	"github.com/Ducky705/ClashGo/internal/config"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/bot"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/logger"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"gocv.io/x/gocv"
@@ -70,9 +70,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Setup log bridge
 	wailsWriter := &WailsLogWriter{app: a}
-	consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"}
-	multi := zerolog.MultiLevelWriter(consoleWriter, wailsWriter)
-	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
+	logger.Init(os.Getenv("DEBUG") != "", wailsWriter)
 
 	// Start Web Server for Remote Access
 	go a.startWebServer()

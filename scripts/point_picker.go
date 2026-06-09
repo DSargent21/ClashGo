@@ -7,9 +7,9 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
 	"gocv.io/x/gocv"
 )
 
@@ -36,7 +36,7 @@ func main() {
 		return
 	}
 
-	window := gocv.NewWindow("ClashGo Point Picker")
+	window := gocv.NewWindow("ClashGO Point Picker")
 	defer window.Close()
 
 	fmt.Println("Capturing screen... Click on the button in the window.")

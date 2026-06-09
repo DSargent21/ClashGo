@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"gocv.io/x/gocv"
-	"github.com/Ducky705/ClashGo/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/rs/zerolog"
 )
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"gocv.io/x/gocv"
-	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGO/internal/game"
 )
 
 // MockDevice simplifies testing by avoiding real ADB calls

@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/bot"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/rs/zerolog"
+	"github.com/Ducky705/ClashGO/internal/bot"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/logger"
 	"github.com/rs/zerolog/log"
 )
 
@@ -25,20 +25,9 @@ var (
 
 func main() {
 	// Professional logging setup
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = log.Output(zerolog.ConsoleWriter{
-		Out:        os.Stderr,
-		TimeFormat: "15:04:05",
-		NoColor:    false,
-	})
+	logger.Init(os.Getenv("DEBUG") != "")
 
-	if os.Getenv("DEBUG") != "" {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	} else {
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	}
-
-	fmt.Printf("coc-bot v%s (%.7s)\n", version, commit)
+	fmt.Printf("ClashGO v%s (%.7s)\n", version, commit)
 
 	// Remove execution timeout for full pipeline test
 	ctx, cancel := context.WithCancel(context.Background())

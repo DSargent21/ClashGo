@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
 	"gocv.io/x/gocv"
 )
 
@@ -48,7 +48,7 @@ func main() {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ClashGo Point Picker</title>
+    <title>ClashGO Point Picker</title>
     <style>
         body { font-family: sans-serif; text-align: center; background: #222; color: #eee; }
         #container { position: relative; display: inline-block; margin-top: 20px; cursor: crosshair; border: 2px solid #555; }
@@ -58,7 +58,7 @@ func main() {
     </style>
 </head>
 <body>
-    <h1>ClashGo Point Picker</h1>
+    <h1>ClashGO Point Picker</h1>
     <div id="info">Click anywhere on the image to get coordinates</div>
     <br>
     <div id="container">

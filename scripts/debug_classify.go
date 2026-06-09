@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 	"os"

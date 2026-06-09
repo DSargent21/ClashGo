@@ -8,7 +8,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/Ducky705/ClashGo/internal/attack"
+	"github.com/Ducky705/ClashGO/internal/attack"
 	"gocv.io/x/gocv"
 )
 

@@ -24,7 +24,7 @@ vendor/
 go.sum
 
 # Compiled Application Binaries (Root & build)
-ClashGo
+ClashGO
 cli
 coc-bot
 coc-bot-test

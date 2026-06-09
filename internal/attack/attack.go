@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/Ducky705/ClashGo/internal/vision"
-	"github.com/Ducky705/ClashGo/pkg/strategy"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/vision"
+	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
