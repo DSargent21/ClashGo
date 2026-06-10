@@ -30,6 +30,8 @@ func (c *Client) PinchZoom(zoomOut bool) error {
 	if err != nil {
 		return fmt.Errorf("detect touch device: %w", err)
 	}
+	
+	c.log.Debugf("PinchZoom using device: %s, res: %dx%d", device, w, h)
 
 	// BlueStacks Virtual Touch uses 0-32767
 	const touchMax = 32767
@@ -61,18 +63,20 @@ func (c *Client) PinchZoom(zoomOut bool) error {
 		batch.WriteString(fmt.Sprintf("sendevent %s %d %d %d && ", device, typ, code, value))
 	}
 
-	add(3, 57, 1) // ABS_MT_TRACKING_ID
-	add(1, 330, 1) // BTN_TOUCH
-	add(3, 53, scale(f1Start[0], w)) // ABS_MT_POSITION_X
-	add(3, 54, scale(f1Start[1], h)) // ABS_MT_POSITION_Y
+	// 1. Initial touch (Both fingers in same frame)
+	add(3, 57, 1) // ABS_MT_TRACKING_ID finger 1
+	add(1, 330, 1) // BTN_TOUCH down
+	add(3, 53, scale(f1Start[0], w))
+	add(3, 54, scale(f1Start[1], h))
 	add(0, 2, 0) // SYN_MT_REPORT
 	
-	add(3, 57, 2)
+	add(3, 57, 2) // ABS_MT_TRACKING_ID finger 2
 	add(3, 53, scale(f2Start[0], w))
 	add(3, 54, scale(f2Start[1], h))
-	add(0, 2, 0)
+	add(0, 2, 0) // SYN_MT_REPORT
 	add(0, 0, 0) // SYN_REPORT
 
+	// 2. Movement (15 steps)
 	steps := 15
 	for i := 1; i <= steps; i++ {
 		add(3, 53, scale(f1Start[0] + (f1End[0]-f1Start[0])*i/steps, w))
@@ -84,12 +88,12 @@ func (c *Client) PinchZoom(zoomOut bool) error {
 		add(0, 0, 0)
 	}
 
-	add(3, 57, -1)
+	// 3. Release
+	add(3, 57, -1) // Release finger 1
 	add(0, 2, 0)
-	add(3, 57, -1)
+	add(3, 57, -1) // Release finger 2
 	add(1, 330, 0) // BTN_TOUCH UP
 	add(0, 2, 0)
-	
 	batch.WriteString(fmt.Sprintf("sendevent %s 0 0 0", device))
 
 	_, err = c.Shell(batch.String())
