@@ -51,19 +51,20 @@ func main() {
 	defer win.Close()
 
 	units := []string{
-		"Electro Dragon", "Balloon", "Archer Queen", 
+		"Valkyrie", "Electro Dragon", "Balloon", "Archer Queen", 
 		"Minion Prince", "Grand Warden", "Dragon Duke", 
 		"Rage Spell", "Freeze Spell", "Ice Spell", 
-		"Barbarian King", "Royal Champion", "Siege Machine", "Empty",
+		"Barbarian King", "Royal Champion", "Siege Machine", 
+		"Earthquake Spell", "Event Troop", "Empty",
 	}
 
 	fmt.Println("\n--- MANUAL TROOP LABELING ---")
 	fmt.Println("For each slot, press the KEY matching the unit:")
-	menuKeys := "0123456789abc"
+	menuKeys := "v0123456789abcde"
 	for i, u := range units {
 		fmt.Printf("[%c] %s\n", menuKeys[i], u)
 	}
-	fmt.Println("\nControls: 's' to save, 'q' to quit.")
+	fmt.Println("\nControls: ARROWS to nudge slot | 's' to save | 'q' to quit")
 
 	labels := make(map[int]string)
 	currentSlot := 0
@@ -72,7 +73,8 @@ func main() {
 		display := img.Clone()
 		
 		// Draw all boxes
-		for i, x := range mConf.SlotXs {
+		for i := range mConf.SlotXs {
+			x := mConf.SlotXs[i]
 			rect := image.Rect(x-mConf.CardWidth/2, mConf.SlotY-mConf.CardHeight/2, x+mConf.CardWidth/2, mConf.SlotY+mConf.CardHeight/2)
 			c := color.RGBA{255, 255, 255, 255}
 			if i == currentSlot {
@@ -87,7 +89,7 @@ func main() {
 			}
 		}
 
-		msg := fmt.Sprintf("LABEL SLOT %d: PRESS KEY", currentSlot+1)
+		msg := fmt.Sprintf("LABEL SLOT %d: PRESS KEY (Arrows to nudge)", currentSlot+1)
 		if currentSlot >= len(mConf.SlotXs) {
 			msg = "ALL LABELED! PRESS 'S' TO SAVE"
 		}
@@ -99,7 +101,22 @@ func main() {
 
 		if key == 'q' || key == 27 {
 			break
-		} else if currentSlot < len(mConf.SlotXs) {
+		}
+		
+		// Nudge Logic
+		if currentSlot < len(mConf.SlotXs) {
+			if key == 2 || key == 65362 { // Up
+				mConf.SlotY--
+			} else if key == 3 || key == 65364 { // Down
+				mConf.SlotY++
+			} else if key == 0 || key == 65361 { // Left
+				mConf.SlotXs[currentSlot]--
+			} else if key == 1 || key == 65363 { // Right
+				mConf.SlotXs[currentSlot]++
+			}
+		}
+
+		if currentSlot < len(mConf.SlotXs) {
 			char := string(rune(key))
 			idx := -1
 			for i, c := range menuKeys {
@@ -115,13 +132,17 @@ func main() {
 				currentSlot++
 			}
 		} else if key == 's' && currentSlot >= len(mConf.SlotXs) {
+			// Save new positions to manual_slots.json too
+			outSlots, _ := json.MarshalIndent(mConf, "", "  ")
+			os.WriteFile("assets/manual_slots.json", outSlots, 0644)
+
 			var final ManualLabelConfig
 			for i, x := range mConf.SlotXs {
 				final.Slots = append(final.Slots, SlotLabel{X: x, Name: labels[i]})
 			}
 			out, _ := json.MarshalIndent(final, "", "  ")
 			os.WriteFile("assets/manual_labels.json", out, 0644)
-			fmt.Println("\n✅ SAVED assets/manual_labels.json")
+			fmt.Println("\n✅ SAVED assets/manual_labels.json and assets/manual_slots.json")
 			break
 		}
 	}

@@ -116,15 +116,37 @@ func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 	return count > threshold
 }
 
-// Validate ensures all required templates for the strategy exist
+// Validate ensures all required templates for the strategy exist or are covered by manual labels
 func (e *Executor) Validate(s *strategy.DynamicStrategy) error {
+	// Load manual labels to see if templates are even needed
+	manualUnits := make(map[string]bool)
+	if data, err := os.ReadFile("assets/manual_labels.json"); err == nil {
+		var lConf struct {
+			Slots []struct {
+				X    int    `json:"x"`
+				Name string `json:"name"`
+			} `json:"slots"`
+		}
+		if json.Unmarshal(data, &lConf) == nil {
+			for _, s := range lConf.Slots {
+				manualUnits[strings.ToLower(strings.TrimSpace(s.Name))] = true
+			}
+		}
+	}
+
 	for _, phase := range s.Phases {
 		for _, unit := range phase.Units {
 			unitName := strings.ToLower(strings.TrimSpace(unit.Name))
+			
+			// Skip if manually labeled
+			if manualUnits[unitName] {
+				continue
+			}
+
 			fileName := strings.ReplaceAll(unitName, " ", "_")
 			tplPath := fmt.Sprintf("assets/templates/attack/%s.png", fileName)
 			if _, err := os.Stat(tplPath); os.IsNotExist(err) {
-				return fmt.Errorf("missing template for unit '%s' at path: %s", unit.Name, tplPath)
+				return fmt.Errorf("missing template for unit '%s' at path: %s (and not found in manual_labels.json)", unit.Name, tplPath)
 			}
 		}
 	}
@@ -317,7 +339,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			isAbility bool
 		}
 
-		isHeroesPhase := phase.Name == "Heroes"
+		isHeroesPhase := strings.Contains(phase.Name, "Heroes")
 		usedSlots := make(map[int]bool) // x-coordinates of slots used in this phase
 		
 		// Setup lastBar with initial screen or refresh if needed (e.g. abilities)
@@ -331,13 +353,14 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		}
 
 		for _, su := range sortedUnits {
-			if su.isAbility {
-				continue // Skip hero abilities during main phase loop (activated right after spells)
-			}
 			unit := su.unit
 			unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 			isAbility := su.isAbility
 
+			if isAbility && phase.Name != "Abilities" {
+				continue // Skip hero abilities during main phase loop (unless it is the dedicated Abilities phase)
+			}
+			
 			isSpell := strings.Contains(unitName, "spell")
 			isSiege := strings.Contains(unitName, "slammer") || strings.Contains(unitName, "siege")
 			isHero := strings.Contains(unitName, "king") || strings.Contains(unitName, "queen") || strings.Contains(unitName, "warden") || strings.Contains(unitName, "prince") || strings.Contains(unitName, "duke") || strings.Contains(unitName, "champion")
@@ -469,7 +492,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 						verify.Close()
 					}
 				}
-				e.deployUnit(unit, match, pCfg, targetEdge, w, h, isAbility, lastBar)
+				e.deployUnit(unit, match, pCfg, targetEdge, w, h, isAbility, lastBar, phase)
 				if isMainArmy && d < maxDrains-1 {
 					time.Sleep(250 * time.Millisecond)
 				}
@@ -499,8 +522,10 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				
 				if isMain {
 					mainDeployments = append(mainDeployments, hm)
+					e.logger.Debug().Str("unit", hm.unit.Name).Msg("added to mainDeployments")
 				} else {
 					bonusDeployments = append(bonusDeployments, hm)
+					e.logger.Debug().Str("unit", hm.unit.Name).Msg("added to bonusDeployments")
 				}
 			}
 
@@ -514,8 +539,10 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				limitMain = len(mainDeployments)
 			}
 
+			e.logger.Debug().Int("main", len(mainDeployments)).Int("bonus", len(bonusDeployments)).Int("limit", limitMain).Msg("hero phase summary")
 			for i := 0; i < limitMain; i++ {
-				e.deployUnit(mainDeployments[i].unit, mainDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar)
+				e.logger.Debug().Str("unit", mainDeployments[i].unit.Name).Int("x", mainDeployments[i].match.Point.X).Msg("deploying main hero")
+				e.deployUnit(mainDeployments[i].unit, mainDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar, phase)
 				deployedHeroSlots = append(deployedHeroSlots, mainDeployments[i].match.Point)
 			}
 
@@ -525,14 +552,17 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			})
 
 			for i := 0; i < len(bonusDeployments); i++ {
-				e.deployUnit(bonusDeployments[i].unit, bonusDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar)
+				e.logger.Debug().Str("unit", bonusDeployments[i].unit.Name).Int("x", bonusDeployments[i].match.Point.X).Msg("deploying bonus hero")
+				e.deployUnit(bonusDeployments[i].unit, bonusDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar, phase)
 				deployedHeroSlots = append(deployedHeroSlots, bonusDeployments[i].match.Point)
 			}
 		}
 
 		pDelay := time.Duration(phase.DelayAfterMS) * time.Millisecond
-		if phase.Name == "Heroes" || phase.Name == "Siege Machine" { pDelay = 0 } // No delay between Siege and Heroes
-		if pDelay > 5 { pDelay = 5 } // Hard cap for speed
+		if strings.Contains(phase.Name, "Heroes") || strings.Contains(phase.Name, "Siege") { 
+			pDelay = 500 * time.Millisecond 
+		}
+		if pDelay > 1000 * time.Millisecond { pDelay = 1000 * time.Millisecond } 
 		if pDelay > 0 {
 			time.Sleep(pDelay)
 		}
@@ -556,6 +586,9 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	}
 
 	// 5. Deployment Success Verifier & Retry Loop
+	e.logger.Info().Msg("waiting for deployment to settle before verification...")
+	time.Sleep(2 * time.Second)
+	
 	e.logger.Info().Msg("verifying deployment success...")
 	var remainingCount int
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -573,6 +606,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			for _, sx := range siegeXs {
 				if math.Abs(float64(slot.X-sx)) < float64(w)*0.06 {
 					isSiegeSlot = true
+					e.logger.Debug().Int("x", slot.X).Int("sx", sx).Msg("skipping siege slot in verify (initial scan match)")
 					break
 				}
 			}
@@ -580,6 +614,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				for sx := range e.tappedSiegeXs {
 					if math.Abs(float64(slot.X-sx)) < float64(w)*0.06 {
 						isSiegeSlot = true
+						e.logger.Debug().Int("x", slot.X).Int("sx", sx).Msg("skipping siege slot in verify (tapped cache match)")
 						break
 					}
 				}
@@ -738,7 +773,7 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 	return isEmpty
 }
 
-func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h int, isAbility bool, currentScreen gocv.Mat) {
+func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h int, isAbility bool, currentScreen gocv.Mat, phase strategy.Phase) {
 	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 	isSiege := strings.Contains(unitName, "slammer") || strings.Contains(unitName, "siege") || strings.Contains(unitName, "blimp") || strings.Contains(unitName, "wrecker") || strings.Contains(unitName, "launcher")
 	isHero := strings.Contains(unitName, "king") || strings.Contains(unitName, "queen") || strings.Contains(unitName, "warden") || strings.Contains(unitName, "prince") || strings.Contains(unitName, "duke") || strings.Contains(unitName, "champion")
@@ -752,9 +787,11 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		if e.tappedSiegeXs == nil {
 			e.tappedSiegeXs = make(map[int]bool)
 		}
-		if e.tappedSiegeXs[uPt.X] {
-			e.logger.Info().Str("unit", unit.Name).Int("x", uPt.X).Msg("siege machine already deployed, skipping tap")
-			return
+		for sx := range e.tappedSiegeXs {
+			if math.Abs(float64(uPt.X-sx)) < float64(w)*0.06 {
+				e.logger.Info().Str("unit", unit.Name).Int("x", uPt.X).Msg("siege machine already deployed (proximity), skipping tap")
+				return
+			}
 		}
 	}
 
@@ -812,35 +849,85 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 	}
 
-	isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro")
+	isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro") || strings.Contains(unitName, "valkyrie")
 	
+	if isHero || isSiege {
+		e.client.HumanSleep(200, 100)
+	}
+
 	// Select slot (idempotent, no glow check needed to avoid false-positives on blue units)
+	e.logger.Debug().Int("x", uPt.X).Int("y", uPt.Y).Msg("tapping slot for selection")
 	e.client.TapFast(uPt.X, uPt.Y, 2.0)
-	e.client.HumanSleep(35, 10)
+	time.Sleep(400 * time.Millisecond)
 
 	if isSiege {
 		e.tappedSiegeXs[uPt.X] = true
+		e.logger.Debug().Int("x", uPt.X).Msg("marked siege as tapped in cache")
 	}
 
 	if !isSpell && !isSpamUnit {
-		e.client.HumanSleep(10, 5)
+		e.client.HumanSleep(100, 50)
 	}
 
 	// Deployment Logic
 	isRage := strings.Contains(unitName, "rage")
 	isFreeze := strings.Contains(unitName, "ice") || strings.Contains(unitName, "freeze")
+	isEarthquake := strings.Contains(unitName, "earthquake") || strings.Contains(unitName, "event")
 	_ = isFreeze
 	isDragonDuke := strings.Contains(unitName, "duke")
 
 	if isSpell {
 		edgeA, okA := pCfg.SpellEdgesA[targetEdge]
 		edgeB, okB := pCfg.SpellEdgesB[targetEdge]
+		
+		e.logger.Debug().Str("unit", unit.Name).Str("uPattern", unit.Pattern).Str("pPattern", phase.Pattern).Msg("spell pattern check")
+		isFourSides := unit.Pattern == "FourSides" || phase.Pattern == "FourSides"
+		if isFourSides {
+			edges := []string{"TopRight", "BottomRight", "BottomLeft", "TopLeft"}
+			// FAST SPAM: No screen checks between batches
+			for i := 0; i < 4; i++ {
+				currentEdge := edges[i]
+				e.logger.Info().Str("unit", unit.Name).Str("edge", currentEdge).Msg("FourSides spell deployment")
+				
+				// For FourSides spells, we use SpellEdgesB (inner)
+				edge, ok := pCfg.SpellEdgesB[currentEdge]
+				if !ok { 
+					edge, ok = pCfg.SpellEdgesA[currentEdge] 
+					if !ok { edge, _ = pCfg.Edges[currentEdge] }
+				}
+				
+				p1, p2 := edge.P1, edge.P2
+				
+				// Apply inward offset from YAML if provided
+				if unit.Offset > 0 || phase.Offset > 0 {
+					off := unit.Offset
+					if off == 0 { off = phase.Offset }
+					// Push toward screen center (true inward)
+					centerX, centerY := w/2, h/2
+					pct := float64(off) / 300.0 // More conservative scaling for center push
+					p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
+					p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
+				}
+				e.logger.Debug().Interface("p1", p1).Interface("p2", p2).Msg("FourSides spell edge coords (inward)")
+
+				for j := 0; j < 4; j++ { // 4 taps per side
+					pct := float64(j) / 3.0
+					tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
+					e.client.TapFast(tx, ty, 8.0)
+					time.Sleep(50 * time.Millisecond) // Faster inter-tap
+				}
+				time.Sleep(100 * time.Millisecond) // Faster inter-side
+			}
+			time.Sleep(200 * time.Millisecond)
+			return
+		}
+
 		if okA && okB {
 			maxSpellAttempts := 4
 			for batch := 0; batch < maxSpellAttempts; batch++ {
-				if isRage {
-					e.logger.Info().Str("unit", unit.Name).Msg("deploying spell lines batch (Rage)")
-					// Deploy 3 Rage spells along edgeA (first line) on batch 0, and edgeB (second line) on batch >= 1
+				if isRage || isEarthquake {
+					e.logger.Info().Str("unit", unit.Name).Msg("deploying spell lines batch (Area Spell)")
+					// Deploy 3 spells along edgeA (first line) on batch 0, and edgeB (second line) on batch >= 1
 					var p1, p2 image.Point
 					if batch == 0 {
 						p1, p2 = edgeA.P1, edgeA.P2
@@ -858,7 +945,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 						}
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
 						e.client.TapFast(tx, ty, 8.0)
-						time.Sleep(15 * time.Millisecond) // Instant but sequential
+						time.Sleep(10 * time.Millisecond) 
 					}
 				} else { // Freeze or other spells
 					e.logger.Info().Str("unit", unit.Name).Msg("deploying spell line batch")
@@ -867,7 +954,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 						pct := float64(i) / 2.0
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
 						e.client.TapFast(tx, ty, 8.0)
-						time.Sleep(15 * time.Millisecond)
+						time.Sleep(10 * time.Millisecond)
 					}
 				}
 
@@ -885,12 +972,50 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				}
 				e.logger.Info().Str("unit", unit.Name).Msg("spell slot not empty yet, selecting again and deploying next batch...")
 				e.client.TapFast(uPt.X, uPt.Y, 2.0)
-				time.Sleep(15 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	} else {
 		var p1, p2 image.Point
 		deploymentEdge := targetEdge
+
+		isFourSides := unit.Pattern == "FourSides" || phase.Pattern == "FourSides"
+		if isFourSides {
+			edges := []string{"TopRight", "BottomRight", "BottomLeft", "TopLeft"}
+			// ULTRA FAST DENSE SPAM
+			for _, edgeName := range edges {
+				edge, ok := pCfg.Edges[edgeName]
+				if !ok { continue }
+				p1, p2 = edge.P1, edge.P2
+
+				// Apply YAML offset
+				if unit.Offset > 0 || phase.Offset > 0 {
+					off := unit.Offset
+					if off == 0 { off = phase.Offset }
+					if target, ok := pCfg.HeroTargets[edgeName]; ok {
+						pct := float64(off) / 200.0
+						p1 = image.Pt(int(float64(p1.X)+float64(target.X-p1.X)*pct), int(float64(p1.Y)+float64(target.Y-p1.Y)*pct))
+						p2 = image.Pt(int(float64(p2.X)+float64(target.X-p2.X)*pct), int(float64(p2.Y)+float64(target.Y-p2.Y)*pct))
+					}
+				}
+
+				e.logger.Info().Str("unit", unit.Name).Str("edge", edgeName).Msg("FourSides rapid dense spam")
+				e.logger.Debug().Interface("p1", p1).Interface("p2", p2).Msg("FourSides edge coords")
+				steps := 12 // 4 batches of 3 = 12 taps per side. 48 taps total.
+				for i := 0; i < steps; i += 3 {
+					pct1 := float64(i) / float64(steps-1)
+					pct2 := float64(i+1) / float64(steps-1)
+					pct3 := float64(i+2) / float64(steps-1)
+					tx1, ty1 := int(float64(p1.X)+float64(p2.X-p1.X)*pct1), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct1)
+					tx2, ty2 := int(float64(p1.X)+float64(p2.X-p1.X)*pct2), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct2)
+					tx3, ty3 := int(float64(p1.X)+float64(p2.X-p1.X)*pct3), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct3)
+					e.client.TapTriple(tx1, ty1, 12.0, tx2, ty2, 12.0, tx3, ty3, 12.0)
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+			time.Sleep(500 * time.Millisecond)
+			return
+		}
 
 		if isDragonDuke && !isAbility {
 			// Dragon Duke goes on adjacent side
@@ -913,9 +1038,13 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 
 		if isHero || isSiege {
-			e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying hero/siege point")
-			e.client.TapFast(p1.X, p1.Y, 12.0)
-			time.Sleep(15 * time.Millisecond)
+			// Add a small jitter to coordinates to prevent exact pixel stacking
+			jx := p1.X + rand.Intn(21) - 10
+			jy := p1.Y + rand.Intn(21) - 10
+
+			e.logger.Info().Str("unit", unit.Name).Int("x", jx).Int("y", jy).Msg("deploying hero/siege point")
+			e.client.TapFast(jx, jy, 8.0)
+			time.Sleep(200 * time.Millisecond) // Faster inter-hero delay
 		} else {
 			// Regular troops / spam units / event troops
 			maxAttempts := 3

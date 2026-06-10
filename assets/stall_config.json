@@ -1,0 +1,22 @@
+{
+  "percent_roi": {
+    "Min": {
+      "X": 774,
+      "Y": 585
+    },
+    "Max": {
+      "X": 829,
+      "Y": 609
+    }
+  },
+  "end_button": {
+    "X": 67,
+    "Y": 595
+  },
+  "confirm_btn": {
+    "X": 534,
+    "Y": 442
+  },
+  "ref_width": 860,
+  "ref_height": 732
+}

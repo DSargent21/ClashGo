@@ -2,15 +2,15 @@
   "slots": [
     {
       "x": 62,
-      "name": "Electro Dragon"
+      "name": "Valkyrie"
     },
     {
       "x": 134,
-      "name": "Balloon"
+      "name": "Siege Machine"
     },
     {
       "x": 212,
-      "name": "Siege Machine"
+      "name": "Archer Queen"
     },
     {
       "x": 287,
@@ -18,23 +18,23 @@
     },
     {
       "x": 360,
-      "name": "Minion Prince"
-    },
-    {
-      "x": 433,
       "name": "Grand Warden"
     },
     {
+      "x": 433,
+      "name": "Dragon Duke"
+    },
+    {
       "x": 511,
-      "name": "Royal Champion"
+      "name": "Earthquake Spell"
     },
     {
       "x": 584,
-      "name": "Rage Spell"
+      "name": "Event Troop"
     },
     {
       "x": 657,
-      "name": "Ice Spell"
+      "name": "Event Troop"
     },
     {
       "x": 730,

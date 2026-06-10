@@ -264,10 +264,13 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 
 // Tap performs a direct ADB tap.
 func (c *Client) Tap(x, y int) error {
-	c.log.Info(fmt.Sprintf("ADB TAP: (%d, %d)", x, y))
+	c.log.Debugf("ADB TAP: (%d, %d)", x, y)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.tapLocked(x, y)
+}
 
+func (c *Client) tapLocked(x, y int) error {
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
 			return err
@@ -305,9 +308,12 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 	ox2 := int(r2.NormFloat64() * stdDev2)
 	oy2 := int(r2.NormFloat64() * stdDev2)
 
-	cmd := fmt.Sprintf("shell:input tap %d %d & input tap %d %d & wait", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
-	_, err := c.transport.Exec(cmd)
-	return err
+	c.log.Debugf("ADB DUAL TAP (sequential): (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
+	if err := c.tapLocked(x1+ox1, y1+oy1); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	return c.tapLocked(x2+ox2, y2+oy2)
 }
 
 // TapTriple performs three taps simultaneously using background shell execution.
@@ -333,9 +339,16 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	ox3 := int(r3.NormFloat64() * stdDev3)
 	oy3 := int(r3.NormFloat64() * stdDev3)
 
-	cmd := fmt.Sprintf("shell:input tap %d %d & input tap %d %d & input tap %d %d & wait", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
-	_, err := c.transport.Exec(cmd)
-	return err
+	c.log.Debugf("ADB TRIPLE TAP (sequential): (%d, %d), (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
+	if err := c.tapLocked(x1+ox1, y1+oy1); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := c.tapLocked(x2+ox2, y2+oy2); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	return c.tapLocked(x3+ox3, y3+oy3)
 }
 
 // TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
