@@ -422,6 +422,30 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	// UpdateScreen takes ownership and will handle closing previous mat
 	gc.UpdateScreen(screen, captureMs)
 
+	// Professional Zoom Out: Mandatory first action upon entering any village state.
+	// We MUST zoom out before starting ANY sequence or clicking ANY buttons.
+	if !b.zoomedOut.Load() {
+		// Include pinpoint attack button check in village detection to avoid race with sequence starter
+		pinX, pinY := b.cal.ScaleRef(60, 695)
+		isVillage := state == game.StateMainVillage || 
+					state == game.StateArmyCamp || 
+					b.isOrange(screen, pinX, pinY) ||
+					b.templateMatch(screen, "btn_attack", 0.45) || 
+					b.templateMatch(screen, "btn_settings", 0.6)
+
+		if isVillage {
+			if b.zoomedOut.CompareAndSwap(false, true) {
+				b.logger.Info().Msg("village detected, performing MANDATORY initial zoom out...")
+				b.navigator.ZoomOut()
+				b.lastAction = time.Now()
+				// Wait for zoom animation to settle (Clash has long momentum)
+				time.Sleep(3000 * time.Millisecond)
+				// Return here so the next loop iteration captures a fresh screen AFTER zoom
+				return
+			}
+		}
+	}
+
 	// Update lastAction only on state transition. 
 	// This ensures if we are stuck in a single state without taking action (like clicking attack)
 	// for more than 15s, we trigger a restart.
@@ -444,19 +468,6 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			Msg("state detected")
 	}
 
-	// Professional Zoom Out on first detection of Main Village or Attack button
-	if (gc.State == game.StateMainVillage || b.templateMatch(screen, "btn_attack", 0.6)) && !b.zoomedOut.Load() {
-		if b.zoomedOut.CompareAndSwap(false, true) {
-			b.logger.Info().Msg("main village elements detected, performing initial zoom out...")
-			b.navigator.ZoomOut()
-			b.lastAction = time.Now()
-			// Wait for zoom animation to settle (Clash has long momentum)
-			time.Sleep(3000 * time.Millisecond)
-			// Return here so the next loop iteration captures a fresh screen after zoom
-			return
-		}
-	}
-
 	if b.seqRunning.Load() {
 		return
 	}
@@ -472,7 +483,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 
 	// Primary detection: try to find the attack button via template matching
 	// Only start attack if we are reasonably sure we're in the Main Village
-	if (gc.State == game.StateMainVillage || gc.State == game.StateUnknown) && b.findAttackButton(screen, 0.45) {
+	if b.zoomedOut.Load() && (gc.State == game.StateMainVillage || gc.State == game.StateUnknown) && b.findAttackButton(screen, 0.45) {
 		b.logger.Info().Msg("attack button detected, starting sequence")
 		b.lastSequenceStart = time.Now()
 		go b.executeAttackSequence(gc)
@@ -817,6 +828,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		Str("loot", fmt.Sprintf("Gold: %d | Elixir: %d | DE: %d", b.totalGold.Load(), b.totalElixir.Load(), b.totalDE.Load())).
 		Dur("uptime", time.Since(b.startedAt)).
 		Msg("=== SESSION SUMMARY ===")
+
+	// Reset zoom state so we zoom out again after returning home
+	b.zoomedOut.Store(false)
 }
 
 func (b *Bot) clickSequence() bool {
