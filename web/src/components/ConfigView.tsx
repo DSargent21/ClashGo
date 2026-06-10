@@ -104,7 +104,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
 
                 {isOpen && searchEnabled && (
                   <div className="absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">
-                    {strategies.filter(s => s.includes('auto_edrag_rush') || s.includes('default')).map((s, idx) => {
+                    {strategies.map((s, idx) => {
                       const isActive = selectedStrategy.endsWith(s);
                       return (
                         <div 

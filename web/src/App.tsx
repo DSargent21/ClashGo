@@ -107,10 +107,10 @@ function App() {
     fetchData();
     const interval = setInterval(fetchData, 2000);
 
-    const updateScreenshot = async () => {
+  const updateScreenshot = async () => {
       try {
         const img = await GetLiveScreenshot();
-        if (img) setScreenshot(img);
+        if (img) setScreenshot('data:image/jpeg;base64,' + img);
       } catch (err) {
         // Silently fail screenshots
       }
@@ -143,9 +143,9 @@ function App() {
         goldThreshold,
         elixirThreshold,
         deThreshold,
-        searchEnabled,
-        selectedStrategy,
         upgradeWalls,
+        selectedStrategy,
+        searchEnabled,
         stallTimer
       );
     } catch (err) {
@@ -155,7 +155,7 @@ function App() {
 
   const handleStart = async () => {
     try {
-      const res = await StartBot(goldThreshold, elixirThreshold, deThreshold, searchEnabled, upgradeWalls);
+      const res = await StartBot(goldThreshold, elixirThreshold, deThreshold, upgradeWalls, searchEnabled);
       setIsRunning(res.running);
     } catch (err) {
       console.error('Start failed:', err);
