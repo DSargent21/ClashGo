@@ -19,6 +19,9 @@ type Client struct {
 	timeout  time.Duration
 	log      Logger
 
+	zoomOutKey string
+	zoomInKey  string
+
 	transport *Transport
 	health    Health
 	mu        sync.Mutex

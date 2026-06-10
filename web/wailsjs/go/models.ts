@@ -161,6 +161,7 @@ export namespace config {
 	    queen_charge_at_pct: number;
 	    warden_use_at_pct: number;
 	    reserve_de_percent: number;
+	    stall_timer_seconds: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AttackConfig(source);
@@ -181,6 +182,7 @@ export namespace config {
 	        this.queen_charge_at_pct = source["queen_charge_at_pct"];
 	        this.warden_use_at_pct = source["warden_use_at_pct"];
 	        this.reserve_de_percent = source["reserve_de_percent"];
+	        this.stall_timer_seconds = source["stall_timer_seconds"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

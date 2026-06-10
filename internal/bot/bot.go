@@ -75,6 +75,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		adb.WithPort(cfg.Device.ADBPort),
 		adb.WithLogger(zl),
 		adb.WithTimeout(30*time.Second),
+		adb.WithZoomKeys(cfg.Device.ZoomOutKey, cfg.Device.ZoomInKey),
 	)
 	client.DeviceID = cfg.Device.DeviceID
 

@@ -54,7 +54,16 @@ func WithLogger(l Logger) Option {
 }
 
 func WithTimeout(d time.Duration) Option {
-	return func(c *Client) { c.timeout = d }
+	return func(c *Client) {
+		c.timeout = d
+	}
+}
+
+func WithZoomKeys(out, in string) Option {
+	return func(c *Client) {
+		c.zoomOutKey = out
+		c.zoomInKey = in
+	}
 }
 
 func WithDeviceID(id string) Option {

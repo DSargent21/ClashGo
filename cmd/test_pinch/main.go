@@ -2,38 +2,29 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
+	"time"
+
 	"github.com/Ducky705/ClashGO/internal/adb"
 )
 
 func main() {
-	client := adb.NewClient(adb.WithDeviceID("emulator-5554"))
+	client := adb.NewClient(adb.WithHost("127.0.0.1"), adb.WithPort(5037))
+	client.DeviceID = "localhost:5555"
+
 	if err := client.Connect(); err != nil {
-		fmt.Printf("Connect failed: %v\n", err)
 		return
 	}
-	defer client.Close()
 
-	fmt.Println("Running Hardware-Level Key Emulation (Down/Up)...")
-	fmt.Println("Focusing BlueStacks...")
-	
-	// This script uses the most realistic 'hardware' emulation possible with AppleScript
-	script := `
-		tell application "BlueStacks" to activate
-		delay 1.2
-		tell application "System Events"
-			repeat 10 times
-				key down "i"
-				delay 0.05
-				key up "i"
-				delay 0.05
-			end repeat
-		end tell
-	`
-	exec.Command("osascript", "-e", script).Run()
+	fmt.Println("Testing ZoomOut keys...")
+	for i := 0; i < 5; i++ {
+		client.KeyEvent(20) // DPAD_DOWN
+		time.Sleep(100 * time.Millisecond)
+	}
 
-	fmt.Println("Sending background ADB keycodes...")
-	client.KeyEvent(37) // KEYCODE_I
+	time.Sleep(2 * time.Second)
 	
-	fmt.Println("Done. Please check if it zoomed. If you see 'iiii' in your terminal, it means focus failed.")
+	fmt.Println("Testing ZoomOut Ctrl+-...")
+	client.Shell("input keycombination CTRL_LEFT MINUS")
+
+	fmt.Println("Done")
 }

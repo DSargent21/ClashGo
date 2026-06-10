@@ -14,6 +14,8 @@ interface ConfigViewProps {
   setSearchEnabled: (v: boolean) => void;
   upgradeWalls: boolean;
   setUpgradeWalls: (v: boolean) => void;
+  stallTimer: number;
+  setStallTimer: (v: number) => void;
   onSave: (e: React.FormEvent) => void;
 }
 
@@ -25,6 +27,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   strategies,
   searchEnabled, setSearchEnabled,
   upgradeWalls, setUpgradeWalls,
+  stallTimer, setStallTimer,
   onSave
 }) => {
   const [isOpen, setIsOpen] = React.useState(false);

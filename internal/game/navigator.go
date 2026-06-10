@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"math"
-	"os/exec"
 	"sort"
 	"time"
 
