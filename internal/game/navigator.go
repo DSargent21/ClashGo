@@ -189,13 +189,8 @@ func (n *Navigator) TapAt(x, y int) error {
 }
 
 func (n *Navigator) ZoomOut() {
-	// Execute ADB fallback in parallel to minimize total latency
-	go func() {
-		_ = n.client.KeyEvent(37) // KEYCODE_I
-	}()
-
-	// Native macOS AppleScript for BlueStacks
-	err := n.nativeZoom("i", 10)
+	n.logger.Info().Msg("performing focus-independent native zoom out...")
+	err := n.client.PinchZoom(true)
 	if err != nil {
 		n.logger.Warn().Err(err).Msg("native ZoomOut failed")
 	} else {
@@ -204,37 +199,14 @@ func (n *Navigator) ZoomOut() {
 }
 
 func (n *Navigator) ZoomIn() {
-	go func() {
-		_ = n.client.KeyEvent(43) // KEYCODE_O
-	}()
-
-	err := n.nativeZoom("o", 5)
+	n.logger.Info().Msg("performing focus-independent native zoom in...")
+	err := n.client.PinchZoom(false)
 	if err != nil {
 		n.logger.Warn().Err(err).Msg("native ZoomIn failed")
 	} else {
 		n.logger.Debug().Msg("native ZoomIn completed")
 	}
 }
-
-// nativeZoom executes a macOS AppleScript to send hardware-level keystrokes 
-// to the BlueStacks application.
-func (n *Navigator) nativeZoom(key string, repeats int) error {
-	script := fmt.Sprintf(`
-		tell application "BlueStacks" to activate
-		delay 0.8
-		tell application "System Events"
-			repeat %d times
-				key down "%s"
-				delay 0.05
-				key up "%s"
-				delay 0.02
-			end repeat
-		end tell
-	`, repeats, key, key)
-
-	return exec.Command("osascript", "-e", script).Run()
-}
-
 
 func (n *Navigator) PinchAtScaled(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {
 	sx1, sy1 := n.cal.ScaleRef(x1, y1)

@@ -439,11 +439,11 @@ func (c *Client) Home() error   { return c.KeyEvent(3) }
 func (c *Client) Enter() error  { return c.KeyEvent(66) }
 func (c *Client) Delete() error { return c.KeyEvent(67) }
 
-// ZoomOut sends the standard Android zoom out keyevent (169)
-func (c *Client) ZoomOut() error { return c.KeyEvent(169) }
+// ZoomOut performs a native multi-touch zoom out.
+func (c *Client) ZoomOut() error { return c.PinchZoom(true) }
 
-// ZoomIn sends the standard Android zoom in keyevent (168)
-func (c *Client) ZoomIn() error { return c.KeyEvent(168) }
+// ZoomIn performs a native multi-touch zoom in.
+func (c *Client) ZoomIn() error { return c.PinchZoom(false) }
 
 func (c *Client) Shell(cmd string) (string, error) {
 	c.mu.Lock()
@@ -590,6 +590,54 @@ func (c *Client) Reconnect() error {
 		c.transport.Close()
 	}
 	return c.connectTransport()
+}
+
+func (c *Client) GetArchitecture() (string, error) {
+	return c.Shell("getprop ro.product.cpu.abi")
+}
+
+func (c *Client) DetectTouchDevice() (string, error) {
+	out, err := c.Shell("getevent -pl")
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(out, "\n")
+	var currentDevice string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "add device") {
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 {
+				currentDevice = strings.TrimSpace(parts[1])
+			}
+			continue
+		}
+		if strings.Contains(line, "ABS_MT_POSITION_X") {
+			return currentDevice, nil
+		}
+	}
+
+	// Fallback for some emulators
+	out, err = c.Shell("getevent -p")
+	if err != nil {
+		return "", err
+	}
+	lines = strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "add device") {
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 {
+				currentDevice = strings.TrimSpace(parts[1])
+			}
+			continue
+		}
+		// 0035 is ABS_MT_POSITION_X
+		if strings.Contains(line, "0035") {
+			return currentDevice, nil
+		}
+	}
+
+	return "", errors.New("touchscreen device not found")
 }
 
 func (c *Client) Health() Health {
