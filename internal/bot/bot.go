@@ -450,8 +450,8 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			b.logger.Info().Msg("main village elements detected, performing initial zoom out...")
 			b.navigator.ZoomOut()
 			b.lastAction = time.Now()
-			// Wait for zoom animation to settle
-			time.Sleep(2000 * time.Millisecond)
+			// Wait for zoom animation to settle (Clash has long momentum)
+			time.Sleep(3000 * time.Millisecond)
 			// Return here so the next loop iteration captures a fresh screen after zoom
 			return
 		}
