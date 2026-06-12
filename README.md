@@ -5,6 +5,8 @@ This is **ClashGO**, a super lightweight, high-performance Clash of Clans bot wr
 ### Why I made this
 I just wanted a bot that actually worked on my Mac. I tried using the original [MyBot.run](https://github.com/MyBotRun/MyBot) but it's built for Windows and uses AutoIt, which didn't really vibe with my setup. So, I spent 3 days vibe-coding this Go version from scratch. It's a bit rough around the edges, but it's fast, efficient, and gets the job done.
 
+![Main Interface](./main_interface.png)
+
 ![ClashGO in Action](./attack_deploy_debug.png)
 
 ---

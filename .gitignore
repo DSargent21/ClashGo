@@ -57,6 +57,9 @@ web/package.json.md5
 **/*.jpg
 **/*.jpeg
 !assets/templates/**/*.png
+!attack_deploy_debug.png
+!last_battle_result.png
+!main_interface.png
 assets/templates/debug/
 
 # Diagnostic and Log files
