@@ -57,9 +57,6 @@ web/package.json.md5
 **/*.jpg
 **/*.jpeg
 !assets/templates/**/*.png
-!attack_deploy_debug.png
-!last_battle_result.png
-!main_interface.png
 !dashboard_ui.png
 assets/templates/debug/
 

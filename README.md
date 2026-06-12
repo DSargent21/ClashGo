@@ -74,8 +74,6 @@ ClashGO handles army training automatically using the game's **Quick Train** sys
 2. Save your preferred army to one of the **Quick Train** slots.
 3. The bot will automatically detect when your army is empty and use that slot to refill it.
 
-![Battle Result](./last_battle_result.png)
-
 ### Custom Strategies
 You can swap between different attack strategies by changing the `strategy_file` in your `config.json`. These are stored as `.yaml` files in `assets/strategies/`.
 
