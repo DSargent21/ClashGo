@@ -698,6 +698,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var battleGold int = 0
 	var battleElixir int = 0
 	var battleDE int = 0
+	var bonusGold, bonusElixir, bonusDE int = 0, 0, 0
 	var parsedResults bool = false
 
 	if b.attackExec.WaitForBattleEnd(4 * time.Minute) {
@@ -714,6 +715,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				battleGold = res.Loot.Gold + res.Bonus.Gold
 				battleElixir = res.Loot.Elixir + res.Bonus.Elixir
 				battleDE = res.Loot.DarkElixir + res.Bonus.DarkElixir
+				bonusGold = res.Bonus.Gold
+				bonusElixir = res.Bonus.Elixir
+				bonusDE = res.Bonus.DarkElixir
 				parsedResults = true
 
 				b.totalGold.Add(int64(res.Loot.Gold + res.Bonus.Gold))
@@ -777,6 +781,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		GoldStolen:       battleGold,
 		ElixirStolen:     battleElixir,
 		DarkElixirStolen: battleDE,
+		BonusGold:        bonusGold,
+		BonusElixir:      bonusElixir,
+		BonusDE:          bonusDE,
 		TotalAttacks:     b.attackCount.Load(),
 	}
 
@@ -1326,6 +1333,9 @@ type AttackReport struct {
 	GoldStolen       int    `json:"gold_stolen"`
 	ElixirStolen     int    `json:"elixir_stolen"`
 	DarkElixirStolen int    `json:"dark_elixir_stolen"`
+	BonusGold        int    `json:"bonus_gold"`
+	BonusElixir      int    `json:"bonus_elixir"`
+	BonusDE          int    `json:"bonus_de"`
 	TotalAttacks     int32  `json:"total_attacks_session"`
 }
 

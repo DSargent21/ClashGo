@@ -58,6 +58,9 @@ export namespace bot {
 	    gold_stolen: number;
 	    elixir_stolen: number;
 	    dark_elixir_stolen: number;
+	    bonus_gold: number;
+	    bonus_elixir: number;
+	    bonus_de: number;
 	    total_attacks_session: number;
 	
 	    static createFrom(source: any = {}) {
@@ -77,6 +80,9 @@ export namespace bot {
 	        this.gold_stolen = source["gold_stolen"];
 	        this.elixir_stolen = source["elixir_stolen"];
 	        this.dark_elixir_stolen = source["dark_elixir_stolen"];
+	        this.bonus_gold = source["bonus_gold"];
+	        this.bonus_elixir = source["bonus_elixir"];
+	        this.bonus_de = source["bonus_de"];
 	        this.total_attacks_session = source["total_attacks_session"];
 	    }
 	}

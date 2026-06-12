@@ -28,6 +28,9 @@ export interface AttackReport {
   gold_stolen: number;
   elixir_stolen: number;
   dark_elixir_stolen: number;
+  bonus_gold: number;
+  bonus_elixir: number;
+  bonus_de: number;
   total_attacks_session: number;
 }
 

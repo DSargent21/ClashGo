@@ -92,17 +92,38 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                   <tr key={i} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/40 transition-colors group">
                     <td className="px-10 py-4">
                       <div className="flex gap-6">
-                        <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                          <span className="material-symbols-outlined text-amber-500 text-base">monetization_on</span> 
-                          {rep.gold_stolen.toLocaleString()}
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
+                            <span className="material-symbols-outlined text-amber-500 text-base">monetization_on</span> 
+                            {rep.gold_stolen.toLocaleString()}
+                          </div>
+                          {rep.bonus_gold > 0 && (
+                            <div className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest pl-6">
+                              + {rep.bonus_gold.toLocaleString()} bonus
+                            </div>
+                          )}
                         </div>
-                        <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                          <span className="material-symbols-outlined text-fuchsia-500 text-base">water_drop</span> 
-                          {rep.elixir_stolen.toLocaleString()}
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
+                            <span className="material-symbols-outlined text-fuchsia-500 text-base">water_drop</span> 
+                            {rep.elixir_stolen.toLocaleString()}
+                          </div>
+                          {rep.bonus_elixir > 0 && (
+                            <div className="text-[10px] font-black text-fuchsia-500/60 uppercase tracking-widest pl-6">
+                              + {rep.bonus_elixir.toLocaleString()} bonus
+                            </div>
+                          )}
                         </div>
-                        <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                          <span className="material-symbols-outlined text-zinc-900 dark:text-zinc-400 text-base">water_drop</span> 
-                          {rep.dark_elixir_stolen.toLocaleString()}
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
+                            <span className="material-symbols-outlined text-zinc-900 dark:text-zinc-400 text-base">water_drop</span> 
+                            {rep.dark_elixir_stolen.toLocaleString()}
+                          </div>
+                          {rep.bonus_de > 0 && (
+                            <div className="text-[10px] font-black text-zinc-500/60 uppercase tracking-widest pl-6">
+                              + {rep.bonus_de.toLocaleString()} bonus
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
