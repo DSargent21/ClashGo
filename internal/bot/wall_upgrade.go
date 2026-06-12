@@ -9,6 +9,7 @@ import (
 	"gocv.io/x/gocv"
 
 	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/vision"
 )
 
@@ -62,7 +63,7 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 		)
 
 		// Load custom ROI if it exists
-		if roiData, err := os.ReadFile("assets/builder_menu_roi.json"); err == nil {
+		if roiData, err := os.ReadFile(paths.Resolve("builder_menu_roi.json")); err == nil {
 			type ROIConfig struct {
 				Physical map[string]int `json:"physical"`
 			}
@@ -77,7 +78,7 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 				b.logger.Info().
 					Int("x1", menuROI.Min.X).Int("y1", menuROI.Min.Y).
 					Int("x2", menuROI.Max.X).Int("y2", menuROI.Max.Y).
-					Msg("Loaded custom builder menu ROI from assets/builder_menu_roi.json")
+					Msg("Loaded custom builder menu ROI")
 			}
 		}
 

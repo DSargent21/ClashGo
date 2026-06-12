@@ -57,6 +57,7 @@ web/package.json.md5
 **/*.jpg
 **/*.jpeg
 !assets/templates/**/*.png
+!dashboard_ui.png
 assets/templates/debug/
 
 # Diagnostic and Log files
@@ -87,3 +88,6 @@ test_match
 config.json
 config.json.bak
 .env
+stats.json
+attack_history.json
+*.zip

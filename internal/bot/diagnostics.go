@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"gocv.io/x/gocv"
 )
 
@@ -23,7 +24,7 @@ func (b *Bot) DumpDiagnostics(reason string, screen gocv.Mat, context map[string
 	baseName := fmt.Sprintf("diag_%s", timestamp)
 
 	// Save screenshot
-	imgName := baseName + ".png"
+	imgName := paths.ResolveConfig(baseName + ".png")
 	if !screen.Empty() {
 		if ok := gocv.IMWrite(imgName, screen); !ok {
 			b.logger.Error().Str("file", imgName).Msg("failed to save diagnostic screenshot")
@@ -45,7 +46,7 @@ func (b *Bot) DumpDiagnostics(reason string, screen gocv.Mat, context map[string
 		return fmt.Errorf("failed to marshal diagnostic data: %w", err)
 	}
 
-	jsonName := baseName + ".json"
+	jsonName := paths.ResolveConfig(baseName + ".json")
 	if err := os.WriteFile(jsonName, jsonData, 0644); err != nil {
 		b.logger.Error().Err(err).Str("file", jsonName).Msg("failed to save diagnostic json")
 		return err
@@ -54,14 +55,14 @@ func (b *Bot) DumpDiagnostics(reason string, screen gocv.Mat, context map[string
 	b.logger.Info().Str("file", jsonName).Msg("saved diagnostic data")
 
 	// Also symlink or copy to "last_failure" for easy access
-	_ = os.Remove("last_failure.png")
-	_ = os.Remove("last_failure.json")
+	_ = os.Remove(paths.ResolveConfig("last_failure.png"))
+	_ = os.Remove(paths.ResolveConfig("last_failure.json"))
 	
 	// Copy files to last_failure (safer than symlinks on some systems/setups)
 	if !screen.Empty() {
-		_ = gocv.IMWrite("last_failure.png", screen)
+		_ = gocv.IMWrite(paths.ResolveConfig("last_failure.png"), screen)
 	}
-	_ = os.WriteFile("last_failure.json", jsonData, 0644)
+	_ = os.WriteFile(paths.ResolveConfig("last_failure.json"), jsonData, 0644)
 
 	return nil
 }

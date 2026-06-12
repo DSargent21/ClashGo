@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/Ducky705/ClashGO/internal/paths"
 )
 
 type BotConfig struct {
@@ -116,7 +118,7 @@ func DefaultConfig() *BotConfig {
 		},
 		Attack: AttackConfig{
 			Enabled:            true,
-			StrategyFile:       "assets/strategies/auto_edrag_rush.yaml",
+			StrategyFile:       paths.Resolve("strategies/auto_edrag_rush.yaml"),
 			MaxAttackPerSession: 100,
 			DropDelay:          Duration{500 * time.Millisecond},
 			SpellDelay:         Duration{2 * time.Second},
@@ -151,6 +153,10 @@ func DefaultConfig() *BotConfig {
 }
 
 func Load(path string) (*BotConfig, error) {
+	if path == "config.json" {
+		path = paths.ResolveConfig("config.json")
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)

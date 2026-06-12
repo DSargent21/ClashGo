@@ -13,6 +13,7 @@ import (
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/logger"
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/rs/zerolog/log"
@@ -65,8 +66,8 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
 	// Ensure fresh stats and history every boot
-	_ = os.Remove("stats.json")
-	_ = os.Remove("attack_history.json")
+	_ = os.Remove(paths.ResolveConfig("stats.json"))
+	_ = os.Remove(paths.ResolveConfig("attack_history.json"))
 
 	// Setup log bridge
 	wailsWriter := &WailsLogWriter{app: a}
@@ -106,7 +107,7 @@ func (a *App) saveStats() {
 		return
 	}
 
-	if err := bot.AsyncWriteFile("stats.json", bytes, 0644); err != nil {
+	if err := bot.AsyncWriteFile(paths.ResolveConfig("stats.json"), bytes, 0644); err != nil {
 		log.Error().Err(err).Msg("failed to write stats.json")
 	}
 }
@@ -119,8 +120,8 @@ func (a *App) ResetStats() {
 		// For now, stopping the bot might be required for a full reset, or we just clear the persistent part.
 	}
 	a.mu.Unlock()
-	_ = os.Remove("stats.json")
-	_ = os.Remove("attack_history.json")
+	_ = os.Remove(paths.ResolveConfig("stats.json"))
+	_ = os.Remove(paths.ResolveConfig("attack_history.json"))
 }
 
 func (a *App) startWebServer() {
@@ -308,7 +309,7 @@ func (a *App) GetLogs() []string {
 
 // GetAttackHistory returns persistent log of attacks
 func (a *App) GetAttackHistory() []bot.AttackReport {
-	data, err := os.ReadFile("attack_history.json")
+	data, err := os.ReadFile(paths.ResolveConfig("attack_history.json"))
 	if err != nil {
 		return []bot.AttackReport{}
 	}
@@ -392,19 +393,19 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	if err != nil {
 		return err
 	}
-	return os.WriteFile("config.json", bytes, 0644)
+	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // GetStrategies lists available strategy files
 func (a *App) GetStrategies() []string {
 	var files []string
-	matches, err := filepath.Glob("assets/strategies/*.yaml")
+	matches, err := filepath.Glob(paths.Resolve("strategies/*.yaml"))
 	if err == nil {
 		for _, m := range matches {
 			files = append(files, filepath.Base(filepath.ToSlash(m)))
 		}
 	}
-	csvMatches, err := filepath.Glob("assets/strategies/*.csv")
+	csvMatches, err := filepath.Glob(paths.Resolve("strategies/*.csv"))
 	if err == nil {
 		for _, m := range csvMatches {
 			files = append(files, filepath.Base(filepath.ToSlash(m)))

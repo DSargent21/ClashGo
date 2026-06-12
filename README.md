@@ -1,68 +1,30 @@
-# ClashGO
+# ClashGO ⚔️
 
-A professional, high-performance Go port of the Clash of Clans AutoIt bot, optimized for Apple Silicon Macs using Android Debug Bridge (ADB).
+This is **ClashGO**, a super lightweight Clash of Clans bot written in Go.
 
----
+I basically vibe-coded this in like 3 days because I wanted a bot that actually worked on my Mac (Apple Silicon). It's built from scratch using Go and OpenCV.
 
-## 🛡️ Anti-Ban & Safety
-This project is designed with safety as a priority. All diagnostic and debug data that could identify your account or base layout is excluded from source control.
-- **No Identifying Data**: Screenshots of player bases and diagnostic JSONs are strictly git-ignored.
-- **Local Execution**: All vision processing happens on your machine.
-- **Human-like Interaction**: Randomized delays and confirmation-backed state transitions.
+![ClashGO Dashboard](./dashboard_ui.png)
 
----
+### ⚠️ WARNING: It's Buggy
+Look, I made this fast. It's rough around the edges, probably has bugs, and might crash. Use it at your own risk. 
 
-## 🚀 Key Features
+### 🚀 Why it's cool
+- **Mac Native**: Works great on Apple Silicon.
+- **Fast**: Uses a persistent ADB connection, so screen captures and taps are instant.
+- **Lightweight**: Just a single binary.
 
-- **Persistent ADB Transport**: Low latency multiplexed TCP connection to ADB server (screencaps < 120ms).
-- **Vision Engine**: Real-time GoCV/OpenCV 4.x vision pipelines for state classification and red-zone segmentation.
-- **Dynamic State Machine**: Confirmation-backed state graph with Dijkstra-based shortest-path traversal.
-- **Army Training Queue**: Automated troop trainer with status recognition and resource extraction.
-- **Strategy Attack Executor**: CSV and YAML deployment parser with smart pacing and hero abilities.
-- **GUI Remote Dashboard**: Wails v2 + React dashboard for real-time status and configuration.
+### 🛠️ How to use
+1. **Emulator**: Set your emulator (like BlueStacks) to **860x732** resolution and **160 DPI**.
+2. **Config**: Point `config.json` to your ADB device.
+3. **Run**: 
+   - CLI: `go build -tags cli -o clashgo . && ./clashgo`
+   - GUI: `wails dev`
 
----
+### 🤝 HELP WANTED (Porting to Windows)
+Right now, this is heavily tested on macOS. I'd love some help **porting/testing this for Windows**. If you're a dev and want to help me make this not-just-a-Mac-thing, open a PR or hit me up!
 
-## 📂 Project Structure
+Also, if you find bugs (you will), just open an issue.
 
-- `cmd/`: Application entry points.
-- `internal/`: Core logic (ADB, Bot, Game State, Vision).
-- `pkg/`: Publicly reusable packages (Strategy parser).
-- `assets/`: UI templates and attack strategies.
-- `docs/`: Design documents and architecture overview.
-- `tools/`: Development and calibration utilities.
-- `web/`: React frontend for the dashboard.
-
----
-
-## 🛠️ Installation & Setup
-
-1. **Go 1.25+**: [Install Go](https://go.dev/doc/install).
-2. **OpenCV 4.x**: 
-   ```bash
-   brew install opencv pkg-config
-   ```
-3. **Verify Configuration**:
-   ```bash
-   pkg-config --libs --cflags opencv4
-   ```
-
----
-
-## 🏃 Running the Bot
-
-### CLI Mode (Headless)
-```bash
-go build -tags cli -o clashgo .
-./clashgo
-```
-
-### GUI Mode (Desktop)
-```bash
-wails dev
-```
-
----
-
-## 📄 License
-Distributed under the GNU General Public License v3.0. See `License.txt` for more information.
+### 📄 License
+MIT. Do whatever you want with it.
