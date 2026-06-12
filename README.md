@@ -23,6 +23,14 @@ I chose Go because I wanted this to be as lightweight as possible while still be
 
 ## 🛠️ Setup & Configuration
 
+### Running the Release (No Setup Needed)
+If you just want to run the bot, download the latest release DMG. It's **fully standalone**—you don't need to install Go, OpenCV, or anything else. Just drag the app to your Applications folder and you're good to go.
+
+---
+
+## 🛠️ Development Setup
+If you want to build from source or contribute, follow these steps:
+
 ### 1. Requirements
 - **Go 1.25+**: [Download here](https://go.dev/doc/install).
 - **OpenCV 4.x**: Used for the vision engine.
