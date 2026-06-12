@@ -49,7 +49,7 @@ function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [screenshot, setScreenshot] = useState('');
   const [adbPort, setAdbPort] = useState(5555);
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
 
   // Config states
