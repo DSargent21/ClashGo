@@ -91,3 +91,4 @@ config.json.bak
 stats.json
 attack_history.json
 *.zip
+.agents/
