@@ -88,3 +88,6 @@ test_match
 config.json
 config.json.bak
 .env
+stats.json
+attack_history.json
+*.zip
