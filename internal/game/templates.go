@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"gocv.io/x/gocv"
 )
 
@@ -29,7 +30,7 @@ type TemplateMeta struct {
 
 func NewTemplateStore(dir string) (*TemplateStore, error) {
 	if dir == "" {
-		dir = "assets/templates"
+		dir = paths.Resolve("templates")
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create template dir: %w", err)

@@ -16,6 +16,7 @@ import (
 	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
@@ -120,7 +121,7 @@ func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 func (e *Executor) Validate(s *strategy.DynamicStrategy) error {
 	// Load manual labels to see if templates are even needed
 	manualUnits := make(map[string]bool)
-	if data, err := os.ReadFile("assets/manual_labels.json"); err == nil {
+	if data, err := os.ReadFile(paths.Resolve("manual_labels.json")); err == nil {
 		var lConf struct {
 			Slots []struct {
 				X    int    `json:"x"`
@@ -144,7 +145,7 @@ func (e *Executor) Validate(s *strategy.DynamicStrategy) error {
 			}
 
 			fileName := strings.ReplaceAll(unitName, " ", "_")
-			tplPath := fmt.Sprintf("assets/templates/attack/%s.png", fileName)
+			tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", fileName))
 			if _, err := os.Stat(tplPath); os.IsNotExist(err) {
 				return fmt.Errorf("missing template for unit '%s' at path: %s (and not found in manual_labels.json)", unit.Name, tplPath)
 			}
@@ -168,7 +169,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	usePrecision := false
 	mBarY := int(float64(h) * 0.78) // Default fallback
 
-	pData, err := os.ReadFile("assets/precision_config.json")
+	pData, err := os.ReadFile(paths.Resolve("precision_config.json"))
 	if err == nil && json.Unmarshal(pData, &pCfg) == nil {
 		usePrecision = true
 		scaleX, scaleY := float64(w)/float64(pCfg.Width), float64(h)/float64(pCfg.Height)
@@ -223,7 +224,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 	// 1.5.1. Load Ground-Truth Manual Labels and override categories in detected slots
 	manualMap := make(map[int]string)
-	if data, err := os.ReadFile("assets/manual_labels.json"); err == nil {
+	if data, err := os.ReadFile(paths.Resolve("manual_labels.json")); err == nil {
 		var lConf struct {
 			Slots []struct {
 				X    int    `json:"x"`
@@ -286,7 +287,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		gocv.Circle(&debugImg, image.Pt(slot.X, slot.Y), 18, c, 2)
 		gocv.PutText(&debugImg, slot.Category, image.Pt(slot.X-15, slot.Y-25), gocv.FontHersheySimplex, 0.4, c, 1)
 	}
-	gocv.IMWrite("attack_deploy_debug.png", debugImg)
+	gocv.IMWrite(paths.ResolveConfig("attack_deploy_debug.png"), debugImg)
 	e.logger.Info().Msg("saved visual diagnostics to attack_deploy_debug.png")
 
 	// Pre-scan and cache all unit locations across all phases to eliminate template matching overhead during deployment
@@ -295,7 +296,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	slotY := mBarY + (h-mBarY)/2
 
 	// 1.9. Load Ground-Truth Manual Labels (100% Reliability)
-	if data, err := os.ReadFile("assets/manual_labels.json"); err == nil {
+	if data, err := os.ReadFile(paths.Resolve("manual_labels.json")); err == nil {
 		var lConf struct {
 			Slots []struct {
 				X    int    `json:"x"`
@@ -410,7 +411,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				}
 
 				fileName := strings.ReplaceAll(unitName, " ", "_")
-				tplPath := fmt.Sprintf("assets/templates/attack/%s.png", fileName)
+				tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", fileName))
 				tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
 				if !tpl.Empty() {
 					findMatch := func(screen gocv.Mat, currentThreshold float32) *vision.Match {
@@ -1189,7 +1190,7 @@ func (e *Executor) EndBattle() error {
 	// Try to load StallConfig for pinpoint accuracy
 	var sCfg StallConfig
 	pinpoint := false
-	if data, err := os.ReadFile("assets/stall_config.json"); err == nil && json.Unmarshal(data, &sCfg) == nil {
+	if data, err := os.ReadFile(paths.Resolve("stall_config.json")); err == nil && json.Unmarshal(data, &sCfg) == nil {
 		pinpoint = true
 	}
 
@@ -1262,12 +1263,12 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 	// Load Stall Config for ROI
 	var sCfg StallConfig
 	hasStallROI := false
-	if data, err := os.ReadFile("assets/stall_config.json"); err == nil && json.Unmarshal(data, &sCfg) == nil {
+	if data, err := os.ReadFile(paths.Resolve("stall_config.json")); err == nil && json.Unmarshal(data, &sCfg) == nil {
 		hasStallROI = !sCfg.PercentROI.Empty()
 	}
 
 	// Prepare OCR
-	tStore, err := game.NewTemplateStore("assets/templates")
+	tStore, err := game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
 		e.logger.Error().Err(err).Msg("failed to create template store for stall detection")
 		return false
@@ -1427,7 +1428,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 	slotY := mBarY + (h-mBarY)/2
 	
 	// 1. Try to load manual calibration for 100% precision
-	if data, err := os.ReadFile("assets/manual_slots.json"); err == nil {
+	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
 		var mConf struct {
 			CardWidth  int   `json:"card_width"`
 			CardHeight int   `json:"card_height"`
@@ -1475,7 +1476,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	// Search Heroes
 	for _, name := range heroNames {
-		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", name))
 		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
 			continue
 		}
@@ -1492,7 +1493,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	// Search Spells
 	for _, name := range spellNames {
-		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", name))
 		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
 			continue
 		}
@@ -1509,7 +1510,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	// Search Sieges
 	for _, name := range siegeNames {
-		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", name)
+		tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", name))
 		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
 			continue
 		}

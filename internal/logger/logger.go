@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -30,7 +31,7 @@ func (cw cleanWriter) Write(p []byte) (n int, err error) {
 // Init initializes the global logger with a clean console output and a rotated JSON file log.
 func Init(debug bool, extraWriters ...io.Writer) {
 	// 1. Setup File Logging (Full JSON)
-	logDir := "logs"
+	logDir := paths.ResolveConfig("logs")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create log directory: %v\n", err)
 	}

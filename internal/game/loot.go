@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog"
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"gocv.io/x/gocv"
 )
 
@@ -117,7 +118,7 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	)
 
 	// Load custom ROIs if they exist
-	if data, err := os.ReadFile("assets/battle_loot_rois.json"); err == nil {
+	if data, err := os.ReadFile(paths.Resolve("battle_loot_rois.json")); err == nil {
 		var custom struct {
 			BattleSearch struct{ X1, Y1, X2, Y2 int } `json:"battleSearch"`
 			BonusSearch  struct{ X1, Y1, X2, Y2 int } `json:"bonusSearch"`
@@ -135,7 +136,7 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 				int(float64(custom.BonusSearch.X2)*lr.cal.ScaleX),
 				int(float64(custom.BonusSearch.Y2)*lr.cal.ScaleY),
 			)
-			lr.logger.Info().Msg("Loaded custom battle loot ROIs from assets/battle_loot_rois.json")
+			lr.logger.Info().Msg("Loaded custom battle loot ROIs")
 		}
 	}
 
@@ -151,7 +152,7 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	}
 
 	// Load custom star points if they exist
-	if data, err := os.ReadFile("assets/star_points.json"); err == nil {
+	if data, err := os.ReadFile(paths.Resolve("star_points.json")); err == nil {
 		var custom struct {
 			Stars []struct{ X, Y int } `json:"stars"`
 		}
@@ -159,7 +160,7 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 			for i := 0; i < 3; i++ {
 				starPoints[i] = image.Pt(custom.Stars[i].X, custom.Stars[i].Y)
 			}
-			lr.logger.Info().Msg("Loaded custom star points from assets/star_points.json")
+			lr.logger.Info().Msg("Loaded custom star points")
 		}
 	}
 

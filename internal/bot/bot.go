@@ -17,6 +17,7 @@ import (
 	"github.com/Ducky705/ClashGO/internal/attack"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/training"
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
@@ -165,7 +166,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	trainer := training.NewTrainer(client, cal, &cfg.Training, log.Logger)
 
 	var templates *game.TemplateStore
-	templates, err = game.NewTemplateStore("assets/templates")
+	templates, err = game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
 		log.Warn().Err(err).Msg("template store init failed, continuing without templates")
 		templates = nil
@@ -705,7 +706,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		// Capture screen to read results
 		resultScreen, err := b.client.CaptureToMat()
 		if err == nil {
-			gocv.IMWrite("last_battle_result.png", resultScreen)
+			gocv.IMWrite(paths.ResolveConfig("last_battle_result.png"), resultScreen)
 			b.logger.Info().Msg("saved battle result screenshot to last_battle_result.png")
 
 			lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
@@ -788,12 +789,12 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	}
 
 	if repBytes, err := json.MarshalIndent(rep, "", "  "); err == nil {
-		_ = AsyncWriteFile("last_attack_report.json", repBytes, 0644)
+		_ = AsyncWriteFile(paths.ResolveConfig("last_attack_report.json"), repBytes, 0644)
 	}
 
 	// Update persistent history file
 	var history []AttackReport
-	if histData, err := os.ReadFile("attack_history.json"); err == nil {
+	if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
 		_ = json.Unmarshal(histData, &history)
 	}
 	history = append([]AttackReport{rep}, history...)
@@ -801,7 +802,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		history = history[:500]
 	}
 	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
-		_ = AsyncWriteFile("attack_history.json", histBytes, 0644)
+		_ = AsyncWriteFile(paths.ResolveConfig("attack_history.json"), histBytes, 0644)
 	}
 
 	deployStatus := "SUCCESS (100% Deployed)"
@@ -1105,7 +1106,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			Msg("clicking (fallback match)")
 		
 		if b.cfg.Debug.SaveScreenshots {
-			gocv.IMWrite(fmt.Sprintf("diag_fallback_%s.png", templateName), screen)
+			gocv.IMWrite(paths.ResolveConfig(fmt.Sprintf("diag_fallback_%s.png", templateName)), screen)
 		}
 
 		if err := b.client.Tap(px, py); err != nil {
