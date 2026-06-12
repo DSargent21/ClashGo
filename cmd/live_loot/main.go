@@ -7,20 +7,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/rs/zerolog"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/logger"
 	"github.com/rs/zerolog/log"
 )
 
 func main() {
 	// 1. Professional logging setup
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = log.Output(zerolog.ConsoleWriter{
-		Out:        os.Stderr,
-		TimeFormat: "15:04:05",
-	})
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	logger.Init(os.Getenv("DEBUG") != "")
 
 	fmt.Println("=== Live Loot Recognition Monitor ===")
 	fmt.Println("Press Ctrl+C to stop")

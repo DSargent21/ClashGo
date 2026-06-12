@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gocv.io/x/gocv"

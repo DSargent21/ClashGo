@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/bot"
-	"github.com/Ducky705/ClashGo/internal/config"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/bot"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/logger"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"gocv.io/x/gocv"
@@ -29,22 +29,34 @@ type App struct {
 	mu        sync.Mutex
 	echo      *echo.Echo
 	lastStats bot.BotStats
+	logBuffer []string
 }
 
 type WailsLogWriter struct {
-	ctx context.Context
+	app *App
 }
 
 func (w *WailsLogWriter) Write(p []byte) (n int, err error) {
-	if w.ctx != nil {
-		runtime.EventsEmit(w.ctx, "bot_log", string(p))
+	msg := string(p)
+	if w.app.ctx != nil {
+		runtime.EventsEmit(w.app.ctx, "bot_log", msg)
 	}
+	
+	w.app.mu.Lock()
+	w.app.logBuffer = append(w.app.logBuffer, msg)
+	if len(w.app.logBuffer) > 100 {
+		w.app.logBuffer = w.app.logBuffer[len(w.app.logBuffer)-100:]
+	}
+	w.app.mu.Unlock()
+	
 	return len(p), nil
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{
+		logBuffer: make([]string, 0, 100),
+	}
 }
 
 // startup is called when the app starts. The context is saved
@@ -52,14 +64,63 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
+	// Ensure fresh stats and history every boot
+	_ = os.Remove("stats.json")
+	_ = os.Remove("attack_history.json")
+
 	// Setup log bridge
-	wailsWriter := &WailsLogWriter{ctx: ctx}
-	consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "15:04:05"}
-	multi := zerolog.MultiLevelWriter(consoleWriter, wailsWriter)
-	log.Logger = zerolog.New(multi).With().Timestamp().Logger()
+	wailsWriter := &WailsLogWriter{app: a}
+	logger.Init(os.Getenv("DEBUG") != "", wailsWriter)
 
 	// Start Web Server for Remote Access
 	go a.startWebServer()
+}
+
+func (a *App) shutdown(ctx context.Context) {
+	a.saveStats()
+}
+
+func (a *App) saveStats() {
+	a.mu.Lock()
+	stats := a.lastStats
+	if a.bot != nil {
+		current := a.bot.Stats()
+		stats = bot.BotStats{
+			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
+			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
+			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
+			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
+			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
+			Stars0:           a.lastStats.Stars0 + current.Stars0,
+			Stars1:           a.lastStats.Stars1 + current.Stars1,
+			Stars2:           a.lastStats.Stars2 + current.Stars2,
+			Stars3:           a.lastStats.Stars3 + current.Stars3,
+			Uptime:           a.lastStats.Uptime + current.Uptime,
+		}
+	}
+	a.mu.Unlock()
+
+	bytes, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		log.Error().Err(err).Msg("failed to marshal stats")
+		return
+	}
+
+	if err := bot.AsyncWriteFile("stats.json", bytes, 0644); err != nil {
+		log.Error().Err(err).Msg("failed to write stats.json")
+	}
+}
+
+func (a *App) ResetStats() {
+	a.mu.Lock()
+	a.lastStats = bot.BotStats{}
+	if a.bot != nil {
+		// We can't easily reset atomic counters in a running bot without adding a Reset method there too.
+		// For now, stopping the bot might be required for a full reset, or we just clear the persistent part.
+	}
+	a.mu.Unlock()
+	_ = os.Remove("stats.json")
+	_ = os.Remove("attack_history.json")
 }
 
 func (a *App) startWebServer() {
@@ -73,6 +134,14 @@ func (a *App) startWebServer() {
 		defer a.mu.Unlock()
 		running := a.bot != nil
 		return c.JSON(200, map[string]interface{}{"running": running})
+	})
+
+	e.GET("/stats", func(c echo.Context) error {
+		return c.JSON(200, a.GetStats())
+	})
+
+	e.GET("/history", func(c echo.Context) error {
+		return c.JSON(200, a.GetAttackHistory())
 	})
 
 	// Static assets from embed would be ideal, but for now just API
@@ -106,21 +175,47 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
 	cfg.Search.Enabled = searchEnabled
 
-	b, err := bot.NewBot(cfg)
-	if err != nil {
-		return BotStatus{Running: false, Message: fmt.Sprintf("Error: %v", err)}
-	}
-
-	a.bot = b
+	// Create a placeholder to indicate the bot is starting
 	a.botCtx, a.cancel = context.WithCancel(context.Background())
 
 	go func() {
+		b, err := bot.NewBot(cfg)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to initialize bot")
+			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Initialization Error: %v", err))
+			
+			a.mu.Lock()
+			a.cancel()
+			a.bot = nil
+			a.mu.Unlock()
+			return
+		}
+
+		b.OnFrame = func(frame string) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "live_feed", frame)
+			}
+		}
+
+		b.OnStatsUpdate = func() {
+			a.saveStats()
+		}
+
+		a.mu.Lock()
+		a.bot = b
+		a.mu.Unlock()
+
 		if err := a.bot.Start(); err != nil {
-			runtime.EventsEmit(a.ctx, "bot_error", err.Error())
+			log.Error().Err(err).Msg("failed to start bot")
+			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Start Error: %v", err))
+			
+			a.mu.Lock()
+			a.bot = nil
+			a.mu.Unlock()
 		}
 	}()
 
-	return BotStatus{Running: true, Message: "Bot started"}
+	return BotStatus{Running: true, Message: "Bot initialization started in background"}
 }
 
 // StopBot stops the bot
@@ -128,16 +223,41 @@ func (a *App) StopBot() BotStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if a.cancel != nil {
+		a.cancel()
+	}
+
 	if a.bot == nil {
 		return BotStatus{Running: false, Message: "Bot not running"}
+	}
+
+	// Capture and accumulate final stats before stopping
+	current := a.bot.Stats()
+	a.lastStats = bot.BotStats{
+		AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
+		SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
+		TotalGold:        a.lastStats.TotalGold + current.TotalGold,
+		TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
+		TotalDE:          a.lastStats.TotalDE + current.TotalDE,
+		Stars0:           a.lastStats.Stars0 + current.Stars0,
+		Stars1:           a.lastStats.Stars1 + current.Stars1,
+		Stars2:           a.lastStats.Stars2 + current.Stars2,
+		Stars3:           a.lastStats.Stars3 + current.Stars3,
+		Uptime:           a.lastStats.Uptime + current.Uptime,
+		AdbHealth:        current.AdbHealth,
 	}
 
 	a.cancel()
 	a.bot.Stop()
 	a.bot = nil
 
+	a.mu.Unlock()
+	a.saveStats()
+	a.mu.Lock()
+
 	return BotStatus{Running: false, Message: "Bot stopped"}
 }
+
 
 // IsRunning returns if the bot is currently running
 func (a *App) IsRunning() bool {
@@ -155,10 +275,35 @@ func (a *App) GetConfig() *config.BotConfig {
 func (a *App) GetStats() bot.BotStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	
+	res := a.lastStats
 	if a.bot != nil {
-		a.lastStats = a.bot.Stats()
+		current := a.bot.Stats()
+		res = bot.BotStats{
+			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
+			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
+			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
+			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
+			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
+			Stars0:           a.lastStats.Stars0 + current.Stars0,
+			Stars1:           a.lastStats.Stars1 + current.Stars1,
+			Stars2:           a.lastStats.Stars2 + current.Stars2,
+			Stars3:           a.lastStats.Stars3 + current.Stars3,
+			Uptime:           a.lastStats.Uptime + current.Uptime,
+			AdbHealth:        current.AdbHealth,
+		}
 	}
-	return a.lastStats
+	return res
+}
+
+// GetLogs returns the buffered logs
+func (a *App) GetLogs() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Return a copy to avoid race conditions
+	res := make([]string, len(a.logBuffer))
+	copy(res, a.logBuffer)
+	return res
 }
 
 // GetAttackHistory returns persistent log of attacks
@@ -179,6 +324,13 @@ func (a *App) GetLiveScreenshot() (string, error) {
 	a.mu.Lock()
 	var client *adb.Client
 	if a.bot != nil {
+		// Optimization: If the bot is running, it's already capturing frames.
+		// Return the latest processed frame instead of triggering a new ADB capture.
+		frame := a.bot.GetLastFrame()
+		if frame != "" {
+			a.mu.Unlock()
+			return frame, nil
+		}
 		client = a.bot.GetClient()
 	}
 	a.mu.Unlock()
@@ -216,15 +368,24 @@ func (a *App) GetLiveScreenshot() (string, error) {
 }
 
 // SaveConfig updates config.json settings
-func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool) error {
+func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool, stall int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	cfg := config.LoadOrDefault("config.json")
 	cfg.Search.MinLootGold = minGold
 	cfg.Search.MinLootElixir = minElixir
 	cfg.Search.MinLootDarkElixir = minDE
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
 	cfg.Search.Enabled = searchEnabled
+	cfg.Attack.StallTimerSeconds = stall
 	if strategyFile != "" {
 		cfg.Attack.StrategyFile = strategyFile
+	}
+
+	// Update running bot in real-time if it exists
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
 	}
 
 	bytes, err := json.MarshalIndent(cfg, "", "  ")

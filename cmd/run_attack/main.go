@@ -4,11 +4,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/attack"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/Ducky705/ClashGo/pkg/strategy"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/attack"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -24,14 +24,10 @@ func main() {
 
 	// 1. Load Config
 	botCfg := config.DefaultConfig()
-	// Set the device ID based on your adb devices output
-	botCfg.Device.DeviceID = "emulator-5554" 
 
 	// 2. Initialize ADB
-	client := adb.NewClient(func(c *adb.Client) {
-		c.DeviceID = botCfg.Device.DeviceID
-	})
-	
+	client := adb.NewClient()
+
 	if err := client.AutoDetectDevice(); err != nil {
 		log.Warn().Err(err).Msg("auto-detect failed, using default ID")
 	}
@@ -53,6 +49,9 @@ func main() {
 
 	// 4. Load Strategy
 	stratPath := "assets/strategies/auto_edrag_rush.yaml"
+	if len(os.Args) > 1 {
+		stratPath = os.Args[1]
+	}
 	s, err := strategy.ParseYAML(stratPath)
 	if err != nil {
 		log.Fatal().Err(err).Str("path", stratPath).Msg("failed to load strategy")
@@ -64,9 +63,9 @@ func main() {
 	log.Info().Msg("zooming out for maximum deployment area...")
 	for i := 0; i < 5; i++ {
 		client.ZoomOut()
-		time.Sleep(100 * time.Millisecond) // Reduced from 200
+		time.Sleep(50 * time.Millisecond) 
 	}
-	time.Sleep(500 * time.Millisecond) // Reduced from 1000
+	time.Sleep(300 * time.Millisecond)
 
 	log.Info().Msg("capturing screen for base analysis...")
 	// 6. Capture Live Screen

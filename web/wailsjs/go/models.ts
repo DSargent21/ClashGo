@@ -2,12 +2,12 @@ export namespace adb {
 	
 	export class Health {
 	    // Go type: time
-	    LastCapture: any;
-	    AvgCaptureMs: number;
-	    ConsecutiveFails: number;
-	    CapturesTotal: number;
-	    ErrorsTotal: number;
-	    LastError: string;
+	    last_capture: any;
+	    avg_capture_ms: number;
+	    consecutive_fails: number;
+	    captures_total: number;
+	    errors_total: number;
+	    last_error: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Health(source);
@@ -15,12 +15,12 @@ export namespace adb {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.LastCapture = this.convertValues(source["LastCapture"], null);
-	        this.AvgCaptureMs = source["AvgCaptureMs"];
-	        this.ConsecutiveFails = source["ConsecutiveFails"];
-	        this.CapturesTotal = source["CapturesTotal"];
-	        this.ErrorsTotal = source["ErrorsTotal"];
-	        this.LastError = source["LastError"];
+	        this.last_capture = this.convertValues(source["last_capture"], null);
+	        this.avg_capture_ms = source["avg_capture_ms"];
+	        this.consecutive_fails = source["consecutive_fails"];
+	        this.captures_total = source["captures_total"];
+	        this.errors_total = source["errors_total"];
+	        this.last_error = source["last_error"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -58,6 +58,9 @@ export namespace bot {
 	    gold_stolen: number;
 	    elixir_stolen: number;
 	    dark_elixir_stolen: number;
+	    bonus_gold: number;
+	    bonus_elixir: number;
+	    bonus_de: number;
 	    total_attacks_session: number;
 	
 	    static createFrom(source: any = {}) {
@@ -77,6 +80,9 @@ export namespace bot {
 	        this.gold_stolen = source["gold_stolen"];
 	        this.elixir_stolen = source["elixir_stolen"];
 	        this.dark_elixir_stolen = source["dark_elixir_stolen"];
+	        this.bonus_gold = source["bonus_gold"];
+	        this.bonus_elixir = source["bonus_elixir"];
+	        this.bonus_de = source["bonus_de"];
 	        this.total_attacks_session = source["total_attacks_session"];
 	    }
 	}
@@ -161,6 +167,7 @@ export namespace config {
 	    queen_charge_at_pct: number;
 	    warden_use_at_pct: number;
 	    reserve_de_percent: number;
+	    stall_timer_seconds: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AttackConfig(source);
@@ -181,6 +188,7 @@ export namespace config {
 	        this.queen_charge_at_pct = source["queen_charge_at_pct"];
 	        this.warden_use_at_pct = source["warden_use_at_pct"];
 	        this.reserve_de_percent = source["reserve_de_percent"];
+	        this.stall_timer_seconds = source["stall_timer_seconds"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

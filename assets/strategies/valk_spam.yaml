@@ -1,0 +1,37 @@
+name: "Valkyrie Earthquake Spam"
+description: "Spam Valkyries on all 4 sides, followed by Heroes/Siege and Earthquakes"
+target_edge: "Random"
+phases:
+  - name: "Valkyrie Spam"
+    units: [{ name: "Valkyrie", amount: "All" }]
+    pattern: "FourSides"
+    offset: 0
+    delay_after_ms: 100
+
+  - name: "Siege & Heroes"
+    units:
+      - { name: "Stone Slammer", amount: "All" }
+      - { name: "Barbarian King", amount: "All" }
+      - { name: "Archer Queen", amount: "All" }
+      - { name: "Grand Warden", amount: "All" }
+      - { name: "Dragon Duke", amount: "All" }
+    pattern: "Point"
+    position: "Center"
+    offset: 150
+    delay_after_ms: 200
+
+  - name: "Earthquakes"
+    units: 
+      - { name: "Earthquake Spell", amount: "All" }
+      - { name: "Event Troop", amount: "All" }
+    pattern: "FourSides"
+    offset: 130 # Deeper in for EQs
+    delay_after_ms: 100
+
+  - name: "Abilities"
+    units:
+      - { name: "Barbarian King", amount: "All", pattern: "Ability" }
+      - { name: "Archer Queen", amount: "All", pattern: "Ability" }
+      - { name: "Grand Warden", amount: "All", pattern: "Ability" }
+    pattern: "Ability"
+    delay_after_ms: 0

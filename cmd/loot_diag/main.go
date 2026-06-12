@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/game"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gocv.io/x/gocv"
@@ -133,7 +133,7 @@ func main() {
 	}
 
 	for _, r := range rois {
-		rect := image.Rect(int(44*cal.ScaleX), int(float64(r.y1-2)*cal.ScaleY), int(420*cal.ScaleX), int(float64(r.y2+2)*cal.ScaleY))
+		rect := image.Rect(int(44*cal.ScaleX), int(float64(r.y1-2)*cal.ScaleY), int(450*cal.ScaleX), int(float64(r.y2+2)*cal.ScaleY))
 		drawROI(diag, rect, r.c, fmt.Sprintf("%s: %d", r.name, r.val))
 	}
 

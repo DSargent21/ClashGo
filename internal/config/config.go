@@ -51,6 +51,7 @@ type AttackConfig struct {
 	QueenChargeAtPct      int           `json:"queen_charge_at_pct"`
 	WardenUseAtPct        int           `json:"warden_use_at_pct"`
 	ReserveDEPercent      int           `json:"reserve_de_percent"`
+	StallTimerSeconds     int           `json:"stall_timer_seconds"`
 }
 
 type SearchConfig struct {
@@ -123,6 +124,7 @@ func DefaultConfig() *BotConfig {
 			QueenChargeAtPct:   50,
 			WardenUseAtPct:     30,
 			ReserveDEPercent:   200,
+			StallTimerSeconds:  10,
 		},
 		Search: SearchConfig{
 			Enabled:       true,

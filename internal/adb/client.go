@@ -19,25 +19,13 @@ type Client struct {
 	timeout  time.Duration
 	log      Logger
 
+	zoomOutKey string
+	zoomInKey  string
+
 	transport *Transport
-	health   Health
-	mu       sync.Mutex
-	closed   bool
-}
-
-type adbLogAdapter struct {
-	log Logger
-}
-
-func (a *adbLogAdapter) Debug() bool { return a.log.Debug() }
-func (a *adbLogAdapter) Debugf(format string, v ...any) {
-	a.log.Debugf(format, v...)
-}
-func (a *adbLogAdapter) Info(msg string)  { a.log.Info(msg) }
-func (a *adbLogAdapter) Warn(msg string)  { a.log.Warn(msg) }
-func (a *adbLogAdapter) Error(msg string) { a.log.Error(msg) }
-func (a *adbLogAdapter) WithFields(fields map[string]any) Logger {
-	return &adbLogAdapter{log: a.log.WithFields(fields)}
+	health    Health
+	mu        sync.Mutex
+	closed    bool
 }
 
 func NewClient(opts ...Option) *Client {
@@ -55,14 +43,11 @@ func NewClient(opts ...Option) *Client {
 }
 
 func (c *Client) connectTransport() error {
-	zl := &adbLogAdapter{log: c.log}
-
 	t, err := NewTransport(c.DeviceID, c.host, c.port, c.timeout)
 	if err != nil {
 		return err
 	}
 	c.transport = t
-	_ = zl
 	return nil
 }
 
@@ -282,9 +267,13 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 
 // Tap performs a direct ADB tap.
 func (c *Client) Tap(x, y int) error {
+	c.log.Debugf("ADB TAP: (%d, %d)", x, y)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.tapLocked(x, y)
+}
 
+func (c *Client) tapLocked(x, y int) error {
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
 			return err
@@ -322,9 +311,12 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 	ox2 := int(r2.NormFloat64() * stdDev2)
 	oy2 := int(r2.NormFloat64() * stdDev2)
 
-	cmd := fmt.Sprintf("shell:input tap %d %d & input tap %d %d & wait", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
-	_, err := c.transport.Exec(cmd)
-	return err
+	c.log.Debugf("ADB DUAL TAP (sequential): (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
+	if err := c.tapLocked(x1+ox1, y1+oy1); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	return c.tapLocked(x2+ox2, y2+oy2)
 }
 
 // TapTriple performs three taps simultaneously using background shell execution.
@@ -350,9 +342,16 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	ox3 := int(r3.NormFloat64() * stdDev3)
 	oy3 := int(r3.NormFloat64() * stdDev3)
 
-	cmd := fmt.Sprintf("shell:input tap %d %d & input tap %d %d & input tap %d %d & wait", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
-	_, err := c.transport.Exec(cmd)
-	return err
+	c.log.Debugf("ADB TRIPLE TAP (sequential): (%d, %d), (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
+	if err := c.tapLocked(x1+ox1, y1+oy1); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := c.tapLocked(x2+ox2, y2+oy2); err != nil {
+		return err
+	}
+	time.Sleep(50 * time.Millisecond)
+	return c.tapLocked(x3+ox3, y3+oy3)
 }
 
 // TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
@@ -443,11 +442,11 @@ func (c *Client) Home() error   { return c.KeyEvent(3) }
 func (c *Client) Enter() error  { return c.KeyEvent(66) }
 func (c *Client) Delete() error { return c.KeyEvent(67) }
 
-// ZoomOut sends the standard Android zoom out keyevent (169)
-func (c *Client) ZoomOut() error { return c.KeyEvent(169) }
+// ZoomOut performs a native multi-touch zoom out.
+func (c *Client) ZoomOut() error { return c.PinchZoom(true) }
 
-// ZoomIn sends the standard Android zoom in keyevent (168)
-func (c *Client) ZoomIn() error { return c.KeyEvent(168) }
+// ZoomIn performs a native multi-touch zoom in.
+func (c *Client) ZoomIn() error { return c.PinchZoom(false) }
 
 func (c *Client) Shell(cmd string) (string, error) {
 	c.mu.Lock()
@@ -594,6 +593,54 @@ func (c *Client) Reconnect() error {
 		c.transport.Close()
 	}
 	return c.connectTransport()
+}
+
+func (c *Client) GetArchitecture() (string, error) {
+	return c.Shell("getprop ro.product.cpu.abi")
+}
+
+func (c *Client) DetectTouchDevice() (string, error) {
+	out, err := c.Shell("getevent -pl")
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(out, "\n")
+	var currentDevice string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "add device") {
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 {
+				currentDevice = strings.TrimSpace(parts[1])
+			}
+			continue
+		}
+		if strings.Contains(line, "ABS_MT_POSITION_X") {
+			return currentDevice, nil
+		}
+	}
+
+	// Fallback for some emulators
+	out, err = c.Shell("getevent -p")
+	if err != nil {
+		return "", err
+	}
+	lines = strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "add device") {
+			parts := strings.Split(line, ":")
+			if len(parts) > 1 {
+				currentDevice = strings.TrimSpace(parts[1])
+			}
+			continue
+		}
+		// 0035 is ABS_MT_POSITION_X
+		if strings.Contains(line, "0035") {
+			return currentDevice, nil
+		}
+	}
+
+	return "", errors.New("touchscreen device not found")
 }
 
 func (c *Client) Health() Health {

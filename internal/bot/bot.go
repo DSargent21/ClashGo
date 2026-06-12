@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -12,13 +13,13 @@ import (
 
 	"gocv.io/x/gocv"
 
-	"github.com/Ducky705/ClashGo/internal/adb"
-	"github.com/Ducky705/ClashGo/internal/attack"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/Ducky705/ClashGo/internal/training"
-	"github.com/Ducky705/ClashGo/internal/vision"
-	"github.com/Ducky705/ClashGo/pkg/strategy"
+	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/attack"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/training"
+	"github.com/Ducky705/ClashGO/internal/vision"
+	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -57,7 +58,13 @@ type Bot struct {
 	startedAt   time.Time
 	lastAction  time.Time
 	lastSequenceStart time.Time
-	stuckTimeout time.Duration
+	stuckTimeout      time.Duration
+
+	lastFrame      atomic.Value // Stores the latest base64 encoded frame
+	lastFrameTime  time.Time
+
+	OnFrame       func(string)
+	OnStatsUpdate func()
 }
 
 func NewBot(cfg *config.BotConfig) (*Bot, error) {
@@ -68,6 +75,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		adb.WithPort(cfg.Device.ADBPort),
 		adb.WithLogger(zl),
 		adb.WithTimeout(30*time.Second),
+		adb.WithZoomKeys(cfg.Device.ZoomOutKey, cfg.Device.ZoomInKey),
 	)
 	client.DeviceID = cfg.Device.DeviceID
 
@@ -189,6 +197,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		stuckTimeout:      60 * time.Second,
 	}
 
+	b.lastFrame.Store("")
 
 	b.classifier = game.NewClassifier(cal, game.DefaultClassifierConfig(), b.logger)
 	if b.templates != nil {
@@ -227,6 +236,12 @@ func (b *Bot) Start() error {
 			Msg("connected")
 	}
 
+	// Initial focus click to ensure emulator/window is active
+	focusX, focusY := b.cal.ScaleRef(842, 345)
+	b.logger.Info().Int("x", focusX).Int("y", focusY).Msg("performing initial focus click")
+	b.client.Tap(focusX, focusY)
+	time.Sleep(1 * time.Second)
+
 	go b.captureLoop()
 	return nil
 }
@@ -234,6 +249,8 @@ func (b *Bot) Start() error {
 func (b *Bot) Stop() {
 	b.cancel()
 	b.client.Close()
+	globalAsyncWriter.Close()
+	vision.CloseTemplateCache()
 }
 func (b *Bot) captureLoop() {
 	gc := game.NewGameContext()
@@ -245,32 +262,81 @@ func (b *Bot) captureLoop() {
 	}
 	frames := make(chan frame, 1)
 
-	// Producer
+	// Adaptive FPS based on game state
+	getCaptureInterval := func() time.Duration {
+		switch gc.State {
+		case game.StateBattle, game.StateSearchMap, game.StateLoading:
+			return 100 * time.Millisecond // 10 FPS for active gameplay
+		case game.StateMainVillage, game.StateArmySelection, game.StateArmyCamp:
+			return 300 * time.Millisecond // ~3 FPS for UI navigation
+		default:
+			return 1000 * time.Millisecond // 1 FPS for unknown/idle states
+		}
+	}
+
 	go func() {
+		var lastCapture time.Time
 		for {
+			interval := getCaptureInterval()
+			nextCapture := lastCapture.Add(interval)
+			sleepTime := time.Until(nextCapture)
+			if sleepTime > 0 {
+				select {
+				case <-b.ctx.Done():
+					return
+				case <-time.After(sleepTime):
+				}
+			}
+
 			select {
 			case <-b.ctx.Done():
 				return
 			default:
-				start := time.Now()
-				screen, err := b.client.CaptureToMat()
-				dur := time.Since(start)
+			}
 
-				select {
-				case frames <- frame{mat: screen, err: err, dur: dur}:
-				default:
-					if err == nil && !screen.Empty() {
-						screen.Close() // Drop frame if consumer is too slow
-					}
+			start := time.Now()
+			screen, err := b.client.CaptureToMat()
+			dur := time.Since(start)
+			lastCapture = time.Now()
+
+			if err == nil && !screen.Empty() {
+				if b.OnFrame != nil {
+					small := vision.GetMat(screen.Rows()/2, screen.Cols()/2, screen.Type())
+					gocv.Resize(screen, &small, image.Point{}, 0.5, 0.5, gocv.InterpolationLinear)
+
+					go func(m gocv.Mat) {
+						defer vision.PutMat(m)
+						buf, err := gocv.IMEncodeWithParams(".jpg", m, []int{gocv.IMWriteJpegQuality, 60})
+						if err == nil {
+							encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
+							b.lastFrame.Store(encoded)
+							b.OnFrame(encoded)
+							buf.Close()
+						}
+					}(small)
+				}
+			}
+
+			select {
+			case frames <- frame{mat: screen, err: err, dur: dur}:
+			default:
+				if err == nil && !screen.Empty() {
+					screen.Close()
 				}
 			}
 		}
 	}()
 
-	// Consumer
 	for {
 		select {
 		case <-b.ctx.Done():
+			select {
+			case f := <-frames:
+				if !f.mat.Empty() {
+					f.mat.Close()
+				}
+			default:
+			}
 			return
 		case f := <-frames:
 			b.checkStuck(gc)
@@ -341,15 +407,44 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	if err != nil {
 		gc.RecordCaptureError()
 		b.logger.Debug().Err(err).Msg("capture failed")
+		if !screen.Empty() {
+			screen.Close()
+		}
 		return
 	}
 	if screen.Empty() {
+		screen.Close()
 		return
 	}
 
 	state, score := b.classify(screen)
 
+	// UpdateScreen takes ownership and will handle closing previous mat
 	gc.UpdateScreen(screen, captureMs)
+
+	// Professional Zoom Out: Mandatory first action upon entering any village state.
+	// We MUST zoom out before starting ANY sequence or clicking ANY buttons.
+	if !b.zoomedOut.Load() {
+		// Include pinpoint attack button check in village detection to avoid race with sequence starter
+		pinX, pinY := b.cal.ScaleRef(60, 695)
+		isVillage := state == game.StateMainVillage || 
+					state == game.StateArmyCamp || 
+					b.isOrange(screen, pinX, pinY) ||
+					b.templateMatch(screen, "btn_attack", 0.45) || 
+					b.templateMatch(screen, "btn_settings", 0.6)
+
+		if isVillage {
+			if b.zoomedOut.CompareAndSwap(false, true) {
+				b.logger.Info().Msg("village detected, performing MANDATORY initial zoom out...")
+				b.navigator.ZoomOut()
+				b.lastAction = time.Now()
+				// Wait for zoom animation to settle (Clash has long momentum)
+				time.Sleep(3000 * time.Millisecond)
+				// Return here so the next loop iteration captures a fresh screen AFTER zoom
+				return
+			}
+		}
+	}
 
 	// Update lastAction only on state transition. 
 	// This ensures if we are stuck in a single state without taking action (like clicking attack)
@@ -373,25 +468,22 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			Msg("state detected")
 	}
 
-	// Professional Zoom Out on first detection of Main Village or Attack button
-	if (gc.State == game.StateMainVillage || b.templateMatch(screen, "btn_attack", 0.6)) && !b.zoomedOut.Load() {
-		if b.zoomedOut.CompareAndSwap(false, true) {
-			b.logger.Info().Msg("main village elements detected, performing initial zoom out...")
-			b.navigator.ZoomOut()
-			b.lastAction = time.Now()
-			// Wait for zoom animation to settle
-			time.Sleep(2000 * time.Millisecond)
-			// Return here so the next loop iteration captures a fresh screen after zoom
-			return
-		}
-	}
-
 	if b.seqRunning.Load() {
 		return
 	}
 
+	// Stuck State Recovery: if we are in a terminal state but no sequence is running,
+	// it means we finished an attack but failed to return home, or a manual action left us here.
+	if gc.State == game.StateBattleEnd || gc.State == game.StateReturnHome {
+		b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
+		go b.attackExec.ReturnHome()
+		b.lastAction = time.Now()
+		return
+	}
+
 	// Primary detection: try to find the attack button via template matching
-	if b.findAttackButton(screen, 0.45) {
+	// Only start attack if we are reasonably sure we're in the Main Village
+	if b.zoomedOut.Load() && (gc.State == game.StateMainVillage || gc.State == game.StateUnknown) && b.findAttackButton(screen, 0.45) {
 		b.logger.Info().Msg("attack button detected, starting sequence")
 		b.lastSequenceStart = time.Now()
 		go b.executeAttackSequence(gc)
@@ -408,22 +500,17 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 }
 
 func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
-	// Step 1: Check a precise pinpoint location first for speed and accuracy.
-	// In the Main Village, the Attack button center is remarkably consistent.
-	// Ref (860x732) -> (60, 695) is the sweet spot (center-top of the orange area).
 	pinX, pinY := b.cal.ScaleRef(60, 695)
 	if b.isOrange(screen, pinX, pinY) {
 		b.logger.Debug().Msg("attack button confirmed via pinpoint color check")
 		return true
 	}
 
-	// Step 2: Fallback to template matching in the bottom-left ROI if pinpoint fails.
 	tpl, ok := b.templates.Get("btn_attack")
 	if !ok {
 		return false
 	}
 
-	// ROI: Bottom-left quadrant
 	roi := image.Rect(0, 500, 300, 732)
 	physROI := image.Rect(
 		int(float64(roi.Min.X)*b.cal.ScaleX),
@@ -432,7 +519,7 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 		int(float64(roi.Max.Y)*b.cal.ScaleY),
 	)
 
-	matches, err := vision.MatchMultiScaleROI(screen, tpl, 0.2, 2.0, 30, threshold, physROI)
+	matches, err := vision.MatchMultiScaleROICached(screen, tpl, "btn_attack", 0.2, 2.0, 5, threshold, physROI)
 	if err != nil || len(matches) == 0 {
 		if err != nil {
 			b.logger.Debug().Err(err).Msg("btn_attack template match error")
@@ -458,30 +545,12 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 }
 
 func (b *Bot) isOrange(screen gocv.Mat, x, y int) bool {
-	if x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
-		return false
-	}
-	// Sample a small area around the point for color robustness
-	region := image.Rect(x-10, y-10, x+11, y+11)
-	if region.Min.X < 0 { region.Min.X = 0 }
-	if region.Min.Y < 0 { region.Min.Y = 0 }
-	if region.Max.X > screen.Cols() { region.Max.X = screen.Cols() }
-	if region.Max.Y > screen.Rows() { region.Max.Y = screen.Rows() }
-
-	sub := screen.Region(region)
-	defer sub.Close()
-
 	// Broad Attack button orange range (BGR)
 	// CoC orange: R=255, G=175, B=0
-	// We allow a wide range for emulator differences
-	lower := gocv.NewScalar(0, 100, 150, 0)
-	upper := gocv.NewScalar(150, 255, 255, 0)
-
-	mask := gocv.NewMat()
-	defer mask.Close()
-	gocv.InRangeWithScalar(sub, lower, upper, &mask)
-
-	return gocv.CountNonZero(mask) > 20 // At least 20 pixels in the 21x21 area match
+	return b.colorCheck(screen, x, y,
+		gocv.NewScalar(0, 100, 150, 0),   // Lower Orange
+		gocv.NewScalar(150, 255, 255, 0), // Upper Orange
+		20)
 }
 
 var lastNav time.Time
@@ -491,8 +560,7 @@ func (b *Bot) templateMatch(screen gocv.Mat, name string, threshold float32) boo
 	if !ok {
 		return false
 	}
-	// Use wider scale range for all bot-level template matching
-	matches, err := vision.MatchMultiScale(screen, tpl, 0.2, 2.0, 30, threshold)
+	matches, err := vision.MatchMultiScaleROICached(screen, tpl, name, 0.2, 2.0, 5, threshold, image.Rect(0, 0, screen.Cols(), screen.Rows()))
 	if err != nil {
 		return false
 	}
@@ -552,6 +620,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		loot, err := lootRec.ReadAvailableLoot(screen)
 		if err != nil {
 			b.logger.Warn().Err(err).Msg("failed to read loot")
+			b.DumpDiagnostics("loot_read_failed", screen, map[string]interface{}{
+				"error": err.Error(),
+			})
 		}
 
 		b.logger.Info().
@@ -575,9 +646,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			if deployErr != nil || remainingUndeployed > 0 {
 				failScreen, err := b.client.CaptureToMat()
 				if err == nil {
-					gocv.IMWrite("last_attack_failed.png", failScreen)
+					b.DumpDiagnostics("deployment_failed", failScreen, map[string]interface{}{
+						"error":      fmt.Sprintf("%v", deployErr),
+						"remaining":  remainingUndeployed,
+						"stratName":  stratName,
+						"targetEdge": targetEdge,
+					})
 					failScreen.Close()
-					b.logger.Warn().Msg("saved failure screenshot to last_attack_failed.png")
 				}
 			}
 			screen.Close()
@@ -587,6 +662,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		b.logger.Info().
 			Msg("loot too low, skipping base...")
 		b.skipsCount.Add(1)
+		if b.OnStatsUpdate != nil {
+			b.OnStatsUpdate()
+		}
 
 		screen.Close() // Close before findAndClick which does its own capture
 
@@ -602,6 +680,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				b.client.Tap(orangePt.X, orangePt.Y)
 			} else {
 				// Final hardcoded fallback
+				b.DumpDiagnostics("next_button_not_found", screen, map[string]interface{}{
+					"message": "forcing skip via hardcoded coordinates",
+				})
 				nextX, nextY := b.cal.ScaleRef(796, 565)
 				b.client.Tap(nextX, nextY)
 			}
@@ -617,6 +698,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var battleGold int = 0
 	var battleElixir int = 0
 	var battleDE int = 0
+	var bonusGold, bonusElixir, bonusDE int = 0, 0, 0
 	var parsedResults bool = false
 
 	if b.attackExec.WaitForBattleEnd(4 * time.Minute) {
@@ -633,6 +715,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				battleGold = res.Loot.Gold + res.Bonus.Gold
 				battleElixir = res.Loot.Elixir + res.Bonus.Elixir
 				battleDE = res.Loot.DarkElixir + res.Bonus.DarkElixir
+				bonusGold = res.Bonus.Gold
+				bonusElixir = res.Bonus.Elixir
+				bonusDE = res.Bonus.DarkElixir
 				parsedResults = true
 
 				b.totalGold.Add(int64(res.Loot.Gold + res.Bonus.Gold))
@@ -648,6 +733,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				case 3: b.stars3.Add(1)
 				}
 				
+				if b.OnStatsUpdate != nil {
+					b.OnStatsUpdate()
+				}
+				
 				b.logger.Info().
 					Int("stars", res.Stars).
 					Int("gold", res.Loot.Gold).
@@ -659,7 +748,15 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 	}
 
-	b.attackExec.ReturnHome()
+	if err := b.attackExec.ReturnHome(); err != nil {
+		b.logger.Warn().Err(err).Msg("ReturnHome failed, attempting template fallback")
+		for i := 0; i < 3; i++ {
+			if b.findAndClick("btn_return_home", "Return Home", 1) {
+				break
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
 
 	if b.cfg.Upgrade.UpgradeWalls {
 		b.UpgradeWalls(gc)
@@ -684,11 +781,14 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		GoldStolen:       battleGold,
 		ElixirStolen:     battleElixir,
 		DarkElixirStolen: battleDE,
+		BonusGold:        bonusGold,
+		BonusElixir:      bonusElixir,
+		BonusDE:          bonusDE,
 		TotalAttacks:     b.attackCount.Load(),
 	}
 
 	if repBytes, err := json.MarshalIndent(rep, "", "  "); err == nil {
-		_ = os.WriteFile("last_attack_report.json", repBytes, 0644)
+		_ = AsyncWriteFile("last_attack_report.json", repBytes, 0644)
 	}
 
 	// Update persistent history file
@@ -697,11 +797,11 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		_ = json.Unmarshal(histData, &history)
 	}
 	history = append([]AttackReport{rep}, history...)
-	if len(history) > 50 {
-		history = history[:50]
+	if len(history) > 500 {
+		history = history[:500]
 	}
 	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
-		_ = os.WriteFile("attack_history.json", histBytes, 0644)
+		_ = AsyncWriteFile("attack_history.json", histBytes, 0644)
 	}
 
 	deployStatus := "SUCCESS (100% Deployed)"
@@ -735,6 +835,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		Str("loot", fmt.Sprintf("Gold: %d | Elixir: %d | DE: %d", b.totalGold.Load(), b.totalElixir.Load(), b.totalDE.Load())).
 		Dur("uptime", time.Since(b.startedAt)).
 		Msg("=== SESSION SUMMARY ===")
+
+	// Reset zoom state so we zoom out again after returning home
+	b.zoomedOut.Store(false)
 }
 
 func (b *Bot) clickSequence() bool {
@@ -749,6 +852,10 @@ func (b *Bot) clickSequence() bool {
 	}
 	if !attackClicked {
 		b.logger.Warn().Msg("could not find or click Attack button")
+		if screen, err := b.client.CaptureToMat(); err == nil {
+			b.DumpDiagnostics("click_attack_failed", screen, nil)
+			screen.Close()
+		}
 		return false
 	}
 	time.Sleep(1500 * time.Millisecond) // Wait for menu slide-in
@@ -764,9 +871,13 @@ func (b *Bot) clickSequence() bool {
 	}
 	if !findMatchClicked {
 		b.logger.Warn().Msg("could not find or click Find Match button")
+		if screen, err := b.client.CaptureToMat(); err == nil {
+			b.DumpDiagnostics("click_find_match_failed", screen, nil)
+			screen.Close()
+		}
 		return false
 	}
-	time.Sleep(1200 * time.Millisecond) // Wait for search screen/army bar
+	time.Sleep(1500 * time.Millisecond) // Wait for search screen/army bar
 
 	// Step 3: Click the white army arrow to expand army selection (retry up to 3 times)
 	armyArrowClicked := false
@@ -779,9 +890,13 @@ func (b *Bot) clickSequence() bool {
 	}
 	if !armyArrowClicked {
 		b.logger.Warn().Msg("could not find or click Army Arrow button")
+		if screen, err := b.client.CaptureToMat(); err == nil {
+			b.DumpDiagnostics("click_army_arrow_failed", screen, nil)
+			screen.Close()
+		}
 		return false
 	}
-	time.Sleep(800 * time.Millisecond) // Wait for expansion animation
+	time.Sleep(1200 * time.Millisecond) // Wait for expansion animation
 
 	// Step 4: Click army composition 1 (retry up to 3 times)
 	army1Clicked := false
@@ -794,8 +909,12 @@ func (b *Bot) clickSequence() bool {
 	}
 	if !army1Clicked {
 		b.logger.Warn().Msg("army 1 button did not appear, continuing anyway")
+		if screen, err := b.client.CaptureToMat(); err == nil {
+			b.DumpDiagnostics("click_army_1_not_found", screen, nil)
+			screen.Close()
+		}
 	}
-	time.Sleep(800 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond)
 
 	// Step 5: Click the green Battle button (retry up to 3 times)
 	battleClicked := false
@@ -831,11 +950,11 @@ func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
 	case "btn_find_match":
 		roi = image.Rect(50, 400, 400, 600) // left-middle
 	case "btn_battle":
-		roi = image.Rect(400, 450, 860, 732)
+		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
 	case "btn_army_arrow":
-		roi = image.Rect(300, 100, 700, 300) // top-center
+		roi = image.Rect(350, 100, 700, 300) // top-center
 	case "btn_army_1":
-		roi = image.Rect(200, 150, 600, 400) // top-center/left
+		roi = image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
 	case "btn_next":
 		roi = image.Rect(600, 450, 860, 732)
 	default:
@@ -857,8 +976,7 @@ func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		// Expand scale range for UI buttons and use ROI
-		matches, _ := vision.MatchMultiScaleROI(screen, tpl, 0.2, 1.8, 30, 0.5, physROI)
+		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, templateName, 0.2, 1.8, 5, 0.5, physROI)
 		screen.Close()
 		if len(matches) > 0 {
 			return true
@@ -877,48 +995,28 @@ type Pinpoint struct {
 }
 
 var villagePinpoints = map[string]Pinpoint{
-	"btn_attack":     {X: 64, Y: 700, Name: "Attack"},
-	"btn_find_match": {X: 165, Y: 495, Name: "Find Match"},
-	"btn_battle":     {X: 525, Y: 615, Name: "Battle"},
-	"btn_army_arrow": {X: 512, Y: 189, Name: "Army Arrow"},
-	"btn_army_1":     {X: 402, Y: 247, Name: "Army 1"},
-	"btn_next":       {X: 796, Y: 565, Name: "Next Match"}, // Verified coordinate
+	"btn_attack":     {X: 64, Y: 666, Name: "Attack"},
+	"btn_find_match": {X: 158, Y: 494, Name: "Find Match"},
+	"btn_battle":     {X: 731, Y: 537, Name: "Battle"},
+	"btn_army_arrow": {X: 514, Y: 192, Name: "Army Arrow"},
+	"btn_army_1":     {X: 513, Y: 230, Name: "Army 1"},
+	"btn_next":       {X: 794, Y: 577, Name: "Next Match"},
+	"btn_return_home":{X: 431, Y: 581, Name: "Return Home"},
+	"btn_okay":       {X: 430, Y: 520, Name: "Okay"},
 }
 
 func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
-	// Professional High-Speed Path: Check Pinpoint first
+	// Step 1: Pinpoint Match (Fast Path - Trust Coordinates)
 	if pp, ok := villagePinpoints[templateName]; ok {
-		// Take a quick capture to verify pinpoint
-		screen, err := b.client.CaptureToMat()
-		if err == nil {
-			px, py := b.cal.ScaleRef(pp.X, pp.Y)
-			// Bypass color check for menu elements with inconsistent backgrounds
-			isMenuElement := templateName == "btn_army_arrow" || templateName == "btn_army_1"
-			
-			// Professional Resilience: Check multiple colors for the button
-			matched := isMenuElement || b.isOrange(screen, px, py) || b.isYellow(screen, px, py) || b.isGreen(screen, px, py) || b.isWhite(screen, px, py) || b.isSilver(screen, px, py)
-			
-			if !matched && templateName == "btn_next" {
-				// Secondary check for Next button: test slightly to the left (hitting the silver text)
-				altX, altY := b.cal.ScaleRef(pp.X-60, pp.Y)
-				matched = b.isSilver(screen, altX, altY) || b.isWhite(screen, altX, altY)
-				if matched {
-					px, py = altX, altY // Use the confirmed point
-				}
-			}
-
-			if matched {
-				screen.Close()
-				b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
-				if err := b.client.Tap(px, py); err == nil {
-					return true
-				}
-			}
-			screen.Close()
+		px, py := b.cal.ScaleRef(pp.X, pp.Y)
+		b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
+		if err := b.client.Tap(px, py); err == nil {
+			time.Sleep(1000 * time.Millisecond) // Wait for UI transition
+			return true
 		}
 	}
 
-	// Fallback Path: Template Matching (Robust but slower)
+	// Step 2: Fallback Path: Template Matching (Robust but slower)
 	tpl, ok := b.templates.Get(templateName)
 	if !ok {
 		b.logger.Error().Str("template", templateName).Msg("template not loaded")
@@ -933,11 +1031,11 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	case "btn_find_match":
 		roi = image.Rect(50, 400, 400, 600) // left-middle
 	case "btn_battle":
-		roi = image.Rect(400, 450, 860, 732)
+		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
 	case "btn_army_arrow":
-		roi = image.Rect(300, 100, 700, 300) // top-center
+		roi = image.Rect(350, 100, 700, 300) // top-center
 	case "btn_army_1":
-		roi = image.Rect(200, 150, 600, 400) // top-center/left
+		roi = image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
 	case "btn_next":
 		roi = image.Rect(600, 450, 860, 732)
 	default:
@@ -965,8 +1063,21 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			continue
 		}
 
-		// Use specialized ROI for matching
-		matches, err := vision.MatchMultiScaleROI(screen, tpl, 0.2, 2.0, 30, 0.45, physROI)
+		// Tier 1.5 Fallback: Try a secondary pinpoint for Battle button if it's next to Army 1
+		if templateName == "btn_battle" && retry == 0 {
+			altX, altY := b.cal.ScaleRef(525, 247) // Higher Y coordinate, same X as Slot 1 Battle
+			if b.isGreen(screen, altX, altY) {
+				screen.Close()
+				b.logger.Info().Str("step", stepName).Msg("secondary pinpoint match (upper battle), clicking...")
+				if err := b.client.Tap(altX, altY); err == nil {
+					return true
+				}
+				screen, _ = b.client.CaptureToMat() // Re-capture if tap failed somehow
+			}
+		}
+
+		// Use specialized ROI for matching (Optimized: 5 steps)
+		matches, err := vision.MatchMultiScaleROICached(screen, tpl, templateName, 0.2, 2.0, 5, 0.45, physROI)
 		screen.Close()
 
 		if err != nil {
@@ -992,6 +1103,10 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			Float64("conf", best.Confidence).
 			Int("x", px).Int("y", py).
 			Msg("clicking (fallback match)")
+		
+		if b.cfg.Debug.SaveScreenshots {
+			gocv.IMWrite(fmt.Sprintf("diag_fallback_%s.png", templateName), screen)
+		}
 
 		if err := b.client.Tap(px, py); err != nil {
 			b.logger.Error().Err(err).Msg("tap failed")
@@ -1077,6 +1192,10 @@ func (b *Bot) dismissInterruptions() {
 		b.client.Back()
 	case game.StateGemDialog, game.StateShieldInfo:
 		b.client.TapRandomized(175, 30)
+	case game.StateWelcomeBack:
+		// Okay button center-ish tap
+		ox, oy := b.cal.ScaleRef(430, 520)
+		b.client.TapRandomized(ox, oy)
 	case game.StateChatOpen:
 		b.client.Back()
 	}
@@ -1102,6 +1221,10 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 			b.logger.Info().Msg("in clouds/loading...")
 			time.Sleep(1 * time.Second)
 			continue
+		case state == game.StateArmySelection || state == game.StateArmyCamp:
+			b.logger.Info().Msg("in army menu, retrying battle click...")
+			b.findAndClick("btn_battle", "Battle Retry", 1)
+			time.Sleep(1 * time.Second)
 		default:
 			b.logger.Info().Str("state", state.String()).Msg("waiting for battle state (searching)...")
 			b.dismissInterruptions()
@@ -1145,8 +1268,27 @@ func (b *Bot) Health() game.SystemHealth {
 	}
 }
 
+func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
+	b.cfg = cfg
+	if b.attackExec != nil {
+		b.attackExec.UpdateConfig(&cfg.Attack)
+	}
+	if b.trainer != nil {
+		b.trainer.UpdateConfig(&cfg.Training)
+	}
+	b.logger.Info().Msg("bot configuration updated in real-time")
+}
+
 func (b *Bot) GetClient() *adb.Client {
 	return b.client
+}
+
+func (b *Bot) GetLastFrame() string {
+	val := b.lastFrame.Load()
+	if val == nil {
+		return ""
+	}
+	return val.(string)
 }
 
 func (b *Bot) Stats() BotStats {
@@ -1191,6 +1333,9 @@ type AttackReport struct {
 	GoldStolen       int    `json:"gold_stolen"`
 	ElixirStolen     int    `json:"elixir_stolen"`
 	DarkElixirStolen int    `json:"dark_elixir_stolen"`
+	BonusGold        int    `json:"bonus_gold"`
+	BonusElixir      int    `json:"bonus_elixir"`
+	BonusDE          int    `json:"bonus_de"`
 	TotalAttacks     int32  `json:"total_attacks_session"`
 }
 

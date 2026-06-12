@@ -1,9 +1,11 @@
 package game
 
 import (
+	"encoding/json"
 	"fmt"
 	"image"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -72,6 +74,13 @@ func (lr *LootRecognizer) ReadAvailableLoot(screen gocv.Mat) (Resources, error) 
 	return report.Resources, nil
 }
 
+func (lr *LootRecognizer) ReadDestructionPercentage(screen gocv.Mat, roi image.Rectangle) int {
+	if roi.Empty() {
+		return 0
+	}
+	return lr.readRow(screen, roi)
+}
+
 func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error) {
 	gray := gocv.NewMat()
 	gocv.CvtColor(screen, &gray, gocv.ColorBGRToGray)
@@ -89,10 +98,9 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		{"de", 100, 395, 450, 420},
 	}
 	battleSearch := image.Rect(
-		int(20*lr.cal.ScaleX), int(300*lr.cal.ScaleY),
-		int(480*lr.cal.ScaleX), int(450*lr.cal.ScaleY),
+		int(20*lr.cal.ScaleX), int(200*lr.cal.ScaleY), // Expanded Y
+		int(480*lr.cal.ScaleX), int(550*lr.cal.ScaleY),
 	)
-	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
 
 	// Bonus Loot (Right column box)
 	bonusRois := []struct {
@@ -104,39 +112,82 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		{"de", 550, 432, 720, 450},
 	}
 	bonusSearch := image.Rect(
-		int(500*lr.cal.ScaleX), int(350*lr.cal.ScaleY),
-		int(780*lr.cal.ScaleX), int(500*lr.cal.ScaleY),
+		int(500*lr.cal.ScaleX), int(200*lr.cal.ScaleY), // Expanded Y
+		int(800*lr.cal.ScaleX), int(600*lr.cal.ScaleY), // Expanded X/Y
 	)
+
+	// Load custom ROIs if they exist
+	if data, err := os.ReadFile("assets/battle_loot_rois.json"); err == nil {
+		var custom struct {
+			BattleSearch struct{ X1, Y1, X2, Y2 int } `json:"battleSearch"`
+			BonusSearch  struct{ X1, Y1, X2, Y2 int } `json:"bonusSearch"`
+		}
+		if json.Unmarshal(data, &custom) == nil {
+			battleSearch = image.Rect(
+				int(float64(custom.BattleSearch.X1)*lr.cal.ScaleX),
+				int(float64(custom.BattleSearch.Y1)*lr.cal.ScaleY),
+				int(float64(custom.BattleSearch.X2)*lr.cal.ScaleX),
+				int(float64(custom.BattleSearch.Y2)*lr.cal.ScaleY),
+			)
+			bonusSearch = image.Rect(
+				int(float64(custom.BonusSearch.X1)*lr.cal.ScaleX),
+				int(float64(custom.BonusSearch.Y1)*lr.cal.ScaleY),
+				int(float64(custom.BonusSearch.X2)*lr.cal.ScaleX),
+				int(float64(custom.BonusSearch.Y2)*lr.cal.ScaleY),
+			)
+			lr.logger.Info().Msg("Loaded custom battle loot ROIs from assets/battle_loot_rois.json")
+		}
+	}
+
+	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
 	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois)
 
-	// Star Detection (Search for yellow pixel clusters in the center-top results area)
-	startY, endY := int(140*lr.cal.ScaleY), int(260*lr.cal.ScaleY)
-	startX, endX := int(280*lr.cal.ScaleX), int(580*lr.cal.ScaleX)
-	rect := image.Rect(startX, startY, endX, endY)
-	rect = lr.safeRect(screen, rect)
-	if !rect.Empty() {
-		subRegion := screen.Region(rect)
-		defer subRegion.Close()
+	// Star Detection: Use brightness at 3 specific points (Left, Middle, Right stars).
+	// Filled stars (yellow/gold/silver) are bright; empty stars are dark.
+	starPoints := []image.Point{
+		{X: 365, Y: 220}, // Left
+		{X: 430, Y: 190}, // Middle
+		{X: 495, Y: 220}, // Right
+	}
 
-		lowerYellow := gocv.NewScalar(0, 150, 170, 0)
-		upperYellow := gocv.NewScalar(120, 255, 255, 0)
-
-		yellowMask := gocv.NewMat()
-		defer yellowMask.Close()
-		gocv.InRangeWithScalar(subRegion, lowerYellow, upperYellow, &yellowMask)
-
-		contours := gocv.FindContours(yellowMask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
-		defer contours.Close()
-
-		validStars := 0
-		for i := 0; i < contours.Size(); i++ {
-			area := gocv.ContourArea(contours.At(i))
-			if area > 40 {
-				validStars++
-			}
+	// Load custom star points if they exist
+	if data, err := os.ReadFile("assets/star_points.json"); err == nil {
+		var custom struct {
+			Stars []struct{ X, Y int } `json:"stars"`
 		}
-		result.Stars = validStars
-		if result.Stars > 3 { result.Stars = 3 }
+		if json.Unmarshal(data, &custom) == nil && len(custom.Stars) == 3 {
+			for i := 0; i < 3; i++ {
+				starPoints[i] = image.Pt(custom.Stars[i].X, custom.Stars[i].Y)
+			}
+			lr.logger.Info().Msg("Loaded custom star points from assets/star_points.json")
+		}
+	}
+
+	validStars := 0
+	for _, pt := range starPoints {
+		// Scale to current resolution
+		sx := int(float64(pt.X) * lr.cal.ScaleX)
+		sy := int(float64(pt.Y) * lr.cal.ScaleY)
+
+		// Define a tiny 5x5 ROI around the point
+		rect := image.Rect(sx-2, sy-2, sx+3, sy+3)
+		rect = lr.safeRect(screen, rect)
+		if rect.Empty() {
+			continue
+		}
+
+		sub := gray.Region(rect)
+		mean := sub.Mean().Val1
+		sub.Close()
+
+		// A filled star center is bright (>100), an empty one is dark.
+		if mean > 100 {
+			validStars++
+		}
+	}
+	result.Stars = validStars
+	if result.Stars > 3 {
+		result.Stars = 3
 	}
 
 	return result, nil
@@ -173,8 +224,15 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 			_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
 			res.Close()
 
-			if maxConf > 0.7 {
-				rect := image.Rect(maxLoc.X+tpl.Cols()+2, maxLoc.Y-2, maxLoc.X+tpl.Cols()+200, maxLoc.Y+tpl.Rows()+2)
+			if maxConf > 0.65 {
+				// Robust anchor: start slightly inside the icon to catch digits immediately after.
+				// readRow uses color/saturation filtering to ignore the actual icon pixels.
+				rect := image.Rect(
+					maxLoc.X+int(4*lr.cal.ScaleX),
+					maxLoc.Y-int(5*lr.cal.ScaleY),
+					maxLoc.X+int(350*lr.cal.ScaleX), // Large enough to cover all digits
+					maxLoc.Y+tpl.Rows()+int(5*lr.cal.ScaleY),
+				)
 				results[i] = lr.readRow(region, rect)
 				continue
 			}
@@ -210,9 +268,14 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 			res.Close()
 
 			if maxConf > 0.8 {
-				// Anchor to icon. Starting ROI directly inside the icon area (maxLoc.X + 4)
+				// Anchor to icon. Starting ROI directly inside the icon area
 				// because readRow uses Color/Saturation to skip the actual icon bits.
-				rect := image.Rect(maxLoc.X+4, maxLoc.Y-5, maxLoc.X+450, maxLoc.Y+tpl.Rows()+5)
+				rect := image.Rect(
+					maxLoc.X+int(4*lr.cal.ScaleX),
+					maxLoc.Y-int(5*lr.cal.ScaleY),
+					maxLoc.X+int(450*lr.cal.ScaleX),
+					maxLoc.Y+tpl.Rows()+int(5*lr.cal.ScaleY),
+				)
 				results[i] = lr.readRow(screen, rect)
 				continue
 			}
@@ -251,11 +314,16 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		var detected []detectedDigit
 		for i := 0; i < contours.Size(); i++ {
 			rect := gocv.BoundingRect(contours.At(i))
-			if rect.Dy() < 10 || rect.Dy() > 30 || rect.Dx() < 1 || rect.Dx() > 35 { continue }
+			minH := int(10 * lr.cal.ScaleY)
+			maxH := int(35 * lr.cal.ScaleY)
+			minW := int(1 * lr.cal.ScaleX)
+			maxW := int(35 * lr.cal.ScaleX)
+			
+			if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW { continue }
 			
 			// Vertical alignment check
 			blobCenterY := rect.Min.Y + rect.Dy()/2
-			if math.Abs(float64(blobCenterY-roiCenterY)) > float64(gray.Rows())/2.5 { continue }
+			if math.Abs(float64(blobCenterY-roiCenterY)) > float64(gray.Rows())/2.0 { continue }
 
 			// Color Filter: Digits are strictly white/grey (Low Saturation)
 			blobHSV := hsv.Region(rect)
@@ -290,13 +358,14 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 				if !found { cleaned = append(cleaned, d) }
 			}
 
-			// Cluster Detection: Find the group of digits with small gaps (<10px)
+			// Cluster Detection: Find the group of digits with small gaps
 			var clusters [][]detectedDigit
 			if len(cleaned) > 0 {
 				current := []detectedDigit{cleaned[0]}
+				maxGap := int(35 * lr.cal.ScaleX)
 				for i := 1; i < len(cleaned); i++ {
 					gap := cleaned[i].rect.Min.X - cleaned[i-1].rect.Max.X
-					if gap <= 35 {
+					if gap <= maxGap {
 						current = append(current, cleaned[i])
 					} else {
 						clusters = append(clusters, current)
@@ -362,7 +431,9 @@ func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 	
 	// Thin vertical blobs are almost always '1'
 	if bestDigit == -1 || maxConf < 0.55 {
-		if bw >= 1 && bw <= 6 && bh >= 12 { // Narrower and taller
+		minH1 := int(12 * lr.cal.ScaleY)
+		maxW1 := int(6 * lr.cal.ScaleX)
+		if bw >= 1 && bw <= maxW1 && bh >= minH1 { // Narrower and taller
 			fill := float64(gocv.CountNonZero(bin)) / float64(bw*bh)
 			if fill > 0.65 { return detectedDigit{digit: 1, conf: 0.6} }
 		}

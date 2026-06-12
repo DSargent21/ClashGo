@@ -1,4 +1,4 @@
-module github.com/Ducky705/ClashGo
+module github.com/Ducky705/ClashGO
 
 go 1.25.0
 
@@ -7,6 +7,7 @@ require (
 	github.com/rs/zerolog v1.33.0
 	github.com/wailsapp/wails/v2 v2.12.0
 	gocv.io/x/gocv v0.43.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 

@@ -1,0 +1,48 @@
+{
+  "slots": [
+    {
+      "x": 62,
+      "name": "Valkyrie"
+    },
+    {
+      "x": 134,
+      "name": "Siege Machine"
+    },
+    {
+      "x": 212,
+      "name": "Archer Queen"
+    },
+    {
+      "x": 287,
+      "name": "Barbarian King"
+    },
+    {
+      "x": 360,
+      "name": "Grand Warden"
+    },
+    {
+      "x": 433,
+      "name": "Dragon Duke"
+    },
+    {
+      "x": 511,
+      "name": "Earthquake Spell"
+    },
+    {
+      "x": 584,
+      "name": "Event Troop"
+    },
+    {
+      "x": 657,
+      "name": "Event Troop"
+    },
+    {
+      "x": 730,
+      "name": "Empty"
+    },
+    {
+      "x": 798,
+      "name": "Empty"
+    }
+  ]
+}

@@ -1,88 +1,68 @@
-# ClashGo: Vanguard CoC Bot
+# ClashGO
 
 A professional, high-performance Go port of the Clash of Clans AutoIt bot, optimized for Apple Silicon Macs using Android Debug Bridge (ADB).
 
 ---
 
-## Key Features
-
-- **Persistent ADB Transport Layer**: Low latency multiplexed TCP connection to ADB server (screencaps in under 120ms).
-- **Vision Engine**: Real-time GoCV/OpenCV 4.x vision pipelines for pixel-based state classification, template matching, and red-zone (obstacle border) segmentation.
-- **Dynamic State Machine**: Confirmation-backed state graph with Dijkstra-based shortest-path traversal to navigate between game states automatically.
-- **Army Training Queue**: Automated troop trainer with delay controls, army status recognition, and resource count extraction.
-- **Strategy Attack Executor**: CSV-driven troop deployment parser with drop pacing, hero auto-abilities, and smart spacing.
-- **Web-enabled GUI Remote Dashboard**: Built with Wails v2 and Echo framework for interactive status reporting and dashboard-based remote configurations.
+## 🛡️ Anti-Ban & Safety
+This project is designed with safety as a priority. All diagnostic and debug data that could identify your account or base layout is excluded from source control.
+- **No Identifying Data**: Screenshots of player bases and diagnostic JSONs are strictly git-ignored.
+- **Local Execution**: All vision processing happens on your machine.
+- **Human-like Interaction**: Randomized delays and confirmation-backed state transitions.
 
 ---
 
-## Repository Structure
+## 🚀 Key Features
 
-```
-.
-├── app.go                      # Wails remote bridge & local Echo HTTP server
-├── cli.go                      # CLI command launcher (run with -tags cli)
-├── main.go                     # Wails GUI bootstrapper
-├── internal/
-│   ├── adb/                    # TCP ADB client transport (multiplexed socket layer)
-│   ├── attack/                 # Attack algorithms, deploy queues, and obstacle border checks
-│   ├── bot/                    # Bot orchestrator: ticks state evaluation loop @ 5Hz
-│   ├── config/                 # Typed configurations load/defaults
-│   ├── game/                   # Classifier, calibration, Dijkstra navigator, and template store
-│   └── training/               # Army monitoring and training sequences
-├── pkg/
-│   └── strategy/               # Attack strategy CSV parser
-├── scripts/                    # Python and Go utility tools
-├── assets/
-│   ├── strategies/             # BARCH CSV deployment files
-│   └── templates/              # Core templates required for vision matching
-└── web/                        # React/TS Frontend code for the GUI Dashboard
-```
+- **Persistent ADB Transport**: Low latency multiplexed TCP connection to ADB server (screencaps < 120ms).
+- **Vision Engine**: Real-time GoCV/OpenCV 4.x vision pipelines for state classification and red-zone segmentation.
+- **Dynamic State Machine**: Confirmation-backed state graph with Dijkstra-based shortest-path traversal.
+- **Army Training Queue**: Automated troop trainer with status recognition and resource extraction.
+- **Strategy Attack Executor**: CSV and YAML deployment parser with smart pacing and hero abilities.
+- **GUI Remote Dashboard**: Wails v2 + React dashboard for real-time status and configuration.
 
 ---
 
-## Installation & Prerequisites
+## 📂 Project Structure
 
-1. **Go Toolchain**: Make sure Go 1.22+ or newer is installed on your Mac.
-2. **OpenCV Dependencies**:
-   Install OpenCV via Homebrew:
+- `cmd/`: Application entry points.
+- `internal/`: Core logic (ADB, Bot, Game State, Vision).
+- `pkg/`: Publicly reusable packages (Strategy parser).
+- `assets/`: UI templates and attack strategies.
+- `docs/`: Design documents and architecture overview.
+- `tools/`: Development and calibration utilities.
+- `web/`: React frontend for the dashboard.
+
+---
+
+## 🛠️ Installation & Setup
+
+1. **Go 1.25+**: [Install Go](https://go.dev/doc/install).
+2. **OpenCV 4.x**: 
    ```bash
    brew install opencv pkg-config
    ```
-3. **GoCV Binding**:
-   Verify OpenCV is discovered by `pkg-config`:
+3. **Verify Configuration**:
    ```bash
    pkg-config --libs --cflags opencv4
    ```
 
 ---
 
-## Building and Running
+## 🏃 Running the Bot
 
-### CLI Mode (Recommended for Server / Headless)
-Build and run with the `cli` build tag:
+### CLI Mode (Headless)
 ```bash
-go build -tags cli -o coc-cli cli.go app.go
-./coc-cli
+go build -tags cli -o clashgo .
+./clashgo
 ```
 
-### GUI Mode (Wails desktop interface)
-Run locally in development mode:
+### GUI Mode (Desktop)
 ```bash
 wails dev
-```
-To bundle for production:
-```bash
-wails build
 ```
 
 ---
 
-## Configuration
-
-Settings are parsed from `config.json` in the working directory. A default config file is generated automatically if one does not exist.
-
-Key configuration nodes:
-- `Device`: ADB targets and scale resolution mappings.
-- `Search`: Hard thresholds for Gold, Elixir, and Dark Elixir search filters.
-- `Training`: Pacing, training order schedules, and wait loops.
-- `Debug`: Local screenshot caching and visualization tools.
+## 📄 License
+Distributed under the GNU General Public License v3.0. See `License.txt` for more information.

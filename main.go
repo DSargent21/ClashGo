@@ -21,7 +21,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:             "Vanguard Mission Control",
+		Title:             "ClashGO Mission Control",
 		Width:             1200,
 		Height:            850,
 		MinWidth:          1024,
@@ -31,14 +31,15 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 9, G: 9, B: 11, A: 1},
 		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
 		},
 		Mac: &mac.Options{
 			TitleBar: &mac.TitleBar{
 				TitlebarAppearsTransparent: true,
-				HideTitle:                  false,
-				FullSizeContent:            false,
+				HideTitle:                  true,
+				FullSizeContent:            true,
 				UseToolbar:                 false,
 				HideToolbarSeparator:       true,
 			},
@@ -46,8 +47,8 @@ func main() {
 			WebviewIsTransparent: true,
 			WindowIsTranslucent:  true,
 			About: &mac.AboutInfo{
-				Title:   "Vanguard",
-				Message: "© 2026 Vanguard Systems",
+				Title:   "ClashGO",
+				Message: "© 2026 ClashGO Systems",
 			},
 		},
 	})

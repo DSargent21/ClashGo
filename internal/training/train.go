@@ -8,9 +8,9 @@ import (
 
 	"gocv.io/x/gocv"
 
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/Ducky705/ClashGo/internal/game"
-	"github.com/Ducky705/ClashGo/internal/vision"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
 )
 
@@ -61,6 +61,12 @@ func (t *Trainer) SetClassifier(fn func(gocv.Mat) (game.GameState, int)) {
 
 func (t *Trainer) SetTemplates(ts *game.TemplateStore) {
 	t.templates = ts
+}
+
+func (t *Trainer) UpdateConfig(cfg *config.TrainingConfig) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cfg = cfg
 }
 
 func (t *Trainer) IdentifyTroops(screen gocv.Mat) ([]TroopCount, error) {

@@ -5,15 +5,16 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/Ducky705/ClashGo/internal/bot"
-	"github.com/Ducky705/ClashGo/internal/config"
-	"github.com/rs/zerolog"
+	"github.com/Ducky705/ClashGO/internal/bot"
+	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/logger"
 	"github.com/rs/zerolog/log"
 )
 
@@ -24,20 +25,9 @@ var (
 
 func main() {
 	// Professional logging setup
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = log.Output(zerolog.ConsoleWriter{
-		Out:        os.Stderr,
-		TimeFormat: "15:04:05",
-		NoColor:    false,
-	})
+	logger.Init(os.Getenv("DEBUG") != "")
 
-	if os.Getenv("DEBUG") != "" {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	} else {
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	}
-
-	fmt.Printf("coc-bot v%s (%.7s)\n", version, commit)
+	fmt.Printf("ClashGO v%s (%.7s)\n", version, commit)
 
 	// Remove execution timeout for full pipeline test
 	ctx, cancel := context.WithCancel(context.Background())
@@ -58,6 +48,7 @@ func main() {
 	}()
 
 	cfg := loadConfig()
+	parseFlags(cfg)
 
 	b, err := bot.NewBot(cfg)
 	if err != nil {
@@ -100,4 +91,22 @@ func loadConfig() *config.BotConfig {
 		return cfg
 	}
 	return config.DefaultConfig()
+}
+
+func parseFlags(cfg *config.BotConfig) {
+	upgradeWalls := flag.Bool("upgrade-walls", cfg.Upgrade.UpgradeWalls, "Enable/disable automatic wall upgrades")
+	minGold := flag.Int("gold", cfg.Search.MinLootGold, "Minimum gold to attack")
+	minElixir := flag.Int("elixir", cfg.Search.MinLootElixir, "Minimum elixir to attack")
+	minDE := flag.Int("de", cfg.Search.MinLootDarkElixir, "Minimum dark elixir to attack")
+	strategy := flag.String("strategy", cfg.Attack.StrategyFile, "Path to strategy YAML file")
+	deviceID := flag.String("device", cfg.Device.DeviceID, "ADB device ID")
+
+	flag.Parse()
+
+	cfg.Upgrade.UpgradeWalls = *upgradeWalls
+	cfg.Search.MinLootGold = *minGold
+	cfg.Search.MinLootElixir = *minElixir
+	cfg.Search.MinLootDarkElixir = *minDE
+	cfg.Attack.StrategyFile = *strategy
+	cfg.Device.DeviceID = *deviceID
 }
