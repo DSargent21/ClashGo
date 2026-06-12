@@ -149,8 +149,8 @@ func (a *App) startWebServer() {
 	// Or we can serve the built dist folder if it exists
 	e.Static("/", "web/dist")
 
-	log.Info().Msg("Web Dashboard available at http://0.0.0.0:8080")
-	if err := e.Start(":8080"); err != nil {
+	log.Info().Msg("Web Dashboard available at http://127.0.0.1:8080")
+	if err := e.Start("127.0.0.1:8080"); err != nil {
 		log.Error().Err(err).Msg("failed to start web server")
 	}
 }

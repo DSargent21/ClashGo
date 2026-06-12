@@ -38,6 +38,7 @@ release: build-cli package
 	@mkdir -p $(BUILD_DIR)/release
 	@cp $(BUILD_DIR)/ClashGO.dmg $(BUILD_DIR)/release/
 	@cp $(BUILD_DIR)/bot_cli $(BUILD_DIR)/release/
+	@cp -R assets $(BUILD_DIR)/release/
 	@cd $(BUILD_DIR)/release && zip -r ../../ClashGO-v$(VERSION)-macOS.zip .
 	@rm -rf $(BUILD_DIR)/release
 	@echo "Release ZIP created: ClashGO-v$(VERSION)-macOS.zip"
