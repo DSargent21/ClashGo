@@ -56,6 +56,34 @@ web/package.json.md5
 **/*.png
 **/*.jpg
 **/*.jpeg
-
-# Explicit exception for core vision template images
 !assets/templates/**/*.png
+assets/templates/debug/
+
+# Diagnostic and Log files
+diag_*.json
+failure.diag
+failure.txt_img
+last_attack_report.json
+last_failure.json
+*.log
+logs/
+
+# Build and Test artifacts
+bin/
+build/bin/
+*.test
+*.prof
+loot_*.vtest.json
+*.exe
+debug_match
+bot_cli
+bot_test
+check_tpl
+img_info
+point_picker
+test_match
+
+# Local configurations
+config.json
+config.json.bak
+.env
