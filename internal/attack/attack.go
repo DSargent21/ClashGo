@@ -30,6 +30,7 @@ type Executor struct {
 	logger        zerolog.Logger
 	classify      func(gocv.Mat) (game.GameState, int)
 	tappedSiegeXs map[int]bool
+	templates     map[string]gocv.Mat
 }
 
 type PrecisionConfig struct {
@@ -62,13 +63,39 @@ func NewExecutor(client *adb.Client, cal *game.Calibration, cfg *config.AttackCo
 		TemplateThreshold: 0.7,
 	}, logger)
 
-	return &Executor{
+	exec := &Executor{
 		client:        client,
 		cal:           cal,
 		cfg:           cfg,
 		logger:        logger.With().Str("component", "attack_executor").Logger(),
 		classify:      classifier.ClassifyState,
 		tappedSiegeXs: make(map[int]bool),
+		templates:     make(map[string]gocv.Mat),
+	}
+	exec.loadTemplates()
+	return exec
+}
+
+func (e *Executor) loadTemplates() {
+	dir := paths.Resolve("templates/attack")
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		e.logger.Error().Err(err).Msg("failed to read templates/attack directory")
+		return
+	}
+	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(strings.ToLower(f.Name()), ".png") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.ToLower(f.Name()), ".png")
+		path := filepath.Join(dir, f.Name())
+		mat := gocv.IMRead(path, gocv.IMReadColor)
+		if mat.Empty() {
+			e.logger.Warn().Str("path", path).Msg("failed to load template image")
+			continue
+		}
+		e.templates[name] = mat
+		e.logger.Debug().Str("name", name).Msg("cached attack template")
 	}
 }
 
@@ -145,9 +172,8 @@ func (e *Executor) Validate(s *strategy.DynamicStrategy) error {
 			}
 
 			fileName := strings.ReplaceAll(unitName, " ", "_")
-			tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", fileName))
-			if _, err := os.Stat(tplPath); os.IsNotExist(err) {
-				return fmt.Errorf("missing template for unit '%s' at path: %s (and not found in manual_labels.json)", unit.Name, tplPath)
+			if _, ok := e.templates[fileName]; !ok {
+				return fmt.Errorf("missing template for unit '%s' (and not found in manual_labels.json)", unit.Name)
 			}
 		}
 	}
@@ -304,17 +330,112 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			} `json:"slots"`
 		}
 		if json.Unmarshal(data, &lConf) == nil {
-			e.logger.Info().Int("labels", len(lConf.Slots)).Msg("loading 100% precise manual troop labels")
+			e.logger.Info().Int("labels", len(lConf.Slots)).Msg("loading and verifying manual troop labels")
 			for _, slot := range lConf.Slots {
 				if slot.Name == "Empty" { continue }
 				
 				// Verify slot isn't empty on the CURRENT screen before caching
 				if !e.isSlotEmpty(screen, slot.X, slotY) {
-					unitCache[strings.ToLower(slot.Name)] = &vision.Match{
-						Point:      image.Pt(slot.X, slotY),
-						Confidence: 1.0, // Ground truth
-						Scale:      1.0,
+					fileName := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(slot.Name)), " ", "_")
+					tpl, ok := e.templates[fileName]
+					
+					matched := true
+					if ok && !tpl.Empty() {
+						cropWidth := int(75.0 * e.cal.ScaleX)
+						cropHeight := int(85.0 * e.cal.ScaleY)
+						rect := image.Rect(slot.X-cropWidth/2, slotY-cropHeight/2, slot.X+cropWidth/2, slotY+cropHeight/2)
+						if rect.Min.X < 0 { rect.Min.X = 0 }
+						if rect.Min.Y < 0 { rect.Min.Y = 0 }
+						if rect.Max.X > w { rect.Max.X = w }
+						if rect.Max.Y > h { rect.Max.Y = h }
+
+						if rect.Dx() >= tpl.Cols() && rect.Dy() >= tpl.Rows() {
+							roi := screen.Region(rect)
+							res := gocv.NewMat()
+							gocv.MatchTemplate(roi, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+							maxVal := float32(0.0)
+							if !res.Empty() {
+								_, mv, _, _ := gocv.MinMaxLoc(res)
+								maxVal = mv
+							}
+							res.Close()
+							roi.Close()
+							
+							if maxVal < 0.55 {
+								matched = false
+								e.logger.Warn().Str("name", slot.Name).Int("x", slot.X).Float32("conf", maxVal).Msg("manual label template mismatch, discarding")
+							}
+						}
 					}
+					
+					if matched {
+						unitCache[strings.ToLower(slot.Name)] = &vision.Match{
+							Point:      image.Pt(slot.X, slotY),
+							Confidence: 1.0, // Ground truth verified
+							Scale:      1.0,
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 1.9.1. Optional: Run template-matching validation on manual labels to detect/correct swaps
+	if len(unitCache) > 0 {
+		e.logger.Info().Msg("verifying manual labels against templates to detect swaps...")
+		for name1, match1 := range unitCache {
+			for name2, match2 := range unitCache {
+				if name1 >= name2 { continue }
+				if !e.isHero(name1) || !e.isHero(name2) { continue }
+				
+				tpl1, ok1 := e.templates[strings.ReplaceAll(name1, " ", "_")]
+				tpl2, ok2 := e.templates[strings.ReplaceAll(name2, " ", "_")]
+				if !ok1 || !ok2 || tpl1.Empty() || tpl2.Empty() {
+					continue
+				}
+				
+				cropWidth := int(75.0 * e.cal.ScaleX)
+				cropHeight := int(85.0 * e.cal.ScaleY)
+				
+				getConf := func(tpl gocv.Mat, x int) float32 {
+					rect := image.Rect(x-cropWidth/2, slotY-cropHeight/2, x+cropWidth/2, slotY+cropHeight/2)
+					if rect.Min.X < 0 { rect.Min.X = 0 }
+					if rect.Min.Y < 0 { rect.Min.Y = 0 }
+					if rect.Max.X > w { rect.Max.X = w }
+					if rect.Max.Y > h { rect.Max.Y = h }
+					
+					if rect.Dx() < tpl.Cols() || rect.Dy() < tpl.Rows() {
+						return 0.0
+					}
+					
+					roi := screen.Region(rect)
+					defer roi.Close()
+					if roi.Empty() {
+						return 0.0
+					}
+					
+					res := gocv.NewMat()
+					defer res.Close()
+					gocv.MatchTemplate(roi, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+					if res.Empty() {
+						return 0.0
+					}
+					_, maxVal, _, _ := gocv.MinMaxLoc(res)
+					return maxVal
+				}
+				
+				confNormal := getConf(tpl1, match1.Point.X) + getConf(tpl2, match2.Point.X)
+				confSwapped := getConf(tpl1, match2.Point.X) + getConf(tpl2, match1.Point.X)
+				
+				if confSwapped > confNormal + 0.15 {
+					e.logger.Warn().Str("unit1", name1).Int("x1", match1.Point.X).
+						Str("unit2", name2).Int("x2", match2.Point.X).
+						Float32("normal", confNormal).Float32("swapped", confSwapped).
+						Msg("⚠️ DETECTED SWAPPED MANUAL LABELS! Auto-correcting coordinates...")
+					
+					pt1 := match1.Point
+					match1.Point = match2.Point
+					match2.Point = pt1
 				}
 			}
 		}
@@ -331,7 +452,27 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			}
 		}
 		
-		// ... existing hybrid logic ... (I will simplify this to avoid duplication)
+	}
+
+	// 2.1. Remove already-cached manual/template units from slotMap to prevent fallback theft
+	for name, match := range unitCache {
+		category := "Troop"
+		nameLower := strings.ToLower(name)
+		if e.isSpell(nameLower) {
+			category = "Spell"
+		} else if e.isHero(nameLower) {
+			category = "Hero"
+		} else if e.isSiege(nameLower) {
+			category = "Siege"
+		}
+		
+		for idx, slot := range slotMap[category] {
+			if math.Abs(float64(match.Point.X-slot.X)) < float64(w)*0.05 {
+				slotMap[category] = append(slotMap[category][:idx], slotMap[category][idx+1:]...)
+				e.logger.Debug().Str("unit", name).Int("x", slot.X).Str("category", category).Msg("pre-removed cached unit from fallback slotMap")
+				break
+			}
+		}
 	}
 
 	for _, phase := range s.Phases {
@@ -398,6 +539,12 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 			// Try cache first
 			var match *vision.Match = unitCache[unitName]
+			if match == nil && isSiege {
+				if m, ok := unitCache["siege machine"]; ok {
+					match = m
+					e.logger.Info().Str("unit", unit.Name).Interface("pos", m.Point).Msg("mapped to manual 'siege machine' slot")
+				}
+			}
 			
 			// If not cached, fall back to live scanner
 			if match == nil {
@@ -411,11 +558,10 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				}
 
 				fileName := strings.ReplaceAll(unitName, " ", "_")
-				tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", fileName))
-				tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
-				if !tpl.Empty() {
+				tpl, ok := e.templates[fileName]
+				if ok && !tpl.Empty() {
 					findMatch := func(screen gocv.Mat, currentThreshold float32) *vision.Match {
-						matches, _ := vision.MatchMultiScaleROICached(screen, tpl, filepath.Base(tplPath), 0.2, 1.2, 20, currentThreshold, barROI)
+						matches, _ := vision.MatchMultiScaleROICached(screen, tpl, fileName, 0.2, 1.2, 20, currentThreshold, barROI)
 						if len(matches) > 0 {
 							sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
 							for _, m := range matches {
@@ -452,7 +598,6 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 							break
 						}
 					}
-					tpl.Close()
 				}
 			}
 
@@ -565,16 +710,22 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 					return mainDeployments[i].match.Confidence > mainDeployments[j].match.Confidence
 				})
 
-				limitMain := 4
-				if len(mainDeployments) < limitMain {
-					limitMain = len(mainDeployments)
-				}
+				limitMain := len(mainDeployments)
+
+				var dragonDukePt *image.Point
 
 				e.logger.Debug().Int("main", len(mainDeployments)).Int("bonus", len(bonusDeployments)).Int("limit", limitMain).Msg("hero phase summary")
 				for i := 0; i < limitMain; i++ {
+					name := strings.ToLower(mainDeployments[i].unit.Name)
+					isDuke := strings.Contains(name, "duke")
 					e.logger.Debug().Str("unit", mainDeployments[i].unit.Name).Int("x", mainDeployments[i].match.Point.X).Msg("deploying main hero")
 					if e.deployUnit(mainDeployments[i].unit, mainDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar, phase) {
-						deployedHeroSlots = append(deployedHeroSlots, mainDeployments[i].match.Point)
+						if isDuke {
+							pt := mainDeployments[i].match.Point
+							dragonDukePt = &pt
+						} else {
+							deployedHeroSlots = append(deployedHeroSlots, mainDeployments[i].match.Point)
+						}
 					}
 				}
 
@@ -584,9 +735,16 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				})
 
 				for i := 0; i < len(bonusDeployments); i++ {
+					name := strings.ToLower(bonusDeployments[i].unit.Name)
+					isDuke := strings.Contains(name, "duke")
 					e.logger.Debug().Str("unit", bonusDeployments[i].unit.Name).Int("x", bonusDeployments[i].match.Point.X).Msg("deploying bonus hero")
 					if e.deployUnit(bonusDeployments[i].unit, bonusDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar, phase) {
-						deployedHeroSlots = append(deployedHeroSlots, bonusDeployments[i].match.Point)
+						if isDuke {
+							pt := bonusDeployments[i].match.Point
+							dragonDukePt = &pt
+						} else {
+							deployedHeroSlots = append(deployedHeroSlots, bonusDeployments[i].match.Point)
+						}
 					}
 				}
 
@@ -599,6 +757,14 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 						e.client.TapFast(pt.X, pt.Y, 2.0)
 						time.Sleep(150 * time.Millisecond)
 					}
+				}
+
+				if dragonDukePt != nil {
+					go func(pt image.Point) {
+						time.Sleep(15 * time.Second)
+						e.logger.Info().Int("x", pt.X).Int("y", pt.Y).Msg("delayed activation of Dragon Duke ability (15s)")
+						e.client.TapFast(pt.X, pt.Y, 2.0)
+					}(*dragonDukePt)
 				}
 			}
 
@@ -736,7 +902,6 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 		return true
 	}
 
-	// 1. Isolate a crop of the slot card
 	size := int(25.0 * e.cal.ScaleX)
 	region := image.Rect(x-size, y-size, x+size, y+size)
 	if region.Min.X < 0 { region.Min.X = 0 }
@@ -750,37 +915,54 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 	defer hsv.Close()
 	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
 
-	// 2. Count "Active" pixels.
-	// Active units are highly saturated (colors) or high value (white text/digits).
-	// Greyed out units have very low saturation.
-	activePixels := 0
+	// Map/Grass Detection (to ignore background)
+	// (hu >= 35 && hu <= 90 && sa > 30)
+	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
+	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
+	maskMap1 := gocv.NewMat()
+	defer maskMap1.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
+
+	// (hu < 30 && sa < 50 && va < 80)
+	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
+	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
+	maskMap2 := gocv.NewMat()
+	defer maskMap2.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
+
+	isMapMask := gocv.NewMat()
+	defer isMapMask.Close()
+	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
+
+	notMapMask := gocv.NewMat()
+	defer notMapMask.Close()
+	gocv.BitwiseNot(isMapMask, &notMapMask)
+
+	// Active Content A: Saturated (>55) and Bright (>90)
+	lowerActA := gocv.NewScalar(0, 56, 91, 0)
+	upperActA := gocv.NewScalar(180, 255, 255, 0)
+	maskActA := gocv.NewMat()
+	defer maskActA.Close()
+	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
+
+	// Active Content B: Very bright white (saturation < 30, value > 220)
+	lowerActB := gocv.NewScalar(0, 0, 221, 0)
+	upperActB := gocv.NewScalar(180, 29, 255, 0)
+	maskActB := gocv.NewMat()
+	defer maskActB.Close()
+	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
+
+	activeContentMask := gocv.NewMat()
+	defer activeContentMask.Close()
+	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
+
+	finalActiveMask := gocv.NewMat()
+	defer finalActiveMask.Close()
+	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
+
+	activePixels := gocv.CountNonZero(finalActiveMask)
 	total := hsv.Rows() * hsv.Cols()
-
-	for row := 0; row < hsv.Rows(); row++ {
-		for col := 0; col < hsv.Cols(); col++ {
-			hu := hsv.GetUCharAt(row, col*3)
-			sa := hsv.GetUCharAt(row, col*3+1)
-			va := hsv.GetUCharAt(row, col*3+2)
-
-			// Map/Grass Detection (to ignore background)
-			isMap := (hu >= 35 && hu <= 90 && sa > 30) || (hu < 30 && sa < 50 && va < 80)
-
-			// Active Content: Saturated (>55) and Bright (>90)
-			// Or very bright white (text/counts: saturation < 30, value > 220)
-			if !isMap {
-				if sa > 55 && va > 90 {
-					activePixels++
-				} else if sa < 30 && va > 220 {
-					activePixels++
-				}
-			}
-		}
-	}
-
 	activeRatio := float64(activePixels) / float64(total)
-
-	// A slot is empty if it lacks enough active color/brightness.
-	// 0.08 (8%) is a safe floor for active troop icons.
 	isEmpty := activeRatio < 0.08
 
 	e.logger.Debug().
@@ -951,7 +1133,8 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				for j := 0; j < 4; j++ { // 4 taps per side
 					pct := float64(j) / 3.0
 					tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-					e.client.TapFast(tx, ty, 8.0)
+					jPt := e.addJitter(image.Pt(tx, ty), 6)
+					e.client.TapFast(jPt.X, jPt.Y, 8.0)
 					time.Sleep(50 * time.Millisecond) // Faster inter-tap
 				}
 				time.Sleep(100 * time.Millisecond) // Faster inter-side
@@ -976,19 +1159,27 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					// Apply inward offset from YAML if provided for regular line spells
 					off := unit.Offset
 					if off == 0 { off = phase.Offset }
-					if off > 0 {
+					extraOffset := 0.0
+					if isRage && batch == 0 {
+						extraOffset = 0.1 // 10% deeper into the base for the first row of rage spells
+					}
+					if off > 0 || extraOffset > 0 {
 						centerX, centerY := w/2, h/2
-						pct := float64(off) / 200.0 // Slightly more aggressive for lines
+						pct := float64(off)/200.0 + extraOffset
 						p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
 						p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
-						e.logger.Info().Int("offset", off).Interface("p1", p1).Msg("applied inward offset to spell line")
+						e.logger.Info().Int("offset", off).Float64("extraOffset", extraOffset).Interface("p1", p1).Msg("applied inward offset to spell line")
 					}
 
 					// Area Spells: Use wider balanced grouping (15% to 85% of the line)
 					for i := 0; i < 3; i++ {
 						pct := 0.15 + float64(i)*0.35 // 0.15, 0.5, 0.85
+						if isRage && batch == 0 {
+							pct = 0.25 + float64(i)*0.25 // 0.25, 0.50, 0.75 (closer together)
+						}
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-						e.client.TapFast(tx, ty, 8.0)
+						jPt := e.addJitter(image.Pt(tx, ty), 8)
+						e.client.TapFast(jPt.X, jPt.Y, 8.0)
 						time.Sleep(10 * time.Millisecond) 
 					}
 				} else { // Freeze or other spells
@@ -1008,7 +1199,8 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					for i := 0; i < 3; i++ { // 3 taps per batch
 						pct := float64(i) / 2.0
 						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-						e.client.TapFast(tx, ty, 8.0)
+						jPt := e.addJitter(image.Pt(tx, ty), 8)
+						e.client.TapFast(jPt.X, jPt.Y, 8.0)
 						time.Sleep(10 * time.Millisecond)
 					}
 				}
@@ -1065,7 +1257,10 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					tx1, ty1 := int(float64(p1.X)+float64(p2.X-p1.X)*pct1), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct1)
 					tx2, ty2 := int(float64(p1.X)+float64(p2.X-p1.X)*pct2), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct2)
 					tx3, ty3 := int(float64(p1.X)+float64(p2.X-p1.X)*pct3), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct3)
-					e.client.TapTriple(tx1, ty1, 12.0, tx2, ty2, 12.0, tx3, ty3, 12.0)
+					j1 := e.addJitter(image.Pt(tx1, ty1), 8)
+					j2 := e.addJitter(image.Pt(tx2, ty2), 8)
+					j3 := e.addJitter(image.Pt(tx3, ty3), 8)
+					e.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
 					time.Sleep(100 * time.Millisecond)
 				}
 			}
@@ -1074,24 +1269,28 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 
 		if isDragonDuke && !isAbility {
-			// Dragon Duke goes on a strictly adjacent side (not opposite, not same)
-			adjacents := map[string][]string{
-				"TopLeft":     {"TopRight", "BottomLeft"},
-				"TopRight":    {"TopLeft", "BottomRight"},
-				"BottomLeft":  {"TopLeft", "BottomRight"},
-				"BottomRight": {"TopRight", "BottomLeft"},
+			horizontal := map[string]string{
+				"topleft":     "TopRight",
+				"topright":    "TopLeft",
+				"bottomleft":  "BottomRight",
+				"bottomright": "BottomLeft",
 			}
-			if opts, ok := adjacents[targetEdge]; ok {
-				deploymentEdge = opts[rand.Intn(len(opts))]
-				e.logger.Info().Str("target", targetEdge).Str("duke_edge", deploymentEdge).Msg("Dragon Duke strictly adjacent placement")
-				
-				// For Dragon Duke, use the midpoint of the adjacent edge to ensure it is clearly separate
-				if edge, ok := pCfg.Edges[deploymentEdge]; ok {
-					midX := (edge.P1.X + edge.P2.X) / 2
-					midY := (edge.P1.Y + edge.P2.Y) / 2
-					p1, p2 = image.Pt(midX, midY), image.Pt(midX, midY)
-					e.logger.Info().Str("edge", deploymentEdge).Interface("midpoint", p1).Msg("placing Dragon Duke at adjacent side midpoint")
-				}
+			normEdge := strings.ToLower(targetEdge)
+			deploymentEdge = "TopRight" // fallback
+			if opt, ok := horizontal[normEdge]; ok {
+				deploymentEdge = opt
+			}
+			e.logger.Info().Str("target", targetEdge).Str("duke_edge", deploymentEdge).Msg("Dragon Duke horizontal adjacent placement")
+			
+			// For Dragon Duke, use the Hero Target of the adjacent edge if available, fallback to midpoint
+			if pt, ok := pCfg.HeroTargets[deploymentEdge]; ok {
+				p1, p2 = pt, pt
+				e.logger.Info().Str("edge", deploymentEdge).Interface("hero_target", p1).Msg("placing Dragon Duke at adjacent side hero target")
+			} else if edge, ok := pCfg.Edges[deploymentEdge]; ok {
+				midX := (edge.P1.X + edge.P2.X) / 2
+				midY := (edge.P1.Y + edge.P2.Y) / 2
+				p1, p2 = image.Pt(midX, midY), image.Pt(midX, midY)
+				e.logger.Info().Str("edge", deploymentEdge).Interface("midpoint", p1).Msg("placing Dragon Duke at adjacent side midpoint")
 			}
 		}
 
@@ -1106,12 +1305,9 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 
 		if isHero || isSiege {
-			// Add a small jitter to coordinates to prevent exact pixel stacking
-			jx := p1.X + rand.Intn(21) - 10
-			jy := p1.Y + rand.Intn(21) - 10
-
-			e.logger.Info().Str("unit", unit.Name).Int("x", jx).Int("y", jy).Msg("deploying hero/siege point")
-			e.client.TapFast(jx, jy, 8.0)
+			jPt := e.addJitter(p1, 10)
+			e.logger.Info().Str("unit", unit.Name).Int("x", jPt.X).Int("y", jPt.Y).Msg("deploying hero/siege point")
+			e.client.TapFast(jPt.X, jPt.Y, 8.0)
 			time.Sleep(200 * time.Millisecond) // Faster inter-hero delay
 		} else {
 			// Regular troops / spam units / event troops
@@ -1120,7 +1316,10 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				if p1 == p2 { // Point deployment batch
 					e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying troop point batch")
 					// Use triple tap approach for point deployment: 3 taps
-					e.client.TapTriple(p1.X, p1.Y, 12.0, p1.X, p1.Y, 12.0, p1.X, p1.Y, 12.0)
+					j1 := e.addJitter(p1, 8)
+					j2 := e.addJitter(p1, 8)
+					j3 := e.addJitter(p1, 8)
+					e.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
 				} else { // Line deployment batch
 					e.logger.Info().Str("unit", unit.Name).Msg("deploying troop line batch")
 					// Deploy three lines simultaneously with triple finger taps
@@ -1132,7 +1331,10 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 						tx1, ty1 := int(float64(p1.X)+float64(p2.X-p1.X)*pct1), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct1)
 						tx2, ty2 := int(float64(p1.X)+float64(p2.X-p1.X)*pct2), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct2)
 						tx3, ty3 := int(float64(p1.X)+float64(p2.X-p1.X)*pct3), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct3)
-						e.client.TapTriple(tx1, ty1, 15.0, tx2, ty2, 15.0, tx3, ty3, 15.0)
+						j1 := e.addJitter(image.Pt(tx1, ty1), 10)
+						j2 := e.addJitter(image.Pt(tx2, ty2), 10)
+						j3 := e.addJitter(image.Pt(tx3, ty3), 10)
+						e.client.TapTriple(j1.X, j1.Y, 15.0, j2.X, j2.Y, 15.0, j3.X, j3.Y, 15.0)
 					}
 				}
 
@@ -1476,16 +1678,11 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	// Search Heroes
 	for _, name := range heroNames {
-		tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", name))
-		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
+		tpl, ok := e.templates[name]
+		if !ok || tpl.Empty() {
 			continue
 		}
-		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
-		if tpl.Empty() {
-			continue
-		}
-		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, filepath.Base(tplPath), 0.2, 1.2, 20, 0.65, barROI)
-		tpl.Close()
+		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, name, 0.2, 1.2, 20, 0.65, barROI)
 		for _, m := range matches {
 			matchedHeroes[m.Point.X] = true
 		}
@@ -1493,16 +1690,11 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	// Search Spells
 	for _, name := range spellNames {
-		tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", name))
-		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
+		tpl, ok := e.templates[name]
+		if !ok || tpl.Empty() {
 			continue
 		}
-		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
-		if tpl.Empty() {
-			continue
-		}
-		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, filepath.Base(tplPath), 0.2, 1.2, 20, 0.75, barROI)
-		tpl.Close()
+		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, name, 0.2, 1.2, 20, 0.75, barROI)
 		for _, m := range matches {
 			matchedSpells[m.Point.X] = true
 		}
@@ -1510,16 +1702,11 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	// Search Sieges
 	for _, name := range siegeNames {
-		tplPath := paths.Resolve(fmt.Sprintf("templates/attack/%s.png", name))
-		if _, err := os.Stat(tplPath); os.IsNotExist(err) {
+		tpl, ok := e.templates[name]
+		if !ok || tpl.Empty() {
 			continue
 		}
-		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
-		if tpl.Empty() {
-			continue
-		}
-		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, filepath.Base(tplPath), 0.2, 1.2, 20, 0.55, barROI)
-		tpl.Close()
+		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, name, 0.2, 1.2, 20, 0.55, barROI)
 		for _, m := range matches {
 			matchedSieges[m.Point.X] = true
 		}
@@ -1660,5 +1847,23 @@ func (e *Executor) hasColorSignature(img gocv.Mat, colorType string) bool {
 	gocv.InRangeWithScalar(hsv, lower, upper, &mask)
 	count := gocv.CountNonZero(mask)
 	return float64(count)/float64(mask.Rows()*mask.Cols()) > minRatio
+}
+
+func (e *Executor) addJitter(pt image.Point, maxPixels int) image.Point {
+	if maxPixels <= 0 {
+		return pt
+	}
+	jx := int(float64(maxPixels) * e.cal.ScaleX)
+	jy := int(float64(maxPixels) * e.cal.ScaleY)
+	if jx <= 0 { jx = 1 }
+	if jy <= 0 { jy = 1 }
+	return image.Pt(
+		pt.X + rand.Intn(jx*2+1) - jx,
+		pt.Y + rand.Intn(jy*2+1) - jy,
+	)
+}
+
+func (e *Executor) GetTemplates() map[string]gocv.Mat {
+	return e.templates
 }
 
