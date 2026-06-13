@@ -304,115 +304,179 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	defer hsv.Close()
 	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
 
+	// 1. Resize 5x first to ensure image dimensions are larger than kernel size (61x61)
+	scaled := gocv.NewMat()
+	defer scaled.Close()
+	gocv.Resize(gray, &scaled, image.Point{X: 0, Y: 0}, 5.0, 5.0, gocv.InterpolationCubic)
+
+	// 2. Estimate background brightness on scaled image with dynamic kernel size safety
+	kSize := 61
+	if scaled.Rows() < kSize {
+		kSize = scaled.Rows()
+	}
+	if scaled.Cols() < kSize {
+		kSize = scaled.Cols()
+	}
+	if kSize%2 == 0 {
+		kSize--
+	}
+	if kSize < 3 {
+		kSize = 3
+	}
+
+	bg := gocv.NewMat()
+	defer bg.Close()
+	gocv.GaussianBlur(scaled, &bg, image.Point{X: kSize, Y: kSize}, 0, 0, gocv.BorderDefault)
+
+	// 3. Remove slow illumination changes
+	norm := gocv.NewMat()
+	defer norm.Close()
+	gocv.Subtract(scaled, bg, &norm)
+
+	// 4. Stretch contrast
+	gocv.Normalize(norm, &norm, 0, 255, gocv.NormMinMax)
+
+	// 5. Scaled Otsu thresholding to prevent hollow digits by keeping shaded inner text regions white
+	binary := gocv.NewMat()
+	defer binary.Close()
+	dummy := gocv.NewMat()
+	defer dummy.Close()
+	otsuVal := gocv.Threshold(norm, &dummy, 0, 255, gocv.ThresholdBinary|gocv.ThresholdOtsu)
+	gocv.Threshold(norm, &binary, otsuVal*0.60, 255, gocv.ThresholdBinary)
+
+	// 6. Morphological Open (1x to clean noise)
+	kernelOpen := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3})
+	defer kernelOpen.Close()
+	gocv.MorphologyEx(binary, &binary, gocv.MorphOpen, kernelOpen)
+
+	// 6.5 Morphological Close (5x5 ellipse) to fill hollow digit centers on victory screens
+	kernelClose := gocv.GetStructuringElement(gocv.MorphEllipse, image.Point{X: 5, Y: 5})
+	defer kernelClose.Close()
+	gocv.MorphologyEx(binary, &binary, gocv.MorphClose, kernelClose)
+
+	// 7. Invert colors if background is light (mostly white pixels)
+	nonZero := gocv.CountNonZero(binary)
+	total := binary.Rows() * binary.Cols()
+	if float64(nonZero)/float64(total) > 0.5 {
+		gocv.BitwiseNot(binary, &binary)
+	}
+
 	bestVal, bestScore := 0, -1.0
-	roiCenterY := gray.Rows() / 2
+	roiCenterY := scaled.Rows() / 2
 
-	for _, tVal := range []float32{145, 175, 205} {
-		thresh := gocv.NewMat()
-		gocv.Threshold(gray, &thresh, tVal, 255, gocv.ThresholdBinary)
+	contours := gocv.FindContours(binary, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+	var detected []detectedDigit
+	for i := 0; i < contours.Size(); i++ {
+		rect := gocv.BoundingRect(contours.At(i))
+		minH := int(7 * lr.cal.ScaleY) * 5
+		maxH := int(40 * lr.cal.ScaleY) * 5
+		minW := int(1 * lr.cal.ScaleX) * 5
+		maxW := int(40 * lr.cal.ScaleX) * 5
 		
-		contours := gocv.FindContours(thresh, gocv.RetrievalExternal, gocv.ChainApproxSimple)
-		var detected []detectedDigit
-		for i := 0; i < contours.Size(); i++ {
-			rect := gocv.BoundingRect(contours.At(i))
-			minH := int(10 * lr.cal.ScaleY)
-			maxH := int(35 * lr.cal.ScaleY)
-			minW := int(1 * lr.cal.ScaleX)
-			maxW := int(35 * lr.cal.ScaleX)
-			
-			if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW { continue }
-			
-			// Vertical alignment check
-			blobCenterY := rect.Min.Y + rect.Dy()/2
-			if math.Abs(float64(blobCenterY-roiCenterY)) > float64(gray.Rows())/2.0 { continue }
+		if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW { continue }
+		
+		// Vertical alignment check
+		blobCenterY := rect.Min.Y + rect.Dy()/2
+		if math.Abs(float64(blobCenterY-roiCenterY)) > float64(scaled.Rows())/2.0 { continue }
 
-			// Color Filter: Digits are strictly white/grey (Low Saturation)
-			blobHSV := hsv.Region(rect)
+		// Color Filter: Digits are strictly white/grey (Low Saturation)
+		// Sample from the original HSV region by scaling coordinates back down 5x
+		origRect := image.Rect(rect.Min.X/5, rect.Min.Y/5, rect.Max.X/5, rect.Max.Y/5)
+		origRect = lr.safeRect(sub, origRect)
+		if !origRect.Empty() {
+			blobHSV := hsv.Region(origRect)
 			mean := blobHSV.Mean()
 			blobHSV.Close()
 
 			// Saturation check is our primary icon-rejection tool.
 			// White text Saturation is usually < 40. Icons are > 100.
-			if mean.Val2 > 75 { continue } 
-
-			blob := thresh.Region(rect)
-			d := lr.matchDigit(blob)
-			blob.Close()
-			if d.digit >= 0 { d.rect = rect; detected = append(detected, d) }
+			// Increased to 105 to tolerate colorful/grass background bleeding into transparent text regions.
+			if mean.Val2 > 105 { continue } 
 		}
-		contours.Close(); thresh.Close()
 
-		if len(detected) > 0 {
-			sort.Slice(detected, func(i, j int) bool { return detected[i].rect.Min.X < detected[j].rect.Min.X })
-			
-			// Deduplicate overlaps
-			cleaned := []detectedDigit{}
-			for _, d := range detected {
-				found := false
-				for i, c := range cleaned {
-					if d.rect.Min.X >= c.rect.Min.X-2 && d.rect.Min.X <= c.rect.Min.X+2 {
-						found = true
-						if d.conf > c.conf { cleaned[i] = d }
-						break
-					}
+		blob := binary.Region(rect)
+		d := lr.matchDigit(blob)
+		blob.Close()
+		if d.digit >= 0 {
+			d.rect = image.Rect(rect.Min.X/5, rect.Min.Y/5, rect.Max.X/5, rect.Max.Y/5)
+			detected = append(detected, d)
+		}
+	}
+	contours.Close()
+
+	if len(detected) > 0 {
+		sort.Slice(detected, func(i, j int) bool { return detected[i].rect.Min.X < detected[j].rect.Min.X })
+		
+		// Deduplicate overlaps
+		cleaned := []detectedDigit{}
+		for _, d := range detected {
+			found := false
+			for i, c := range cleaned {
+				if d.rect.Min.X >= c.rect.Min.X-2 && d.rect.Min.X <= c.rect.Min.X+2 {
+					found = true
+					if d.conf > c.conf { cleaned[i] = d }
+					break
 				}
-				if !found { cleaned = append(cleaned, d) }
 			}
+			if !found { cleaned = append(cleaned, d) }
+		}
 
-			// Cluster Detection: Find the group of digits with small gaps
-			var clusters [][]detectedDigit
-			if len(cleaned) > 0 {
-				current := []detectedDigit{cleaned[0]}
-				maxGap := int(35 * lr.cal.ScaleX)
-				for i := 1; i < len(cleaned); i++ {
-					gap := cleaned[i].rect.Min.X - cleaned[i-1].rect.Max.X
-					if gap <= maxGap {
-						current = append(current, cleaned[i])
-					} else {
-						clusters = append(clusters, current)
-						current = []detectedDigit{cleaned[i]}
-					}
+		// Cluster Detection: Find the group of digits with small gaps
+		var clusters [][]detectedDigit
+		if len(cleaned) > 0 {
+			current := []detectedDigit{cleaned[0]}
+			maxGap := int(35 * lr.cal.ScaleX)
+			for i := 1; i < len(cleaned); i++ {
+				gap := cleaned[i].rect.Min.X - cleaned[i-1].rect.Max.X
+				if gap <= maxGap {
+					current = append(current, cleaned[i])
+				} else {
+					clusters = append(clusters, current)
+					current = []detectedDigit{cleaned[i]}
 				}
-				clusters = append(clusters, current)
 			}
+			clusters = append(clusters, current)
+		}
 
-			// Select best cluster (most digits)
-			var bestCluster []detectedDigit
-			for _, c := range clusters {
-				if len(c) > len(bestCluster) {
+		// Select best cluster (most digits)
+		var bestCluster []detectedDigit
+		for _, c := range clusters {
+			if len(c) > len(bestCluster) {
+				bestCluster = c
+			} else if len(c) == len(bestCluster) && len(c) > 0 {
+				// Tie-breaker: prefer the more LEFT cluster (loot digits start immediately)
+				if bestCluster == nil || c[0].rect.Min.X < bestCluster[0].rect.Min.X {
 					bestCluster = c
-				} else if len(c) == len(bestCluster) && len(c) > 0 {
-					// Tie-breaker: prefer the more LEFT cluster (loot digits start immediately)
-					if bestCluster == nil || c[0].rect.Min.X < bestCluster[0].rect.Min.X {
-						bestCluster = c
-					}
 				}
 			}
-			cleaned = bestCluster
+		}
+		cleaned = bestCluster
 
-			score := float64(len(cleaned)*len(cleaned)) * 100.0
-			s := ""
-			details := ""
-			for _, d := range cleaned { 
-				// Get mean intensity for logging
-				blobGray := gray.Region(d.rect)
+		score := float64(len(cleaned)*len(cleaned)) * 100.0
+		s := ""
+		details := ""
+		for _, d := range cleaned { 
+			// Get mean intensity for logging
+			origRect := lr.safeRect(gray, d.rect)
+			if !origRect.Empty() {
+				blobGray := gray.Region(origRect)
 				mean := blobGray.Mean()
 				blobGray.Close()
-				
 				s += strconv.Itoa(d.digit)
 				details += fmt.Sprintf("[%d@%d-%d m%.0f]", d.digit, d.rect.Min.X, d.rect.Max.X, mean.Val1)
 			}
-			if lr.Debug {
-				lr.logger.Debug().Int("thresh", int(tVal)).Str("digits", s).Str("pos", details).Msg("row OCR pass")
-			}
-			if score > bestScore {
-				val, _ := strconv.Atoi(s)
-				if val < 5000000 { bestVal = val; bestScore = score }
-			}
+		}
+		if lr.Debug {
+			lr.logger.Debug().Str("digits", s).Str("pos", details).Msg("row OCR pass")
+		}
+		if score > bestScore {
+			val, _ := strconv.Atoi(s)
+			if val < 5000000 { bestVal = val; bestScore = score }
 		}
 	}
 	return bestVal
 }
+
 
 func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 	bestDigit, maxConf := -1, float32(0.0)

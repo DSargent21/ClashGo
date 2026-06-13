@@ -759,6 +759,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 	}
 
+	// Dismiss potential popup menus by tapping a neutral side area (Ref: 537, 693)
+	sideX := int(537 * b.cal.ScaleX)
+	sideY := int(693 * b.cal.ScaleY)
+	b.logger.Info().Msg("Tapping side area to dismiss potential post-attack popups...")
+	_ = b.client.Tap(sideX, sideY)
+	time.Sleep(1000 * time.Millisecond)
+
 	if b.cfg.Upgrade.UpgradeWalls {
 		b.UpgradeWalls(gc)
 	}

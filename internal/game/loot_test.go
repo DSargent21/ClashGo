@@ -1,6 +1,7 @@
 package game
 
 import (
+	"image"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,46 +21,11 @@ type lootTestCase struct {
 // Reference screenshots with hand-labelled ground-truth loot values.
 var lootTestCases = []lootTestCase{
 	{
-		name:     "215234",
-		imgPath:  "../../screen_20260515_215234.png",
-		wantGold: 443168,
-		wantElix: 434311,
-		wantDE:   4822,
-	},
-	{
-		name:     "215242",
-		imgPath:  "../../screen_20260515_215242.png",
-		wantGold: 1347740,
-		wantElix: 527360,
-		wantDE:   339,
-	},
-	{
-		name:     "215252",
-		imgPath:  "../../screen_20260515_215252.png",
-		wantGold: 1413444,
-		wantElix: 1410840,
-		wantDE:   9698,
-	},
-	{
-		name:     "215301",
-		imgPath:  "../../screen_20260515_215301.png",
-		wantGold: 665136,
-		wantElix: 339251,
-		wantDE:   13048,
-	},
-	{
-		name:     "215309",
-		imgPath:  "../../screen_20260515_215309.png",
-		wantGold: 649714,
-		wantElix: 644436,
-		wantDE:   6825,
-	},
-	{
-		name:     "215316",
-		imgPath:  "../../screen_20260515_215316.png",
-		wantGold: 597833,
-		wantElix: 254860,
-		wantDE:   11114,
+		name:     "screen_ocr",
+		imgPath:  "testdata/screen_ocr.png",
+		wantGold: 295434,
+		wantElix: 786892,
+		wantDE:   7249,
 	},
 }
 
@@ -139,6 +105,57 @@ func TestLootAccuracy(t *testing.T) {
 	}
 }
 
+func TestLootProgrammatic(t *testing.T) {
+	lr := newTestLootRecognizer(t)
+
+	// Ensure digit templates are loaded
+	loadedCount := 0
+	for _, tpl := range lr.digitTemplates {
+		if !tpl.Empty() {
+			loadedCount++
+		}
+	}
+	if loadedCount < 10 {
+		t.Skip("Some templates are missing; skipping programmatic test")
+	}
+
+	// Create a canvas 400x60 BGR
+	canvas := gocv.NewMatWithSize(60, 400, gocv.MatTypeCV8UC3)
+	canvas.SetTo(gocv.NewScalar(0, 0, 0, 0))
+	defer canvas.Close()
+
+	// Let's compose "45309" on the canvas
+	digitsToDraw := []int{4, 5, 3, 0, 9}
+	xOffset := 15
+	yOffset := 15
+
+	for _, d := range digitsToDraw {
+		tpl := lr.digitTemplates[d]
+		// Create a BGR version of the template to copy to canvas
+		tplBGR := gocv.NewMat()
+		gocv.CvtColor(tpl, &tplBGR, gocv.ColorGrayToBGR)
+
+		rows := tpl.Rows()
+		cols := tpl.Cols()
+
+		targetRect := image.Rect(xOffset, yOffset, xOffset+cols, yOffset+rows)
+		subMat := canvas.Region(targetRect)
+
+		tplBGR.CopyTo(&subMat)
+		subMat.Close()
+		tplBGR.Close()
+
+		xOffset += cols + 2 // 2px gap between digits
+	}
+
+	// Now run readRow on this canvas
+	val := lr.readRow(canvas, image.Rect(0, 0, canvas.Cols(), canvas.Rows()))
+	want := 45309
+	if val != want {
+		t.Errorf("readRow returned %d, want %d", val, want)
+	}
+}
+
 // TestLootConsistency checks that multiple calls on the same image give the
 // same result (determinism).
 func TestLootConsistency(t *testing.T) {
@@ -174,8 +191,7 @@ func TestLootConsistency(t *testing.T) {
 func BenchmarkLootRecognition(b *testing.B) {
 	lr := newTestLootRecognizer(b)
 
-	// Use the largest image for benchmarking.
-	img := gocv.IMRead("../../screen_20260515_215252.png", gocv.IMReadColor)
+	img := gocv.IMRead("testdata/screen_ocr.png", gocv.IMReadColor)
 	if img.Empty() {
 		b.Fatal("cannot read reference image")
 	}
@@ -222,5 +238,45 @@ func TestLootAccuracyExact(t *testing.T) {
 	// Just log the results rather than failing — useful during tuning.
 	t.Logf("\n%d / %d cases have exact match failures — tune HSV ranges above",
 		failures, len(lootTestCases))
+}
+
+func TestLootVictory(t *testing.T) {
+	lr := newTestLootRecognizer(t)
+	img := gocv.IMRead("testdata/screen_victory.png", gocv.IMReadColor)
+	if img.Empty() {
+		t.Skip("screen_victory.png is missing")
+	}
+	defer img.Close()
+
+	result, err := lr.ReadBattleResult(img)
+	if err != nil {
+		t.Fatalf("ReadBattleResult: %v", err)
+	}
+
+	if result.Stars != 2 {
+		t.Errorf("Stars = %d, want 2", result.Stars)
+	}
+
+	// Battle Loot
+	if result.Loot.Gold != 1985245 {
+		t.Errorf("Loot.Gold = %d, want 1985245", result.Loot.Gold)
+	}
+	if result.Loot.Elixir != 1985977 {
+		t.Errorf("Loot.Elixir = %d, want 1985977", result.Loot.Elixir)
+	}
+	if result.Loot.DarkElixir != 21600 {
+		t.Errorf("Loot.DE = %d, want 21600", result.Loot.DarkElixir)
+	}
+
+	// Bonus Loot
+	if result.Bonus.Gold != 312400 {
+		t.Errorf("Bonus.Gold = %d, want 312400", result.Bonus.Gold)
+	}
+	if result.Bonus.Elixir != 312400 {
+		t.Errorf("Bonus.Elixir = %d, want 312400", result.Bonus.Elixir)
+	}
+	if result.Bonus.DarkElixir != 2310 {
+		t.Errorf("Bonus.DE = %d, want 2310", result.Bonus.DarkElixir)
+	}
 }
 

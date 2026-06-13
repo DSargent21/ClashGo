@@ -16,6 +16,22 @@ func init() {
 	assetsDir = "assets"
 	configDir = "."
 
+	// Search upward for the "assets" folder (resolves path issues when running tests in subdirectories)
+	for i := 0; i < 5; i++ {
+		testPath := "assets"
+		if i > 0 {
+			dots := ""
+			for j := 0; j < i; j++ {
+				dots = filepath.Join(dots, "..")
+			}
+			testPath = filepath.Join(dots, "assets")
+		}
+		if info, err := os.Stat(testPath); err == nil && info.IsDir() {
+			assetsDir = testPath
+			break
+		}
+	}
+
 	if runtime.GOOS == "darwin" {
 		// Check if we are running inside a .app bundle
 		execPath, err := os.Executable()
