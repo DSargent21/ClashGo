@@ -140,8 +140,10 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		}
 	}
 
-	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois)
-	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois)
+	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois, 0.65)
+	// Force fallback row reading directly for the Bonus column by using 1.1 threshold.
+	// This makes it completely immune to poor icon contrast or shifted graphics.
+	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois, 1.1)
 
 	// Star Detection: Use brightness at 3 specific points (Left, Middle, Right stars).
 	// Filled stars (yellow/gold/silver) are bright; empty stars are dark.
@@ -207,7 +209,7 @@ func (lr *LootRecognizer) safeRect(img gocv.Mat, r image.Rectangle) image.Rectan
 func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.Rectangle, fallbacks []struct {
 	name           string
 	x1, y1, x2, y2 int
-}) Resources {
+}, minConfThreshold float32) Resources {
 	searchRoi = lr.safeRect(screen, searchRoi)
 	if searchRoi.Empty() { return Resources{} }
 
@@ -225,7 +227,7 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 			_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
 			res.Close()
 
-			if maxConf > 0.65 {
+			if maxConf > minConfThreshold {
 				// Robust anchor: start slightly inside the icon to catch digits immediately after.
 				// readRow uses color/saturation filtering to ignore the actual icon pixels.
 				rect := image.Rect(
@@ -425,7 +427,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		var clusters [][]detectedDigit
 		if len(cleaned) > 0 {
 			current := []detectedDigit{cleaned[0]}
-			maxGap := int(35 * lr.cal.ScaleX)
+			maxGap := int(80 * lr.cal.ScaleX)
 			for i := 1; i < len(cleaned); i++ {
 				gap := cleaned[i].rect.Min.X - cleaned[i-1].rect.Max.X
 				if gap <= maxGap {
@@ -471,7 +473,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		}
 		if score > bestScore {
 			val, _ := strconv.Atoi(s)
-			if val < 5000000 { bestVal = val; bestScore = score }
+			if val < 100000000 { bestVal = val; bestScore = score }
 		}
 	}
 	return bestVal

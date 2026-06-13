@@ -195,7 +195,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		startedAt:         time.Now(),
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
-		stuckTimeout:      60 * time.Second,
+		stuckTimeout:      35 * time.Second,
 	}
 
 	b.lastFrame.Store("")
@@ -579,9 +579,8 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	}
 
 	if !b.clickSequence() {
-		b.logger.Warn().Msg("attack click sequence failed, recovering to main village")
-		b.navigator.NavigateToMainVillage(gc)
-		time.Sleep(2 * time.Second)
+		b.logger.Warn().Msg("attack click sequence failed, restarting game to recover...")
+		b.restartGame()
 		return
 	}
 
@@ -594,7 +593,15 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var stratName string = "Unknown"
 	var targetEdge string = "Unknown"
 
+	searchStart := time.Now()
 	for {
+		if time.Since(searchStart) > 5*time.Minute {
+			b.logger.Error().Msg("searching/skipping bases took too long (stuck in clouds?), restarting game...")
+			b.restartGame()
+			lootRec.Close()
+			return
+		}
+
 		// High-Speed Loop: reduced sleep for faster cycling
 		time.Sleep(1200 * time.Millisecond)
 
@@ -713,9 +720,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			res, err := lootRec.ReadBattleResult(resultScreen)
 			if err == nil {
 				battleStars = res.Stars
-				battleGold = res.Loot.Gold + res.Bonus.Gold
-				battleElixir = res.Loot.Elixir + res.Bonus.Elixir
-				battleDE = res.Loot.DarkElixir + res.Bonus.DarkElixir
+				battleGold = res.Loot.Gold
+				battleElixir = res.Loot.Elixir
+				battleDE = res.Loot.DarkElixir
 				bonusGold = res.Bonus.Gold
 				bonusElixir = res.Bonus.Elixir
 				bonusDE = res.Bonus.DarkElixir
@@ -747,16 +754,30 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			resultScreen.Close()
 			lootRec.Close()
 		}
+	} else {
+		b.logger.Error().Msg("battle end timeout (stuck in battle?), restarting game...")
+		b.restartGame()
+		return
 	}
 
-	if err := b.attackExec.ReturnHome(); err != nil {
+	returnedHome := false
+	if err := b.attackExec.ReturnHome(); err == nil {
+		returnedHome = true
+	} else {
 		b.logger.Warn().Err(err).Msg("ReturnHome failed, attempting template fallback")
 		for i := 0; i < 3; i++ {
 			if b.findAndClick("btn_return_home", "Return Home", 1) {
+				returnedHome = true
 				break
 			}
 			time.Sleep(1 * time.Second)
 		}
+	}
+
+	if !returnedHome {
+		b.logger.Error().Msg("failed to return home after battle, restarting game...")
+		b.restartGame()
+		return
 	}
 
 	// Dismiss potential popup menus by tapping a neutral side area (Ref: 537, 693)

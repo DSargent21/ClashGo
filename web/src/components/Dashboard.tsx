@@ -95,7 +95,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
                             <span className="material-symbols-outlined text-amber-500 text-base">monetization_on</span> 
-                            {rep.gold_stolen.toLocaleString()}
+                            {(rep.gold_stolen + rep.bonus_gold).toLocaleString()}
                           </div>
                           {rep.bonus_gold > 0 && (
                             <div className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest pl-6">
@@ -106,7 +106,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
                             <span className="material-symbols-outlined text-fuchsia-500 text-base">water_drop</span> 
-                            {rep.elixir_stolen.toLocaleString()}
+                            {(rep.elixir_stolen + rep.bonus_elixir).toLocaleString()}
                           </div>
                           {rep.bonus_elixir > 0 && (
                             <div className="text-[10px] font-black text-fuchsia-500/60 uppercase tracking-widest pl-6">
@@ -117,7 +117,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
                             <span className="material-symbols-outlined text-zinc-900 dark:text-zinc-400 text-base">water_drop</span> 
-                            {rep.dark_elixir_stolen.toLocaleString()}
+                            {(rep.dark_elixir_stolen + rep.bonus_de).toLocaleString()}
                           </div>
                           {rep.bonus_de > 0 && (
                             <div className="text-[10px] font-black text-zinc-500/60 uppercase tracking-widest pl-6">
