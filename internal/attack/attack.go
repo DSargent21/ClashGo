@@ -537,17 +537,11 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			isSiege := e.isSiege(unitName)
 			isHero := e.isHero(unitName)
 
-			// Try cache first
-			var match *vision.Match = unitCache[unitName]
-			if match == nil && isSiege {
-				if m, ok := unitCache["siege machine"]; ok {
-					match = m
-					e.logger.Info().Str("unit", unit.Name).Interface("pos", m.Point).Msg("mapped to manual 'siege machine' slot")
-				}
-			}
-			
-			// If not cached, fall back to live scanner
-			if match == nil {
+			// 1. Try live template scanner first if the template is cached
+			var match *vision.Match
+			fileName := strings.ReplaceAll(unitName, " ", "_")
+			tpl, ok := e.templates[fileName]
+			if ok && !tpl.Empty() {
 				if lastBar.Closed() || lastBar.Empty() {
 					var err error
 					lastBar, err = e.client.CaptureToMat()
@@ -557,47 +551,57 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 					}
 				}
 
-				fileName := strings.ReplaceAll(unitName, " ", "_")
-				tpl, ok := e.templates[fileName]
-				if ok && !tpl.Empty() {
-					findMatch := func(screen gocv.Mat, currentThreshold float32) *vision.Match {
-						matches, _ := vision.MatchMultiScaleROICached(screen, tpl, fileName, 0.2, 1.2, 20, currentThreshold, barROI)
-						if len(matches) > 0 {
-							sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
-							for _, m := range matches {
-								isUsed := false
-								for ux := range usedSlots {
-									if math.Abs(float64(m.Point.X-ux)) < float64(w)*0.05 {
-										isUsed = true
-										break
-									}
-								}
-								if !isUsed {
-									return &m
+				findMatch := func(screen gocv.Mat, currentThreshold float32) *vision.Match {
+					matches, _ := vision.MatchMultiScaleROICached(screen, tpl, fileName, 0.2, 1.2, 20, currentThreshold, barROI)
+					if len(matches) > 0 {
+						sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
+						for _, m := range matches {
+							isUsed := false
+							for ux := range usedSlots {
+								if math.Abs(float64(m.Point.X-ux)) < float64(w)*0.05 {
+									isUsed = true
+									break
 								}
 							}
-						}
-						return nil
-					}
-
-					thresholds := []float32{0.80, 0.70, 0.60, 0.55}
-					if isHero || isSiege { thresholds = []float32{0.75, 0.65, 0.55, 0.50} }
-					if isSpell { thresholds = []float32{0.80, 0.75, 0.70, 0.65} }
-
-					for _, t := range thresholds {
-						match = findMatch(lastBar, t)
-						if match != nil {
-							if strings.EqualFold(unitName, "grand warden") {
-								shiftX := int(-6.0 * e.cal.ScaleX)
-								shiftY := int(-16.0 * e.cal.ScaleY)
-								match.Point.X += shiftX
-								match.Point.Y += shiftY
-								e.logger.Info().Int("orig_x", match.Point.X-shiftX).Int("orig_y", match.Point.Y-shiftY).
-									Int("new_x", match.Point.X).Int("new_y", match.Point.Y).Msg("shifted grand warden click target upward/leftward")
+							if !isUsed {
+								return &m
 							}
-							break
 						}
 					}
+					return nil
+				}
+
+				thresholds := []float32{0.80, 0.70, 0.60, 0.55}
+				if isHero || isSiege { thresholds = []float32{0.75, 0.65, 0.55, 0.50} }
+				if isSpell { thresholds = []float32{0.80, 0.75, 0.70, 0.65} }
+
+				for _, t := range thresholds {
+					match = findMatch(lastBar, t)
+					if match != nil {
+						if strings.EqualFold(unitName, "grand warden") {
+							shiftX := int(-6.0 * e.cal.ScaleX)
+							shiftY := int(-16.0 * e.cal.ScaleY)
+							match.Point.X += shiftX
+							match.Point.Y += shiftY
+							e.logger.Info().Int("orig_x", match.Point.X-shiftX).Int("orig_y", match.Point.Y-shiftY).
+								Int("new_x", match.Point.X).Int("new_y", match.Point.Y).Msg("shifted grand warden click target upward/leftward")
+						}
+						break
+					}
+				}
+			}
+
+			// 2. Fallback to manual labels cache if template search failed or wasn't cached
+			if match == nil {
+				match = unitCache[unitName]
+				if match == nil && isSiege {
+					if m, ok := unitCache["siege machine"]; ok {
+						match = m
+						e.logger.Info().Str("unit", unit.Name).Interface("pos", m.Point).Msg("mapped to manual 'siege machine' slot")
+					}
+				}
+				if match != nil {
+					e.logger.Info().Str("unit", unit.Name).Interface("pos", match.Point).Msg("using manual label fallback mapping")
 				}
 			}
 
