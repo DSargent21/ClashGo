@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Feed from './components/Feed';
@@ -22,6 +22,26 @@ import { EventsOn } from '../wailsjs/runtime';
 import { bot, main } from '../wailsjs/go/models';
 import { TabType } from './types';
 import './App.css';
+
+const getInitialDarkMode = (): boolean => {
+  try {
+    const stored = localStorage.getItem('darkMode');
+    if (stored !== null) return stored === 'true';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  } catch {
+    return false;
+  }
+};
+
+const getInitialSidebarExpanded = (): boolean => {
+  try {
+    const stored = localStorage.getItem('sidebarExpanded');
+    if (stored !== null) return stored === 'true';
+    return true;
+  } catch {
+    return true;
+  }
+};
 
 function App() {
   const [tab, setTab] = useState<TabType>('dashboard');
@@ -49,8 +69,8 @@ function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [screenshot, setScreenshot] = useState('');
   const [adbPort, setAdbPort] = useState(5555);
-  const [darkMode, setDarkMode] = useState(false);
-  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const [darkMode, setDarkMode] = useState(getInitialDarkMode);
+  const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarExpanded);
 
   // Config states
   const [goldThreshold, setGoldThreshold] = useState(400000);
@@ -135,7 +155,20 @@ function App() {
     } else {
       document.documentElement.classList.remove('dark');
     }
+    try {
+      localStorage.setItem('darkMode', String(darkMode));
+    } catch (e) {
+      console.warn('Failed to save darkMode preference:', e);
+    }
   }, [darkMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('sidebarExpanded', String(sidebarExpanded));
+    } catch (e) {
+      console.warn('Failed to save sidebarExpanded preference:', e);
+    }
+  }, [sidebarExpanded]);
 
   const saveSettings = async () => {
     try {

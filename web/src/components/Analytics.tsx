@@ -14,6 +14,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats }) => {
   ];
 
   const totalAttacks = stats.stars_3 + stats.stars_2 + stats.stars_1 + stats.stars_0;
+  const getPercent = (count: number) => totalAttacks > 0 ? Math.round((count / totalAttacks) * 100) : 0;
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 max-w-6xl mx-auto">
@@ -27,7 +28,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats }) => {
         </div>
         <div className="space-y-6">
           {starData.map((item, idx) => {
-            const percent = totalAttacks > 0 ? Math.round((item.count / totalAttacks) * 100) : 0;
+            const percent = getPercent(item.count);
             return (
               <div key={idx} className="space-y-4">
                 <div className="flex justify-between text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em]">

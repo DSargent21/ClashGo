@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ type PrecisionConfig struct {
 	SpellEdgesA  map[string]ManualEdge   `json:"spell_edges_a"`
 	SpellEdgesB  map[string]ManualEdge   `json:"spell_edges_b"`
 	HeroTargets  map[string]image.Point  `json:"hero_targets"`
+	SpellTargets map[string]image.Point  `json:"spell_targets"`
 	BarY         int                    `json:"bar_y"`
 	Width        int                    `json:"width"`
 	Height       int                    `json:"height"`
@@ -221,6 +223,9 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		for k, v := range pCfg.HeroTargets {
 			pCfg.HeroTargets[k] = image.Pt(int(float64(v.X)*scaleX), int(float64(v.Y)*scaleY))
 		}
+		for k, v := range pCfg.SpellTargets {
+			pCfg.SpellTargets[k] = image.Pt(int(float64(v.X)*scaleX), int(float64(v.Y)*scaleY))
+		}
 		mBarY = int(float64(pCfg.BarY) * scaleY)
 		if mBarY > int(float64(h)*0.92) { mBarY = int(float64(h) * 0.92) }
 		e.logger.Info().Int("bar_y", mBarY).Msg("using ULTIMATE PRECISION config")
@@ -248,7 +253,21 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	// 1.5. Parse Troop Bar Layout and segment active slots into categories
 	slots := e.ParseLayout(screen, pCfg, w, h, mBarY)
 
-	// 1.5.1. Load Ground-Truth Manual Labels and override categories in detected slots
+	// Build the unitCache dynamically by scanning the bar ROI once at the start (100% robust and handles scaling)
+	unitCache := make(map[string]*vision.Match)
+	scaleY := float64(h) / float64(pCfg.Height)
+	slotY := mBarY + int(38.0*scaleY)
+	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+		var mConf struct {
+			CardHeight int `json:"card_height"`
+		}
+		if json.Unmarshal(data, &mConf) == nil && mConf.CardHeight > 0 {
+			slotY = mBarY + mConf.CardHeight/2
+		}
+	}
+	barROI := image.Rect(0, mBarY, w, h)
+
+	// Load fallback manual labels mapping for safety/failsafe
 	manualMap := make(map[int]string)
 	if data, err := os.ReadFile(paths.Resolve("manual_labels.json")); err == nil {
 		var lConf struct {
@@ -258,30 +277,80 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			} `json:"slots"`
 		}
 		if json.Unmarshal(data, &lConf) == nil {
-			for _, slot := range lConf.Slots {
-				manualMap[slot.X] = slot.Name
+			for _, sVal := range lConf.Slots {
+				manualMap[sVal.X] = sVal.Name
 			}
 		}
 	}
 
+	e.logger.Info().Msg("🤖 Pinpointing slot identities dynamically via template matching...")
+	for tplName, tpl := range e.templates {
+		if tpl.Empty() {
+			continue
+		}
+		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, tplName, 0.2, 1.2, 20, 0.55, barROI)
+		if len(matches) > 0 {
+			sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
+			bestMatch := matches[0]
+			cleanName := strings.ReplaceAll(tplName, "_", " ")
+			e.logger.Info().Str("unit", cleanName).Int("x", bestMatch.Point.X).Float64("conf", bestMatch.Confidence).Msg("pinpointed unit via template match")
+			
+			unitCache[cleanName] = &bestMatch
+		}
+	}
+
 	var siegeXs []int
-	for i := range slots {
-		if label, ok := manualMap[slots[i].X]; ok {
-			if label == "Empty" { continue }
-			name := strings.ToLower(label)
-			if e.isSiege(name) {
-				slots[i].Category = "Siege"
-			} else if e.isHero(name) {
-				slots[i].Category = "Hero"
-			} else if e.isSpell(name) {
-				slots[i].Category = "Spell"
-			} else if strings.Contains(name, "cc") || strings.Contains(name, "castle") {
-				slots[i].Category = "CC"
+	for idx := range slots {
+		slot := &slots[idx]
+		
+		matchedName := ""
+		for name, match := range unitCache {
+			if math.Abs(float64(slot.X-match.Point.X)) < float64(w)*0.04 {
+				matchedName = name
+				break
 			}
 		}
 
-		if slots[i].Category == "Siege" {
-			siegeXs = append(siegeXs, slots[i].X)
+		if matchedName != "" {
+			if e.isSiege(matchedName) {
+				slot.Category = "Siege"
+			} else if e.isHero(matchedName) {
+				slot.Category = "Hero"
+			} else if e.isSpell(matchedName) {
+				slot.Category = "Spell"
+			} else if strings.Contains(matchedName, "cc") || strings.Contains(matchedName, "castle") {
+				slot.Category = "CC"
+			} else {
+				slot.Category = "Troop"
+			}
+		} else {
+			// Fallback: Use manual labels override if template match is missing for this slot
+			if label, ok := manualMap[slot.X]; ok && label != "Empty" {
+				cleanName := strings.ToLower(strings.TrimSpace(label))
+				e.logger.Warn().Int("x", slot.X).Str("fallback", cleanName).Msg("using fallback manual label for slot")
+				
+				unitCache[cleanName] = &vision.Match{
+					Point:      image.Pt(slot.X, slotY),
+					Confidence: 1.0,
+					Scale:      1.0,
+				}
+
+				if e.isSiege(cleanName) {
+					slot.Category = "Siege"
+				} else if e.isHero(cleanName) {
+					slot.Category = "Hero"
+				} else if e.isSpell(cleanName) {
+					slot.Category = "Spell"
+				} else if strings.Contains(cleanName, "cc") || strings.Contains(cleanName, "castle") {
+					slot.Category = "CC"
+				} else {
+					slot.Category = "Troop"
+				}
+			}
+		}
+
+		if slot.Category == "Siege" {
+			siegeXs = append(siegeXs, slot.X)
 		}
 	}
 
@@ -315,144 +384,6 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	}
 	gocv.IMWrite(paths.ResolveConfig("attack_deploy_debug.png"), debugImg)
 	e.logger.Info().Msg("saved visual diagnostics to attack_deploy_debug.png")
-
-	// Pre-scan and cache all unit locations across all phases to eliminate template matching overhead during deployment
-	barROI := image.Rect(0, mBarY, w, h)
-	unitCache := make(map[string]*vision.Match)
-	slotY := mBarY + (h-mBarY)/2
-
-	// 1.9. Load Ground-Truth Manual Labels (100% Reliability)
-	if data, err := os.ReadFile(paths.Resolve("manual_labels.json")); err == nil {
-		var lConf struct {
-			Slots []struct {
-				X    int    `json:"x"`
-				Name string `json:"name"`
-			} `json:"slots"`
-		}
-		if json.Unmarshal(data, &lConf) == nil {
-			e.logger.Info().Int("labels", len(lConf.Slots)).Msg("loading and verifying manual troop labels")
-			for _, slot := range lConf.Slots {
-				if slot.Name == "Empty" { continue }
-				
-				// Verify slot isn't empty on the CURRENT screen before caching
-				if !e.isSlotEmpty(screen, slot.X, slotY) {
-					fileName := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(slot.Name)), " ", "_")
-					tpl, ok := e.templates[fileName]
-					
-					matched := true
-					if ok && !tpl.Empty() {
-						cropWidth := int(75.0 * e.cal.ScaleX)
-						cropHeight := int(85.0 * e.cal.ScaleY)
-						rect := image.Rect(slot.X-cropWidth/2, slotY-cropHeight/2, slot.X+cropWidth/2, slotY+cropHeight/2)
-						if rect.Min.X < 0 { rect.Min.X = 0 }
-						if rect.Min.Y < 0 { rect.Min.Y = 0 }
-						if rect.Max.X > w { rect.Max.X = w }
-						if rect.Max.Y > h { rect.Max.Y = h }
-
-						if rect.Dx() >= tpl.Cols() && rect.Dy() >= tpl.Rows() {
-							roi := screen.Region(rect)
-							res := gocv.NewMat()
-							gocv.MatchTemplate(roi, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
-							maxVal := float32(0.0)
-							if !res.Empty() {
-								_, mv, _, _ := gocv.MinMaxLoc(res)
-								maxVal = mv
-							}
-							res.Close()
-							roi.Close()
-							
-							if maxVal < 0.55 {
-								matched = false
-								e.logger.Warn().Str("name", slot.Name).Int("x", slot.X).Float32("conf", maxVal).Msg("manual label template mismatch, discarding")
-							}
-						}
-					}
-					
-					if matched {
-						unitCache[strings.ToLower(slot.Name)] = &vision.Match{
-							Point:      image.Pt(slot.X, slotY),
-							Confidence: 1.0, // Ground truth verified
-							Scale:      1.0,
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// 1.9.1. Optional: Run template-matching validation on manual labels to detect/correct swaps
-	if len(unitCache) > 0 {
-		e.logger.Info().Msg("verifying manual labels against templates to detect swaps...")
-		for name1, match1 := range unitCache {
-			for name2, match2 := range unitCache {
-				if name1 >= name2 { continue }
-				if !e.isHero(name1) || !e.isHero(name2) { continue }
-				
-				tpl1, ok1 := e.templates[strings.ReplaceAll(name1, " ", "_")]
-				tpl2, ok2 := e.templates[strings.ReplaceAll(name2, " ", "_")]
-				if !ok1 || !ok2 || tpl1.Empty() || tpl2.Empty() {
-					continue
-				}
-				
-				cropWidth := int(75.0 * e.cal.ScaleX)
-				cropHeight := int(85.0 * e.cal.ScaleY)
-				
-				getConf := func(tpl gocv.Mat, x int) float32 {
-					rect := image.Rect(x-cropWidth/2, slotY-cropHeight/2, x+cropWidth/2, slotY+cropHeight/2)
-					if rect.Min.X < 0 { rect.Min.X = 0 }
-					if rect.Min.Y < 0 { rect.Min.Y = 0 }
-					if rect.Max.X > w { rect.Max.X = w }
-					if rect.Max.Y > h { rect.Max.Y = h }
-					
-					if rect.Dx() < tpl.Cols() || rect.Dy() < tpl.Rows() {
-						return 0.0
-					}
-					
-					roi := screen.Region(rect)
-					defer roi.Close()
-					if roi.Empty() {
-						return 0.0
-					}
-					
-					res := gocv.NewMat()
-					defer res.Close()
-					gocv.MatchTemplate(roi, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
-					if res.Empty() {
-						return 0.0
-					}
-					_, maxVal, _, _ := gocv.MinMaxLoc(res)
-					return maxVal
-				}
-				
-				confNormal := getConf(tpl1, match1.Point.X) + getConf(tpl2, match2.Point.X)
-				confSwapped := getConf(tpl1, match2.Point.X) + getConf(tpl2, match1.Point.X)
-				
-				if confSwapped > confNormal + 0.15 {
-					e.logger.Warn().Str("unit1", name1).Int("x1", match1.Point.X).
-						Str("unit2", name2).Int("x2", match2.Point.X).
-						Float32("normal", confNormal).Float32("swapped", confSwapped).
-						Msg("⚠️ DETECTED SWAPPED MANUAL LABELS! Auto-correcting coordinates...")
-					
-					pt1 := match1.Point
-					match1.Point = match2.Point
-					match2.Point = pt1
-				}
-			}
-		}
-	}
-
-	// 2.0. Fallback to hybrid recognition only for units NOT in manual labels
-	if len(unitCache) == 0 {
-		e.logger.Info().Msg("manual labels missing, using hybrid slot-anchored logic...")
-		// Create a list of all unique units in the strategy
-		uniqueUnits := make(map[string]strategy.Unit)
-		for _, phase := range s.Phases {
-			for _, u := range phase.Units {
-				uniqueUnits[strings.ToLower(strings.TrimSpace(u.Name))] = u
-			}
-		}
-		
-	}
 
 	// 2.1. Remove already-cached manual/template units from slotMap to prevent fallback theft
 	for name, match := range unitCache {
@@ -537,71 +468,71 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			isSiege := e.isSiege(unitName)
 			isHero := e.isHero(unitName)
 
-			// 1. Try live template scanner first if the template is cached
+			// 1. Try manual labels cache first (100% reliable and instant)
 			var match *vision.Match
-			fileName := strings.ReplaceAll(unitName, " ", "_")
-			tpl, ok := e.templates[fileName]
-			if ok && !tpl.Empty() {
-				if lastBar.Closed() || lastBar.Empty() {
-					var err error
-					lastBar, err = e.client.CaptureToMat()
-					if err != nil {
-						e.logger.Warn().Err(err).Msg("failed capture")
-						continue
-					}
-				}
-
-				findMatch := func(screen gocv.Mat, currentThreshold float32) *vision.Match {
-					matches, _ := vision.MatchMultiScaleROICached(screen, tpl, fileName, 0.2, 1.2, 20, currentThreshold, barROI)
-					if len(matches) > 0 {
-						sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
-						for _, m := range matches {
-							isUsed := false
-							for ux := range usedSlots {
-								if math.Abs(float64(m.Point.X-ux)) < float64(w)*0.05 {
-									isUsed = true
-									break
-								}
-							}
-							if !isUsed {
-								return &m
-							}
-						}
-					}
-					return nil
-				}
-
-				thresholds := []float32{0.80, 0.70, 0.60, 0.55}
-				if isHero || isSiege { thresholds = []float32{0.75, 0.65, 0.55, 0.50} }
-				if isSpell { thresholds = []float32{0.80, 0.75, 0.70, 0.65} }
-
-				for _, t := range thresholds {
-					match = findMatch(lastBar, t)
-					if match != nil {
-						if strings.EqualFold(unitName, "grand warden") {
-							shiftX := int(-6.0 * e.cal.ScaleX)
-							shiftY := int(-16.0 * e.cal.ScaleY)
-							match.Point.X += shiftX
-							match.Point.Y += shiftY
-							e.logger.Info().Int("orig_x", match.Point.X-shiftX).Int("orig_y", match.Point.Y-shiftY).
-								Int("new_x", match.Point.X).Int("new_y", match.Point.Y).Msg("shifted grand warden click target upward/leftward")
-						}
-						break
-					}
+			match = unitCache[unitName]
+			if match == nil && isSiege {
+				if m, ok := unitCache["siege machine"]; ok {
+					match = m
+					e.logger.Info().Str("unit", unit.Name).Interface("pos", m.Point).Msg("mapped to manual 'siege machine' slot")
 				}
 			}
+			if match != nil {
+				e.logger.Info().Str("unit", unit.Name).Interface("pos", match.Point).Msg("using manual label coordinates from cache")
+			}
 
-			// 2. Fallback to manual labels cache if template search failed or wasn't cached
+			// 2. Fallback to live template scanner only if not cached
 			if match == nil {
-				match = unitCache[unitName]
-				if match == nil && isSiege {
-					if m, ok := unitCache["siege machine"]; ok {
-						match = m
-						e.logger.Info().Str("unit", unit.Name).Interface("pos", m.Point).Msg("mapped to manual 'siege machine' slot")
+				fileName := strings.ReplaceAll(unitName, " ", "_")
+				tpl, ok := e.templates[fileName]
+				if ok && !tpl.Empty() {
+					if lastBar.Closed() || lastBar.Empty() {
+						var err error
+						lastBar, err = e.client.CaptureToMat()
+						if err != nil {
+							e.logger.Warn().Err(err).Msg("failed capture")
+							continue
+						}
 					}
-				}
-				if match != nil {
-					e.logger.Info().Str("unit", unit.Name).Interface("pos", match.Point).Msg("using manual label fallback mapping")
+
+					findMatch := func(screen gocv.Mat, currentThreshold float32) *vision.Match {
+						matches, _ := vision.MatchMultiScaleROICached(screen, tpl, fileName, 0.2, 1.2, 20, currentThreshold, barROI)
+						if len(matches) > 0 {
+							sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
+							for _, m := range matches {
+								isUsed := false
+								for ux := range usedSlots {
+									if math.Abs(float64(m.Point.X-ux)) < float64(w)*0.05 {
+										isUsed = true
+										break
+									}
+								}
+								if !isUsed {
+									return &m
+								}
+							}
+						}
+						return nil
+					}
+
+					thresholds := []float32{0.80, 0.70, 0.60, 0.55}
+					if isHero || isSiege { thresholds = []float32{0.75, 0.65, 0.55, 0.50} }
+					if isSpell { thresholds = []float32{0.80, 0.75, 0.70, 0.65} }
+
+					for _, t := range thresholds {
+						match = findMatch(lastBar, t)
+						if match != nil {
+							if strings.EqualFold(unitName, "grand warden") {
+								shiftX := int(-6.0 * e.cal.ScaleX)
+								shiftY := int(-16.0 * e.cal.ScaleY)
+								match.Point.X += shiftX
+								match.Point.Y += shiftY
+								e.logger.Info().Int("orig_x", match.Point.X-shiftX).Int("orig_y", match.Point.Y-shiftY).
+									Int("new_x", match.Point.X).Int("new_y", match.Point.Y).Msg("shifted grand warden click target upward/leftward")
+							}
+							break
+						}
+					}
 				}
 			}
 
@@ -655,28 +586,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 			usedSlots[match.Point.X] = true
 			globalUsedSlots[match.Point.X] = true
-
-			// Drain Loop for main army (Balloons/EDrags)
-			isMainArmy := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "dragon")
-			maxDrains := 1
-			if isMainArmy { maxDrains = 5 }
-
-			for d := 0; d < maxDrains; d++ {
-				if d > 0 {
-					verify, err := e.client.CaptureToMat()
-					if err == nil {
-						if e.isSlotEmpty(verify, match.Point.X, match.Point.Y) {
-							verify.Close()
-							break
-						}
-						verify.Close()
-					}
-				}
-				e.deployUnit(unit, match, pCfg, targetEdge, w, h, isAbility, lastBar, phase)
-				if isMainArmy && d < maxDrains-1 {
-					time.Sleep(250 * time.Millisecond)
-				}
-			}
+			e.deployUnit(unit, match, pCfg, targetEdge, w, h, slotY, isAbility, lastBar, phase)
 			}
 
 			// Handle Heroes Phase (Deployment Only)
@@ -723,7 +633,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 					name := strings.ToLower(mainDeployments[i].unit.Name)
 					isDuke := strings.Contains(name, "duke")
 					e.logger.Debug().Str("unit", mainDeployments[i].unit.Name).Int("x", mainDeployments[i].match.Point.X).Msg("deploying main hero")
-					if e.deployUnit(mainDeployments[i].unit, mainDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar, phase) {
+					if e.deployUnit(mainDeployments[i].unit, mainDeployments[i].match, pCfg, targetEdge, w, h, slotY, false, lastBar, phase) {
 						if isDuke {
 							pt := mainDeployments[i].match.Point
 							dragonDukePt = &pt
@@ -742,7 +652,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 					name := strings.ToLower(bonusDeployments[i].unit.Name)
 					isDuke := strings.Contains(name, "duke")
 					e.logger.Debug().Str("unit", bonusDeployments[i].unit.Name).Int("x", bonusDeployments[i].match.Point.X).Msg("deploying bonus hero")
-					if e.deployUnit(bonusDeployments[i].unit, bonusDeployments[i].match, pCfg, targetEdge, w, h, false, lastBar, phase) {
+					if e.deployUnit(bonusDeployments[i].unit, bonusDeployments[i].match, pCfg, targetEdge, w, h, slotY, false, lastBar, phase) {
 						if isDuke {
 							pt := bonusDeployments[i].match.Point
 							dragonDukePt = &pt
@@ -849,11 +759,23 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			
 			// Deploy
 			var p1, p2 image.Point
-			if edge, ok := pCfg.Edges[targetEdge]; ok {
-				p1, p2 = edge.P1, edge.P2
-			} else {
-				p1 = image.Pt(w/2, h/2)
-				p2 = p1
+			if slot.Category == "Spell" {
+				if edge, ok := pCfg.SpellEdgesB[targetEdge]; ok {
+					p1, p2 = edge.P1, edge.P2
+					// Push slightly deeper towards center
+					centerX, centerY := w/2, h/2
+					pct := 0.20
+					p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
+					p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
+				}
+			}
+			if p1.X == 0 && p1.Y == 0 {
+				if edge, ok := pCfg.Edges[targetEdge]; ok {
+					p1, p2 = edge.P1, edge.P2
+				} else {
+					p1 = image.Pt(w/2, h/2)
+					p2 = p1
+				}
 			}
 
 			maxRetryAttempts := 2
@@ -1006,14 +928,14 @@ func (e *Executor) isSiegeTapped(x int, w int) bool {
 	return false
 }
 
-func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h int, isAbility bool, currentScreen gocv.Mat, phase strategy.Phase) bool {
+func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg PrecisionConfig, targetEdge string, w, h, slotY int, isAbility bool, currentScreen gocv.Mat, phase strategy.Phase) bool {
 	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 	isSiege := e.isSiege(unitName)
 	isHero := e.isHero(unitName)
 	isHeroOrSiege := isHero || isSiege
 	isSpell := e.isSpell(unitName)
 
-	uPt := match.Point
+	uPt := image.Pt(match.Point.X, slotY)
 
 	// Siege Protection: NEVER tap the same siege slot twice, regardless of what unit thinks it is.
 	if e.isSiegeTapped(uPt.X, w) {
@@ -1071,15 +993,14 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		return false
 	}
 
-	isSpamUnit := strings.Contains(unitName, "balloon") || strings.Contains(unitName, "electro") || strings.Contains(unitName, "valkyrie")
-
 	if isHero || isSiege {
-		e.client.HumanSleep(200, 100)
+		e.client.HumanSleep(80, 20)
 	}
 
 	// Select slot (idempotent, no glow check needed to avoid false-positives on blue units)
-	e.logger.Debug().Int("x", uPt.X).Int("y", uPt.Y).Msg("tapping slot for selection")
-	e.client.TapFast(uPt.X, uPt.Y, 2.0)
+	jCard := e.addJitter(uPt, 8)
+	e.logger.Debug().Int("x", jCard.X).Int("y", jCard.Y).Msg("tapping slot for selection (with jitter)")
+	e.client.TapFast(jCard.X, jCard.Y, 2.0)
 
 	if isSiege {
 		if e.tappedSiegeXs == nil {
@@ -1089,21 +1010,16 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		e.logger.Debug().Int("x", uPt.X).Msg("marked siege as tapped in cache")
 	}
 
-	time.Sleep(400 * time.Millisecond)
-
-	if !isSpell && !isSpamUnit {
-		e.client.HumanSleep(100, 50)
+	if isHero || isSiege {
+		e.client.HumanSleep(250, 50)
+	} else {
+		e.client.HumanSleep(100, 25)
 	}
 
 	// Deployment Logic
-	isRage := strings.Contains(unitName, "rage")
-	isEarthquake := strings.Contains(unitName, "earthquake") || strings.Contains(unitName, "event")
 	isDragonDuke := strings.Contains(unitName, "duke")
 
 	if isSpell {
-		edgeA, okA := pCfg.SpellEdgesA[targetEdge]
-		edgeB, okB := pCfg.SpellEdgesB[targetEdge]
-
 		e.logger.Debug().Str("unit", unit.Name).Str("uPattern", unit.Pattern).Str("pPattern", phase.Pattern).Msg("spell pattern check")
 		isFourSides := unit.Pattern == "FourSides" || phase.Pattern == "FourSides"
 		if isFourSides {
@@ -1113,33 +1029,46 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				currentEdge := edges[i]
 				e.logger.Info().Str("unit", unit.Name).Str("edge", currentEdge).Msg("FourSides spell deployment")
 
-				// For FourSides spells, we use SpellEdgesB (inner)
-				edge, ok := pCfg.SpellEdgesB[currentEdge]
-				if !ok { 
-					edge, ok = pCfg.SpellEdgesA[currentEdge] 
-					if !ok { edge, _ = pCfg.Edges[currentEdge] }
-				}
+				if targetPt, okT := pCfg.SpellTargets[currentEdge]; okT {
+					// Deploy around spell target point
+					for j := 0; j < 4; j++ {
+						angle := float64(j) * 2.0 * math.Pi / 4.0
+						radius := 18.0 * e.cal.ScaleX
+						tx := targetPt.X + int(radius*math.Cos(angle))
+						ty := targetPt.Y + int(radius*math.Sin(angle))
+						jPt := e.addJitter(image.Pt(tx, ty), 6)
+						e.client.TapFast(jPt.X, jPt.Y, 8.0)
+						time.Sleep(50 * time.Millisecond) // Faster inter-tap
+					}
+				} else {
+					// Legacy fallback to SpellEdgesB
+					edge, ok := pCfg.SpellEdgesB[currentEdge]
+					if !ok { 
+						edge, ok = pCfg.SpellEdgesA[currentEdge] 
+						if !ok { edge, _ = pCfg.Edges[currentEdge] }
+					}
 
-				p1, p2 := edge.P1, edge.P2
+					p1, p2 := edge.P1, edge.P2
 
-				// Apply inward offset from YAML if provided
-				off := unit.Offset
-				if off == 0 { off = phase.Offset }
-				if off > 0 {
-					// Push toward screen center (true inward)
-					centerX, centerY := w/2, h/2
-					pct := float64(off) / 300.0 // Scaling for center push
-					p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
-					p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
-				}
-				e.logger.Debug().Interface("p1", p1).Interface("p2", p2).Msg("FourSides spell edge coords (inward)")
+					// Apply inward offset from YAML if provided
+					off := unit.Offset
+					if off == 0 { off = phase.Offset }
+					if off > 0 {
+						// Push toward screen center (true inward)
+						centerX, centerY := w/2, h/2
+						pct := float64(off) / 300.0 // Scaling for center push
+						p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
+						p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
+					}
+					e.logger.Debug().Interface("p1", p1).Interface("p2", p2).Msg("FourSides spell edge coords (inward)")
 
-				for j := 0; j < 4; j++ { // 4 taps per side
-					pct := float64(j) / 3.0
-					tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-					jPt := e.addJitter(image.Pt(tx, ty), 6)
-					e.client.TapFast(jPt.X, jPt.Y, 8.0)
-					time.Sleep(50 * time.Millisecond) // Faster inter-tap
+					for j := 0; j < 4; j++ { // 4 taps per side
+						pct := float64(j) / 3.0
+						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
+						jPt := e.addJitter(image.Pt(tx, ty), 6)
+						e.client.TapFast(jPt.X, jPt.Y, 8.0)
+						time.Sleep(50 * time.Millisecond) // Faster inter-tap
+					}
 				}
 				time.Sleep(100 * time.Millisecond) // Faster inter-side
 			}
@@ -1147,84 +1076,173 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 			return true
 		}
 
-		if okA && okB {
-			maxSpellAttempts := 4
-			for batch := 0; batch < maxSpellAttempts; batch++ {
-				if isRage || isEarthquake {
-					e.logger.Info().Str("unit", unit.Name).Msg("deploying spell lines batch (Area Spell)")
-					// Deploy 3 spells along edgeA (first line) on batch 0, and edgeB (second line) on batch >= 1
-					var p1, p2 image.Point
-					if batch == 0 {
-						p1, p2 = edgeA.P1, edgeA.P2
-					} else {
-						p1, p2 = edgeB.P1, edgeB.P2
-					}
+		spellTarget, okT := pCfg.SpellTargets[targetEdge]
+		isPointPattern := unit.Pattern == "Point" || phase.Pattern == "Point"
+		
+		e.logger.Debug().
+			Str("unit", unit.Name).
+			Str("targetEdge", targetEdge).
+			Bool("isPointPattern", isPointPattern).
+			Bool("hasSpellTargetPoint", okT).
+			Msg("Determining spell deployment parameters")
 
-					// Apply inward offset from YAML if provided for regular line spells
-					off := unit.Offset
-					if off == 0 { off = phase.Offset }
-					extraOffset := 0.0
-					if isRage && batch == 0 {
-						extraOffset = 0.1 // 10% deeper into the base for the first row of rage spells
-					}
-					if off > 0 || extraOffset > 0 {
-						centerX, centerY := w/2, h/2
-						pct := float64(off)/200.0 + extraOffset
-						p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
-						p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
-						e.logger.Info().Int("offset", off).Float64("extraOffset", extraOffset).Interface("p1", p1).Msg("applied inward offset to spell line")
-					}
+		if isPointPattern && okT {
+			maxSpells := 5 // Default fallback to ensure all spells deploy
+			if unit.Amount != "All" && unit.Amount != "" {
+				if val, err := strconv.Atoi(unit.Amount); err == nil {
+					maxSpells = val
+				}
+			}
 
-					// Area Spells: Use wider balanced grouping (15% to 85% of the line)
-					for i := 0; i < 3; i++ {
-						pct := 0.15 + float64(i)*0.35 // 0.15, 0.5, 0.85
-						if isRage && batch == 0 {
-							pct = 0.25 + float64(i)*0.25 // 0.25, 0.50, 0.75 (closer together)
-						}
-						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-						jPt := e.addJitter(image.Pt(tx, ty), 8)
-						e.client.TapFast(jPt.X, jPt.Y, 8.0)
-						time.Sleep(10 * time.Millisecond) 
-					}
-				} else { // Freeze or other spells
-					e.logger.Info().Str("unit", unit.Name).Msg("deploying spell line batch")
-					p1, p2 := edgeB.P1, edgeB.P2
+			e.logger.Info().Str("unit", unit.Name).Interface("point", spellTarget).Int("count", maxSpells).Msg("Deploying spells clustered around point target")
 
-					// Apply inward offset for freeze as well
+			// Deploy spells clustered slightly around the spellTarget
+			points := make([]image.Point, 0, maxSpells)
+			for i := 0; i < maxSpells; i++ {
+				var offset image.Point
+				if maxSpells > 1 {
+					angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
+					radius := 18.0 * e.cal.ScaleX
+					offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
+				}
+				pt := image.Pt(spellTarget.X+offset.X, spellTarget.Y+offset.Y)
+				points = append(points, e.addJitter(pt, 6))
+			}
+
+			for idx, pt := range points {
+				e.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target point")
+				e.client.TapFast(pt.X, pt.Y, 8.0)
+				
+				if idx < len(points)-1 {
+					e.client.HumanSleep(180, 40) // Spacing between spell placements
+				}
+			}
+			return true
+		}
+
+		// Line deployment: Rage Spell -> SpellEdgesA, Ice Spell / Others -> SpellEdgesB
+		var edge ManualEdge
+		var ok bool
+		var selectedLine string
+		isRage := strings.Contains(unitName, "rage")
+
+		if isRage {
+			edge, ok = pCfg.SpellEdgesA[targetEdge]
+			selectedLine = "SpellEdgesA (Line A)"
+			if !ok {
+				edge, ok = pCfg.SpellEdgesB[targetEdge]
+				selectedLine = "SpellEdgesB (Line B fallback)"
+			}
+		} else {
+			edge, ok = pCfg.SpellEdgesB[targetEdge]
+			selectedLine = "SpellEdgesB (Line B)"
+			if !ok {
+				edge, ok = pCfg.SpellEdgesA[targetEdge]
+				selectedLine = "SpellEdgesA (Line A fallback)"
+			}
+		}
+
+		e.logger.Info().
+			Str("unit", unit.Name).
+			Str("line", selectedLine).
+			Bool("found", ok).
+			Interface("coords", edge).
+			Msg("Routing spell to deployment line")
+
+		if ok {
+			maxSpells := 5 // Default fallback to ensure all spells deploy
+			if unit.Amount != "All" && unit.Amount != "" {
+				if val, err := strconv.Atoi(unit.Amount); err == nil {
+					maxSpells = val
+				}
+			}
+
+			// Special Custom Layout for Rage Spells (3 on Line A, 2 on Line B)
+			if isRage && maxSpells == 5 {
+				edgeA, okA := pCfg.SpellEdgesA[targetEdge]
+				edgeB, okB := pCfg.SpellEdgesB[targetEdge]
+				if okA && okB {
+					e.logger.Info().Msg("Deploying Rage Spells: 3 on Line A (even), 2 on Line B (far)")
+					
+					p1A, p2A := edgeA.P1, edgeA.P2
 					off := unit.Offset
 					if off == 0 { off = phase.Offset }
 					if off > 0 {
 						centerX, centerY := w/2, h/2
-						pct := float64(off) / 200.0
-						p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
-						p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
+						pct := float64(off)/150.0 + 0.12
+						p1A = image.Pt(int(float64(p1A.X)+float64(centerX-p1A.X)*pct), int(float64(p1A.Y)+float64(centerY-p1A.Y)*pct))
+						p2A = image.Pt(int(float64(p2A.X)+float64(centerX-p2A.X)*pct), int(float64(p2A.Y)+float64(centerY-p2A.Y)*pct))
 					}
-
-					for i := 0; i < 3; i++ { // 3 taps per batch
-						pct := float64(i) / 2.0
-						tx, ty := int(float64(p1.X)+float64(p2.X-p1.X)*pct), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct)
-						jPt := e.addJitter(image.Pt(tx, ty), 8)
-						e.client.TapFast(jPt.X, jPt.Y, 8.0)
-						time.Sleep(10 * time.Millisecond)
+					
+					pointsA := []image.Point{
+						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.20), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.20)), 8),
+						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.50), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.50)), 8),
+						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.80), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.80)), 8),
 					}
+					
+					p1B, p2B := edgeB.P1, edgeB.P2
+					if off > 0 {
+						centerX, centerY := w/2, h/2
+						pct := float64(off)/150.0 + 0.12
+						p1B = image.Pt(int(float64(p1B.X)+float64(centerX-p1B.X)*pct), int(float64(p1B.Y)+float64(centerY-p1B.Y)*pct))
+						p2B = image.Pt(int(float64(p2B.X)+float64(centerX-p2B.X)*pct), int(float64(p2B.Y)+float64(centerY-p2B.Y)*pct))
+					}
+					
+					pointsB := []image.Point{
+						e.addJitter(image.Pt(int(float64(p1B.X)+float64(p2B.X-p1B.X)*0.10), int(float64(p1B.Y)+float64(p2B.Y-p1B.Y)*0.10)), 8),
+						e.addJitter(image.Pt(int(float64(p1B.X)+float64(p2B.X-p1B.X)*0.90), int(float64(p1B.Y)+float64(p2B.Y-p1B.Y)*0.90)), 8),
+					}
+					
+					for idx, pt := range pointsA {
+						e.logger.Info().Int("idx", idx).Interface("pt", pt).Msg("tapping Rage Spell Line A")
+						e.client.TapFast(pt.X, pt.Y, 8.0)
+						e.client.HumanSleep(180, 40)
+					}
+					for idx, pt := range pointsB {
+						e.logger.Info().Int("idx", idx+3).Interface("pt", pt).Msg("tapping Rage Spell Line B")
+						e.client.TapFast(pt.X, pt.Y, 8.0)
+						if idx < len(pointsB)-1 {
+							e.client.HumanSleep(180, 40)
+						}
+					}
+					return true
 				}
-
-				// Check if empty
-				checkMat, err := e.client.CaptureToMat()
-				if err != nil {
-					break
-				}
-				isEmpty := e.isSlotEmpty(checkMat, uPt.X, uPt.Y)
-				checkMat.Close()
-
-				if isEmpty {
-					e.logger.Info().Str("unit", unit.Name).Msg("spell slot empty, finished deploying")
-					break
-				}
-				e.logger.Info().Str("unit", unit.Name).Msg("spell slot not empty yet, selecting again and deploying next batch...")
-				e.client.TapFast(uPt.X, uPt.Y, 2.0)
-				time.Sleep(10 * time.Millisecond)
 			}
+
+			p1, p2 := edge.P1, edge.P2
+
+			off := unit.Offset
+			if off == 0 { off = phase.Offset }
+			if off > 0 {
+				centerX, centerY := w/2, h/2
+				pct := float64(off)/150.0 + 0.12 // Pushed deeper/further in
+				p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
+				p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
+				e.logger.Debug().Interface("offset_p1", p1).Interface("offset_p2", p2).Msg("Applied inward offset to spell line")
+			}
+
+			// Distribute spell targets at 0.22, 0.50, 0.78 to be slightly tighter but not overlap
+			points := make([]image.Point, 0, maxSpells)
+			for i := 0; i < maxSpells; i++ {
+				pct := 0.5
+				if maxSpells > 1 {
+					pct = 0.22 + float64(i)*0.56/float64(maxSpells-1) // 0.22, 0.50, 0.78
+				}
+				tx := int(float64(p1.X) + float64(p2.X-p1.X)*pct)
+				ty := int(float64(p1.Y) + float64(p2.Y-p1.Y)*pct)
+				points = append(points, e.addJitter(image.Pt(tx, ty), 8))
+			}
+
+			for idx, pt := range points {
+				e.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target line")
+				e.client.TapFast(pt.X, pt.Y, 8.0)
+				
+				if idx < len(points)-1 {
+					e.client.HumanSleep(180, 40) // Spacing between spell placements
+				}
+			}
+		} else {
+			e.logger.Warn().Str("unit", unit.Name).Msg("No spell deployment line or target point configured for edge")
 		}
 		return true
 	} else {
@@ -1312,56 +1330,90 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 			jPt := e.addJitter(p1, 10)
 			e.logger.Info().Str("unit", unit.Name).Int("x", jPt.X).Int("y", jPt.Y).Msg("deploying hero/siege point")
 			e.client.TapFast(jPt.X, jPt.Y, 8.0)
-			time.Sleep(200 * time.Millisecond) // Faster inter-hero delay
+			e.client.HumanSleep(200, 40) // Increased pacing for reliable emulator registration
 		} else {
 			// Regular troops / spam units / event troops
-			maxAttempts := 3
-			for batch := 0; batch < maxAttempts; batch++ {
-				if p1 == p2 { // Point deployment batch
-					e.logger.Info().Str("unit", unit.Name).Int("x", p1.X).Int("y", p1.Y).Msg("deploying troop point batch")
-					// Use triple tap approach for point deployment: 3 taps
-					j1 := e.addJitter(p1, 8)
-					j2 := e.addJitter(p1, 8)
-					j3 := e.addJitter(p1, 8)
-					e.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
-				} else { // Line deployment batch
-					e.logger.Info().Str("unit", unit.Name).Msg("deploying troop line batch")
-					// Deploy three lines simultaneously with triple finger taps
-					steps := 9
-					for i := 0; i < steps; i += 3 {
-						pct1 := float64(i) / float64(steps-1)
-						pct2 := float64(i+1) / float64(steps-1)
-						pct3 := float64(i+2) / float64(steps-1)
-						tx1, ty1 := int(float64(p1.X)+float64(p2.X-p1.X)*pct1), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct1)
-						tx2, ty2 := int(float64(p1.X)+float64(p2.X-p1.X)*pct2), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct2)
-						tx3, ty3 := int(float64(p1.X)+float64(p2.X-p1.X)*pct3), int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct3)
-						j1 := e.addJitter(image.Pt(tx1, ty1), 10)
-						j2 := e.addJitter(image.Pt(tx2, ty2), 10)
-						j3 := e.addJitter(image.Pt(tx3, ty3), 10)
-						e.client.TapTriple(j1.X, j1.Y, 15.0, j2.X, j2.Y, 15.0, j3.X, j3.Y, 15.0)
+			maxTaps := 12 // Default fallback
+			if unit.Amount != "All" && unit.Amount != "" {
+				if val, err := strconv.Atoi(unit.Amount); err == nil {
+					maxTaps = val
+				}
+			} else {
+				if strings.Contains(unitName, "balloon") {
+					maxTaps = 12
+				} else if strings.Contains(unitName, "electro") || strings.Contains(unitName, "dragon") {
+					maxTaps = 12
+				}
+			}
+
+			if p1 == p2 { // Point deployment
+				e.logger.Info().Str("unit", unit.Name).Int("count", maxTaps).Msg("deploying troop point batch")
+				for i := 0; i < maxTaps; {
+					rem := maxTaps - i
+					if rem >= 3 {
+						j1 := e.addJitter(p1, 8)
+						j2 := e.addJitter(p1, 8)
+						j3 := e.addJitter(p1, 8)
+						e.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
+						i += 3
+					} else if rem == 2 {
+						j1 := e.addJitter(p1, 8)
+						j2 := e.addJitter(p1, 8)
+						e.client.TapDual(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0)
+						i += 2
+					} else {
+						j1 := e.addJitter(p1, 8)
+						e.client.TapFast(j1.X, j1.Y, 12.0)
+						i += 1
+					}
+					e.client.HumanSleep(80, 20)
+				}
+			} else { // Line deployment
+				e.logger.Info().Str("unit", unit.Name).Int("count", maxTaps).Msg("deploying troop line precisely")
+				points := make([]image.Point, 0, maxTaps)
+				for i := 0; i < maxTaps; i++ {
+					pct := 0.5
+					if maxTaps > 1 {
+						pct = float64(i) / float64(maxTaps-1)
+					}
+					tx := int(float64(p1.X) + float64(p2.X-p1.X)*pct)
+					ty := int(float64(p1.Y) + float64(p2.Y-p1.Y)*pct)
+					points = append(points, e.addJitter(image.Pt(tx, ty), 10))
+				}
+
+				// Randomize direction: 50% chance to deploy in reverse direction
+				if rand.Float64() < 0.5 {
+					e.logger.Debug().Msg("reversing deployment order along line for human variability")
+					for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
+						points[i], points[j] = points[j], points[i]
 					}
 				}
 
-				time.Sleep(200 * time.Millisecond) // Wait for server sync
-				// Check if slot is empty now
-				checkMat, err := e.client.CaptureToMat()
-				if err != nil {
-					break
+				for i := 0; i < len(points); {
+					rem := len(points) - i
+					if rem >= 3 {
+						e.client.TapTriple(points[i].X, points[i].Y, 15.0, points[i+1].X, points[i+1].Y, 15.0, points[i+2].X, points[i+2].Y, 15.0)
+						i += 3
+					} else if rem == 2 {
+						e.client.TapDual(points[i].X, points[i].Y, 15.0, points[i+1].X, points[i+1].Y, 15.0)
+						i += 2
+					} else {
+						e.client.TapFast(points[i].X, points[i].Y, 15.0)
+						i += 1
+					}
+					
+					// Variable human inter-tap pacing
+					sleepBase := 100
+					sleepDev := 30
+					if rand.Float64() < 0.10 {
+						// 10% chance of a longer pause representing human finger relocation
+						sleepBase = 220
+						sleepDev = 40
+					}
+					e.client.HumanSleep(sleepBase, sleepDev)
 				}
-				isEmpty := e.isSlotEmpty(checkMat, uPt.X, uPt.Y)
-				checkMat.Close()
-
-				if isEmpty {
-					e.logger.Info().Str("unit", unit.Name).Msg("troop slot empty, finished deploying")
-					break
-				}
-
-				e.logger.Info().Str("unit", unit.Name).Msg("troop slot not empty yet, selecting again and deploying next batch...")
-				e.client.TapFast(uPt.X, uPt.Y, 2.0)
-				time.Sleep(50 * time.Millisecond)
 			}
 		}
-		// Ensure touch is fully released and processed by the system before any next card selection
 		time.Sleep(15 * time.Millisecond)
 		return true
 	}
@@ -1631,7 +1683,7 @@ type TroopSlot struct {
 
 func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBarY int) []TroopSlot {
 	var activeXs []int
-	slotY := mBarY + (h-mBarY)/2
+	slotY := mBarY + int(38.0*e.cal.ScaleY)
 	
 	// 1. Try to load manual calibration for 100% precision
 	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
@@ -1643,7 +1695,11 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 		}
 		if json.Unmarshal(data, &mConf) == nil {
 			e.logger.Info().Int("slots", len(mConf.SlotXs)).Msg("using 100% precise manual slot mapping")
-			slotY = mConf.SlotY
+			if mConf.CardHeight > 0 {
+				slotY = mBarY + mConf.CardHeight/2
+			} else {
+				slotY = mConf.SlotY
+			}
 			// Verify each slot actually has content (isn't empty/dark)
 			for _, x := range mConf.SlotXs {
 				if !e.isSlotEmpty(screen, x, slotY) {

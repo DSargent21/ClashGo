@@ -98,3 +98,15 @@ func TestCalculateInwardOffset(t *testing.T) {
 		t.Errorf("np2 = %v, want (755, 245)", np2)
 	}
 }
+
+func TestPrecisionConfigSpellTargets(t *testing.T) {
+	cfg := PrecisionConfig{
+		SpellTargets: map[string]image.Point{
+			"BottomLeft": image.Pt(100, 200),
+		},
+	}
+	if pt, ok := cfg.SpellTargets["BottomLeft"]; !ok || pt.X != 100 || pt.Y != 200 {
+		t.Errorf("expected BottomLeft spell target (100, 200), got %v", pt)
+	}
+}
+

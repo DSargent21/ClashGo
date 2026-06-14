@@ -10,6 +10,16 @@ interface DashboardProps {
   terminalEndRef: React.RefObject<HTMLDivElement>;
 }
 
+const getTerminalAutoScroll = (): boolean => {
+  try {
+    const stored = localStorage.getItem('terminalAutoScroll');
+    if (stored !== null) return stored === 'true';
+    return true;
+  } catch {
+    return true;
+  }
+};
+
 const Dashboard: React.FC<DashboardProps> = React.memo(({
   stats,
   history,
@@ -18,21 +28,32 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   terminalEndRef
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const [terminalAutoScroll, setTerminalAutoScroll] = React.useState(getTerminalAutoScroll);
   const uptimeHours = stats.uptime / (1e9 * 3600);
   
   React.useEffect(() => {
+    try {
+      localStorage.setItem('terminalAutoScroll', String(terminalAutoScroll));
+    } catch (e) {
+      console.warn('Failed to save terminalAutoScroll preference:', e);
+    }
+  }, [terminalAutoScroll]);
+
+  React.useEffect(() => {
+    if (!terminalAutoScroll) return;
+    
     const container = containerRef.current;
     if (!container) return;
 
-    // Smart scroll: only if already at bottom (within 50px)
-    const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
+    // Smart scroll: only if already at bottom (within 100px)
+    const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
     if (isAtBottom) {
-      terminalEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      container.scrollTop = container.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, terminalAutoScroll]);
 
   const getRate = (total: number) => {
-    if (uptimeHours < 0.01) return 'CALC...';
+    if (uptimeHours < 0.01 || total === 0) return '+0/hr';
     const rate = total / uptimeHours;
     if (rate > 1e6) return `+${(rate / 1e6).toFixed(1)}M/hr`;
     if (rate > 1e3) return `+${(rate / 1e3).toFixed(0)}k/hr`;
@@ -187,15 +208,31 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
             </div>
             <span className="text-[10px] font-black text-zinc-600 dark:text-zinc-500 uppercase tracking-[0.3em]">System Console</span>
           </div>
-          <button 
-            onClick={() => {
-              const text = logs.join('\n');
-              navigator.clipboard.writeText(text);
-            }} 
-            className="h-9 px-5 rounded-xl bg-zinc-900 dark:bg-zinc-900/50 text-[10px] font-black text-zinc-500 hover:text-white hover:bg-zinc-800 transition-all uppercase tracking-[0.2em] border border-zinc-800/50"
-          >
-            Export Logs
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setTerminalAutoScroll(!terminalAutoScroll)}
+              className={`flex items-center gap-2 h-9 px-4 rounded-xl transition-all uppercase tracking-[0.2em] text-[10px] font-black border ${
+                terminalAutoScroll
+                  ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/20'
+                  : 'bg-zinc-900 dark:bg-zinc-900/50 text-zinc-500 border-zinc-800/50 hover:text-white hover:bg-zinc-800'
+              }`}
+              title={terminalAutoScroll ? 'Auto-scroll enabled (click to disable)' : 'Auto-scroll disabled (click to enable)'}
+            >
+              <span className="material-symbols-outlined text-sm">
+                {terminalAutoScroll ? 'keyboard_arrow_down' : 'keyboard_arrow_up'}
+              </span>
+              Auto
+            </button>
+            <button 
+              onClick={() => {
+                const text = logs.join('\n');
+                navigator.clipboard.writeText(text);
+              }} 
+              className="h-9 px-5 rounded-xl bg-zinc-900 dark:bg-zinc-900/50 text-[10px] font-black text-zinc-500 hover:text-white hover:bg-zinc-800 transition-all uppercase tracking-[0.2em] border border-zinc-800/50"
+            >
+              Export Logs
+            </button>
+          </div>
         </div>
         <div 
           ref={containerRef}
