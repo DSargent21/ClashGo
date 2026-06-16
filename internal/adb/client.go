@@ -7,10 +7,23 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gocv.io/x/gocv"
 )
+
+type TapEvent struct {
+	Seq    int64  `json:"seq"`
+	Type   string `json:"type"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	ActualX int   `json:"actual_x"`
+	ActualY int   `json:"actual_y"`
+	StdDev float64 `json:"std_dev,omitempty"`
+	Error  string `json:"error,omitempty"`
+	Ts     int64  `json:"ts_ms"`
+}
 
 type Client struct {
 	DeviceID string
@@ -26,6 +39,10 @@ type Client struct {
 	health    Health
 	mu        sync.Mutex
 	closed    bool
+
+	tapHookMu sync.RWMutex
+	tapHook   func(TapEvent)
+	tapSeq    int64
 }
 
 func NewClient(opts ...Option) *Client {
@@ -40,6 +57,23 @@ func NewClient(opts ...Option) *Client {
 		o(c)
 	}
 	return c
+}
+
+func (c *Client) SetTapHook(fn func(TapEvent)) {
+	c.tapHookMu.Lock()
+	defer c.tapHookMu.Unlock()
+	c.tapHook = fn
+}
+
+func (c *Client) fireTapHook(ev TapEvent) {
+	c.tapHookMu.RLock()
+	fn := c.tapHook
+	c.tapHookMu.RUnlock()
+	if fn != nil {
+		ev.Seq = atomic.AddInt64(&c.tapSeq, 1)
+		ev.Ts = time.Now().UnixMilli()
+		fn(ev)
+	}
 }
 
 func (c *Client) connectTransport() error {
@@ -269,8 +303,10 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 func (c *Client) Tap(x, y int) error {
 	c.log.Debugf("ADB TAP: (%d, %d)", x, y)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.tapLocked(x, y)
+	err := c.tapLocked(x, y)
+	c.mu.Unlock()
+	c.fireTapHook(TapEvent{Type: "tap", X: x, Y: y, ActualX: x, ActualY: y, StdDev: 0, Error: errStr(err)})
+	return err
 }
 
 func (c *Client) tapLocked(x, y int) error {
@@ -289,7 +325,11 @@ func (c *Client) TapFast(x, y int, stdDev float64) error {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	ox := int(r.NormFloat64() * stdDev)
 	oy := int(r.NormFloat64() * stdDev)
-	return c.Tap(x+ox, y+oy)
+	c.mu.Lock()
+	err := c.tapLocked(x+ox, y+oy)
+	c.mu.Unlock()
+	c.fireTapHook(TapEvent{Type: "tap_fast", X: x, Y: y, ActualX: x + ox, ActualY: y + oy, StdDev: stdDev, Error: errStr(err)})
+	return err
 }
 
 // TapDual performs two taps simultaneously using background shell execution.
@@ -299,6 +339,7 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
+			c.fireTapHook(TapEvent{Type: "tap_dual", X: x1, Y: y1, ActualX: x1, ActualY: y1, StdDev: stdDev1, Error: errStr(err)})
 			return err
 		}
 	}
@@ -312,11 +353,15 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 	oy2 := int(r2.NormFloat64() * stdDev2)
 
 	c.log.Debugf("ADB DUAL TAP (sequential): (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
-	if err := c.tapLocked(x1+ox1, y1+oy1); err != nil {
-		return err
+	err1 := c.tapLocked(x1+ox1, y1+oy1)
+	c.fireTapHook(TapEvent{Type: "tap_dual_1", X: x1, Y: y1, ActualX: x1 + ox1, ActualY: y1 + oy1, StdDev: stdDev1, Error: errStr(err1)})
+	if err1 != nil {
+		return err1
 	}
 	time.Sleep(50 * time.Millisecond)
-	return c.tapLocked(x2+ox2, y2+oy2)
+	err2 := c.tapLocked(x2+ox2, y2+oy2)
+	c.fireTapHook(TapEvent{Type: "tap_dual_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
+	return err2
 }
 
 // TapTriple performs three taps simultaneously using background shell execution.
@@ -326,6 +371,7 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
+			c.fireTapHook(TapEvent{Type: "tap_triple", X: x1, Y: y1, ActualX: x1, ActualY: y1, StdDev: stdDev1, Error: errStr(err)})
 			return err
 		}
 	}
@@ -343,15 +389,21 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	oy3 := int(r3.NormFloat64() * stdDev3)
 
 	c.log.Debugf("ADB TRIPLE TAP (sequential): (%d, %d), (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
-	if err := c.tapLocked(x1+ox1, y1+oy1); err != nil {
-		return err
+	err1 := c.tapLocked(x1+ox1, y1+oy1)
+	c.fireTapHook(TapEvent{Type: "tap_triple_1", X: x1, Y: y1, ActualX: x1 + ox1, ActualY: y1 + oy1, StdDev: stdDev1, Error: errStr(err1)})
+	if err1 != nil {
+		return err1
 	}
 	time.Sleep(50 * time.Millisecond)
-	if err := c.tapLocked(x2+ox2, y2+oy2); err != nil {
-		return err
+	err2 := c.tapLocked(x2+ox2, y2+oy2)
+	c.fireTapHook(TapEvent{Type: "tap_triple_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
+	if err2 != nil {
+		return err2
 	}
 	time.Sleep(50 * time.Millisecond)
-	return c.tapLocked(x3+ox3, y3+oy3)
+	err3 := c.tapLocked(x3+ox3, y3+oy3)
+	c.fireTapHook(TapEvent{Type: "tap_triple_3", X: x3, Y: y3, ActualX: x3 + ox3, ActualY: y3 + oy3, StdDev: stdDev3, Error: errStr(err3)})
+	return err3
 }
 
 // TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
@@ -645,4 +697,11 @@ func (c *Client) DetectTouchDevice() (string, error) {
 
 func (c *Client) Health() Health {
 	return c.health
+}
+
+func errStr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

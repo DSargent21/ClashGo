@@ -1,6 +1,6 @@
 import React from 'react';
 import { TabType } from '../types';
-import logo from '../assets/images/clashgo-logo.png';
+import logo from '../assets/images/logo-universal.png';
 
 interface SidebarProps {
   tab: TabType;
@@ -54,7 +54,7 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
             <img 
               src={logo} 
               alt="Logo" 
-              className="w-7 h-7 object-contain dark:invert dark:brightness-60" 
+              className="w-7 h-7 object-contain" 
               style={{ width: '28px', height: '28px' }} 
             />
           </div>
