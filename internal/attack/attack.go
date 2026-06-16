@@ -32,6 +32,10 @@ type Executor struct {
 	classify      func(gocv.Mat) (game.GameState, int)
 	tappedSiegeXs map[int]bool
 	templates     map[string]gocv.Mat
+
+	// Debug callbacks — nil when not debugging
+	OnPhaseStart func(phase string, edge string)
+	OnUnitDeploy func(unit string, slotX int, slotY int)
 }
 
 type PrecisionConfig struct {
@@ -259,10 +263,15 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	slotY := mBarY + int(38.0*scaleY)
 	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
 		var mConf struct {
+			SlotY      int `json:"slot_y"`
 			CardHeight int `json:"card_height"`
 		}
-		if json.Unmarshal(data, &mConf) == nil && mConf.CardHeight > 0 {
-			slotY = mBarY + mConf.CardHeight/2
+		if json.Unmarshal(data, &mConf) == nil {
+			if mConf.SlotY > 0 {
+				slotY = mConf.SlotY
+			} else if mConf.CardHeight > 0 {
+				slotY = mBarY + mConf.CardHeight/2
+			}
 		}
 	}
 	barROI := image.Rect(0, mBarY, w, h)
@@ -312,6 +321,9 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		}
 
 		if matchedName != "" {
+			// Snap template match coordinates to actual slot position
+			unitCache[matchedName].Point = image.Pt(slot.X, slot.Y)
+			
 			if e.isSiege(matchedName) {
 				slot.Category = "Siege"
 			} else if e.isHero(matchedName) {
@@ -408,6 +420,9 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 	for _, phase := range s.Phases {
 		e.logger.Info().Str("phase", phase.Name).Msg("attack phase")
+		if e.OnPhaseStart != nil {
+			e.OnPhaseStart(phase.Name, targetEdge)
+		}
 
 		// Sort units: Spells -> Regular Units -> Abilities
 		sortedUnits := make([]struct {
@@ -516,7 +531,8 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 					}
 
 					thresholds := []float32{0.80, 0.70, 0.60, 0.55}
-					if isHero || isSiege { thresholds = []float32{0.75, 0.65, 0.55, 0.50} }
+					if isHero { thresholds = []float32{0.85, 0.80, 0.75, 0.70} }
+					if isSiege { thresholds = []float32{0.75, 0.65, 0.55, 0.50} }
 					if isSpell { thresholds = []float32{0.80, 0.75, 0.70, 0.65} }
 
 					for _, t := range thresholds {
@@ -547,7 +563,10 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 			if match == nil && !isAbility {
 				// Fallback to dynamic layout parser mapping
-				if len(slotMap[category]) > 0 {
+				// BUT skip heroes — hero cards need template match to avoid slot theft
+				if isHero {
+					e.logger.Warn().Str("unit", unit.Name).Msg("hero has no template match, skipping to prevent slot theft")
+				} else if len(slotMap[category]) > 0 {
 					targetPt := slotMap[category][0]
 					slotMap[category] = slotMap[category][1:]
 					match = &vision.Match{
@@ -586,6 +605,9 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 			usedSlots[match.Point.X] = true
 			globalUsedSlots[match.Point.X] = true
+			if e.OnUnitDeploy != nil {
+				e.OnUnitDeploy(unit.Name, match.Point.X, slotY)
+			}
 			e.deployUnit(unit, match, pCfg, targetEdge, w, h, slotY, isAbility, lastBar, phase)
 			}
 
@@ -626,20 +648,14 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 				limitMain := len(mainDeployments)
 
-				var dragonDukePt *image.Point
-
 				e.logger.Debug().Int("main", len(mainDeployments)).Int("bonus", len(bonusDeployments)).Int("limit", limitMain).Msg("hero phase summary")
 				for i := 0; i < limitMain; i++ {
-					name := strings.ToLower(mainDeployments[i].unit.Name)
-					isDuke := strings.Contains(name, "duke")
 					e.logger.Debug().Str("unit", mainDeployments[i].unit.Name).Int("x", mainDeployments[i].match.Point.X).Msg("deploying main hero")
+					if e.OnUnitDeploy != nil {
+						e.OnUnitDeploy(mainDeployments[i].unit.Name, mainDeployments[i].match.Point.X, slotY)
+					}
 					if e.deployUnit(mainDeployments[i].unit, mainDeployments[i].match, pCfg, targetEdge, w, h, slotY, false, lastBar, phase) {
-						if isDuke {
-							pt := mainDeployments[i].match.Point
-							dragonDukePt = &pt
-						} else {
-							deployedHeroSlots = append(deployedHeroSlots, mainDeployments[i].match.Point)
-						}
+						deployedHeroSlots = append(deployedHeroSlots, mainDeployments[i].match.Point)
 					}
 				}
 
@@ -649,16 +665,12 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				})
 
 				for i := 0; i < len(bonusDeployments); i++ {
-					name := strings.ToLower(bonusDeployments[i].unit.Name)
-					isDuke := strings.Contains(name, "duke")
 					e.logger.Debug().Str("unit", bonusDeployments[i].unit.Name).Int("x", bonusDeployments[i].match.Point.X).Msg("deploying bonus hero")
+					if e.OnUnitDeploy != nil {
+						e.OnUnitDeploy(bonusDeployments[i].unit.Name, bonusDeployments[i].match.Point.X, slotY)
+					}
 					if e.deployUnit(bonusDeployments[i].unit, bonusDeployments[i].match, pCfg, targetEdge, w, h, slotY, false, lastBar, phase) {
-						if isDuke {
-							pt := bonusDeployments[i].match.Point
-							dragonDukePt = &pt
-						} else {
-							deployedHeroSlots = append(deployedHeroSlots, bonusDeployments[i].match.Point)
-						}
+						deployedHeroSlots = append(deployedHeroSlots, bonusDeployments[i].match.Point)
 					}
 				}
 
@@ -671,15 +683,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 						e.client.TapFast(pt.X, pt.Y, 2.0)
 						time.Sleep(150 * time.Millisecond)
 					}
-				}
-
-				if dragonDukePt != nil {
-					go func(pt image.Point) {
-						time.Sleep(15 * time.Second)
-						e.logger.Info().Int("x", pt.X).Int("y", pt.Y).Msg("delayed activation of Dragon Duke ability (15s)")
-						e.client.TapFast(pt.X, pt.Y, 2.0)
-					}(*dragonDukePt)
-				}
+					}
 			}
 
 		pDelay := time.Duration(phase.DelayAfterMS) * time.Millisecond
@@ -695,7 +699,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	// Final Sweep: Deploy any remaining event or mismatched troops in the bar
 	sweepScreen, err := e.client.CaptureToMat()
 	if err == nil {
-		e.SweepRemainingSlots(sweepScreen, pCfg, targetEdge, w, h, mBarY, globalUsedSlots, siegeXs)
+		e.SweepRemainingSlots(sweepScreen, pCfg, targetEdge, w, h, mBarY, globalUsedSlots, siegeXs, slots, slotY)
 		sweepScreen.Close()
 	}
 
@@ -715,13 +719,27 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		var remainingActiveSlots []TroopSlot
 		verifySlots := e.ParseLayout(verifyScreen, pCfg, w, h, mBarY)
 		for _, slot := range verifySlots {
-			// Skip if it is a Siege slot to avoid triggering release
+			// Skip Siege slots
 			if slot.Category == "Siege" || e.isSiegeTapped(slot.X, w) {
 				e.logger.Debug().Int("x", slot.X).Msg("skipping siege slot in verify")
 				continue
 			}
 
-			// Sweep any remaining slots that are not empty (excluding Heroes that are already deployed but show ability)
+			// Get actual activity ratio to distinguish real troops from ability icons
+			ratio := e.getSlotActivityRatio(verifyScreen, slot.X, slot.Y)
+			
+			// Empty slot (ratio < 0.08) — skip
+			if ratio < 0.08 {
+				continue
+			}
+			
+			// Ability icon or UI artifact (ratio 0.08-0.4) — likely hero ability, skip
+			if ratio < 0.4 {
+				e.logger.Debug().Int("x", slot.X).Float64("ratio", ratio).Str("category", slot.Category).Msg("skipping low-ratio slot in verify (ability icon?)")
+				continue
+			}
+
+			// Real troop/spell (ratio >= 0.4) — needs redeployment
 			if slot.Category == "Troop" || slot.Category == "Spell" || slot.Category == "CC" {
 				remainingActiveSlots = append(remainingActiveSlots, slot)
 			}
@@ -739,15 +757,32 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		
 		// Redeploy remaining slots
 		for _, slot := range remainingActiveSlots {
-			// Skip if this slot was a hero we already deployed (hero cards stay on bar)
-			isDeployedHero := false
-			for _, hp := range deployedHeroSlots {
-				if math.Abs(float64(slot.X-hp.X)) < float64(w)*0.04 {
-					isDeployedHero = true
+			// Skip if this slot was already deployed by main phases (globalUsedSlots)
+			alreadyDeployed := false
+			for ux := range globalUsedSlots {
+				if math.Abs(float64(slot.X-ux)) < float64(w)*0.04 {
+					alreadyDeployed = true
 					break
 				}
 			}
-			if isDeployedHero {
+			if alreadyDeployed {
+				e.logger.Debug().Int("x", slot.X).Msg("skipping main-phase-deployed slot in verify")
+				continue
+			}
+
+			// Skip if this slot was a hero or siege we already deployed (cards stay on bar)
+			isDeployedUnit := false
+			for _, hp := range deployedHeroSlots {
+				if math.Abs(float64(slot.X-hp.X)) < float64(w)*0.06 {
+					isDeployedUnit = true
+					break
+				}
+			}
+			if !isDeployedUnit && e.isSiegeTapped(slot.X, w) {
+				isDeployedUnit = true
+			}
+			if isDeployedUnit {
+				e.logger.Debug().Int("x", slot.X).Msg("skipping already-deployed unit in verify")
 				continue
 			}
 
@@ -900,6 +935,93 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 	return isEmpty
 }
 
+func (e *Executor) getSlotActivityRatio(screen gocv.Mat, x, y int) float64 {
+	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
+		return 0
+	}
+
+	size := int(25.0 * e.cal.ScaleX)
+	region := image.Rect(x-size, y-size, x+size, y+size)
+	if region.Min.X < 0 { region.Min.X = 0 }
+	if region.Min.Y < 0 { region.Min.Y = 0 }
+	if region.Max.X > screen.Cols() { region.Max.X = screen.Cols() }
+	if region.Max.Y > screen.Rows() { region.Max.Y = screen.Rows() }
+	sub := screen.Region(region)
+	defer sub.Close()
+
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+
+	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
+	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
+	maskMap1 := gocv.NewMat()
+	defer maskMap1.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
+
+	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
+	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
+	maskMap2 := gocv.NewMat()
+	defer maskMap2.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
+
+	isMapMask := gocv.NewMat()
+	defer isMapMask.Close()
+	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
+
+	notMapMask := gocv.NewMat()
+	defer notMapMask.Close()
+	gocv.BitwiseNot(isMapMask, &notMapMask)
+
+	lowerActA := gocv.NewScalar(0, 56, 91, 0)
+	upperActA := gocv.NewScalar(180, 255, 255, 0)
+	maskActA := gocv.NewMat()
+	defer maskActA.Close()
+	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
+
+	lowerActB := gocv.NewScalar(0, 0, 221, 0)
+	upperActB := gocv.NewScalar(180, 29, 255, 0)
+	maskActB := gocv.NewMat()
+	defer maskActB.Close()
+	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
+
+	activeContentMask := gocv.NewMat()
+	defer activeContentMask.Close()
+	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
+
+	finalActiveMask := gocv.NewMat()
+	defer finalActiveMask.Close()
+	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
+
+	activePixels := gocv.CountNonZero(finalActiveMask)
+	total := hsv.Rows() * hsv.Cols()
+	return float64(activePixels) / float64(total)
+}
+
+// GetSlotActivityRatio is the exported wrapper for debug scripts.
+func (e *Executor) GetSlotActivityRatio(screen gocv.Mat, x, y int) float64 {
+	return e.getSlotActivityRatio(screen, x, y)
+}
+
+// GetSlotY returns the Y coordinate used for slot detection.
+func (e *Executor) GetSlotY(h, mBarY int) int {
+	slotY := mBarY + int(38.0*e.cal.ScaleY)
+	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+		var mConf struct {
+			SlotY      int `json:"slot_y"`
+			CardHeight int `json:"card_height"`
+		}
+		if json.Unmarshal(data, &mConf) == nil {
+			if mConf.SlotY > 0 {
+				slotY = mConf.SlotY
+			} else if mConf.CardHeight > 0 {
+				slotY = mBarY + mConf.CardHeight/2
+			}
+		}
+	}
+	return slotY
+}
+
 func (e *Executor) isHero(name string) bool {
 	n := strings.ToLower(name)
 	return strings.Contains(n, "king") || strings.Contains(n, "queen") || strings.Contains(n, "warden") ||
@@ -932,7 +1054,6 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 	isSiege := e.isSiege(unitName)
 	isHero := e.isHero(unitName)
-	isHeroOrSiege := isHero || isSiege
 	isSpell := e.isSpell(unitName)
 
 	uPt := image.Pt(match.Point.X, slotY)
@@ -993,11 +1114,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		return false
 	}
 
-	if isHero || isSiege {
-		e.client.HumanSleep(80, 20)
-	}
-
-	// Select slot (idempotent, no glow check needed to avoid false-positives on blue units)
+	// Select slot immediately (no pre-wait - sweep doesn't use it, matches successful pattern)
 	jCard := e.addJitter(uPt, 8)
 	e.logger.Debug().Int("x", jCard.X).Int("y", jCard.Y).Msg("tapping slot for selection (with jitter)")
 	e.client.TapFast(jCard.X, jCard.Y, 2.0)
@@ -1010,10 +1127,11 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		e.logger.Debug().Int("x", uPt.X).Msg("marked siege as tapped in cache")
 	}
 
-	if isHero || isSiege {
+	if isHero {
 		e.client.HumanSleep(250, 50)
 	} else {
-		e.client.HumanSleep(100, 25)
+		// Match sweep timing: 35ms for reliable selection-to-deploy window
+		e.client.HumanSleep(35, 10)
 	}
 
 	// Deployment Logic
@@ -1165,28 +1283,14 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					e.logger.Info().Msg("Deploying Rage Spells: 3 on Line A (even), 2 on Line B (far)")
 					
 					p1A, p2A := edgeA.P1, edgeA.P2
-					off := unit.Offset
-					if off == 0 { off = phase.Offset }
-					if off > 0 {
-						centerX, centerY := w/2, h/2
-						pct := float64(off)/150.0 + 0.12
-						p1A = image.Pt(int(float64(p1A.X)+float64(centerX-p1A.X)*pct), int(float64(p1A.Y)+float64(centerY-p1A.Y)*pct))
-						p2A = image.Pt(int(float64(p2A.X)+float64(centerX-p2A.X)*pct), int(float64(p2A.Y)+float64(centerY-p2A.Y)*pct))
-					}
 					
 					pointsA := []image.Point{
-						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.20), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.20)), 8),
+						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.10), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.10)), 8),
 						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.50), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.50)), 8),
-						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.80), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.80)), 8),
+						e.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.90), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.90)), 8),
 					}
 					
 					p1B, p2B := edgeB.P1, edgeB.P2
-					if off > 0 {
-						centerX, centerY := w/2, h/2
-						pct := float64(off)/150.0 + 0.12
-						p1B = image.Pt(int(float64(p1B.X)+float64(centerX-p1B.X)*pct), int(float64(p1B.Y)+float64(centerY-p1B.Y)*pct))
-						p2B = image.Pt(int(float64(p2B.X)+float64(centerX-p2B.X)*pct), int(float64(p2B.Y)+float64(centerY-p2B.Y)*pct))
-					}
 					
 					pointsB := []image.Point{
 						e.addJitter(image.Pt(int(float64(p1B.X)+float64(p2B.X-p1B.X)*0.10), int(float64(p1B.Y)+float64(p2B.Y-p1B.Y)*0.10)), 8),
@@ -1291,48 +1395,62 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 		}
 
 		if isDragonDuke && !isAbility {
-			horizontal := map[string]string{
-				"topleft":     "TopRight",
-				"topright":    "TopLeft",
-				"bottomleft":  "BottomRight",
-				"bottomright": "BottomLeft",
+			// Dragon Duke deploys to an ADJACENT edge (not the target edge)
+			adjacentEdges := map[string][]string{
+				"TopLeft":     {"TopRight", "BottomLeft"},
+				"TopRight":    {"TopLeft", "BottomRight"},
+				"BottomLeft":  {"TopLeft", "BottomRight"},
+				"BottomRight": {"TopRight", "BottomLeft"},
 			}
-			normEdge := strings.ToLower(targetEdge)
-			deploymentEdge = "TopRight" // fallback
-			if opt, ok := horizontal[normEdge]; ok {
-				deploymentEdge = opt
+			if adj, ok := adjacentEdges[targetEdge]; ok && len(adj) > 0 {
+				deploymentEdge = adj[rand.Intn(len(adj))]
+			} else {
+				deploymentEdge = targetEdge
 			}
-			e.logger.Info().Str("target", targetEdge).Str("duke_edge", deploymentEdge).Msg("Dragon Duke horizontal adjacent placement")
+			e.logger.Info().Str("target", targetEdge).Str("duke_edge", deploymentEdge).Msg("Dragon Duke adjacent-edge placement")
 			
-			// For Dragon Duke, use the Hero Target of the adjacent edge if available, fallback to midpoint
-			if pt, ok := pCfg.HeroTargets[deploymentEdge]; ok {
-				p1, p2 = pt, pt
-				e.logger.Info().Str("edge", deploymentEdge).Interface("hero_target", p1).Msg("placing Dragon Duke at adjacent side hero target")
-			} else if edge, ok := pCfg.Edges[deploymentEdge]; ok {
-				midX := (edge.P1.X + edge.P2.X) / 2
-				midY := (edge.P1.Y + edge.P2.Y) / 2
-				p1, p2 = image.Pt(midX, midY), image.Pt(midX, midY)
-				e.logger.Info().Str("edge", deploymentEdge).Interface("midpoint", p1).Msg("placing Dragon Duke at adjacent side midpoint")
+			// Deploy along the edge LINE (not hero target) for adjacent-edge placement
+			if edge, ok := pCfg.Edges[deploymentEdge]; ok {
+				scaled := ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
+				p1, p2 = scaled.P1, scaled.P2
+				e.logger.Info().Str("edge", deploymentEdge).Interface("p1", p1).Interface("p2", p2).Msg("placing Dragon Duke along adjacent edge line")
 			}
 		}
 
-		// Update logic to skip HeroTargets for Dragon Duke since we just manually set p1/p2 to midpoint
-		if isHeroOrSiege && !(isDragonDuke && !isAbility) {
-			if pt, ok := pCfg.HeroTargets[deploymentEdge]; ok { p1, p2 = pt, pt }
+		// Deployment target logic:
+		// - Dragon Duke: adjacent edge line (already set above)
+		// - Heroes: HeroTargets (interior point for ability range)
+		// - Siege: edge LINE (open ground, like troops)
+		// - Troops: edge LINE (open ground)
+		// All units deploy along edge LINE for open ground
+		// Heroes: deploy at outer edge point (p1) for guaranteed open ground
+		// Troops/Siege: deploy along full edge line
+		if isHero && !(isDragonDuke && !isAbility) {
+			// Use outer edge point (p1) for hero deployment - guaranteed open ground
+			if edge, ok := pCfg.Edges[deploymentEdge]; ok {
+				scaled := ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
+				p1, p2 = scaled.P1, scaled.P1 // Single point at outer edge
+			}
 		} else if !isDragonDuke || isAbility {
-			// Only use default edge logic if not already set by Duke midpoint logic
-			if (p1.X == 0 && p1.Y == 0) || isAbility {
-				if edge, ok := pCfg.Edges[deploymentEdge]; ok { p1, p2 = edge.P1, edge.P2 }
+			// Troops + Siege: always use edge LINE for reliable open-ground deployment
+			if edge, ok := pCfg.Edges[deploymentEdge]; ok {
+				scaled := ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
+				p1, p2 = scaled.P1, scaled.P2
 			}
 		}
 
-		if isHero || isSiege {
+		// Heroes: point deployment at outer edge (open ground)
+		// Siege + Troops: line deployment along edge (open ground)
+		if isHero {
 			jPt := e.addJitter(p1, 10)
-			e.logger.Info().Str("unit", unit.Name).Int("x", jPt.X).Int("y", jPt.Y).Msg("deploying hero/siege point")
-			e.client.TapFast(jPt.X, jPt.Y, 8.0)
-			e.client.HumanSleep(200, 40) // Increased pacing for reliable emulator registration
+			e.logger.Info().Str("unit", unit.Name).Int("x", jPt.X).Int("y", jPt.Y).Msg("deploying hero")
+			// Triple tap for reliable registration (matches sweep pattern)
+			j2 := e.addJitter(p1, 10)
+			j3 := e.addJitter(p1, 10)
+			e.client.TapTriple(jPt.X, jPt.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
+			e.client.HumanSleep(200, 40)
 		} else {
-			// Regular troops / spam units / event troops
+			// Siege + Regular troops / spam units / event troops
 			maxTaps := 12 // Default fallback
 			if unit.Amount != "All" && unit.Amount != "" {
 				if val, err := strconv.Atoi(unit.Amount); err == nil {
@@ -1366,7 +1484,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 						e.client.TapFast(j1.X, j1.Y, 12.0)
 						i += 1
 					}
-					e.client.HumanSleep(80, 20)
+					e.client.HumanSleep(200, 40)
 				}
 			} else { // Line deployment
 				e.logger.Info().Str("unit", unit.Name).Int("count", maxTaps).Msg("deploying troop line precisely")
@@ -1389,6 +1507,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					}
 				}
 
+				// Deploy in batches of 3 with verification (match sweep pattern)
 				for i := 0; i < len(points); {
 					rem := len(points) - i
 					if rem >= 3 {
@@ -1402,15 +1521,27 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 						i += 1
 					}
 					
-					// Variable human inter-tap pacing
-					sleepBase := 100
-					sleepDev := 30
+					// Variable human inter-tap pacing (match sweep's 200ms for reliable registration)
+					sleepBase := 200
+					sleepDev := 40
 					if rand.Float64() < 0.10 {
 						// 10% chance of a longer pause representing human finger relocation
-						sleepBase = 220
-						sleepDev = 40
+						sleepBase = 300
+						sleepDev = 50
 					}
 					e.client.HumanSleep(sleepBase, sleepDev)
+
+					// Verify slot emptied after each batch (match sweep pattern)
+					if i < len(points) {
+						if verify, err := e.client.CaptureToMat(); err == nil {
+							empty := e.isSlotEmpty(verify, match.Point.X, slotY)
+							verify.Close()
+							if empty {
+								e.logger.Info().Str("unit", unit.Name).Msg("slot emptied mid-deploy, stopping batch")
+								break
+							}
+						}
+					}
 				}
 			}
 		}
@@ -1586,17 +1717,18 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 	}
 }
 
-func (e *Executor) SweepRemainingSlots(screen gocv.Mat, pCfg PrecisionConfig, targetEdge string, w, h int, mBarY int, usedSlots map[int]bool, siegeXs []int) {
+func (e *Executor) SweepRemainingSlots(screen gocv.Mat, pCfg PrecisionConfig, targetEdge string, w, h int, mBarY int, usedSlots map[int]bool, siegeXs []int, allSlots []TroopSlot, slotY int) {
 	e.logger.Info().Msg("starting sweep of remaining/event slots...")
 	
-	// The center Y of the troop slots is roughly midway between mBarY and the screen bottom
-	slotY := mBarY + (h - mBarY)/2
-	
-	// We scan horizontally from X = 40 to w - 20 with a step of 75 pixels (scaled)
-	step := int(75.0 * e.cal.ScaleX)
-	startX := int(40.0 * e.cal.ScaleX)
-	
-	for x := startX; x < w - 20; x += step {
+	// Scan ONLY known slot positions from the initial parse — no fixed-step scanning
+	for _, slot := range allSlots {
+		x := slot.X
+		
+		// Skip Siege slots
+		if slot.Category == "Siege" || e.isSiegeTapped(x, w) {
+			continue
+		}
+		
 		// Check if this X coordinate is already close to a slot we processed
 		alreadyUsed := false
 		for ux := range usedSlots {
@@ -1611,34 +1743,33 @@ func (e *Executor) SweepRemainingSlots(screen gocv.Mat, pCfg PrecisionConfig, ta
 		
 		// If the slot at (x, slotY) is not empty, it contains a troop/spell to deploy!
 		if !e.isSlotEmpty(screen, x, slotY) {
-			// Skip if it is a Siege slot to avoid triggering release
-			if e.isSiegeTapped(x, w) {
-				continue
-			}
+			e.logger.Info().Int("x", x).Str("category", slot.Category).Msg("found undeployed troop slot during sweep, deploying...")
 
-			e.logger.Info().Int("x", x).Int("y", slotY).Msg("found undeployed/event troop slot during sweep, deploying...")
-
-			
 			// Select the slot (click it)
 			e.client.TapFast(x, slotY, 2.0)
 			e.client.HumanSleep(35, 10)
 			
 			// Determine deployment target (default to line spread along target edge)
 			var p1, p2 image.Point
-			if edge, ok := pCfg.Edges[targetEdge]; ok {
-				p1, p2 = edge.P1, edge.P2
-			} else {
-				p1 = image.Pt(w/2, h/2)
-				p2 = p1
+			if slot.Category == "Spell" {
+				if edge, ok := pCfg.SpellEdgesB[targetEdge]; ok {
+					p1, p2 = edge.P1, edge.P2
+				}
+			}
+			if p1.X == 0 && p1.Y == 0 {
+				if edge, ok := pCfg.Edges[targetEdge]; ok {
+					p1, p2 = edge.P1, edge.P2
+				} else {
+					p1 = image.Pt(w/2, h/2)
+					p2 = p1
+				}
 			}
 			
 			maxSweepAttempts := 2
 			for batch := 0; batch < maxSweepAttempts; batch++ {
 				if p1 == p2 {
-					// Use triple tap approach for point deployment
 					e.client.TapTriple(p1.X, p1.Y, 12.0, p1.X, p1.Y, 12.0, p1.X, p1.Y, 12.0)
 				} else {
-					// Deploy three lines simultaneously with triple finger taps
 					steps := 9
 					for i := 0; i < steps; i += 3 {
 						pct1 := float64(i) / float64(steps-1)
@@ -1651,7 +1782,7 @@ func (e *Executor) SweepRemainingSlots(screen gocv.Mat, pCfg PrecisionConfig, ta
 					}
 				}
 
-				time.Sleep(200 * time.Millisecond) // Wait for server sync
+				time.Sleep(200 * time.Millisecond)
 				checkMat, err := e.client.CaptureToMat()
 				if err != nil {
 					break
@@ -1663,14 +1794,12 @@ func (e *Executor) SweepRemainingSlots(screen gocv.Mat, pCfg PrecisionConfig, ta
 					e.logger.Info().Int("x", x).Msg("swept slot empty, finished deploying")
 					break
 				}
-				// Re-select
 				e.client.TapFast(x, slotY, 2.0)
 				time.Sleep(50 * time.Millisecond)
 			}
 			
-			// Add to usedSlots so we don't double-process
 			usedSlots[x] = true
-			e.client.HumanSleep(35, 10) // Delay to ensure release before next selection
+			e.client.HumanSleep(35, 10)
 		}
 	}
 }
@@ -1695,10 +1824,10 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 		}
 		if json.Unmarshal(data, &mConf) == nil {
 			e.logger.Info().Int("slots", len(mConf.SlotXs)).Msg("using 100% precise manual slot mapping")
-			if mConf.CardHeight > 0 {
-				slotY = mBarY + mConf.CardHeight/2
-			} else {
+			if mConf.SlotY > 0 {
 				slotY = mConf.SlotY
+			} else if mConf.CardHeight > 0 {
+				slotY = mBarY + mConf.CardHeight/2
 			}
 			// Verify each slot actually has content (isn't empty/dark)
 			for _, x := range mConf.SlotXs {
@@ -1925,5 +2054,16 @@ func (e *Executor) addJitter(pt image.Point, maxPixels int) image.Point {
 
 func (e *Executor) GetTemplates() map[string]gocv.Mat {
 	return e.templates
+}
+
+func ScaleEdge(e ManualEdge, refW, refH, curW, curH int) ManualEdge {
+	if refW == 0 || refH == 0 {
+		return e
+	}
+	sx, sy := float64(curW)/float64(refW), float64(curH)/float64(refH)
+	return ManualEdge{
+		P1: image.Pt(int(float64(e.P1.X)*sx), int(float64(e.P1.Y)*sy)),
+		P2: image.Pt(int(float64(e.P2.X)*sx), int(float64(e.P2.Y)*sy)),
+	}
 }
 
