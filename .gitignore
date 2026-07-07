@@ -6,9 +6,12 @@ bin/
 .DS_Store
 Thumbs.db
 
-# Local configurations
+# Local configurations (never commit secrets)
 config.json
 config.json.bak
+.env
+stats.json
+attack_history.json
 
 # IDEs & Editor configs
 .vscode/
@@ -23,8 +26,9 @@ config.json.bak
 vendor/
 go.sum
 
-# Compiled Application Binaries (Root & build)
+# Compiled Application Binaries (root & build/)
 ClashGO
+ClashGO.app/
 cli
 coc-bot
 coc-bot-test
@@ -33,35 +37,41 @@ roidiag
 run_attack
 test_live_end
 verify_loot
+clashgo
+clashgo_cli
+debug_attack
+inspect_taps
+pick_coords
+bot_cli
+test_attack
+test_template
 build/pinpoint_helper
 build/test_wall_steps
+build/calibrate_stall
 build/darwin/
 adb_mock_v2.go
 full_mock_adb.go
 
-# Scratch/Temporary Directories
+# Build artifacts
+build/bin/
+build/appicon.vtest.json
+*.test
+*.prof
+loot_*.vtest.json
+*.zip
+
+# Scratch / Runtime / Debug output (never commit)
 scratch/
 mock.log
-web/node_modules/
-web/dist/
-web/package.json.md5
+tmp/
+debug_attacks/
+debug_out_run1/
+debug_out/
+output/
 
-# Strict Image Blocking (Prevent pushing images to GitHub)
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.bmp
-*.tiff
-**/*.png
-**/*.jpg
-**/*.jpeg
-!assets/templates/**/*.png
-!dashboard_ui.png
-assets/templates/debug/
-
-# Diagnostic and Log files
+# Diagnostic & Log files (per-attack artifacts)
 diag_*.json
+diag_*.png
 failure.diag
 failure.txt_img
 last_attack_report.json
@@ -69,26 +79,35 @@ last_failure.json
 *.log
 logs/
 
-# Build and Test artifacts
-bin/
-build/bin/
-*.test
-*.prof
-loot_*.vtest.json
-*.exe
-debug_match
-bot_cli
-bot_test
-check_tpl
-img_info
-point_picker
-test_match
+# Images: NEVER push decorative/screenshot raster images to GitHub.
+# Carve-outs (these are functional code inputs, not docs/screenshots):
+#   assets/templates/**/*.png       — gocv template matcher loads at runtime
+#   assets/grab/de_region.png        — dev-only screenshot tool input (cmd/grab_one)
+#   assets/grab/full_screen.png      — dev-only screenshot tool input (cmd/find_anchors, cmd/capture_digits, cmd/grab_one)
+#   internal/game/testdata/screen_ocr.png     — Go test fixture (loot_test.go)
+#   internal/game/testdata/screen_victory.png — Go test fixture (loot_test.go)
+#
+# If you add a new test fixture or grab-tool input, append it here explicitly
+# rather than dropping a PNG into those dirs — explicit list prevents an
+# accidental debug screenshot from being silently tracked.
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.bmp
+**/*.tiff
+!**/assets/templates/**/*.png
+!assets/grab/de_region.png
+!assets/grab/full_screen.png
+!internal/game/testdata/screen_ocr.png
+!internal/game/testdata/screen_victory.png
+assets/templates/debug/
 
-# Local configurations
-config.json
-config.json.bak
-.env
-stats.json
-attack_history.json
-*.zip
+# Auto-generated bindings (do not commit)
+web/wailsjs/
+web/dist/
+web/node_modules/
+web/package.json.md5
+
+# Misc
 .agents/
