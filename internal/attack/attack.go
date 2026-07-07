@@ -36,10 +36,26 @@ type Executor struct {
 	// Debug callbacks — nil when not debugging
 	OnPhaseStart func(phase string, edge string)
 	OnUnitDeploy func(unit string, slotX int, slotY int)
+
+	// OnDukePick (debug-only). When non-nil, the legacy deployUnit
+	// Dragon Duke branch fires it after the adjacent-corner random
+	// pick — chosen is one of {TopLeft, TopRight, BottomLeft,
+	// BottomRight}. The new path (HeroManager.resolveHeroTarget) does
+	// NOT fire this — Duke falls through to the chosen edge there.
+	// Either path is observable via the structured log line
+	// "Dragon Duke adjacent-edge placement" already emitted by
+	// deployUnit; this callback exists so a downstream tool can pin
+	// every Duke pick to disk for after-the-fact corpus analysis.
+	OnDukePick func(targetEdge string, chosenEdge string)
 }
 
 type PrecisionConfig struct {
 	Edges        map[string]ManualEdge   `json:"edges"`
+	// Sides holds the 4 STRICT deploy lines (top/right/bottom/left).
+	// Optional — populated by pick_coords -mode=four and consumed by
+	// SpotsForSide in internal/attack/spots.go so each side is a fully
+	// first-class deployment target instead of an awkward corner-pair.
+	Sides        map[string]ManualEdge   `json:"sides,omitempty"`
 	SpellEdgesA  map[string]ManualEdge   `json:"spell_edges_a"`
 	SpellEdgesB  map[string]ManualEdge   `json:"spell_edges_b"`
 	HeroTargets  map[string]image.Point  `json:"hero_targets"`
@@ -229,6 +245,17 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		}
 		for k, v := range pCfg.SpellTargets {
 			pCfg.SpellTargets[k] = image.Pt(int(float64(v.X)*scaleX), int(float64(v.Y)*scaleY))
+		}
+		// Sides scale-down — same scaleX/scaleY edges above use. Without this,
+		// SpotsForSide (which scales internally) would double-scale callers
+		// that already ran precision config through this loader.
+		if pCfg.Sides != nil {
+			for k, v := range pCfg.Sides {
+				pCfg.Sides[k] = ManualEdge{
+					P1: image.Pt(int(float64(v.P1.X)*scaleX), int(float64(v.P1.Y)*scaleY)),
+					P2: image.Pt(int(float64(v.P2.X)*scaleX), int(float64(v.P2.Y)*scaleY)),
+				}
+			}
 		}
 		mBarY = int(float64(pCfg.BarY) * scaleY)
 		if mBarY > int(float64(h)*0.92) { mBarY = int(float64(h) * 0.92) }
@@ -1394,20 +1421,28 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 			return true
 		}
 
-		if isDragonDuke && !isAbility {
-			// Dragon Duke deploys to an ADJACENT edge (not the target edge)
-			adjacentEdges := map[string][]string{
-				"TopLeft":     {"TopRight", "BottomLeft"},
-				"TopRight":    {"TopLeft", "BottomRight"},
-				"BottomLeft":  {"TopLeft", "BottomRight"},
-				"BottomRight": {"TopRight", "BottomLeft"},
-			}
-			if adj, ok := adjacentEdges[targetEdge]; ok && len(adj) > 0 {
-				deploymentEdge = adj[rand.Intn(len(adj))]
-			} else {
-				deploymentEdge = targetEdge
-			}
-			e.logger.Info().Str("target", targetEdge).Str("duke_edge", deploymentEdge).Msg("Dragon Duke adjacent-edge placement")
+		if		isDragonDuke && !isAbility {
+		// Dragon Duke deploys to an ADJACENT edge (not the target edge).
+		// Note: the NEW orchestrator path (HeroManager.resolveHeroTarget)
+		// no longer uses this branch — Duke falls through to the chosen
+		// edge there. This legacy branch is preserved for callers using
+		// DeployDynamic directly and for the per-attack OnDukePick
+		// observer.
+		adjacentEdges := map[string][]string{
+			"TopLeft":     {"TopRight", "BottomLeft"},
+			"TopRight":    {"TopLeft", "BottomRight"},
+			"BottomLeft":  {"TopLeft", "BottomRight"},
+			"BottomRight": {"TopRight", "BottomLeft"},
+		}
+		chosen := targetEdge
+		if adj, ok := adjacentEdges[targetEdge]; ok && len(adj) > 0 {
+			chosen = adj[rand.Intn(len(adj))]
+		}
+		deploymentEdge = chosen
+		e.logger.Info().Str("target", targetEdge).Str("duke_edge", deploymentEdge).Msg("Dragon Duke adjacent-edge placement")
+		if e.OnDukePick != nil {
+			e.OnDukePick(targetEdge, chosen)
+		}
 			
 			// Deploy along the edge LINE (not hero target) for adjacent-edge placement
 			if edge, ok := pCfg.Edges[deploymentEdge]; ok {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -63,6 +64,13 @@ type Bot struct {
 
 	lastFrame      atomic.Value // Stores the latest base64 encoded frame
 	lastFrameTime  time.Time
+
+	// dukePicksFile records every Dragon Duke random pick across all
+	// live attacks. Opened once at NewBot time and written from the
+	// attackExec.OnDukePick callback (legacy path) via the orchestrator
+	// bridge that funnels HeroManager.resolveHeroTarget picks through
+	// OnDukePick as well. One NDJSON line per pick; jq-friendly.
+	dukePicksFile *os.File
 
 	OnFrame       func(string)
 	OnStatsUpdate func()
@@ -162,6 +170,19 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	graph := game.NewStateGraph()
 	graph.AddNode(game.StateMainVillage)
 
+	// Open the Duke-pick NDJSON writer BEFORE constructing the
+	// attackExec so the callback closure captures the file handle.
+	startedWall := time.Now()
+	dukePicksDir := "output/duke_picks"
+	if err := os.MkdirAll(dukePicksDir, 0o755); err != nil {
+		log.Warn().Err(err).Str("dir", dukePicksDir).Msg("failed to create duke_picks dir")
+	}
+	dukePicksPath := filepath.Join(dukePicksDir, startedWall.Format("20060102_150405")+".ndjson")
+	dukePicksFile, dpErr := os.OpenFile(dukePicksPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if dpErr != nil {
+		log.Warn().Err(dpErr).Str("path", dukePicksPath).Msg("failed to open duke_picks NDJSON; will skip")
+	}
+
 	attackExec := attack.NewExecutor(client, cal, &cfg.Attack, log.Logger)
 	trainer := training.NewTrainer(client, cal, &cfg.Training, log.Logger)
 
@@ -192,10 +213,25 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		ctx:        ctx,
 		cancel:     cancel,
 		logger:     log.With().Str("bot", "orchestrator").Logger(),
-		startedAt:         time.Now(),
+		startedAt:         startedWall,
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
 		stuckTimeout:      35 * time.Second,
+		dukePicksFile:     dukePicksFile,
+	}
+
+	// Wire the OnDukePick observer so every Duke random pick (legacy
+	// adjacent-corner OR new chosen-edge fallback) gets append-recorded
+	// to the per-session NDJSON. No-op if the file failed to open.
+	if dukePicksFile != nil {
+		writePick := func(target, chosen string) {
+			line := fmt.Sprintf(`{"timestamp":%q,"target_edge":%q,"chosen_edge":%q}`+"\n",
+				time.Now().Format(time.RFC3339Nano), target, chosen)
+			if _, err := dukePicksFile.WriteString(line); err != nil {
+				log.Warn().Err(err).Msg("failed to write duke pick to NDJSON")
+			}
+		}
+		attackExec.OnDukePick = writePick
 	}
 
 	b.lastFrame.Store("")
@@ -252,6 +288,9 @@ func (b *Bot) Stop() {
 	b.client.Close()
 	globalAsyncWriter.Close()
 	vision.CloseTemplateCache()
+	if b.dukePicksFile != nil {
+		_ = b.dukePicksFile.Close()
+	}
 }
 func (b *Bot) captureLoop() {
 	gc := game.NewGameContext()
@@ -793,6 +832,20 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	b.attackCount.Add(1)
 
+	// If we've reached the configured attack cap (e.g. --once), shut the bot
+	// down gracefully instead of silently idling in the capture loop.
+	if int(b.attackCount.Load()) >= b.cfg.Attack.MaxAttackPerSession {
+		b.logger.Info().
+			Int32("attacks", b.attackCount.Load()).
+			Int("cap", b.cfg.Attack.MaxAttackPerSession).
+			Msg("attack cap reached, scheduling graceful shutdown...")
+		go func() {
+			// Tiny delay so the summary flushes and any post-attack writes finish.
+			time.Sleep(2 * time.Second)
+			b.cancel()
+		}()
+	}
+
 	depErrStr := ""
 	if deployErr != nil {
 		depErrStr = deployErr.Error()
@@ -1280,12 +1333,74 @@ func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
 	// Wait for clouds/battle transition to settle and troop bar to become responsive
 	time.Sleep(1500 * time.Millisecond)
 
-	remaining, err := b.attackExec.DeployDynamic(strat, screen)
+	remaining, err := b.attackExec.DeployDynamicV2(strat, screen, b.cfg.Attack.StrategyFile)
 	if err != nil {
 		b.logger.Error().Err(err).Msg("dynamic deploy failed")
 		return remaining, err
 	}
 	return remaining, nil
+}
+
+// QuickDeploy is the manual single-shot deploy path for run_designed_attack.sh.
+// The user is assumed to already be on the attack screen with a base loaded —
+// there's no search loop, no attack-button discovery, no home → finds-match
+// pipeline. We capture the current screen once, run deployTroops (which honors
+// formula.json overrides if design_attack wrote one next to the strategy), and
+// return.
+//
+// The captureLoop is intentionally NOT started; cli.go's --deploy-only branch
+// calls this directly and bypasses b.Start() to avoid the Find-Attack-Button
+// race that would otherwise kick the bot into the next-base search cycle.
+//
+// On non-Battle screens (e.g. user is still on home, or in clouds), we log a
+// WARN and proceed anyway — the deployTroops path will see the absence of a
+// troop bar and either error out cleanly or succeed-by-luck if the screen does
+// actually contain a deployable base. Caller should surface the error.
+func (b *Bot) QuickDeploy() error {
+	b.logger.Info().Msg("deploy-only mode: capturing current screen once")
+
+	screen, err := b.client.CaptureToMat()
+	if err != nil {
+		return fmt.Errorf("capture: %w", err)
+	}
+	defer screen.Close()
+
+	if screen.Empty() {
+		return fmt.Errorf("captured screen is empty; device disconnected?")
+	}
+
+	state, _ := b.classify(screen)
+	b.logger.Info().
+		Str("state", state.String()).
+		Int("w", screen.Cols()).
+		Int("h", screen.Rows()).
+		Msg("starting deploy from current screen")
+
+	// Hard gate on StateBattle: deployTroops assumes a Battle-state screen
+	// with a visible troop bar and a deployable base. Running it against
+	// home / army-menu / battle-end / clouds could mis-fire taps on buttons
+	// mistaken for slot positions. Surface a clear actionable error so the
+	// user can wait for the clouds to clear or finish navigating to the
+	// attack screen before re-running.
+	if state != game.StateBattle {
+		b.logger.Error().
+			Str("state", state.String()).
+			Msg("refusing to deploy: screen is not in Battle state; wait for clouds/loading to clear or navigate to a base on the attack screen, then re-run")
+		return fmt.Errorf("screen is in state %s; expected Battle — wait for the attack screen to be ready, then re-run", state.String())
+	}
+
+	remaining, deployErr := b.deployTroops(screen)
+	if deployErr != nil {
+		// Surface partial-success so callers know how far it got.
+		b.logger.Error().Err(deployErr).Int("undeployed", remaining).Msg("deploy failed")
+		return fmt.Errorf("deployTroops: %w (undeployed=%d)", deployErr, remaining)
+	}
+	if remaining > 0 {
+		b.logger.Warn().Int("undeployed", remaining).Msg("deploy finished with undeployed slots")
+		return fmt.Errorf("deploy completed with %d undeployed slots", remaining)
+	}
+	b.logger.Info().Msg("deploy completed cleanly (0 undeployed)")
+	return nil
 }
 
 func (b *Bot) Health() game.SystemHealth {

@@ -1,6 +1,6 @@
-name: "Auto EDrag Rush"
-description: "Professional Balloon + EDrag attack with Double Diamond precision"
-target_edge: "Random"
+name: "EDrag Rush - Top"
+description: "Professional Balloon + EDrag attack with Double Diamond precision on the TOP side. Rage goes on Line A (outer), Ice on Line B (inner)."
+target_edge: "top"
 auto_deploy_eventTroops: true
 phases:
   - name: "Balloons"
@@ -53,4 +53,3 @@ phases:
     offset: 30 # Near the point of entry
     retry: 3
     delay_after_ms: 10
-

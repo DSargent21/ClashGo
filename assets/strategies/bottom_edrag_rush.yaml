@@ -1,6 +1,13 @@
-name: "Auto EDrag Rush"
-description: "Professional Balloon + EDrag attack with Double Diamond precision"
-target_edge: "Random"
+# REQUIRES 'bottom' side in pCfg.Sides.
+# The user has only classified {left, right, top} so far; running this
+# strategy before re-picking -mode=four with a real bottom line will
+# hit SpotsForSide(pCfg, "bottom", ...) which returns nil (side key
+# missing). The orchestrator's redZone fallback may rescue it, but
+# re-run `./cmd/pick_coords -mode four` and click a real bottom-aligned
+# line FIRST for reliable deploy.
+name: "EDrag Rush - Bottom"
+description: "Professional Balloon + EDrag attack with Double Diamond precision on the BOTTOM side. Rage goes on Line A (outer), Ice on Line B (inner)."
+target_edge: "bottom"
 auto_deploy_eventTroops: true
 phases:
   - name: "Balloons"
@@ -53,4 +60,3 @@ phases:
     offset: 30 # Near the point of entry
     retry: 3
     delay_after_ms: 10
-

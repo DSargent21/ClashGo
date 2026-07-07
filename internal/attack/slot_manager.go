@@ -1,0 +1,707 @@
+package attack
+
+import (
+	"encoding/json"
+	"image"
+	"math"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/vision"
+	"github.com/rs/zerolog"
+	"gocv.io/x/gocv"
+)
+
+// SlotState tracks lifecycle of each detected slot.
+type SlotState int
+
+const (
+	SlotDetected  SlotState = iota // Found on bar
+	SlotIdentified                 // Unit name resolved
+	SlotAttempted                  // Tap attempted
+	SlotDeployed                   // Confirmed empty
+	SlotFailed                     // Retries exhausted
+)
+
+func (s SlotState) String() string {
+	switch s {
+	case SlotDetected:
+		return "Detected"
+	case SlotIdentified:
+		return "Identified"
+	case SlotAttempted:
+		return "Attempted"
+	case SlotDeployed:
+		return "Deployed"
+	case SlotFailed:
+		return "Failed"
+	default:
+		return "Unknown"
+	}
+}
+
+// TrackedSlot extends TroopSlot with state tracking.
+type TrackedSlot struct {
+	TroopSlot                  // Embedded: X, Y, Category
+	State      SlotState       `json:"state"`
+	UnitName   string          `json:"unit_name"`
+	Confidence float64         `json:"confidence"`
+	Attempts   int             `json:"attempts"`
+	LastTapAt  time.Time       `json:"last_tap_at"`
+	IsEmpty    bool            `json:"is_empty"` // Last known emptiness
+}
+
+// SlotManager handles slot detection, classification, identity resolution, and state tracking.
+type SlotManager struct {
+	slots     []*TrackedSlot
+	unitIndex map[string]*TrackedSlot // unitName (lower) → slot
+	xIndex    map[int]*TrackedSlot    // x coord → slot
+	w         int
+	h         int
+	slotY     int
+	barY      int
+	logger    zerolog.Logger
+}
+
+// NewSlotManager detects active slots, resolves identities via template matching + manual labels.
+func NewSlotManager(
+	screen gocv.Mat,
+	pCfg PrecisionConfig,
+	w, h, mBarY int,
+	templates map[string]gocv.Mat,
+	classify func(gocv.Mat) (game.GameState, int),
+	logger zerolog.Logger,
+) *SlotManager {
+	sm := &SlotManager{
+		unitIndex: make(map[string]*TrackedSlot),
+		xIndex:    make(map[int]*TrackedSlot),
+		w:         w,
+		h:         h,
+		barY:      mBarY,
+		logger:    logger.With().Str("component", "slot_manager").Logger(),
+	}
+
+	// Resolve slotY
+	sm.slotY = mBarY + int(38.0*float64(h)/float64(pCfg.Height))
+	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+		var mConf struct {
+			SlotY      int `json:"slot_y"`
+			CardHeight int `json:"card_height"`
+		}
+		if json.Unmarshal(data, &mConf) == nil {
+			if mConf.SlotY > 0 {
+				sm.slotY = mConf.SlotY
+			} else if mConf.CardHeight > 0 {
+				sm.slotY = mBarY + mConf.CardHeight/2
+			}
+		}
+	}
+
+	// Step 1: Detect active slots
+	activeXs := sm.detectActiveSlots(screen)
+	if len(activeXs) == 0 {
+		sm.logger.Warn().Msg("no active slots detected")
+		return sm
+	}
+
+	// Step 2: Classify slots via template matching
+	barROI := image.Rect(0, mBarY, w, h)
+	sm.classifySlots(screen, activeXs, templates, barROI)
+
+	// Step 3: Fill gaps with manual labels (backward compat)
+	sm.applyManualLabelsFallback()
+
+	// Step 4: Build indices
+	for _, slot := range sm.slots {
+		sm.xIndex[slot.X] = slot
+		if slot.UnitName != "" {
+			sm.unitIndex[strings.ToLower(slot.UnitName)] = slot
+		}
+	}
+
+	sm.logger.Info().Int("total", len(sm.slots)).Msg("slot manager initialized")
+	return sm
+}
+
+// detectActiveSlots finds all non-empty X positions on the troop bar.
+func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
+	// Try manual calibration first
+	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+		var mConf struct {
+			SlotXs []int `json:"slot_xs"`
+			SlotY  int   `json:"slot_y"`
+		}
+		if json.Unmarshal(data, &mConf) == nil && len(mConf.SlotXs) > 0 {
+			sm.logger.Info().Int("slots", len(mConf.SlotXs)).Msg("using precise manual slot mapping")
+			var activeXs []int
+			for _, x := range mConf.SlotXs {
+				if !isSlotEmptyStatic(screen, x, sm.slotY, sm.w, sm.h) {
+					activeXs = append(activeXs, x)
+				}
+			}
+			return activeXs
+		}
+	}
+
+	// Fallback: grid detection
+	sm.logger.Info().Msg("manual calibration missing, falling back to grid detection")
+	scaleX := float64(sm.w) / 860.0 // Reference width
+	step := int(75.0 * scaleX)
+	startX := int(40.0 * scaleX)
+	var activeXs []int
+	for x := startX; x < sm.w-20; x += step {
+		if !isSlotEmptyStatic(screen, x, sm.slotY, sm.w, sm.h) {
+			activeXs = append(activeXs, x)
+		}
+	}
+	return activeXs
+}
+
+// classifySlots runs template matching to identify units and assign categories.
+func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates map[string]gocv.Mat, barROI image.Rectangle) {
+	// Create initial slots
+	for _, x := range activeXs {
+		sm.slots = append(sm.slots, &TrackedSlot{
+			TroopSlot: TroopSlot{X: x, Y: sm.slotY, Category: "Troop"},
+			State:     SlotDetected,
+		})
+	}
+
+	// Run template matching for all templates
+	type templateResult struct {
+		name  string
+		match vision.Match
+	}
+	var results []templateResult
+
+	for tplName, tpl := range templates {
+		if tpl.Empty() {
+			continue
+		}
+		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, tplName, 0.2, 1.2, 20, 0.55, barROI)
+		if len(matches) > 0 {
+			sort.Slice(matches, func(i, j int) bool { return matches[i].Confidence > matches[j].Confidence })
+			results = append(results, templateResult{name: tplName, match: matches[0]})
+		}
+	}
+
+	// Sort by confidence DESC so the highest-confidence match assigns first.
+	// Combined with the strict-greater check below, this guarantees that
+	// a low-confidence 2nd hit (e.g. Minion Prince conf 0.55) cannot
+	// overwrite a higher-confidence 1st hit (Ice Spell conf 0.89) on the
+	// same slot. Previously the iteration order of Go's templates map was
+	// non-deterministic, so the last-write-wins bug surfaced as random slot
+	// identity mis-assignment per run.
+	sort.Slice(results, func(i, j int) bool { return results[i].match.Confidence > results[j].match.Confidence })
+
+	// Resolve identities: match templates to slots
+	for _, res := range results {
+		cleanName := strings.ReplaceAll(res.name, "_", " ")
+		bestSlot := sm.findClosestSlot(res.match.Point.X, 0.04)
+		if bestSlot == nil {
+			continue
+		}
+
+		// Only overwrite if the slot is empty OR this template is strictly
+		// more confident. Equality falls back to first-write-wins, which
+		// is now deterministic because results is sorted DESC above.
+		if bestSlot.UnitName != "" && bestSlot.Confidence >= res.match.Confidence {
+			sm.logger.Debug().
+				Int("x", bestSlot.X).
+				Str("existing", bestSlot.UnitName).
+				Float64("existing_conf", bestSlot.Confidence).
+				Str("skipping", cleanName).
+				Float64("skip_conf", res.match.Confidence).
+				Msg("slot identity already assigned at higher confidence")
+			continue
+		}
+
+		bestSlot.UnitName = cleanName
+		bestSlot.Confidence = res.match.Confidence
+		bestSlot.State = SlotIdentified
+
+		// Reclassify based on matched name
+		if isHeroStatic(cleanName) {
+			bestSlot.Category = "Hero"
+		} else if isSiegeStatic(cleanName) {
+			bestSlot.Category = "Siege"
+		} else if isSpellStatic(cleanName) {
+			bestSlot.Category = "Spell"
+		} else if strings.Contains(cleanName, "cc") || strings.Contains(cleanName, "castle") {
+			bestSlot.Category = "CC"
+		}
+
+		sm.logger.Info().
+			Str("unit", cleanName).
+			Int("x", bestSlot.X).
+			Float64("conf", res.match.Confidence).
+			Msg("identified unit via template match")
+	}
+
+	// Classify remaining slots using positional heuristics
+	sm.applyPositionalClassification(activeXs)
+}
+
+// applyPositionalClassification uses hero/spell anchors to classify unidentified slots.
+func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
+	// Find hero and spell anchors
+	firstHeroX := 9999
+	lastHeroX := -1
+	firstSpellX := 9999
+
+	for _, slot := range sm.slots {
+		if slot.UnitName == "" {
+			continue
+		}
+		if isHeroStatic(slot.UnitName) {
+			if slot.X < firstHeroX {
+				firstHeroX = slot.X
+			}
+			if slot.X > lastHeroX {
+				lastHeroX = slot.X
+			}
+		}
+		if isSpellStatic(slot.UnitName) {
+			if slot.X < firstSpellX {
+				firstSpellX = slot.X
+			}
+		}
+	}
+
+	// Fallback anchors if not found
+	if firstHeroX == 9999 {
+		idx := len(activeXs) / 2
+		if idx < len(activeXs) {
+			firstHeroX = activeXs[idx]
+			lastHeroX = firstHeroX
+		}
+	}
+	if firstSpellX == 9999 {
+		firstSpellX = lastHeroX + int(70.0*float64(sm.w)/860.0)
+	}
+
+	scaleX := float64(sm.w) / 860.0
+	heroMargin := int(30.0 * scaleX)
+	spellMargin := int(30.0 * scaleX)
+
+	for _, slot := range sm.slots {
+		// Skip already identified slots
+		if slot.UnitName != "" {
+			continue
+		}
+
+		// Check if matched as siege via template
+		isSiege := slot.Category == "Siege"
+
+		// Check "last before hero" heuristic
+		if !isSiege && firstHeroX != 9999 && slot.X < firstHeroX {
+			isLastBeforeHero := true
+			for _, otherSlot := range sm.slots {
+				if otherSlot.X > slot.X && otherSlot.X < firstHeroX {
+					isLastBeforeHero = false
+					break
+				}
+			}
+			if isLastBeforeHero && slot.X != activeXs[0] {
+				isSiege = true
+			}
+		}
+
+		// Apply category based on position
+		if slot.X >= firstSpellX-spellMargin {
+			slot.Category = "Spell"
+		} else if slot.X >= firstHeroX-heroMargin && slot.X <= lastHeroX+heroMargin {
+			slot.Category = "Hero"
+		} else if isSiege {
+			slot.Category = "Siege"
+		}
+	}
+
+	// Classify last slot as CC if far right
+	if len(sm.slots) > 0 {
+		lastSlot := sm.slots[len(sm.slots)-1]
+		if lastSlot.Category == "Spell" && lastSlot.X > sm.w-int(100.0*float64(sm.w)/860.0) {
+			lastSlot.Category = "CC"
+			sm.logger.Info().Int("x", lastSlot.X).Msg("classified last slot as CC")
+		}
+	}
+}
+
+// applyManualLabelsFallback fills unidentified slots with manual_labels.json data.
+func (sm *SlotManager) applyManualLabelsFallback() {
+	data, err := os.ReadFile(paths.Resolve("manual_labels.json"))
+	if err != nil {
+		return
+	}
+	var lConf struct {
+		Slots []struct {
+			X    int    `json:"x"`
+			Name string `json:"name"`
+		} `json:"slots"`
+	}
+	if json.Unmarshal(data, &lConf) != nil {
+		return
+	}
+
+	manualMap := make(map[int]string)
+	for _, s := range lConf.Slots {
+		manualMap[s.X] = s.Name
+	}
+
+	for _, slot := range sm.slots {
+		if slot.UnitName != "" {
+			continue
+		}
+		label, ok := manualMap[slot.X]
+		if !ok || label == "Empty" {
+			continue
+		}
+		cleanName := strings.ToLower(strings.TrimSpace(label))
+		slot.UnitName = cleanName
+		slot.Confidence = 1.0
+		slot.State = SlotIdentified
+
+		if isHeroStatic(cleanName) {
+			slot.Category = "Hero"
+		} else if isSiegeStatic(cleanName) {
+			slot.Category = "Siege"
+		} else if isSpellStatic(cleanName) {
+			slot.Category = "Spell"
+		} else if strings.Contains(cleanName, "cc") || strings.Contains(cleanName, "castle") {
+			slot.Category = "CC"
+		}
+
+		sm.logger.Warn().
+			Int("x", slot.X).
+			Str("fallback", cleanName).
+			Msg("using fallback manual label")
+	}
+}
+
+// findClosestSlot finds the slot closest to a given X within tolerance.
+func (sm *SlotManager) findClosestSlot(x int, tolerancePct float64) *TrackedSlot {
+	tolerance := float64(sm.w) * tolerancePct
+	var best *TrackedSlot
+	bestDist := tolerance
+	for _, slot := range sm.slots {
+		dist := math.Abs(float64(x - slot.X))
+		if dist < bestDist {
+			bestDist = dist
+			best = slot
+		}
+	}
+	return best
+}
+
+// --- Public API ---
+
+// GetSlot returns the tracked slot for a unit name (case-insensitive).
+func (sm *SlotManager) GetSlot(unitName string) *TrackedSlot {
+	return sm.unitIndex[strings.ToLower(unitName)]
+}
+
+// GetSlotByX returns the tracked slot at a given X coordinate.
+func (sm *SlotManager) GetSlotByX(x int) *TrackedSlot {
+	return sm.xIndex[x]
+}
+
+// GetAllSlots returns all tracked slots.
+func (sm *SlotManager) GetAllSlots() []*TrackedSlot {
+	return sm.slots
+}
+
+// GetSlotY returns the Y coordinate used for slot detection.
+func (sm *SlotManager) GetSlotY() int {
+	return sm.slotY
+}
+
+// GetUndeployedSlots returns slots not in Deployed or Failed state.
+func (sm *SlotManager) GetUndeployedSlots() []*TrackedSlot {
+	var result []*TrackedSlot
+	for _, slot := range sm.slots {
+		if slot.State != SlotDeployed && slot.State != SlotFailed {
+			result = append(result, slot)
+		}
+	}
+	return result
+}
+
+// GetSlotsByCategory returns slots filtered by category.
+func (sm *SlotManager) GetSlotsByCategory(category string) []*TrackedSlot {
+	var result []*TrackedSlot
+	for _, slot := range sm.slots {
+		if slot.Category == category {
+			result = append(result, slot)
+		}
+	}
+	return result
+}
+
+// GetEventTroops returns slots with unit names not in the given strategy unit list.
+func (sm *SlotManager) GetEventTroops(strategyUnitNames []string) []*TrackedSlot {
+	strategySet := make(map[string]bool)
+	for _, name := range strategyUnitNames {
+		strategySet[strings.ToLower(name)] = true
+	}
+
+	var result []*TrackedSlot
+	for _, slot := range sm.slots {
+		if slot.UnitName == "" {
+			continue
+		}
+		if !strategySet[strings.ToLower(slot.UnitName)] && slot.State != SlotDeployed && slot.State != SlotFailed {
+			result = append(result, slot)
+		}
+	}
+	return result
+}
+
+// RecordAttempt records a deployment attempt for a slot.
+func (sm *SlotManager) RecordAttempt(unitName string, success bool) {
+	slot := sm.GetSlot(unitName)
+	if slot == nil {
+		return
+	}
+	slot.Attempts++
+	slot.LastTapAt = time.Now()
+	slot.State = SlotAttempted
+
+	if success {
+		slot.State = SlotDeployed
+	}
+}
+
+// MarkDeployed marks a slot as successfully deployed.
+func (sm *SlotManager) MarkDeployed(unitName string) {
+	slot := sm.GetSlot(unitName)
+	if slot == nil {
+		return
+	}
+	slot.State = SlotDeployed
+	slot.IsEmpty = true
+}
+
+// MarkFailed marks a slot as failed after exhausting retries.
+func (sm *SlotManager) MarkFailed(unitName string) {
+	slot := sm.GetSlot(unitName)
+	if slot == nil {
+		return
+	}
+	slot.State = SlotFailed
+}
+
+// IsDeployed returns true if the slot is confirmed deployed.
+func (sm *SlotManager) IsDeployed(unitName string) bool {
+	slot := sm.GetSlot(unitName)
+	if slot == nil {
+		return false
+	}
+	return slot.State == SlotDeployed
+}
+
+// GetDeploymentCount returns number of deployed slots.
+func (sm *SlotManager) GetDeploymentCount() int {
+	count := 0
+	for _, slot := range sm.slots {
+		if slot.State == SlotDeployed {
+			count++
+		}
+	}
+	return count
+}
+
+// GetActiveCount returns number of non-empty slots (detected but not deployed).
+func (sm *SlotManager) GetActiveCount() int {
+	count := 0
+	for _, slot := range sm.slots {
+		if !slot.IsEmpty && slot.State != SlotDeployed && slot.State != SlotFailed {
+			count++
+		}
+	}
+	return count
+}
+
+// RefreshSlotState checks if a slot is now empty after deployment attempt.
+func (sm *SlotManager) RefreshSlotState(screen gocv.Mat, unitName string) bool {
+	slot := sm.GetSlot(unitName)
+	if slot == nil {
+		return true
+	}
+	empty := isSlotEmptyStatic(screen, slot.X, slot.Y, sm.w, sm.h)
+	slot.IsEmpty = empty
+	if empty && slot.State == SlotAttempted {
+		slot.State = SlotDeployed
+	}
+	return empty
+}
+
+// --- Static helper functions (no Executor dependency) ---
+
+func isHeroStatic(name string) bool {
+	n := strings.ToLower(name)
+	return strings.Contains(n, "king") || strings.Contains(n, "queen") || strings.Contains(n, "warden") ||
+		strings.Contains(n, "prince") || strings.Contains(n, "duke") || strings.Contains(n, "champion")
+}
+
+func isSiegeStatic(name string) bool {
+	n := strings.ToLower(name)
+	return strings.Contains(n, "slammer") || strings.Contains(n, "siege") || strings.Contains(n, "blimp") ||
+		strings.Contains(n, "wrecker") || strings.Contains(n, "launcher") || strings.Contains(n, "drill")
+}
+
+func isSpellStatic(name string) bool {
+	return strings.Contains(strings.ToLower(name), "spell")
+}
+
+// isSlotEmptyStatic checks if a slot region is empty (no active content).
+func isSlotEmptyStatic(screen gocv.Mat, x, y, screenW, screenH int) bool {
+	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
+		return true
+	}
+
+	scaleX := float64(screenW) / 860.0
+	size := int(25.0 * scaleX)
+	region := image.Rect(x-size, y-size, x+size, y+size)
+	if region.Min.X < 0 {
+		region.Min.X = 0
+	}
+	if region.Min.Y < 0 {
+		region.Min.Y = 0
+	}
+	if region.Max.X > screen.Cols() {
+		region.Max.X = screen.Cols()
+	}
+	if region.Max.Y > screen.Rows() {
+		region.Max.Y = screen.Rows()
+	}
+	sub := screen.Region(region)
+	defer sub.Close()
+
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+
+	// Map/Grass Detection
+	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
+	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
+	maskMap1 := gocv.NewMat()
+	defer maskMap1.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
+
+	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
+	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
+	maskMap2 := gocv.NewMat()
+	defer maskMap2.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
+
+	isMapMask := gocv.NewMat()
+	defer isMapMask.Close()
+	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
+
+	notMapMask := gocv.NewMat()
+	defer notMapMask.Close()
+	gocv.BitwiseNot(isMapMask, &notMapMask)
+
+	// Active Content
+	lowerActA := gocv.NewScalar(0, 56, 91, 0)
+	upperActA := gocv.NewScalar(180, 255, 255, 0)
+	maskActA := gocv.NewMat()
+	defer maskActA.Close()
+	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
+
+	lowerActB := gocv.NewScalar(0, 0, 221, 0)
+	upperActB := gocv.NewScalar(180, 29, 255, 0)
+	maskActB := gocv.NewMat()
+	defer maskActB.Close()
+	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
+
+	activeContentMask := gocv.NewMat()
+	defer activeContentMask.Close()
+	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
+
+	finalActiveMask := gocv.NewMat()
+	defer finalActiveMask.Close()
+	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
+
+	activePixels := gocv.CountNonZero(finalActiveMask)
+	total := hsv.Rows() * hsv.Cols()
+	activeRatio := float64(activePixels) / float64(total)
+	return activeRatio < 0.08
+}
+
+// GetSlotActivityRatioStatic returns the ratio of active content pixels in a slot region.
+func GetSlotActivityRatioStatic(screen gocv.Mat, x, y, screenW int) float64 {
+	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
+		return 0
+	}
+
+	scaleX := float64(screenW) / 860.0
+	size := int(25.0 * scaleX)
+	region := image.Rect(x-size, y-size, x+size, y+size)
+	if region.Min.X < 0 {
+		region.Min.X = 0
+	}
+	if region.Min.Y < 0 {
+		region.Min.Y = 0
+	}
+	if region.Max.X > screen.Cols() {
+		region.Max.X = screen.Cols()
+	}
+	if region.Max.Y > screen.Rows() {
+		region.Max.Y = screen.Rows()
+	}
+	sub := screen.Region(region)
+	defer sub.Close()
+
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+
+	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
+	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
+	maskMap1 := gocv.NewMat()
+	defer maskMap1.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
+
+	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
+	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
+	maskMap2 := gocv.NewMat()
+	defer maskMap2.Close()
+	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
+
+	isMapMask := gocv.NewMat()
+	defer isMapMask.Close()
+	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
+
+	notMapMask := gocv.NewMat()
+	defer notMapMask.Close()
+	gocv.BitwiseNot(isMapMask, &notMapMask)
+
+	lowerActA := gocv.NewScalar(0, 56, 91, 0)
+	upperActA := gocv.NewScalar(180, 255, 255, 0)
+	maskActA := gocv.NewMat()
+	defer maskActA.Close()
+	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
+
+	lowerActB := gocv.NewScalar(0, 0, 221, 0)
+	upperActB := gocv.NewScalar(180, 29, 255, 0)
+	maskActB := gocv.NewMat()
+	defer maskActB.Close()
+	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
+
+	activeContentMask := gocv.NewMat()
+	defer activeContentMask.Close()
+	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
+
+	finalActiveMask := gocv.NewMat()
+	defer finalActiveMask.Close()
+	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
+
+	activePixels := gocv.CountNonZero(finalActiveMask)
+	total := hsv.Rows() * hsv.Cols()
+	return float64(activePixels) / float64(total)
+}

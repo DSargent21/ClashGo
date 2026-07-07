@@ -1,0 +1,137 @@
+{
+  "name": "design_attack_formula",
+  "screen": {
+    "w": 860,
+    "h": 732
+  },
+  "units": {
+    "_event_spell": {
+      "type": "line",
+      "jitter": 3,
+      "p1": {
+        "x": 449,
+        "y": 509
+      },
+      "p2": {
+        "x": 642,
+        "y": 363
+      }
+    },
+    "_event_troop": {
+      "type": "point",
+      "p": {
+        "x": 644,
+        "y": 513
+      },
+      "jitter": 5
+    },
+    "_rage_inner": {
+      "type": "line",
+      "jitter": 3,
+      "p1": {
+        "x": 416,
+        "y": 458
+      },
+      "p2": {
+        "x": 567,
+        "y": 337
+      }
+    },
+    "archer queen": {
+      "type": "point",
+      "p": {
+        "x": 642,
+        "y": 513
+      },
+      "jitter": 5
+    },
+    "balloon": {
+      "type": "line",
+      "jitter": 3,
+      "p1": {
+        "x": 542,
+        "y": 590
+      },
+      "p2": {
+        "x": 736,
+        "y": 441
+      }
+    },
+    "barbarian king": {
+      "type": "point",
+      "p": {
+        "x": 642,
+        "y": 513
+      },
+      "jitter": 5
+    },
+    "dragon duke": {
+      "type": "point",
+      "p": {
+        "x": 235,
+        "y": 521
+      },
+      "jitter": 5
+    },
+    "electro dragon": {
+      "type": "line",
+      "jitter": 3,
+      "p1": {
+        "x": 542,
+        "y": 590
+      },
+      "p2": {
+        "x": 736,
+        "y": 440
+      }
+    },
+    "grand warden": {
+      "type": "point",
+      "p": {
+        "x": 642,
+        "y": 513
+      },
+      "jitter": 5
+    },
+    "ice spell": {
+      "type": "line",
+      "jitter": 3,
+      "p1": {
+        "x": 478,
+        "y": 456
+      },
+      "p2": {
+        "x": 563,
+        "y": 398
+      }
+    },
+    "minion prince": {
+      "type": "point",
+      "p": {
+        "x": 642,
+        "y": 513
+      },
+      "jitter": 5
+    },
+    "rage spell": {
+      "type": "line",
+      "jitter": 3,
+      "p1": {
+        "x": 474,
+        "y": 534
+      },
+      "p2": {
+        "x": 669,
+        "y": 386
+      }
+    },
+    "stone slammer": {
+      "type": "point",
+      "p": {
+        "x": 642,
+        "y": 513
+      },
+      "jitter": 5
+    }
+  }
+}

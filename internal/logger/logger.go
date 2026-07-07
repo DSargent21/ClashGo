@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
@@ -118,3 +120,148 @@ func Init(debug bool, extraWriters ...io.Writer) {
 	zerolog.SetGlobalLevel(level)
 	zerolog.TimeFieldFormat = time.RFC3339
 }
+
+// ---- NDJSON mirror --------------------------------------------------------
+//
+// ndjsonMirror duplicates every zerolog event into a per-day NDJSON file.
+// It is non-blocking: a buffered channel feeds a single drainer goroutine.
+//
+// This sink exists for terminal-AI consumers who need to grep/jq/DuckDB the
+// bot's runtime without parsing console output. The full JSON event is
+// preserved (level, fields, error, time); only the timestamp is reformatted
+// to an integer number of milliseconds since the Unix epoch so it is sortable.
+
+// EnableNDJSONMirror installs an NDJSON mirror under dir. The dir is created
+// if missing. Returns the io.Writer so callers can pass it via extraWriters.
+// Safe to call before or after Init(); if called after, the mirror is appended
+// to the active multi-writer chain.
+//
+// The returned Closer should be called on shutdown to flush in-flight events.
+func EnableNDJSONMirror(dir string) (io.Writer, io.Closer, error) {
+	if dir == "" {
+		return nil, nilEmptyCloser{}, fmt.Errorf("logger: empty NDJSON dir")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, nilEmptyCloser{}, fmt.Errorf("logger: mkdir ndjson: %w", err)
+	}
+
+	m := &ndjsonMirror{
+		dir: dir,
+		buf: make(chan jsonLogEntry, 4096),
+	}
+	go m.run()
+	return m, m, nil
+}
+
+type jsonLogEntry struct {
+	ts    int64
+	bytes []byte
+}
+
+// ndjsonMirror is an io.Writer that ships each Write to a per-day file via a
+// background drainer goroutine. Backpressure is non-blocking: if the channel
+// is full, we drop (logged at debug next time we drain) rather than stalling
+// the hot path.
+type ndjsonMirror struct {
+	dir string
+	buf chan jsonLogEntry
+
+	// Test-only instrumentation; atomic so the hot path doesn't take a lock.
+	dropped atomic.Int64
+	closed  bool
+
+	mu sync.Mutex // guards closed transitions only
+}
+
+// Write accepts a single zerolog line. zerolog always emits valid JSON with
+// a trailing newline; we pass the raw bytes through to the buffered queue
+// without parsing or re-marshaling — the hot path runs at every log line
+// (frames at 10 FPS = 100s of entries per second). The drainer ensures a
+// trailing newline if absent.
+//
+// On full channel, drop and bump the dropped counter; do not block. The
+// canonical `select { case ... : default: }` non-blocking pattern is
+// deterministic — Go picks the case whenever it's ready, falling through to
+// default only when no case can proceed.
+func (m *ndjsonMirror) Write(p []byte) (int, error) {
+	if m == nil || len(p) == 0 {
+		return len(p), nil
+	}
+	entry := jsonLogEntry{bytes: p}
+	if p[len(p)-1] != '\n' {
+		// Allocate a single byte append so the file stays valid NDJSON.
+		cp := make([]byte, len(p)+1)
+		copy(cp, p)
+		cp[len(cp)-1] = '\n'
+		entry.bytes = cp
+	}
+	select {
+	case m.buf <- entry:
+	default:
+		m.dropped.Add(1)
+	}
+	return len(p), nil
+}
+
+func (m *ndjsonMirror) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closed = true
+	close(m.buf)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *ndjsonMirror) Dropped() int64 {
+	return m.dropped.Load()
+}
+
+// run drains the buffer into a per-day file. The file is rotated when the day
+// changes.
+func (m *ndjsonMirror) run() {
+	if m == nil {
+		return
+	}
+	var (
+		currentDay string
+		f          *os.File
+		closeF     = func() {
+			if f != nil {
+				_ = f.Close()
+				f = nil
+			}
+		}
+	)
+	defer closeF()
+
+	for entry := range m.buf {
+		day := time.UnixMilli(entry.ts).UTC().Format("2006-01-02")
+		if day != currentDay {
+			closeF()
+			currentDay = day
+			path := filepath.Join(m.dir, day+".ndjson")
+			nf, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				// Best-effort retry on next entry.
+				continue
+			}
+			f = nf
+		}
+		if f == nil {
+			continue
+		}
+		if _, err := f.Write(entry.bytes); err != nil {
+			closeF()
+		}
+	}
+}
+
+type nilEmptyCloser struct{}
+
+func (nilEmptyCloser) Close() error { return nil }

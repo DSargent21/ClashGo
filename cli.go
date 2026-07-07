@@ -23,6 +23,10 @@ var (
 	commit  = "none"
 )
 
+// deployOnly is hoisted to package scope so main() can branch on it.
+// flag.BoolVar binds the flag declaration to this variable.
+var deployOnly bool
+
 func main() {
 	// Professional logging setup
 	logger.Init(os.Getenv("DEBUG") != "")
@@ -53,6 +57,20 @@ func main() {
 	b, err := bot.NewBot(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize bot")
+	}
+
+	if deployOnly {
+		log.Info().Msg("deploy-only mode: capturing current screen and deploying once.")
+		qdErr := b.QuickDeploy()
+		// Always cleanup before any exit. log.Fatal below calls os.Exit, so
+		// calling b.Stop() AFTER the error check would skip closing the adb
+		// client + the per-session duke-picks NDJSON (last lines may not
+		// flush). Run Stop() unconditionally first.
+		b.Stop()
+		if qdErr != nil {
+			log.Fatal().Err(qdErr).Msg("deploy-only failed")
+		}
+		return
 	}
 
 	go func() {
@@ -100,6 +118,8 @@ func parseFlags(cfg *config.BotConfig) {
 	minDE := flag.Int("de", cfg.Search.MinLootDarkElixir, "Minimum dark elixir to attack")
 	strategy := flag.String("strategy", cfg.Attack.StrategyFile, "Path to strategy YAML file")
 	deviceID := flag.String("device", cfg.Device.DeviceID, "ADB device ID")
+	once := flag.Bool("once", false, "Run a single attack, then exit cleanly (sets MaxAttackPerSession=1 and triggers graceful shutdown when the attack finishes)")
+	flag.BoolVar(&deployOnly, "deploy-only", false, "Skip the search/attack-button pipeline and deploy immediately on the current screen. Assumes you're already on the attack screen with troops loaded. Pairs with --once for a single manual deploy. Disables game restart on startup so your deploy screen isn't force-stopped.")
 
 	flag.Parse()
 
@@ -109,4 +129,21 @@ func parseFlags(cfg *config.BotConfig) {
 	cfg.Search.MinLootDarkElixir = *minDE
 	cfg.Attack.StrategyFile = *strategy
 	cfg.Device.DeviceID = *deviceID
+
+	if *once {
+		original := cfg.Attack.MaxAttackPerSession
+		cfg.Attack.MaxAttackPerSession = 1
+		fmt.Printf("ClashGO: --once set; capping attacks at 1 (was %d) and exiting cleanly after the first battle.\n", original)
+	}
+
+	if deployOnly {
+		// Critical: do NOT force-stop CoC on startup. The user is already
+		// on the deploy screen (or fresh in-match) — kicking them out would
+		// resurrect the home screen and lose their base.
+		cfg.Device.RestartOnStartup = false
+		// Cap implicitly — deploy-only has no concept of "many".
+		originalCap := cfg.Attack.MaxAttackPerSession
+		cfg.Attack.MaxAttackPerSession = 1
+		fmt.Printf("ClashGO: --deploy-only set; skipping game restart, deploying on current screen once (cap was %d).\n", originalCap)
+	}
 }

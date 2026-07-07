@@ -277,6 +277,79 @@ func main() {
 	gocv.IMWrite(filepath.Join(*outDir, "01_slots_and_edges.png"), debugImg)
 	log.Info().Int("slots", len(slots)).Msg("saved slot diagnostics")
 
+	// --- Red zone detection visualization ---
+	redDetector := attack.NewRedLineDetector(log.Logger)
+	uiCutoff := int(float64(h) * 0.85)
+	redZone := redDetector.Detect(preScreen, uiCutoff)
+
+	redImg := preScreen.Clone()
+	if redZone.Valid {
+		// Draw red zone bounding box with thick outline
+		gocv.Rectangle(&redImg, redZone.BBox, color.RGBA{255, 0, 0, 255}, 4)
+		// Label
+		gocv.PutText(&redImg, fmt.Sprintf("RED ZONE: %dx%d at (%d,%d)", redZone.BBox.Dx(), redZone.BBox.Dy(), redZone.BBox.Min.X, redZone.BBox.Min.Y),
+			image.Pt(redZone.BBox.Min.X, redZone.BBox.Min.Y-15),
+			gocv.FontHersheySimplex, 0.5, color.RGBA{255, 0, 0, 255}, 2)
+
+		// Calculate deployment lines for ALL sides
+		deployCalc := attack.NewDeployLineCalculator(log.Logger)
+		sides := []string{"left", "top", "right", "bottom"}
+		bestLine := deployCalc.Calculate(redZone, w, h, uiCutoff, "", 15)
+
+		// Draw inactive sides dimmer
+		for _, side := range sides {
+			if side == bestLine.Side {
+				continue
+			}
+			line := deployCalc.Calculate(redZone, w, h, uiCutoff, side, 15)
+			for i, pt := range line.Points {
+				gocv.Circle(&redImg, pt, 4, color.RGBA{100, 100, 100, 128}, -1)
+				if i > 0 {
+					gocv.Line(&redImg, line.Points[i-1], pt, color.RGBA{100, 100, 100, 128}, 1)
+				}
+			}
+		}
+
+		// Draw best deployment line (bright green)
+		for i, pt := range bestLine.Points {
+			gocv.Circle(&redImg, pt, 8, color.RGBA{0, 255, 0, 255}, -1)
+			gocv.Circle(&redImg, pt, 8, color.RGBA{0, 200, 0, 255}, 2)
+			if i > 0 {
+				gocv.Line(&redImg, bestLine.Points[i-1], pt, color.RGBA{0, 255, 0, 255}, 3)
+			}
+			// Number each point
+			gocv.PutText(&redImg, fmt.Sprintf("%d", i+1), image.Pt(pt.X-4, pt.Y-12),
+				gocv.FontHersheySimplex, 0.35, color.RGBA{255, 255, 255, 255}, 1)
+		}
+
+		// Draw anchor point (blue diamond)
+		gocv.Circle(&redImg, bestLine.Anchor, 12, color.RGBA{0, 100, 255, 255}, -1)
+		gocv.Circle(&redImg, bestLine.Anchor, 12, color.RGBA{0, 50, 200, 255}, 3)
+		gocv.PutText(&redImg, fmt.Sprintf("ANCHOR (%s)", bestLine.Side),
+			image.Pt(bestLine.Anchor.X+15, bestLine.Anchor.Y+5),
+			gocv.FontHersheySimplex, 0.45, color.RGBA{0, 100, 255, 255}, 2)
+
+		// Draw standoff distance line from red zone to deploy line
+		standoffPt := image.Pt((redZone.BBox.Min.X+redZone.BBox.Max.X)/2, redZone.BBox.Min.Y)
+		gocv.Line(&redImg, standoffPt, image.Pt(standoffPt.X, bestLine.Points[0].Y), color.RGBA{255, 255, 0, 180}, 1)
+		gocv.PutText(&redImg, fmt.Sprintf("standoff=%dpx", bestLine.Points[0].Y-standoffPt.Y),
+			image.Pt(standoffPt.X+5, (standoffPt.Y+bestLine.Points[0].Y)/2),
+			gocv.FontHersheySimplex, 0.3, color.RGBA{255, 255, 0, 200}, 1)
+
+		log.Info().
+			Str("side", bestLine.Side).
+			Int("points", len(bestLine.Points)).
+			Int("redZoneW", redZone.BBox.Dx()).
+			Int("redZoneH", redZone.BBox.Dy()).
+			Msg("red zone and deploy line detected")
+	} else {
+		gocv.PutText(&redImg, "NO RED ZONE DETECTED - using fallback",
+			image.Pt(10, 30), gocv.FontHersheySimplex, 0.6, color.RGBA{255, 255, 0, 255}, 2)
+		log.Warn().Msg("no red zone detected, using fallback deployment line")
+	}
+	gocv.IMWrite(filepath.Join(*outDir, "00_red_zone.png"), redImg)
+	log.Info().Bool("valid", redZone.Valid).Msg("saved red zone detection")
+
 	// --- Template match log ---
 	tplImg := preScreen.Clone()
 	barROI := image.Rect(0, mBarY, w, h)
@@ -371,7 +444,7 @@ func main() {
 		log.Info().Msg("dry-run mode: skipping actual attack")
 	} else {
 		log.Info().Msg("starting attack deployment")
-		remaining, err := executor.DeployDynamic(strat, preScreen)
+		remaining, err := executor.DeployDynamicV2(strat, preScreen, *strategyPath)
 		if err != nil {
 			log.Error().Err(err).Msg("attack deployment failed")
 		}
@@ -420,7 +493,7 @@ func main() {
 	}
 
 	// --- Build slot diagnostics ---
-	slotDiags := buildSlotDiagnostics(slots, allTaps, prePhaseHealth, postPhaseHealth, w)
+	slotDiags := buildSlotDiagnostics(slots, allTaps, prePhaseHealth, postPhaseHealth, tplLogs, w)
 
 	// --- Build phase logs ---
 	var phaseLogs []PhaseLog
@@ -616,12 +689,22 @@ func pointToSegmentDist(px, py, x1, y1, x2, y2 float64) float64 {
 	return math.Sqrt((px-closestX)*(px-closestX) + (py-closestY)*(py-closestY))
 }
 
-func buildSlotDiagnostics(slots []attack.TroopSlot, allTaps []TapLog, preHealth, postHealth []SlotHealth, w int) []SlotDiagnostics {
+func buildSlotDiagnostics(slots []attack.TroopSlot, allTaps []TapLog, preHealth, postHealth []SlotHealth, tplLogs []TemplateLog, w int) []SlotDiagnostics {
 	var diags []SlotDiagnostics
 	for _, slot := range slots {
 		d := SlotDiagnostics{
 			X:        slot.X,
 			Category: slot.Category,
+		}
+
+		// Find nearest template match for this slot
+		bestDist := 999
+		for _, tpl := range tplLogs {
+			dist := int(math.Abs(float64(tpl.X - slot.X)))
+			if dist < bestDist && dist < 30 { // Within 30px of slot
+				bestDist = dist
+				d.Template = tpl.Unit
+			}
 		}
 
 		// Count taps on this slot
@@ -659,10 +742,15 @@ func buildSlotDiagnostics(slots []attack.TroopSlot, allTaps []TapLog, preHealth,
 
 		// Determine if deployed
 		// Troop/Spell/CC: slot empties after deployment
-		// Hero/Siege: slot shows smaller icon (ability/cage) after deployment
+		// Hero: always stays on bar after deploy (cooldown), so tapped = deployed
+		// Siege: slot shows smaller icon (cage) after deployment
 		d.Deployed = d.FinalEmpty && tapCount > 0
-		if !d.Deployed && tapCount > 0 && (slot.Category == "Hero" || slot.Category == "Siege") {
-			// For heroes/siege: deployed if ratio decreased significantly from pre-attack
+		if !d.Deployed && tapCount > 0 && slot.Category == "Hero" {
+			// Heroes ALWAYS stay on the bar - if tapped, it was deployed
+			d.Deployed = true
+		}
+		if !d.Deployed && tapCount > 0 && slot.Category == "Siege" {
+			// For siege: deployed if ratio decreased significantly from pre-attack
 			ratioDrop := preRatio - d.FinalRatio
 			if ratioDrop > 0.15 {
 				d.Deployed = true
