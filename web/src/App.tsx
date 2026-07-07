@@ -5,29 +5,85 @@ import Feed from './components/Feed';
 import Analytics from './components/Analytics';
 import ConfigView from './components/ConfigView';
 import SettingsView from './components/SettingsView';
-import { 
-  GetStats, 
-  GetAttackHistory, 
-  GetLogs, 
-  GetLiveScreenshot, 
-  SaveConfig, 
-  StartBot, 
-  StopBot, 
+import { EventsOn } from '../wailsjs/runtime';
+import {
+  GetStats,
+  GetAttackHistory,
+  GetLogs,
+  GetLiveScreenshot,
+  SaveConfig,
+  StartBot,
+  StopBot,
   IsRunning,
   ResetStats,
   GetConfig,
-  GetStrategies
+  GetStrategies,
+  GetUpdateStatus,
+  GetAppVersion,
+  CheckForUpdate,
+  DownloadUpdate,
+  ApplyUpdate,
+  InstallAndRestart,
+  SkipCurrentVersion,
+  ClearSkippedVersion,
 } from '../wailsjs/go/main/App';
-import { EventsOn } from '../wailsjs/runtime';
 import { bot, main } from '../wailsjs/go/models';
-import { TabType } from './types';
+import { TabType, UpdateStatus, DEFAULT_UPDATE_STATUS } from './types';
+import UpdateBanner from './components/UpdateBanner';
 import './App.css';
+
+/**
+ * Defensive wrapper around the Wails-generated `EventsOn` that returns
+ * a no-op unsubscribe when the Wails runtime bridge isn't available.
+ *
+ * Why this exists
+ * ─────────────────────────────────────────────────────────────────
+ * The generated `web/wailsjs/runtime/runtime.js` short-circuits via
+ * `window.runtime?.EventsOnMultiple(eventName, callback)` — but when
+ * `window.runtime` itself is undefined (e.g. running the React app
+ * directly in Chrome via `npm run dev`, or a Wails WkWebView that
+ * hasn't received its bridge yet), the inner `EventsOnMultiple`
+ * function reads `.EventsOnMultiple` off `undefined` and throws an
+ * `Uncaught TypeError`. That throw propagates out of the synchronous
+ * useEffect body, React unmounts the whole `<App/>` (no error
+ * boundary in the original tree), the `#root` container becomes
+ * empty, `WebviewIsTransparent: true` lets Wails' dark-zinc
+ * BackgroundColour (#09090b) show through, and the user reports a
+ * "black screen" with no actionable signal.
+ *
+ * Wrapping EventsOn at the call site keeps the defensive measure
+ * scoped to where it's needed and avoids introducing a class
+ * component (the codebase uses React.FC + React.memo throughout).
+ */
+function safeEventsOn(
+  eventName: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  callback: (...args: any[]) => void,
+): () => void {
+  try {
+    return EventsOn(eventName, callback);
+  } catch {
+    // Wails runtime bridge isn't ready yet (development outside wails
+    // dev, or the bridge hasn't injected). Return a no-op unsubscribe
+    // so the cleanup chain in the useEffect still runs cleanly.
+    return () => {};
+  }
+}
 
 const getInitialDarkMode = (): boolean => {
   try {
     const stored = localStorage.getItem('darkMode');
     if (stored !== null) return stored === 'true';
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    // Default to LIGHT, not OS preference.
+    //
+    // macOS's system appearance is dark by default, so honoring
+    // `prefers-color-scheme: dark` here stacks dark on top of dark:
+    // Tailwind `bg-zinc-950` (#09090b) over Wails' macOS dark window
+    // chrome over the WkWebView's transparent layer. The visual result
+    // reads as "black screen" to the user even though every component
+    // is technically painted. The SettingsView toggle still round-trips
+    // the user's explicit choice via `localStorage`.
+    return false;
   } catch {
     return false;
   }
@@ -72,6 +128,11 @@ function App() {
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
   const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarExpanded);
 
+  // Updater state — pushed via `updater_status` event from Go.
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
+  const [appVersion, setAppVersion] = useState('');
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+
   // Config states
   const [goldThreshold, setGoldThreshold] = useState(400000);
   const [elixirThreshold, setElixirThreshold] = useState(400000);
@@ -92,7 +153,7 @@ function App() {
           IsRunning(),
           GetStrategies()
         ]);
-        
+
         setGoldThreshold(conf.search.min_loot_gold);
         setElixirThreshold(conf.search.min_loot_elixir);
         setDeThreshold(conf.search.min_loot_de);
@@ -105,6 +166,20 @@ function App() {
         setAdbPort(conf.device.adb_port);
       } catch (err) {
         console.error('Init failed:', err);
+      }
+
+      // Pull the embedded app version + initial updater snapshot.
+      try {
+        const v = await GetAppVersion();
+        setAppVersion(v);
+      } catch (err) {
+        console.warn('GetAppVersion failed:', err);
+      }
+      try {
+        const s = await GetUpdateStatus();
+        setUpdateStatus(s);
+      } catch (err) {
+        console.warn('GetUpdateStatus failed:', err);
       }
     };
     init();
@@ -138,14 +213,28 @@ function App() {
 
     const screenInterval = setInterval(updateScreenshot, 1000);
 
-    const unsub = EventsOn("state-change", (data: any) => {
+    // Subscribe to Wails-pushed events. `safeEventsOn` wraps the runtime
+    // bridge so a missing `window.runtime` (e.g. `npm run dev` opened in
+    // Chrome directly, or a WkWebView whose bridge hasn't injected yet)
+    // doesn't throw out of this synchronous useEffect body — that throw
+    // propagates and unmounts the React tree, which under
+    // `WebviewIsTransparent: true` presents as the dark-zinc window frame.
+    const unsub = safeEventsOn("state-change", (data: any) => {
       console.log("State changed:", data);
+    });
+
+    // Subscribe to updater_status events pushed every 2s from Go.
+    const unsubUpdater = safeEventsOn("updater_status", (data: UpdateStatus) => {
+      if (data && typeof data === 'object') {
+        setUpdateStatus(data);
+      }
     });
 
     return () => {
       clearInterval(interval);
       clearInterval(screenInterval);
       unsub();
+      unsubUpdater();
     };
   }, []);
 
@@ -214,6 +303,47 @@ function App() {
     }
   };
 
+  // --- Updater handlers (bound to Wails methods on App) ---
+  const handleUpdaterCheck = async () => {
+    try {
+      const s = await CheckForUpdate();
+      setUpdateStatus(s);
+      setUpdateDismissed(false);
+    } catch (err) {
+      console.error('CheckForUpdate failed:', err);
+    }
+  };
+  const handleUpdaterDownload = async (): Promise<string> => {
+    // Returns the local path; UpdateStatus will reflect via the
+    // 2s event ticker (state will flip to 'ready').
+    const path = await DownloadUpdate();
+    const s = await GetUpdateStatus();
+    setUpdateStatus(s);
+    return path;
+  };
+  const handleUpdaterApply = async () => {
+    await ApplyUpdate();
+  };
+  const handleUpdaterOneClick = async () => {
+    // The Go-side InstallAndRestart takes care of stopping the bot,
+    // saving stats, marking the restarting state, spawning the helper,
+    // and exiting the process after a 1s IPC flush window.
+    await InstallAndRestart();
+    // The status will flip to 'restarting' and the React side will
+    // switch to the non-dismissible splash automatically via the
+    // updater_status event listener.
+  };
+  const handleUpdaterSkip = async () => {
+    await SkipCurrentVersion();
+    const s = await GetUpdateStatus();
+    setUpdateStatus(s);
+  };
+  const handleUpdaterClearSkip = async () => {
+    await ClearSkippedVersion();
+    const s = await GetUpdateStatus();
+    setUpdateStatus(s);
+  };
+
   const dashboardProps = useMemo(() => ({
     stats,
     history,
@@ -269,7 +399,21 @@ function App() {
               </div>
               <h1 className="font-headline text-5xl font-bold tracking-tight capitalize text-zinc-950 dark:text-white">{tab}</h1>
             </div>
-            <div className="flex gap-4">
+            <div className="flex gap-4 items-center">
+              {!updateDismissed && (
+                <UpdateBanner
+                  status={updateStatus}
+                  appVersion={appVersion}
+                  isBotRunning={isRunning}
+                  onCheckNow={handleUpdaterCheck}
+                  onDownload={handleUpdaterDownload}
+                  onApply={handleUpdaterApply}
+                  onUpdateAndRestart={handleUpdaterOneClick}
+                  onSkip={handleUpdaterSkip}
+                  onClearSkip={handleUpdaterClearSkip}
+                  onDismiss={() => setUpdateDismissed(true)}
+                />
+              )}
               <div className="bg-white dark:bg-zinc-900 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md">
                 <div className="relative">
                   <div className={`w-2.5 h-2.5 rounded-full ${stats.adb_health.consecutive_fails === 0 ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></div>
@@ -285,12 +429,16 @@ function App() {
           {tab === 'analytics' && <Analytics stats={stats} />}
           {tab === 'config' && <ConfigView {...configProps} />}
           {tab === 'settings' && (
-            <SettingsView 
-              stats={stats} 
-              adbPort={adbPort} 
-              darkMode={darkMode} 
-              setDarkMode={setDarkMode} 
-              onResetStats={handleReset} 
+            <SettingsView
+              stats={stats}
+              adbPort={adbPort}
+              darkMode={darkMode}
+              setDarkMode={setDarkMode}
+              onResetStats={handleReset}
+              appVersion={appVersion}
+              updateStatus={updateStatus}
+              onCheckUpdates={handleUpdaterCheck}
+              onClearSkip={handleUpdaterClearSkip}
             />
           )}
         </div>

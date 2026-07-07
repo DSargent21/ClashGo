@@ -1,6 +1,6 @@
 import React from 'react';
 import { TabType } from '../types';
-import logo from '../assets/images/logo-universal.png';
+import logo from '../assets/images/clashgo-logo.png';
 
 interface SidebarProps {
   tab: TabType;
@@ -50,14 +50,11 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
     <div className="flex flex-col h-full py-8 px-4 relative z-20">
       <div className="flex items-center mb-10 px-0 overflow-hidden draggable">
         <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center no-drag">
-          <div className="w-10 h-10 bg-white dark:bg-zinc-800 rounded-xl flex items-center justify-center shadow-premium dark:shadow-none border border-zinc-100 dark:border-zinc-700">
-            <img 
-              src={logo} 
-              alt="Logo" 
-              className="w-7 h-7 object-contain" 
-              style={{ width: '28px', height: '28px' }} 
-            />
-          </div>
+          <img
+            src={logo}
+            alt="ClashGO Logo"
+            className="w-9 h-9 object-contain dark:invert"
+          />
         </div>
         <div className={`transition-[opacity,transform] duration-200 ease-out ml-2 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'}`}>
           <h1 className="font-headline text-lg font-bold tracking-tight whitespace-nowrap text-zinc-950 dark:text-white">Clash<span className="text-zinc-400 dark:text-zinc-500 font-medium ml-0.5">GO</span></h1>
