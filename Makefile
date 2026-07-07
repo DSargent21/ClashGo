@@ -4,16 +4,42 @@ BINARY_NAME=bot_cli
 BUILD_DIR=build/bin
 MACOS_VERSION=$(shell sw_vers -productVersion | cut -d . -f 1-2)
 
-.PHONY: all build build-cli build-gui clean
+# Build metadata — shared between the CLI build (-tags cli) and the
+# Wails GUI build (build/darwin). Override VERSION on the command line
+# before running `make release`:
+#
+#     make release VERSION=0.2.0-beta
+#
+# The same value goes into:
+#   - Go ldflags (binary --version)
+#   - Wails .app Info.plist (productVersion)
+#   - The release zip filename (-v<VERSION>-macOS)
+#   - The latest.json manifest emitted alongside the zip
+ifeq ($(origin VERSION),undefined)
+VERSION := $(shell grep '"productVersion":' wails.json | cut -d '"' -f 4)
+endif
+VERSION_TAG := v$(VERSION)
+GIT_COMMIT  := $(shell git rev-parse HEAD 2>/dev/null || echo "none")
+BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+RELEASE_ZIP := ClashGO-v$(VERSION)-macOS.zip
+
+# ldflags injected into both the CLI binary and the Wails GUI binary.
+# Variables must match the package-level var names in version.go
+# (main.version / main.commit / main.date).
+LDFLAGS := -X main.version=$(VERSION) \
+           -X main.commit=$(GIT_COMMIT) \
+           -X main.date=$(BUILD_DATE)
+
+.PHONY: all build build-cli build-gui clean release manifest
 
 all: build-cli build-gui
 
 build: build-cli build-gui
 
 build-cli:
-	@echo "Building CLI..."
+	@echo "Building CLI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -o $(BUILD_DIR)/$(BINARY_NAME) .
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
 
 # one-shot attack: capture screen, design placements per unit, deploy via
 # formula. No game restart, no bot search loop. Single command. Always
@@ -22,7 +48,7 @@ build-cli:
 attack-once: build-cli
 	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME)
 
-.PHONY: attack-once attack-once-cli auto-attack auto-attack-right auto-attack-left auto-attack-top auto-attack-bottom attack-record attack-replay
+.PHONY: attack-once attack-once-cli auto-attack auto-attack-right auto-attack-left auto-attack-top auto-attack-bottom attack-record attack-replay attack-classify
 
 attack-once-cli: build-cli
 	@./run_designed_attack.sh \
@@ -40,10 +66,8 @@ auto-attack: build-cli
 auto-attack-right: auto-attack
 auto-attack-left: build-cli
 	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge left
-
 auto-attack-top: build-cli
 	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge top
-
 auto-attack-bottom: build-cli
 	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge bottom
 
@@ -89,32 +113,47 @@ attack-classify: build-attack-record
 		--dry-run 2>&1 | grep -E 'slot|deploy|dry-run'
 
 build-gui:
-	@echo "Building GUI..."
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) wails build -o ClashGO
+	@echo "Building GUI (version=$(VERSION), commit=$(GIT_COMMIT))..."
+	@mkdir -p $(BUILD_DIR)
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) wails build -o ClashGO -ldflags "$(LDFLAGS)"
+
+# manifest target — produces build/bin/latest.json once the zip is on
+# disk. Standalone so it can be invoked from CI without a full GUI
+# build. Run after `build-cli` (which produces the zip via `release`).
+manifest:
+	@echo "Building release_manifest helper..."
+	@mkdir -p $(BUILD_DIR)
+	@go build -o $(BUILD_DIR)/release_manifest ./cmd/release_manifest
+	@echo "Emitting build/bin/latest.json for $(VERSION)..."
+	@./build/bin/release_manifest \
+		-version $(VERSION) \
+		-zip $(BUILD_DIR)/$(RELEASE_ZIP) \
+		-min-supported $(shell echo "$(VERSION)" | sed -E 's/-.*//; s/^([0-9]+\.[0-9]+)\.[0-9]+.*/\1.0/') \
+		-out $(BUILD_DIR)/latest.json \
+		-repo Ducky705/ClashGO \
+		-os darwin
 
 package: build-gui
-	@echo "Packaging DMG..."
-	@mkdir -p $(BUILD_DIR)/dmg
-	@cp -R $(BUILD_DIR)/ClashGO.app $(BUILD_DIR)/dmg/
-	@mkdir -p $(BUILD_DIR)/dmg/ClashGO.app/Contents/Resources/assets
-	@cp -R assets/* $(BUILD_DIR)/dmg/ClashGO.app/Contents/Resources/assets/
-	@ln -s /Applications $(BUILD_DIR)/dmg/Applications
-	@rm -f $(BUILD_DIR)/ClashGO.dmg
-	hdiutil create -volname "ClashGO" -srcfolder $(BUILD_DIR)/dmg -ov -format UDZO $(BUILD_DIR)/ClashGO.dmg
-	@rm -rf $(BUILD_DIR)/dmg
-	@echo "DMG created at $(BUILD_DIR)/ClashGO.dmg"
+	@echo "Packaging DMG via tools/build_dmg.sh..."
+	@bash tools/build_dmg.sh $(BUILD_DIR)/ClashGO.app $(BUILD_DIR)/ClashGO.dmg "ClashGO Installer"
 
-VERSION=$(shell grep '"productVersion":' wails.json | cut -d '"' -f 4)
+# note: tools/build_dmg.sh runs standalone \u2014 no Make dependency on the
+# caller. Callers (CI / `make release`) still trigger `package` to keep
+# the legacy make-graph intact.
 
-release: build-cli package
-	@echo "Creating versioned release ZIP for v$(VERSION)..."
+release: build-cli package build-zip manifest
+	@echo "Release v$(VERSION) emitted:"
+	@echo "  - $(BUILD_DIR)/ClashGO-v$(VERSION)-macOS.zip"
+	@echo "  - $(BUILD_DIR)/ClashGO.dmg"
+	@echo "  - $(BUILD_DIR)/latest.json (publish alongside the zip on GitHub)"
+
+# build-zip turns the packaged .app into the zip artifact.
+build-zip:
+	@echo "Building release zip..."
 	@mkdir -p $(BUILD_DIR)/release
-	@cp $(BUILD_DIR)/ClashGO.dmg $(BUILD_DIR)/release/
-	@cp $(BUILD_DIR)/bot_cli $(BUILD_DIR)/release/
-	@cp -R assets $(BUILD_DIR)/release/
-	@cd $(BUILD_DIR)/release && zip -r ../../ClashGO-v$(VERSION)-macOS.zip .
+	@cp -R $(BUILD_DIR)/ClashGO.app $(BUILD_DIR)/release/
+	@cd $(BUILD_DIR)/release && zip -r ../$(RELEASE_ZIP) ClashGO.app
 	@rm -rf $(BUILD_DIR)/release
-	@echo "Release ZIP created: ClashGO-v$(VERSION)-macOS.zip"
 
 clean:
 	rm -rf $(BUILD_DIR)/*

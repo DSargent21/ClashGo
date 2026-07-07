@@ -51,3 +51,44 @@ export interface BotConfig {
 }
 
 export type TabType = 'dashboard' | 'feed' | 'analytics' | 'config' | 'settings';
+
+// UpdateStatus mirrors internal/updater.Status (Go side).
+// Casing follows Wails JSON convention (snake_case). Keep field names
+// in sync with the Go struct — renaming here without updating
+// updater.Status will break the banner silently.
+export interface UpdateStatus {
+  current_version: string;
+  latest_version: string;
+  available: boolean;
+  // 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'installing' | 'error' | 'up_to_date'
+  state: string;
+  progress: number; // 0..1
+  notes: string;
+  release_url: string;
+  asset_name: string;
+  download_path: string;
+  expected_size: number;
+  downloaded_size: number;
+  error: string;
+  last_checked_unix: number;
+  skip_version: string;
+  min_supported: string;
+}
+
+export const DEFAULT_UPDATE_STATUS: UpdateStatus = {
+  current_version: '',
+  latest_version: '',
+  available: false,
+  state: 'idle',
+  progress: 0,
+  notes: '',
+  release_url: '',
+  asset_name: '',
+  download_path: '',
+  expected_size: 0,
+  downloaded_size: 0,
+  error: '',
+  last_checked_unix: 0,
+  skip_version: '',
+  min_supported: '',
+};

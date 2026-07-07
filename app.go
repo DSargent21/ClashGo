@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/logger"
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/updater"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/rs/zerolog/log"
@@ -31,6 +33,11 @@ type App struct {
 	echo      *echo.Echo
 	lastStats bot.BotStats
 	logBuffer []string
+
+	// Updater wiring
+	updater       *updater.Service
+	updaterBgCtx  context.Context
+	updaterBgStop context.CancelFunc
 }
 
 type WailsLogWriter struct {
@@ -42,14 +49,14 @@ func (w *WailsLogWriter) Write(p []byte) (n int, err error) {
 	if w.app.ctx != nil {
 		runtime.EventsEmit(w.app.ctx, "bot_log", msg)
 	}
-	
+
 	w.app.mu.Lock()
 	w.app.logBuffer = append(w.app.logBuffer, msg)
 	if len(w.app.logBuffer) > 100 {
 		w.app.logBuffer = w.app.logBuffer[len(w.app.logBuffer)-100:]
 	}
 	w.app.mu.Unlock()
-	
+
 	return len(p), nil
 }
 
@@ -57,6 +64,7 @@ func (w *WailsLogWriter) Write(p []byte) (n int, err error) {
 func NewApp() *App {
 	return &App{
 		logBuffer: make([]string, 0, 100),
+		updater:   updater.New(updater.DefaultConfig(version)),
 	}
 }
 
@@ -73,12 +81,71 @@ func (a *App) startup(ctx context.Context) {
 	wailsWriter := &WailsLogWriter{app: a}
 	logger.Init(os.Getenv("DEBUG") != "", wailsWriter)
 
-	// Start Web Server for Remote Access
-	go a.startWebServer()
+	// Bring up the updater service. If NewApp wasn't used (rare
+	// test scaffold), construct lazily.
+	if a.updater == nil {
+		a.updater = updater.New(updater.DefaultConfig(version))
+	}
+	a.updater.CleanupOrphanDownloads()
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	a.updaterBgCtx = bgCtx
+	a.updaterBgStop = bgCancel
+	a.updater.StartBackgroundPoller(bgCtx)
+	go a.forwardUpdaterStatus(bgCtx)
+
+	// Skip the standalone web dashboard on `wails dev`. Wails injects
+	// its own dev proxy at :34115 → Vite at :5173 by parsing stdout
+	// for `http://host:port` patterns. If we start Echo (which prints
+	// its own listen URL), `wails dev` mis-reads it as Vite re-pointing
+	// to :8080 and re-aims the WkWebView there — where Echo serves the
+	// (stale or empty) `web/dist` instead of Vite's HMR graph. The user
+	// sees a half-mounted layout on the transparent webview, presenting
+	// as the dark-zinc frame color through the transparent layers, i.e.
+	// a "black screen after 1 second".
+	//
+	// IMPORTANT: detect dev mode via Wails' canonical runtime API rather
+	// than an env-var check — the V2 CLI does NOT set WAILS_DEV (or any
+	// equivalent) on the spawned GUI process, so `os.Getenv("WAILS_DEV")`
+	// was always empty and would have started Echo in dev too.
+	if runtime.Environment(ctx).BuildType != "dev" {
+		// Start Web Server for Remote Access (production-only).
+		go a.startWebServer()
+	}
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	if a.updaterBgStop != nil {
+		a.updaterBgStop()
+	}
 	a.saveStats()
+}
+
+// forwardUpdaterStatus pushes the updater's status to the React side
+// on every meaningful change. We use a 2s ticker with equality check
+// to avoid spamming the UI with identical payloads; React renders
+// only when the status struct actually changes.
+func (a *App) forwardUpdaterStatus(ctx context.Context) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	var lastJSON string
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if a.ctx == nil || a.updater == nil {
+				continue
+			}
+			st := a.updater.GetStatus()
+			b, _ := json.Marshal(st)
+			s := string(b)
+			if s == lastJSON {
+				continue
+			}
+			lastJSON = s
+			runtime.EventsEmit(a.ctx, "updater_status", st)
+		}
+	}
 }
 
 func (a *App) saveStats() {
@@ -127,6 +194,11 @@ func (a *App) ResetStats() {
 func (a *App) startWebServer() {
 	e := echo.New()
 	e.HideBanner = true
+	// Defense in depth: even if a future startup path accidentally enables
+	// startWebServer under wails dev (e.g. removing the WAILS_DEV gate),
+	// suppressing the listen-port banner removes the `http://host:port`
+	// pattern that `wails dev` parses for proxy-target discovery.
+	e.HidePort = true
 	e.Use(middleware.CORS())
 
 	// Basic API for remote control
@@ -149,7 +221,16 @@ func (a *App) startWebServer() {
 	// Or we can serve the built dist folder if it exists
 	e.Static("/", "web/dist")
 
-	log.Info().Msg("Web Dashboard available at http://127.0.0.1:8080")
+	// NOTE: do NOT print "http://127.0.0.1:8080" here — `wails dev` watches
+	// stdout for `http://host:port` patterns to discover the Vite dev
+	// server, and it would mis-read this line as Vite's URL flipping to
+	// :8080. Once that happens the WkWebView gets re-pointed to the Echo
+	// server, which serves an empty / stale `web/dist/` in dev (Vite
+	// never writes to disk in dev), leaving the window painted as the
+	// WkWebView's transparent background — i.e. the `bg-zinc-950` frame
+	// color, which presents as a solid black screen. Keep this as a plain
+	// "port NNN" string so the regex in `wails dev` ignores it.
+	log.Info().Msg("Web Dashboard available on port 8080")
 	if err := e.Start("127.0.0.1:8080"); err != nil {
 		log.Error().Err(err).Msg("failed to start web server")
 	}
@@ -184,7 +265,7 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 		if err != nil {
 			log.Error().Err(err).Msg("failed to initialize bot")
 			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Initialization Error: %v", err))
-			
+
 			a.mu.Lock()
 			a.cancel()
 			a.bot = nil
@@ -209,7 +290,7 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 		if err := a.bot.Start(); err != nil {
 			log.Error().Err(err).Msg("failed to start bot")
 			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Start Error: %v", err))
-			
+
 			a.mu.Lock()
 			a.bot = nil
 			a.mu.Unlock()
@@ -259,7 +340,6 @@ func (a *App) StopBot() BotStatus {
 	return BotStatus{Running: false, Message: "Bot stopped"}
 }
 
-
 // IsRunning returns if the bot is currently running
 func (a *App) IsRunning() bool {
 	a.mu.Lock()
@@ -276,7 +356,7 @@ func (a *App) GetConfig() *config.BotConfig {
 func (a *App) GetStats() bot.BotStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	
+
 	res := a.lastStats
 	if a.bot != nil {
 		current := a.bot.Stats()
@@ -337,16 +417,21 @@ func (a *App) GetLiveScreenshot() (string, error) {
 	a.mu.Unlock()
 
 	if client == nil {
-		cfg := config.LoadOrDefault("config.json")
-		client = adb.NewClient(
-			adb.WithHost(cfg.Device.ADBHost),
-			adb.WithPort(cfg.Device.ADBPort),
-		)
-		client.DeviceID = cfg.Device.DeviceID
-		if err := client.Connect(); err != nil {
-			return "", err
-		}
-		defer client.Close()
+		// Bot isn't running and we have no client to fall back to.
+		// React's setInterval(updateScreenshot, 1000) calls this IPC
+		// method once per second. When ADB is offline, an unbounded
+		// adb.Connect() here stacks a goroutine per tick and floods
+		// Wails' IPC bridge until the webview hangs on a black frame.
+		// Returning empty is the correct placeholder while the bot
+		// isn't started; once the user clicks Start, the running-bot
+		// branch above (GetLastFrame / a.bot.GetClient()) takes over.
+		//
+		// IMPORTANT: if you ever re-add client.Connect() below, it
+		// MUST be wrapped in a finite context.WithTimeout(<=2*time.Second)
+		// so a single stalled connect cannot pin a goroutine — see
+		// the IPC-bridge-storm comment above. Without a timeout, this
+		// method will re-black-screen wails dev on adb-unreachable launch.
+		return "", nil
 	}
 
 	mat, err := client.CaptureToMat()
@@ -414,3 +499,137 @@ func (a *App) GetStrategies() []string {
 	return files
 }
 
+// ---- Updater bindings ----
+//
+// The following methods are exposed to the React side via Wails. The
+// names are stable; renaming requires regenerating wailsjs/ bindings
+// AND matching the UpdateBanner.tsx imports.
+
+// GetAppVersion returns the embedded build version (ldflags-injected
+// by the Makefile — see version.go).
+func (a *App) GetAppVersion() string { return version }
+
+// GetUpdateStatus returns the current updater status snapshot.
+func (a *App) GetUpdateStatus() updater.Status {
+	if a.updater == nil {
+		return updater.Status{
+			CurrentVersion: version,
+			State:          updater.StateError,
+			Error:          "updater not initialized",
+		}
+	}
+	return a.updater.GetStatus()
+}
+
+// CheckForUpdate triggers an immediate GitHub-Releases check. Returns
+// the fresh status; the `updater_status` event is also emitted.
+func (a *App) CheckForUpdate() (updater.Status, error) {
+	if a.updater == nil {
+		return updater.Status{State: updater.StateError}, fmt.Errorf("updater not initialized")
+	}
+	return a.updater.Check(a.ctx)
+}
+
+// DownloadUpdate downloads + SHA256-verifies the matched asset. The
+// result is the absolute path of the verified file.
+func (a *App) DownloadUpdate() (string, error) {
+	if a.updater == nil {
+		return "", fmt.Errorf("updater not initialized")
+	}
+	return a.updater.Download(a.ctx)
+}
+
+// ApplyUpdate opens the downloaded zip in Finder so the user can
+// drag-replace the running app (Phase-2 fast / always-works path).
+// Use InstallAndRestart for an in-place auto-replace.
+func (a *App) ApplyUpdate() error {
+	if a.updater == nil {
+		return fmt.Errorf("updater not initialized")
+	}
+	return a.updater.Apply()
+}
+
+// InstallAndRestart is the one-click auto-install path.
+// Sequence (intentional ordering):
+//  1. Stop the bot synchronously so ADB + stats flush cleanly.
+//  2. Save persisted stats via the existing path.
+//  3. Mark Status=StateRestarting so React covers the Wails ↔ helper
+//     transition with a non-dismissible splash.
+//  4. Spawn updater.ApplyAuto() which detaches install_update.sh.
+//  5. Schedule os.Exit(0) AFTER a short delay so the IPC reply has
+//     time to land at React before the process dies (about 1s is
+//     safe on the local socket). Using runtime.Quit is tempting but
+//     races with the helper script's `kill -0 $PPID` loop.
+//
+// Returns nil iff the helper was successfully started. If the helper
+// fails afterwards, it's the helper's responsibility to surface a
+// native macOS notification (see install_update.sh).
+func (a *App) InstallAndRestart() error {
+	if a.updater == nil {
+		return fmt.Errorf("updater not initialized")
+	}
+
+	// Step 1: stop the bot synchronously if running.
+	if a.IsRunning() {
+		log.Info().Msg("InstallAndRestart: stopping bot to drain ADB before exit")
+		_ = a.StopBot()
+	}
+
+	// Step 2: flush persistent stats. saveStats is idempotent + safe
+	// even when no bot is running.
+	a.saveStats()
+
+	// Step 3: cover the Wails exit + helper wait window.
+	// We deliberately do NOT emit "updater_status" here — the 2s
+	// ticker in forwardUpdaterStatus emits within ~2s and we don't
+	// want React to receive two close-in-time events (the IPC emit
+	// + the ticker race). SetState alone is enough.
+	a.updater.SetState(updater.StateRestarting)
+
+	// Step 4: detach the helper script. Returns (started, error).
+	// If false, the helper is missing (e.g. dev build); fall back to
+	// Finder-open and don't exit.
+	started, err := a.updater.ApplyAuto()
+	if err != nil || !started {
+		log.Warn().Err(err).Msg("InstallAndRestart: helper unavailable, falling back to Finder")
+		_ = a.updater.Apply()
+		// Revert state so the UI comes back to "ready" instead of
+		// staying on the restart splash.
+		a.updater.SetState(updater.StateReady)
+		return err
+	}
+
+	// Step 5: exit cleanly so the helper script's PID wait resolves.
+	// 1s delay gives the Wails JS bridge time to flush our success
+	// response + the splash render before the process vanishes.
+	go func() {
+		time.Sleep(1 * time.Second)
+		log.Info().Msg("InstallAndRestart: helper detached, exiting for bundle swap")
+		os.Exit(0)
+	}()
+
+	return nil
+}
+
+// SkipCurrentVersion marks the current latest version as "skip this".
+// Persisted to ~/Library/Application Support/ClashGO/skip_version.txt.
+func (a *App) SkipCurrentVersion() error {
+	if a.updater == nil {
+		return fmt.Errorf("updater not initialized")
+	}
+	st := a.updater.GetStatus()
+	if st.LatestVersion == "" {
+		return fmt.Errorf("no version available to skip")
+	}
+	a.updater.SetSkipVersion(st.LatestVersion)
+	return nil
+}
+
+// ClearSkippedVersion is the inverse of SkipCurrentVersion.
+func (a *App) ClearSkippedVersion() error {
+	if a.updater == nil {
+		return fmt.Errorf("updater not initialized")
+	}
+	a.updater.SetSkipVersion("")
+	return nil
+}

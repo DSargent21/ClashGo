@@ -385,37 +385,71 @@ func (b *Bot) captureLoop() {
 	}
 }
 
+// recordActivity marks the bot as having taken a meaningful action.
+// Called after real forward progress (successful clicks/state transitions)
+// so the stuck-check distinguishes "spinning" from "working".
+func (b *Bot) recordActivity() {
+	b.lastAction = time.Now()
+}
+
+// checkStuck enforces a global watchdog: if the capture pipeline is dead,
+// or if the bot is in-progress for absurdly long, or has been sitting in
+// one place doing nothing for too long, we cycle the game to recover from
+// hangs / dialogs / out-of-game screens without requiring user intervention.
 func (b *Bot) checkStuck(gc *game.GameContext) {
-	// Don't check stuckTimeout if an attack sequence is running, 
-	// but do check if the sequence itself has been running for an absurdly long time.
+	// 1. Capture pipeline watchdog: catches dead ADB / emulator before the
+	// slower time-based watchdogs below can fire (and ensures restarts reset
+	// the zoom state, which trusts that captures are returning frames).
+	if gc.ReadHealth().ConsecutiveFails >= 10 {
+		b.logger.Error().
+			Int("consecutive_fails", gc.ReadHealth().ConsecutiveFails).
+			Str("state", gc.State.String()).
+			Msg("capture pipeline appears dead, triggering emergency restart...")
+		b.restartGame()
+		b.lastSequenceStart = time.Now()
+		return
+	}
+
+	// 2. Per-attack absolute ceiling: a single attack cycle (clicks → search →
+	// deploy → battle end → return home) is bounded by lastSequenceStart.
+	// WaitForBattleEnd alone can take ~4 min, so we keep a generous 15-min
+	// window here. The activity-based watchdog below is bypassed for the
+	// duration of a sequence because long inner phases (deploy) intentionally
+	// have quiet stretches where no recordActivity() tick fires.
 	if b.seqRunning.Load() {
 		if time.Since(b.lastSequenceStart) > 15*time.Minute {
 			b.logger.Warn().
 				Dur("seq_time", time.Since(b.lastSequenceStart)).
-				Msg("attack sequence running too long, triggering emergency restart...")
+				Msg("attack sequence exceeded maximum duration, triggering emergency restart...")
 			b.restartGame()
-			b.lastAction = time.Now()
 			b.lastSequenceStart = time.Now()
 		}
 		return
 	}
 
-	// Determine dynamic timeout: 3m for Battle, 15s otherwise
+	state, _, _ := gc.ReadState()
+
+	// 3. Activity-based watchdog for non-sequence flows. Any successful
+	// click / state transition / post-zoom resets lastAction via
+	// b.recordActivity(), so this only fires when the bot is genuinely stuck
+	// (no clicks landing, no state advance).
 	timeout := b.stuckTimeout
-	if gc.State == game.StateBattle {
+	if state == game.StateBattle {
+		// Battle outside an active sequence is unusual; allow a longer
+		// window before force-cycling.
 		timeout = 3 * time.Minute
 	}
 
-	// If we haven't taken a known action (state transition) in too long
-	if time.Since(b.lastAction) > timeout {
+	stuckTime := time.Since(b.lastAction)
+	if stuckTime > timeout {
 		b.logger.Warn().
-			Str("state", gc.State.String()).
-			Dur("stuck_time", time.Since(b.lastAction)).
+			Str("state", state.String()).
+			Time("last_action", b.lastAction).
+			Dur("stuck_time", stuckTime).
 			Dur("timeout", timeout).
-			Msg("bot appears stuck, triggering emergency restart...")
+			Msg("bot appears stuck without meaningful action, triggering emergency restart...")
 
 		b.restartGame()
-		b.lastAction = time.Now()
 		b.lastSequenceStart = time.Now()
 	}
 }
@@ -477,7 +511,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			if b.zoomedOut.CompareAndSwap(false, true) {
 				b.logger.Info().Msg("village detected, performing MANDATORY initial zoom out...")
 				b.navigator.ZoomOut()
-				b.lastAction = time.Now()
+				b.recordActivity()
 				// Wait for zoom animation to settle (Clash has long momentum)
 				time.Sleep(3000 * time.Millisecond)
 				// Return here so the next loop iteration captures a fresh screen AFTER zoom
@@ -486,11 +520,10 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		}
 	}
 
-	// Update lastAction only on state transition. 
-	// This ensures if we are stuck in a single state without taking action (like clicking attack)
-	// for more than 15s, we trigger a restart.
+	// Update lastAction only on meaningful state transitions. Unknown / Loading
+	// are excluded so a transient flicker doesn't reset the stuck timer.
 	if state != gc.State && state != game.StateUnknown && state != game.StateLoading {
-		b.lastAction = time.Now()
+		b.recordActivity()
 	}
 
 	if gc.ConfirmState(state) {
@@ -517,7 +550,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	if gc.State == game.StateBattleEnd || gc.State == game.StateReturnHome {
 		b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
 		go b.attackExec.ReturnHome()
-		b.lastAction = time.Now()
+		b.recordActivity()
 		return
 	}
 
@@ -718,13 +751,14 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		// Professional High-Speed Click: Use pinpoint with fallback
 		if !b.findAndClick("btn_next", "Next Match", 2) {
 			b.logger.Warn().Msg("template match failed, forcing skip via color/pinpoint")
-			
+
 			// Try color-based fallback before hardcoded coordinates
 			searchROI := image.Rect(b.cal.PhysicalW/2, b.cal.PhysicalH/2, b.cal.PhysicalW, b.cal.PhysicalH)
 			orangePt, err := vision.PixelSearch(screen, searchROI, 252, 186, 54, 50)
 			if err == nil {
 				b.logger.Info().Msg("clicking Next via orange color fallback")
 				b.client.Tap(orangePt.X, orangePt.Y)
+				b.recordActivity()
 			} else {
 				// Final hardcoded fallback
 				b.DumpDiagnostics("next_button_not_found", screen, map[string]interface{}{
@@ -732,6 +766,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				})
 				nextX, nextY := b.cal.ScaleRef(796, 565)
 				b.client.Tap(nextX, nextY)
+				b.recordActivity()
 			}
 		}
 
@@ -1094,6 +1129,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 		b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
 		if err := b.client.Tap(px, py); err == nil {
 			time.Sleep(1000 * time.Millisecond) // Wait for UI transition
+			b.recordActivity() // successful click = real progress
 			return true
 		}
 	}
@@ -1152,6 +1188,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 				screen.Close()
 				b.logger.Info().Str("step", stepName).Msg("secondary pinpoint match (upper battle), clicking...")
 				if err := b.client.Tap(altX, altY); err == nil {
+					b.recordActivity()
 					return true
 				}
 				screen, _ = b.client.CaptureToMat() // Re-capture if tap failed somehow
@@ -1194,6 +1231,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			b.logger.Error().Err(err).Msg("tap failed")
 			return false
 		}
+		b.recordActivity() // successful template-based click = real progress
 
 		return true
 	}
@@ -1203,6 +1241,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 		px, py := b.cal.ScaleRef(pp.X, pp.Y)
 		b.logger.Warn().Str("step", pp.Name).Msg("pinpoint color check and template match failed; executing blind tap fallback")
 		if err := b.client.Tap(px, py); err == nil {
+			b.recordActivity() // successful blind tap = real progress
 			return true
 		}
 	}
@@ -1259,6 +1298,14 @@ func (b *Bot) colorCheck(screen gocv.Mat, x, y int, lower, upper gocv.Scalar, mi
 	return gocv.CountNonZero(mask) > minPixels
 }
 
+// dismissInterruptions taps its way through transient overlays. Note that
+// these direct taps intentionally DO NOT call recordActivity() — if a dialog
+// is truly stuck and refusing to dismiss, we want the global stuck watchdog
+// to fire and cycle the game rather than mask the hang as forward progress.
+//
+// If the dismiss is actually working, the resulting state transition (caught
+// by the captureLoop's next frame) will reset lastAction via recordActivity()
+// on its own.
 func (b *Bot) dismissInterruptions() {
 	screen, err := b.client.CaptureToMat()
 	if err != nil {

@@ -12,7 +12,10 @@ var (
 )
 
 func init() {
-	// Default to current working directory (dev mode)
+	// Default to current working directory (dev mode).
+	// Note: CLASHGO_CONFIG_DIR / CLASHGO_ASSETS_DIR overrides are
+	// read at call time inside GetConfigDir / GetAssetsDir so tests
+	// using t.Setenv() actually redirect.
 	assetsDir = "assets"
 	configDir = "."
 
@@ -62,8 +65,13 @@ func init() {
 	}
 }
 
-// GetAssetsDir returns the absolute path to the assets directory
+// GetAssetsDir returns the absolute path to the assets directory.
+// CLASHGO_ASSETS_DIR overrides resolution at call time for tests +
+// portable installs.
 func GetAssetsDir() string {
+	if override := os.Getenv("CLASHGO_ASSETS_DIR"); override != "" {
+		return override
+	}
 	abs, err := filepath.Abs(assetsDir)
 	if err != nil {
 		return assetsDir
@@ -71,8 +79,16 @@ func GetAssetsDir() string {
 	return abs
 }
 
-// GetConfigDir returns the absolute path to the directory for writable config/data files
+// GetConfigDir returns the absolute path to the directory for writable
+// config/data files. CLASHGO_CONFIG_DIR overrides resolution at call
+// time — useful for tests (via t.Setenv) and for users who want a
+// portable install (state next to the binary, not ~/Library/Application
+// Support). Reading at call time matters because Go's package init()
+// runs once before any test's t.Setenv would land.
 func GetConfigDir() string {
+	if override := os.Getenv("CLASHGO_CONFIG_DIR"); override != "" {
+		return override
+	}
 	abs, err := filepath.Abs(configDir)
 	if err != nil {
 		return configDir

@@ -408,3 +408,48 @@ export namespace main {
 
 }
 
+export namespace updater {
+	
+	export class Status {
+	    current_version: string;
+	    latest_version: string;
+	    available: boolean;
+	    state: string;
+	    progress: number;
+	    notes: string;
+	    release_url: string;
+	    asset_name: string;
+	    download_path: string;
+	    expected_size: number;
+	    downloaded_size: number;
+	    error: string;
+	    last_checked_unix: number;
+	    skip_version: string;
+	    min_supported: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current_version = source["current_version"];
+	        this.latest_version = source["latest_version"];
+	        this.available = source["available"];
+	        this.state = source["state"];
+	        this.progress = source["progress"];
+	        this.notes = source["notes"];
+	        this.release_url = source["release_url"];
+	        this.asset_name = source["asset_name"];
+	        this.download_path = source["download_path"];
+	        this.expected_size = source["expected_size"];
+	        this.downloaded_size = source["downloaded_size"];
+	        this.error = source["error"];
+	        this.last_checked_unix = source["last_checked_unix"];
+	        this.skip_version = source["skip_version"];
+	        this.min_supported = source["min_supported"];
+	    }
+	}
+
+}
+

@@ -12,6 +12,8 @@ config.json.bak
 .env
 stats.json
 attack_history.json
+# In-app updater runtime state (per-user skip preference, NOT code)
+internal/updater/skip_version.txt
 
 # IDEs & Editor configs
 .vscode/

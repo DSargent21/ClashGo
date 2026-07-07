@@ -18,10 +18,9 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var (
-	version = "dev"
-	commit  = "none"
-)
+// version + commit vars live in version.go (no build tag) so they're
+// shared by both the `cli` build (this file) and the Wails GUI build
+// (main.go). The Makefile overrides them via `-ldflags`.
 
 // deployOnly is hoisted to package scope so main() can branch on it.
 // flag.BoolVar binds the flag declaration to this variable.
