@@ -264,7 +264,13 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		// Select slot
 		sw.executor.TapSlot(slot, 4)
-		sw.executor.HumanSleep(35, 10)
+		// 150ms matches the orchestrator + hero-slot settle floor.
+		// The previous 35ms was too short — CoC's slot-selection
+		// animation can run longer than that on slow shells or
+		// immediately after a prior phase's last deploy, and the
+		// first fireTapsBatched tap would land on the previous
+		// unit-type cursor instead of the intended retry.
+		sw.executor.HumanSleep(150, 30)
 
 		sw.logger.Info().
 			Int("x", slot.X).

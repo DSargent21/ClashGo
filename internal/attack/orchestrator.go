@@ -230,7 +230,17 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			}
 
 			tapExec.TapSlot(up.Slot, 8)
-			tapExec.HumanSleep(35, 10)
+			// 150ms is the empirically-required CoC slot-selection
+			// animation floor (matches deploySingleHero's settle on
+			// heroes). The previous 35ms was too fast: the bot
+			// frequently "selected" the ED slot but CoC was still
+			// mid-animation from the prior phase, so taps fired on
+			// the OLD unit type instead of ED. Live data:
+			// auto_edrag_rush showed zero EDs on the field after
+			// the deploy despite the bot reporting "all units
+			// successfully deployed". Same fix applies to Spells +
+			// Siege (they share the 35ms gap and the same bug).
+			tapExec.HumanSleep(150, 30)
 
 			success := spellDeployer.DeploySpell(up.Unit, up.Slot, targetEdge, plan.Phase.Pattern)
 			if success {
@@ -240,18 +250,18 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 
 		// Deploy troops
 		heroMgr := NewHeroManager(tapExec, slotMgr, pCfg, targetEdge, w, h, formulaPtr, e.logger)
-	// Bridge: when HeroManager's resolveHeroTarget fires for the
-	// Dragon Duke, route the event through Executor.OnDukePick so a
-	// single observer (live bot's NDJSON writer, debug_test's
-	// recorder) sees BOTH the legacy adjacent-corner random pick and
-	// the new "follow the chosen edge" behavior. chosen == target in
-	// the new path — Duke falls through to the chosen edge with a
-	// random point along it.
-	heroMgr.OnDukeDeployed = func(target string) {
-		if e.OnDukePick != nil {
-			e.OnDukePick(target, target)
+		// Bridge: when HeroManager's resolveHeroTarget fires for the
+		// Dragon Duke, route the event through Executor.OnDukePick so a
+		// single observer (live bot's NDJSON writer, debug_test's
+		// recorder) sees BOTH the legacy adjacent-corner random pick and
+		// the new "follow the chosen edge" behavior. chosen == target in
+		// the new path — Duke falls through to the chosen edge with a
+		// random point along it.
+		heroMgr.OnDukeDeployed = func(target string) {
+			if e.OnDukePick != nil {
+				e.OnDukePick(target, target)
+			}
 		}
-	}
 		for _, up := range ResolveTroopTargets(plan) {
 			if up.Slot == nil {
 				continue
@@ -266,7 +276,17 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			}
 
 			tapExec.TapSlot(up.Slot, 8)
-			tapExec.HumanSleep(35, 10)
+			// 150ms is the empirically-required CoC slot-selection
+			// animation floor (matches deploySingleHero's settle on
+			// heroes). The previous 35ms was too fast: the bot
+			// frequently "selected" the ED slot but CoC was still
+			// mid-animation from the prior phase, so taps fired on
+			// the OLD unit type instead of ED. Live data:
+			// auto_edrag_rush showed zero EDs on the field after
+			// the deploy despite the bot reporting "all units
+			// successfully deployed". Same fix applies to Spells +
+			// Siege (they share the 35ms gap and the same bug).
+			tapExec.HumanSleep(150, 30)
 
 			detectedCount := GetCountForSlot(troopCounts, up.Slot.X)
 			heroMgr.DeployTroops(up.Unit, up.Slot, plan.Phase.Pattern, plan.Phase.Offset, plan.Phase.Pattern, screen, detectedCount)
@@ -287,7 +307,17 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			}
 
 			tapExec.TapSlot(up.Slot, 8)
-			tapExec.HumanSleep(35, 10)
+			// 150ms is the empirically-required CoC slot-selection
+			// animation floor (matches deploySingleHero's settle on
+			// heroes). The previous 35ms was too fast: the bot
+			// frequently "selected" the ED slot but CoC was still
+			// mid-animation from the prior phase, so taps fired on
+			// the OLD unit type instead of ED. Live data:
+			// auto_edrag_rush showed zero EDs on the field after
+			// the deploy despite the bot reporting "all units
+			// successfully deployed". Same fix applies to Spells +
+			// Siege (they share the 35ms gap and the same bug).
+			tapExec.HumanSleep(150, 30)
 
 			heroMgr.DeploySiege(up.Unit, up.Slot)
 		}
@@ -318,12 +348,16 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		// so authors can spot unintentional bloat. The cap is high
 		// enough for spells (which legitimately need a long settle for
 		// the multi-tap flow to register).
-		const heroSiegeDefault = 30 * time.Millisecond
+		const heroSiegeDefault = 50 * time.Millisecond
+		const interPhaseMin = 50 * time.Millisecond // Safety floor so YAML values like delay_after_ms: 10 do not bypass the inter-phase settle window — CoC needs ~50ms minimum between phases to register the new troop bar state.
 		const maxPhaseDelay = 200 * time.Millisecond
 		pDelay := time.Duration(plan.Phase.DelayAfterMS) * time.Millisecond
 		isHeroOrSiege := strings.Contains(plan.Phase.Name, "Heroes") || strings.Contains(plan.Phase.Name, "Siege")
 		if isHeroOrSiege && pDelay <= 0 {
 			pDelay = heroSiegeDefault
+		}
+		if pDelay < interPhaseMin {
+			pDelay = interPhaseMin
 		}
 		if pDelay > maxPhaseDelay {
 			e.logger.Warn().
@@ -418,7 +452,7 @@ func manualEdgeToDeployLine(edge ManualEdge, targetEdge string, n int) DeployLin
 	}
 	pts := make([]image.Point, n)
 	for i := 0; i < n; i++ {
-		t := float64(i) / float64(n - 1)
+		t := float64(i) / float64(n-1)
 		pts[i] = image.Pt(
 			edge.P1.X+int(t*float64(edge.P2.X-edge.P1.X)),
 			edge.P1.Y+int(t*float64(edge.P2.Y-edge.P1.Y)),
