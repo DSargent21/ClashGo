@@ -213,6 +213,13 @@ func (sw *Sweeper) eventFormulaEntry(slot *TrackedSlot) (formula.UnitEntry, bool
 // TapTriple-along-line loop below - which spreads taps across the line and
 // is wrong for a single hero drop.
 //
+// Defense-in-depth: a Siege slot that ARIVED here is a bug — DeploySiege
+// in HeroManager owns sieges end-to-end and now always marks the slot
+// deployed via slot.UnitName on success. Skipping here avoids the
+// 12-48 wasted taps the live test showed (3 deploySlot retries × ~4
+// TapTriple batches × 3 taps = ~36 wasted taps per attack when the
+// empty-check returned false even though the siege was already down).
+//
 // Empty-slot guard: between TapTriple batches, capture a fresh screen
 // and check `isSlotEmptyStatic`. If the slot emptied, mark `IsEmpty`
 // + return success IMMEDIATELY so we don't fire extra troops into a
@@ -226,6 +233,18 @@ func (sw *Sweeper) eventFormulaEntry(slot *TrackedSlot) (formula.UnitEntry, bool
 func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) bool {
 	if slot.Category == "Hero" {
 		return sw.deployHeroSlotOnce(slot)
+	}
+
+	// Siege defense-in-depth: see comment above. If we somehow got
+	// here with an undeployed siege slot, do NOT fire taps — they're
+	// guaranteed wasted because DeploySiege already attempted (and
+	// either succeeded silently or already threw a bad harvest).
+	if slot.Category == "Siege" {
+		sw.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("sweep: siege slot arrived undeployed; DeploySiege owns these — skipping to avoid wasted taps")
+		return false
 	}
 
 	// Resolve the line we're going to deploy along. Formula wins for

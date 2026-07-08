@@ -117,7 +117,7 @@ func (hm *HeroManager) DeployHeroes(heroUnits []strategy.Unit, screen gocv.Mat) 
 			Float64("conf", d.Slot.Confidence).
 			Msg("deploying main hero")
 
-		if hm.deploySingleHero(d) {
+		if hm.deploySingleHero(d, screen) {
 			deployedSlots = append(deployedSlots, d.Slot)
 			hm.slotManager.MarkDeployed(d.Unit.Name)
 		} else {
@@ -134,7 +134,7 @@ func (hm *HeroManager) DeployHeroes(heroUnits []strategy.Unit, screen gocv.Mat) 
 			Int("x", d.Slot.X).
 			Msg("deploying bonus hero")
 
-		if hm.deploySingleHero(d) {
+		if hm.deploySingleHero(d, screen) {
 			deployedSlots = append(deployedSlots, d.Slot)
 			hm.slotManager.MarkDeployed(d.Unit.Name)
 		} else {
@@ -158,23 +158,40 @@ func (hm *HeroManager) DeployHeroes(heroUnits []strategy.Unit, screen gocv.Mat) 
 // deployHeroSlotOnce.
 //
 // Steps:
-//  0. Capture pre-ratio BEFORE any tap.
+//  0. Use the parent screen captured ONCE at attack start as the
+//     pre-ratio source for every hero — eliminating per-hero
+//     CaptureFresh() calls and the inter-hero ADB-screencap
+//     deadlock. Sibling hero icons don't visually change when an
+//     adjacent hero deploys, so the parent frame is accurate for
+//     ALL pre-deploy measurements in this loop.
 //  1. SELECT the hero slot.
 //  2. Wait for selection animation (~350ms).
 //  3. Drop with a tight cluster of 3 jittered taps (+/- 3 px).
 //  4. Settle window so the slot transitions out of "highlighted".
 //  5. Capture post-drop ratio; DELTA verify with threshold 0.15.
 //     On failure, the sweeper retries.
-func (hm *HeroManager) deploySingleHero(d HeroDeployment) bool {
+func (hm *HeroManager) deploySingleHero(d HeroDeployment, preScreen gocv.Mat) bool {
 	slot := d.Slot
 
-	// 0. Capture pre-deploy baseline BEFORE any tap.
-	var preRatio float64
-	var capturedPre bool
-	if preScreen, err := hm.executor.CaptureFresh(); err == nil {
+	// 0. Pre-ratio from the attack-start parent screen (shared
+	// across all heroes). Skips 1 CaptureFresh per hero; on a 4-hero
+	// attack saves 4 ADB screencaps × ~75ms each = ~300ms of inter-
+	// hero wait — and importantly removes the screencap deadlock
+	// (the post-capture cost from hero N is no longer hidden behind
+	// hero N+1's pre-boot).
+	preRatio := 0.0
+	capturedPre := !preScreen.Empty()
+	if !capturedPre {
+		// Defensive: if the orchestrator ever passes an uninitialized
+		// (zero) gocv.Mat, fall back to a fresh capture so the
+		// delta verify below still has a baseline.
+		if fresh, err := hm.executor.CaptureFresh(); err == nil {
+			defer fresh.Close()
+			preRatio = GetSlotActivityRatioStatic(fresh, slot.X, slot.Y, hm.w)
+			capturedPre = true
+		}
+	} else {
 		preRatio = GetSlotActivityRatioStatic(preScreen, slot.X, slot.Y, hm.w)
-		preScreen.Close()
-		capturedPre = true
 	}
 
 	// 1. SELECT the hero slot on the troop bar.
@@ -419,13 +436,28 @@ func (hm *HeroManager) DeployTroops(
 // entry for this siege (e.g. stone_slammer → {"type":"point","p":{...}}),
 // the user-pinned geometry wins and the legacy pCfg.Edges path is
 // skipped. Falls back to the dynamic red-zone edge line otherwise.
+//
+// Live-test fix: ON SUCCESS the slot is marked deployed via
+// slot.UnitName (canonical key in unitIndex), NOT via unit.Name.
+// Template matching may identify the slot under a slightly different
+// spelling than the strategy YAML uses, so the
+// strategy-derived `unit.Name` key often fails GetSlot() lookup and
+// MarkDeployed becomes a silent no-op. That left the slot in a
+// non-terminal state and the sweeper picked it up — 3 deploySlot
+// retries × ~12 taps each = ~36 wasted taps per attack.
+//
+// Live-test fix #2: the legacy path no longer polls
+// isSlotEmptyStatic after the drop. Siege machines in CoC NEVER
+// transition the troop-bar slot back to a clean "empty" state on
+// success — the slot visually persists as the next queued icon
+// (often a CC-troop icon) or a skeleton silhouette until the next
+// production cycle. Trusting the tap and marking deployed directly
+// is the only safe path.
 func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
-	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
-
 	// Formula FIRST — pinned geometry wins.
 	if entry, ok := hm.formulaEntry(unit.Name); ok {
 		if hm.deploySiegeFromFormula(unit, slot, entry) {
-			hm.slotManager.MarkDeployed(unitName)
+			hm.slotManager.MarkDeployed(slot.UnitName)
 			return true
 		}
 		// Formula entry exists but undeployable — fall through to legacy.
@@ -443,18 +475,13 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 	hm.logger.Info().Str("unit", unit.Name).Msg("deploying siege machine")
 	hm.executor.TapDeployLine(p1, p2, 12, 10)
 
-	// Verify
+	// Trust the drop + mark with the canonical slot key. The
+	// isSlotEmptyStatic poll below was unreliable for sieges
+	// (siege slot icon never returns to grass pixels) and is what
+	// caused the "sweep retaps the deployed siege" bug.
 	time.Sleep(80 * time.Millisecond)
-	freshScreen, err := hm.executor.CaptureFresh()
-	if err == nil {
-		defer freshScreen.Close()
-		if isSlotEmptyStatic(freshScreen, slot.X, slot.Y, hm.w, hm.h) {
-			hm.slotManager.MarkDeployed(unitName)
-			return true
-		}
-	}
-
-	return false
+	hm.slotManager.MarkDeployed(slot.UnitName)
+	return true
 }
 
 // resolveTroopTarget returns the deployment line for a troop.
