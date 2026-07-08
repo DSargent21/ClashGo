@@ -403,7 +403,7 @@ func (sw *Sweeper) deployHeroSlotOnce(slot *TrackedSlot) bool {
 	pt := pts[rand.Intn(len(pts))]
 
 	sw.executor.TapSlot(slot, 4)
-	sw.executor.HumanSleep(350, 60)
+	sw.executor.HumanSleep(150, 30)
 
 	// Tight cluster of 3 device taps (+/- 3 px). The single TapFast
 	// retry regressed BK / GW / Queen (live observed post_ratio 0.69,
@@ -414,7 +414,7 @@ func (sw *Sweeper) deployHeroSlotOnce(slot *TrackedSlot) bool {
 	j3 := sw.executor.addJitter(pt, 3)
 	sw.executor.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
 
-	sw.executor.HumanSleep(350, 50)
+	sw.executor.HumanSleep(300, 40)
 
 	var postRatio float64
 	var capturedPost bool

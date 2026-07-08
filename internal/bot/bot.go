@@ -513,7 +513,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 				b.navigator.ZoomOut()
 				b.recordActivity()
 				// Wait for zoom animation to settle (Clash has long momentum)
-				time.Sleep(3000 * time.Millisecond)
+				time.Sleep(1800 * time.Millisecond)
 				// Return here so the next loop iteration captures a fresh screen AFTER zoom
 				return
 			}

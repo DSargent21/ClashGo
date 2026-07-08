@@ -1665,7 +1665,7 @@ func (e *Executor) EndBattle() error {
 func (e *Executor) ReturnHome() error {
 	hx, hy := e.cal.ScaleRef(430, 566)
 	if err := e.client.TapHuman(hx, hy, 5.0); err != nil { return err }
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(900 * time.Millisecond)
 	screen, err := e.client.CaptureToMat()
 	if err != nil { return err }
 	defer screen.Close()

@@ -265,7 +265,7 @@ func (hm *HeroManager) activateAbilities(deployedSlots []*TrackedSlot) {
 	hm.logger.Info().Int("count", len(deployedSlots)).Msg("activating hero abilities")
 
 	// Wait for heroes to land on map
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	for _, slot := range deployedSlots {
 		// Heroes always remain on bar (cooldown) - just tap ability
@@ -303,6 +303,15 @@ func (hm *HeroManager) resolveHeroTarget(slot *TrackedSlot) (image.Point, image.
 			py := p1.Y + int(float64(p2.Y-p1.Y)*t)
 			return image.Pt(px, py), image.Pt(px, py)
 		}
+	}
+
+	// Grand Warden is the only hero that should drop in the SCREEN CENTER.
+	// His Eternal Tome covers the entire funnel, so edge deployment wastes
+	// the radius and risks him dying before the ability fires. Other heroes
+	// (BK, AQ, Prince, Duke, Champion) keep going to the chosen edge.
+	if strings.Contains(unitName, "warden") {
+		pt := image.Pt(hm.w/2, hm.h/2)
+		return pt, pt
 	}
 
 	// All heroes (including Dragon Duke) deploy on the chosen edge.

@@ -1,6 +1,7 @@
 package attack
 
 import (
+	"strings"
 	"image"
 	"math/rand"
 	"time"
@@ -34,7 +35,14 @@ func (t *TapExecutor) CaptureFresh() (gocv.Mat, error) {
 
 // TapSlot selects a slot with jitter for human-like behavior.
 func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) {
-	jPt := t.addJitter(image.Pt(slot.X, slot.Y), jitterPx)
+	// Grand Warden flight-mode toggle sits at the bottom of his icon on the
+	// troop bar. Nudge the tap upward so the PORTRAIT (selection/cursor) is
+	// hit, NOT the chip (which would silently flip his ground<->air mode).
+	ptY := slot.Y
+	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
+		ptY -= int(25.0 * t.cal.ScaleY)
+	}
+	jPt := t.addJitter(image.Pt(slot.X, ptY), jitterPx)
 	t.logger.Debug().
 		Int("x", jPt.X).
 		Int("y", jPt.Y).
@@ -157,12 +165,19 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 
 // TapHeroAbility taps a hero slot for ability activation.
 func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
+	// Same warden-portrait-vs-mode-chip offset as TapSlot: tap the upper
+	// portion of the icon so the ABILITY button registers, not the small
+	// ground<->air toggle below it.
+	ptY := slot.Y
+	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
+		ptY -= int(25.0 * t.cal.ScaleY)
+	}
 	t.logger.Info().
 		Int("x", slot.X).
-		Int("y", slot.Y).
+		Int("y", ptY).
 		Str("unit", slot.UnitName).
 		Msg("tapping hero ability")
-	t.client.TapFast(slot.X, slot.Y, 4.0)
+	t.client.TapFast(slot.X, ptY, 4.0)
 }
 
 // TapBulkAbilities activates abilities for multiple heroes with delays.
