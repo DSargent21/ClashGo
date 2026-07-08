@@ -27,43 +27,43 @@ import (
 )
 
 type Bot struct {
-	client    *adb.Client
-	cal       *game.Calibration
+	client     *adb.Client
+	cal        *game.Calibration
 	classifier *game.Classifier
-	navigator *game.Navigator
-	graph     *game.StateGraph
-	templates *game.TemplateStore
+	navigator  *game.Navigator
+	graph      *game.StateGraph
+	templates  *game.TemplateStore
 	recognizer *game.Recognizer
-	cfg       *config.BotConfig
+	cfg        *config.BotConfig
 
 	classify func(gocv.Mat) (game.GameState, int)
 
-	attackExec  *attack.Executor
+	attackExec *attack.Executor
 	trainer    *training.Trainer
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	logger     zerolog.Logger
+	ctx    context.Context
+	cancel context.CancelFunc
+	logger zerolog.Logger
 
-	attackCount atomic.Int32
-	skipsCount  atomic.Int32
-	totalGold   atomic.Int64
-	totalElixir atomic.Int64
-	totalDE     atomic.Int64
-	totalStars  atomic.Int32
-	stars0      atomic.Int32
-	stars1      atomic.Int32
-	stars2      atomic.Int32
-	stars3      atomic.Int32
-	seqRunning  atomic.Bool
-	zoomedOut   atomic.Bool
-	startedAt   time.Time
-	lastAction  time.Time
+	attackCount       atomic.Int32
+	skipsCount        atomic.Int32
+	totalGold         atomic.Int64
+	totalElixir       atomic.Int64
+	totalDE           atomic.Int64
+	totalStars        atomic.Int32
+	stars0            atomic.Int32
+	stars1            atomic.Int32
+	stars2            atomic.Int32
+	stars3            atomic.Int32
+	seqRunning        atomic.Bool
+	zoomedOut         atomic.Bool
+	startedAt         time.Time
+	lastAction        time.Time
 	lastSequenceStart time.Time
 	stuckTimeout      time.Duration
 
-	lastFrame      atomic.Value // Stores the latest base64 encoded frame
-	lastFrameTime  time.Time
+	lastFrame     atomic.Value // Stores the latest base64 encoded frame
+	lastFrameTime time.Time
 
 	// dukePicksFile records every Dragon Duke random pick across all
 	// live attacks. Opened once at NewBot time and written from the
@@ -139,7 +139,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	if packageName == "" {
 		packageName = "com.supercell.clashofclans"
 	}
-	
+
 	if cfg.Device.RestartOnStartup {
 		// Always close the app to start out for a clean state
 		log.Info().Str("package", packageName).Msg("ensuring clean state by restarting game...")
@@ -202,17 +202,17 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	b := &Bot{
-		client:     client,
-		cal:        cal,
-		graph:      graph,
-		templates:  templates,
-		recognizer: recognizer,
-		cfg:        cfg,
-		attackExec: attackExec,
-		trainer:    trainer,
-		ctx:        ctx,
-		cancel:     cancel,
-		logger:     log.With().Str("bot", "orchestrator").Logger(),
+		client:            client,
+		cal:               cal,
+		graph:             graph,
+		templates:         templates,
+		recognizer:        recognizer,
+		cfg:               cfg,
+		attackExec:        attackExec,
+		trainer:           trainer,
+		ctx:               ctx,
+		cancel:            cancel,
+		logger:            log.With().Str("bot", "orchestrator").Logger(),
 		startedAt:         startedWall,
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
@@ -501,11 +501,11 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	if !b.zoomedOut.Load() {
 		// Include pinpoint attack button check in village detection to avoid race with sequence starter
 		pinX, pinY := b.cal.ScaleRef(60, 695)
-		isVillage := state == game.StateMainVillage || 
-					state == game.StateArmyCamp || 
-					b.isOrange(screen, pinX, pinY) ||
-					b.templateMatch(screen, "btn_attack", 0.45) || 
-					b.templateMatch(screen, "btn_settings", 0.6)
+		isVillage := state == game.StateMainVillage ||
+			state == game.StateArmyCamp ||
+			b.isOrange(screen, pinX, pinY) ||
+			b.templateMatch(screen, "btn_attack", 0.45) ||
+			b.templateMatch(screen, "btn_settings", 0.6)
 
 		if isVillage {
 			if b.zoomedOut.CompareAndSwap(false, true) {
@@ -602,7 +602,7 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 
 	best := matches[0]
 	isOrange := b.isOrange(screen, best.Point.X, best.Point.Y)
-	
+
 	b.logger.Debug().
 		Float64("conf", best.Confidence).
 		Int("x", best.Point.X).
@@ -645,6 +645,16 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		return
 	}
 	defer b.seqRunning.Store(false)
+
+	// Open a persistent adb shell pipe for the lifetime of this attack
+	// cycle. The pipe amortizes per-tap `app_process` JVM spin-up cost
+	// (~150-300ms/tap -> ~1-5ms/tap) and provides a fast auto-reconnect /
+	// legacy-fallback path if the pipe breaks. `defer` guarantees cleanup
+	// even if the sequence is interrupted by restartGame / panic / timeout.
+	if b.cfg.Debug.UseShellPipe {
+		b.client.EnablePersistentShell(b.cfg.Debug.ShellPipeSyncFlush)
+		defer b.client.ClosePersistentShell()
+	}
 
 	if b.attackCount.Load() >= int32(b.cfg.Attack.MaxAttackPerSession) {
 		return
@@ -711,8 +721,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			Int("de", loot.DarkElixir).
 			Msg("loot detected")
 
-		meetsReq := !b.cfg.Search.Enabled || (
-			loot.Gold >= b.cfg.Search.MinLootGold &&
+		meetsReq := !b.cfg.Search.Enabled || (loot.Gold >= b.cfg.Search.MinLootGold &&
 			loot.Elixir >= b.cfg.Search.MinLootElixir &&
 			loot.DarkElixir >= b.cfg.Search.MinLootDarkElixir)
 
@@ -775,7 +784,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	}
 
 	b.logger.Info().Msg("battle deployment complete, waiting for battle to end naturally...")
-	
+
 	var battleStars int = 0
 	var battleGold int = 0
 	var battleElixir int = 0
@@ -806,19 +815,23 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				b.totalElixir.Add(int64(res.Loot.Elixir + res.Bonus.Elixir))
 				b.totalDE.Add(int64(res.Loot.DarkElixir + res.Bonus.DarkElixir))
 				b.totalStars.Add(int32(res.Stars))
-				
+
 				// Track specific star result
 				switch res.Stars {
-				case 0: b.stars0.Add(1)
-				case 1: b.stars1.Add(1)
-				case 2: b.stars2.Add(1)
-				case 3: b.stars3.Add(1)
+				case 0:
+					b.stars0.Add(1)
+				case 1:
+					b.stars1.Add(1)
+				case 2:
+					b.stars2.Add(1)
+				case 3:
+					b.stars3.Add(1)
 				}
-				
+
 				if b.OnStatsUpdate != nil {
 					b.OnStatsUpdate()
 				}
-				
+
 				b.logger.Info().
 					Int("stars", res.Stars).
 					Int("gold", res.Loot.Gold).
@@ -944,7 +957,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	fmt.Printf("  - DE:        %d\n", rep.DarkElixirStolen)
 	fmt.Println("=========================================")
 	fmt.Println()
-	
+
 	// Professional Session Summary
 	b.logger.Info().
 		Int32("attacks", b.attackCount.Load()).
@@ -1112,14 +1125,14 @@ type Pinpoint struct {
 }
 
 var villagePinpoints = map[string]Pinpoint{
-	"btn_attack":     {X: 64, Y: 666, Name: "Attack"},
-	"btn_find_match": {X: 158, Y: 494, Name: "Find Match"},
-	"btn_battle":     {X: 731, Y: 537, Name: "Battle"},
-	"btn_army_arrow": {X: 514, Y: 192, Name: "Army Arrow"},
-	"btn_army_1":     {X: 513, Y: 230, Name: "Army 1"},
-	"btn_next":       {X: 794, Y: 577, Name: "Next Match"},
-	"btn_return_home":{X: 431, Y: 581, Name: "Return Home"},
-	"btn_okay":       {X: 430, Y: 520, Name: "Okay"},
+	"btn_attack":      {X: 64, Y: 666, Name: "Attack"},
+	"btn_find_match":  {X: 158, Y: 494, Name: "Find Match"},
+	"btn_battle":      {X: 731, Y: 537, Name: "Battle"},
+	"btn_army_arrow":  {X: 514, Y: 192, Name: "Army Arrow"},
+	"btn_army_1":      {X: 513, Y: 230, Name: "Army 1"},
+	"btn_next":        {X: 794, Y: 577, Name: "Next Match"},
+	"btn_return_home": {X: 431, Y: 581, Name: "Return Home"},
+	"btn_okay":        {X: 430, Y: 520, Name: "Okay"},
 }
 
 func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
@@ -1129,7 +1142,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 		b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
 		if err := b.client.Tap(px, py); err == nil {
 			time.Sleep(1000 * time.Millisecond) // Wait for UI transition
-			b.recordActivity() // successful click = real progress
+			b.recordActivity()                  // successful click = real progress
 			return true
 		}
 	}
@@ -1222,7 +1235,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			Float64("conf", best.Confidence).
 			Int("x", px).Int("y", py).
 			Msg("clicking (fallback match)")
-		
+
 		if b.cfg.Debug.SaveScreenshots {
 			gocv.IMWrite(paths.ResolveConfig(fmt.Sprintf("diag_fallback_%s.png", templateName)), screen)
 		}
@@ -1251,29 +1264,29 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 }
 
 func (b *Bot) isWhite(screen gocv.Mat, x, y int) bool {
-	return b.colorCheck(screen, x, y, 
+	return b.colorCheck(screen, x, y,
 		gocv.NewScalar(220, 220, 220, 0), // Lower White
 		gocv.NewScalar(255, 255, 255, 0), // Upper White
 		10)
 }
 
 func (b *Bot) isSilver(screen gocv.Mat, x, y int) bool {
-	return b.colorCheck(screen, x, y, 
+	return b.colorCheck(screen, x, y,
 		gocv.NewScalar(170, 170, 170, 0), // Lower Silver
 		gocv.NewScalar(235, 235, 235, 0), // Upper Silver
 		10)
 }
 
 func (b *Bot) isYellow(screen gocv.Mat, x, y int) bool {
-	return b.colorCheck(screen, x, y, 
-		gocv.NewScalar(0, 180, 200, 0), // Lower Yellow (BGR)
+	return b.colorCheck(screen, x, y,
+		gocv.NewScalar(0, 180, 200, 0),   // Lower Yellow (BGR)
 		gocv.NewScalar(100, 255, 255, 0), // Upper Yellow
 		15)
 }
 
 func (b *Bot) isGreen(screen gocv.Mat, x, y int) bool {
-	return b.colorCheck(screen, x, y, 
-		gocv.NewScalar(0, 150, 0, 0),   // Lower Green
+	return b.colorCheck(screen, x, y,
+		gocv.NewScalar(0, 150, 0, 0),     // Lower Green
 		gocv.NewScalar(120, 255, 120, 0), // Upper Green
 		15)
 }
@@ -1283,10 +1296,18 @@ func (b *Bot) colorCheck(screen gocv.Mat, x, y int, lower, upper gocv.Scalar, mi
 		return false
 	}
 	region := image.Rect(x-10, y-10, x+11, y+11)
-	if region.Min.X < 0 { region.Min.X = 0 }
-	if region.Min.Y < 0 { region.Min.Y = 0 }
-	if region.Max.X > screen.Cols() { region.Max.X = screen.Cols() }
-	if region.Max.Y > screen.Rows() { region.Max.Y = screen.Rows() }
+	if region.Min.X < 0 {
+		region.Min.X = 0
+	}
+	if region.Min.Y < 0 {
+		region.Min.Y = 0
+	}
+	if region.Max.X > screen.Cols() {
+		region.Max.X = screen.Cols()
+	}
+	if region.Max.Y > screen.Rows() {
+		region.Max.Y = screen.Rows()
+	}
 
 	sub := screen.Region(region)
 	defer sub.Close()
@@ -1530,7 +1551,6 @@ type AttackReport struct {
 	TotalAttacks     int32  `json:"total_attacks_session"`
 }
 
-
 type adbLogAdapter struct {
 	log zerolog.Logger
 }
@@ -1545,7 +1565,6 @@ func (a *adbLogAdapter) Error(msg string) { a.log.Error().Msg(msg) }
 func (a *adbLogAdapter) WithFields(fields map[string]any) adb.Logger {
 	return &adbLogAdapter{log: a.log.With().Fields(fields).Logger()}
 }
-
 
 func init() {
 	runtime.GOMAXPROCS(0)

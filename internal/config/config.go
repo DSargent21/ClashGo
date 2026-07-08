@@ -10,12 +10,12 @@ import (
 )
 
 type BotConfig struct {
-	Device    DeviceConfig    `json:"device"`
-	Training  TrainingConfig  `json:"training"`
-	Attack    AttackConfig    `json:"attack"`
-	Search    SearchConfig    `json:"search"`
-	Upgrade   UpgradeConfig   `json:"upgrade"`
-	Debug     DebugConfig     `json:"debug"`
+	Device   DeviceConfig   `json:"device"`
+	Training TrainingConfig `json:"training"`
+	Attack   AttackConfig   `json:"attack"`
+	Search   SearchConfig   `json:"search"`
+	Upgrade  UpgradeConfig  `json:"upgrade"`
+	Debug    DebugConfig    `json:"debug"`
 }
 
 type DeviceConfig struct {
@@ -32,50 +32,64 @@ type DeviceConfig struct {
 }
 
 type TrainingConfig struct {
-	Enabled           bool     `json:"enabled"`
-	FullArmyBeforeAttack bool  `json:"full_army_before_attack"`
-	TrainDeadTroops   bool     `json:"train_dead_troops"`
-	MinBarracksLevel  int      `json:"min_barracks_level"`
-	SleepAfterTrain   Duration `json:"sleep_after_train"`
+	Enabled              bool     `json:"enabled"`
+	FullArmyBeforeAttack bool     `json:"full_army_before_attack"`
+	TrainDeadTroops      bool     `json:"train_dead_troops"`
+	MinBarracksLevel     int      `json:"min_barracks_level"`
+	SleepAfterTrain      Duration `json:"sleep_after_train"`
 }
 
 type AttackConfig struct {
-	Enabled              bool          `json:"enabled"`
-	StrategyFile         string        `json:"strategy_file"`
-	AttackWhenFull       bool          `json:"attack_when_full"`
-	MaxAttackPerSession  int           `json:"max_attack_per_session"`
-	DropDelay            Duration      `json:"drop_delay"`
-	SpellDelay           Duration      `json:"spell_delay"`
-	EndBattleDelay       Duration      `json:"end_battle_delay"`
-	UseQueen             bool          `json:"use_queen"`
-	UseWarden            bool          `json:"use_warden"`
-	UseClanCastle        bool          `json:"use_clan_castle"`
-	QueenChargeAtPct      int           `json:"queen_charge_at_pct"`
-	WardenUseAtPct        int           `json:"warden_use_at_pct"`
-	ReserveDEPercent      int           `json:"reserve_de_percent"`
-	StallTimerSeconds     int           `json:"stall_timer_seconds"`
+	Enabled             bool     `json:"enabled"`
+	StrategyFile        string   `json:"strategy_file"`
+	AttackWhenFull      bool     `json:"attack_when_full"`
+	MaxAttackPerSession int      `json:"max_attack_per_session"`
+	DropDelay           Duration `json:"drop_delay"`
+	SpellDelay          Duration `json:"spell_delay"`
+	EndBattleDelay      Duration `json:"end_battle_delay"`
+	UseQueen            bool     `json:"use_queen"`
+	UseWarden           bool     `json:"use_warden"`
+	UseClanCastle       bool     `json:"use_clan_castle"`
+	QueenChargeAtPct    int      `json:"queen_charge_at_pct"`
+	WardenUseAtPct      int      `json:"warden_use_at_pct"`
+	ReserveDEPercent    int      `json:"reserve_de_percent"`
+	StallTimerSeconds   int      `json:"stall_timer_seconds"`
 }
 
 type SearchConfig struct {
-	Enabled             bool   `json:"enabled"`
-	MinTrophies         int    `json:"min_trophies"`
-	MaxTrophies         int    `json:"max_trophies"`
-	MinTownHall         int    `json:"min_town_hall"`
-	MaxTownHall         int    `json:"max_town_hall"`
-	SkipBigBase         bool   `json:"skip_big_base"`
-	SkipMaxTH           bool   `json:"skip_max_th"`
-	AttackIfDarkElixirGT int   `json:"attack_if_de_gt"`
-	AttackIfTrophiesGT  int    `json:"attack_if_trophies_gt"`
-	MinLootGold         int    `json:"min_loot_gold"`
-	MinLootElixir       int    `json:"min_loot_elixir"`
-	MinLootDarkElixir   int    `json:"min_loot_de"`
+	Enabled              bool `json:"enabled"`
+	MinTrophies          int  `json:"min_trophies"`
+	MaxTrophies          int  `json:"max_trophies"`
+	MinTownHall          int  `json:"min_town_hall"`
+	MaxTownHall          int  `json:"max_town_hall"`
+	SkipBigBase          bool `json:"skip_big_base"`
+	SkipMaxTH            bool `json:"skip_max_th"`
+	AttackIfDarkElixirGT int  `json:"attack_if_de_gt"`
+	AttackIfTrophiesGT   int  `json:"attack_if_trophies_gt"`
+	MinLootGold          int  `json:"min_loot_gold"`
+	MinLootElixir        int  `json:"min_loot_elixir"`
+	MinLootDarkElixir    int  `json:"min_loot_de"`
 }
 
 type DebugConfig struct {
-	CaptureDebug   bool `json:"capture_debug"`
+	CaptureDebug    bool `json:"capture_debug"`
 	SaveScreenshots bool `json:"save_screenshots"`
 	TemplateDebug   bool `json:"template_debug"`
 	StateDebug      bool `json:"state_debug"`
+	// UseShellPipe enables a persistent adb "shell:sh" connection during
+	// attack cycles, amortizing the per-command `app_process` JVM spin-up
+	// cost (100-300ms tax per tap). Default false; safe fallback to legacy
+	// per-command transport.Exec when disabled or when the pipe breaks
+	// mid-cycle. Stable on BlueStacks / macOS AVD; do not flip on hosts
+	// where persistent shells are aggressively terminated.
+	UseShellPipe bool `json:"use_shell_pipe"`
+	// ShellPipeSyncFlush controls Tap semantics under the persistent pipe:
+	//   true  = Tap blocks until the bytes are flushed to the socket (safer;
+	//           preserves ordering relative to CaptureToMat).
+	//   false = Tap is fire-and-forget (fastest; rely on HumanSleep between
+	//           batches to preserve ordering).
+	// Only consulted when UseShellPipe is true.
+	ShellPipeSyncFlush bool `json:"shell_pipe_sync_flush"`
 }
 
 type UpgradeConfig struct {
@@ -112,42 +126,44 @@ func DefaultConfig() *BotConfig {
 			RestartOnStartup: true,
 		},
 		Training: TrainingConfig{
-			Enabled:            true,
+			Enabled:              true,
 			FullArmyBeforeAttack: true,
-			SleepAfterTrain:    Duration{5 * time.Second},
+			SleepAfterTrain:      Duration{5 * time.Second},
 		},
 		Attack: AttackConfig{
-			Enabled:            true,
-			StrategyFile:       paths.Resolve("strategies/auto_edrag_rush.yaml"),
+			Enabled:             true,
+			StrategyFile:        paths.Resolve("strategies/auto_edrag_rush.yaml"),
 			MaxAttackPerSession: 100,
-			DropDelay:          Duration{500 * time.Millisecond},
-			SpellDelay:         Duration{2 * time.Second},
-			EndBattleDelay:     Duration{30 * time.Second},
-			QueenChargeAtPct:   50,
-			WardenUseAtPct:     30,
-			ReserveDEPercent:   200,
-			StallTimerSeconds:  10,
+			DropDelay:           Duration{500 * time.Millisecond},
+			SpellDelay:          Duration{2 * time.Second},
+			EndBattleDelay:      Duration{30 * time.Second},
+			QueenChargeAtPct:    50,
+			WardenUseAtPct:      30,
+			ReserveDEPercent:    200,
+			StallTimerSeconds:   10,
 		},
 		Search: SearchConfig{
-			Enabled:       true,
-			MinTrophies:   0,
-			MaxTrophies:   3000,
-			MinTownHall:   7,
-			MaxTownHall:   13,
-			SkipMaxTH:     false,
+			Enabled:              true,
+			MinTrophies:          0,
+			MaxTrophies:          3000,
+			MinTownHall:          7,
+			MaxTownHall:          13,
+			SkipMaxTH:            false,
 			AttackIfDarkElixirGT: 0,
-			MinLootGold:   750000,
-			MinLootElixir: 750000,
-			MinLootDarkElixir: 2000,
+			MinLootGold:          750000,
+			MinLootElixir:        750000,
+			MinLootDarkElixir:    2000,
 		},
 		Upgrade: UpgradeConfig{
 			UpgradeWalls: false,
 		},
 		Debug: DebugConfig{
-			CaptureDebug:   false,
-			SaveScreenshots: true,
-			TemplateDebug:   false,
-			StateDebug:      false,
+			CaptureDebug:       false,
+			SaveScreenshots:    true,
+			TemplateDebug:      false,
+			StateDebug:         false,
+			UseShellPipe:       false,
+			ShellPipeSyncFlush: true,
 		},
 	}
 }

@@ -14,15 +14,15 @@ import (
 )
 
 type TapEvent struct {
-	Seq    int64  `json:"seq"`
-	Type   string `json:"type"`
-	X      int    `json:"x"`
-	Y      int    `json:"y"`
-	ActualX int   `json:"actual_x"`
-	ActualY int   `json:"actual_y"`
-	StdDev float64 `json:"std_dev,omitempty"`
-	Error  string `json:"error,omitempty"`
-	Ts     int64  `json:"ts_ms"`
+	Seq     int64   `json:"seq"`
+	Type    string  `json:"type"`
+	X       int     `json:"x"`
+	Y       int     `json:"y"`
+	ActualX int     `json:"actual_x"`
+	ActualY int     `json:"actual_y"`
+	StdDev  float64 `json:"std_dev,omitempty"`
+	Error   string  `json:"error,omitempty"`
+	Ts      int64   `json:"ts_ms"`
 }
 
 type Client struct {
@@ -40,9 +40,63 @@ type Client struct {
 	mu        sync.Mutex
 	closed    bool
 
+	// Persistent shell pipe (lazy-init). When enabled (UseShellPipe == true)
+	// and not broken, Tap/Swipe/KeyEvent/Text route through pipe.Send
+	// (sync flush) or pipe.SendAsync (fire-and-forget). When disabled or
+	// broken, all calls fall back to transport.Exec via tapLocked.
+	pipe   *ShellPipe
+	pipeMu sync.Mutex
+
 	tapHookMu sync.RWMutex
 	tapHook   func(TapEvent)
 	tapSeq    int64
+}
+
+// EnablePersistentShell activates the persistent adb shell pipe for the
+// duration of an attack cycle. Pass syncFlush=false to use fire-and-forget
+// semantics for Tap (faster but no per-tap completion ack). Subsequent
+// calls are no-ops; call ClosePersistentShell to tear down.
+func (c *Client) EnablePersistentShell(syncFlush bool) {
+	c.pipeMu.Lock()
+	defer c.pipeMu.Unlock()
+	if c.pipe != nil {
+		return
+	}
+	c.pipe = NewShellPipe(c.DeviceID, c.host, c.port, c.timeout, c.log)
+	if err := c.pipe.Start(); err != nil {
+		c.log.Warn(fmt.Sprintf("persistent shell pipe failed to start, using legacy transport: %v", err))
+		c.pipe = nil
+		return
+	}
+	c.log.Info("persistent adb shell pipe enabled (sync_flush: " + fmt.Sprint(syncFlush) + ")")
+}
+
+// ClosePersistentShell tears down the pipe (typically called at end of
+// executeAttackSequence). Safe to call when not enabled.
+func (c *Client) ClosePersistentShell() {
+	c.pipeMu.Lock()
+	defer c.pipeMu.Unlock()
+	if c.pipe == nil {
+		return
+	}
+	_ = c.pipe.Close()
+	c.pipe = nil
+	c.log.Info("persistent adb shell pipe closed")
+}
+
+// hasPipe returns the current pipe if enabled and not broken. Caller must
+// hold c.pipeMu only if it intends to use the pipe; for typical Tap callers
+// they don't lock — pipe.IsBroken() is atomic and a torn read returns nil.
+func (c *Client) currentPipe() *ShellPipe {
+	c.pipeMu.Lock()
+	defer c.pipeMu.Unlock()
+	if c.pipe == nil {
+		return nil
+	}
+	if c.pipe.IsBroken() {
+		return nil
+	}
+	return c.pipe
 }
 
 func NewClient(opts ...Option) *Client {
@@ -299,14 +353,62 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 	return imgBGR, nil
 }
 
-// Tap performs a direct ADB tap.
+// Tap performs a direct ADB tap via the persistent shell pipe when enabled,
+// or falls back to transport.Exec otherwise. The pipe path is sync-flush:
+// returns once the bytes have been written to the socket (eliminating the
+// `app_process` JVM spin-up latency from `shell:input tap`).
 func (c *Client) Tap(x, y int) error {
 	c.log.Debugf("ADB TAP: (%d, %d)", x, y)
-	c.mu.Lock()
-	err := c.tapLocked(x, y)
-	c.mu.Unlock()
+	err := c.routeTap("input tap", x, y, false)
 	c.fireTapHook(TapEvent{Type: "tap", X: x, Y: y, ActualX: x, ActualY: y, StdDev: 0, Error: errStr(err)})
 	return err
+}
+
+// TapAsync is fire-and-forget: returns once the command is queued in the
+// pipe channel. Use only in verified-safe hot loops (TapDeployFourSides,
+// TapDeployLine, TapDeployPoint) where ordering relative to capture is
+// preserved by an explicit HumanSleep/time.Sleep after the batch.
+func (c *Client) TapAsync(x, y int) error {
+	c.log.Debugf("ADB TAP-ASYNC: (%d, %d)", x, y)
+	err := c.routeTap("input tap", x, y, true)
+	c.fireTapHook(TapEvent{Type: "tap_async", X: x, Y: y, ActualX: x, ActualY: y, StdDev: 0, Error: errStr(err)})
+	return err
+}
+
+// routeTap is the shared router for Tap/TapAsync/TapFast through either
+// the persistent pipe (when alive) or the legacy transport.Exec fallback.
+func (c *Client) routeTap(cmd string, x, y int, async bool) error {
+	if p := c.currentPipe(); p != nil {
+		full := fmt.Sprintf("%s %d %d", cmd, x, y)
+		if async {
+			if err := p.SendAsync(full); err == nil {
+				return nil
+			} else if err != ErrShellPipeBusy {
+				// Broken: drop pipe so subsequent calls take legacy path
+				c.markPipeBroken()
+				return c.tapLocked(x, y)
+			}
+			// Busy: fall through to legacy
+		} else {
+			if err := p.Send(full); err == nil {
+				return nil
+			}
+			// Broken: fall back
+			c.markPipeBroken()
+			return c.tapLocked(x, y)
+		}
+	}
+	return c.tapLocked(x, y)
+}
+
+// markPipeBroken atomically closes the pipe so future calls fall back.
+func (c *Client) markPipeBroken() {
+	c.pipeMu.Lock()
+	defer c.pipeMu.Unlock()
+	if c.pipe != nil {
+		_ = c.pipe.Close()
+		c.pipe = nil
+	}
 }
 
 func (c *Client) tapLocked(x, y int) error {
@@ -315,24 +417,40 @@ func (c *Client) tapLocked(x, y int) error {
 			return err
 		}
 	}
-
 	_, err := c.transport.Exec(fmt.Sprintf("shell:input tap %d %d", x, y))
 	return err
 }
 
 // TapFast performs a tap with minimal randomness and NO intentional delay.
+// When the persistent shell pipe is alive and synced to the worker, this
+// returns in ~1-5ms (socket flush) instead of ~200ms (`app_process` startup
+// from per-call transport.Exec). Falls back to legacy transport.Exec if
+// the pipe is disabled or broken.
 func (c *Client) TapFast(x, y int, stdDev float64) error {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	ox := int(r.NormFloat64() * stdDev)
 	oy := int(r.NormFloat64() * stdDev)
 	c.mu.Lock()
-	err := c.tapLocked(x+ox, y+oy)
+	err := c.routeTap("input tap", x+ox, y+oy, false)
 	c.mu.Unlock()
 	c.fireTapHook(TapEvent{Type: "tap_fast", X: x, Y: y, ActualX: x + ox, ActualY: y + oy, StdDev: stdDev, Error: errStr(err)})
 	return err
 }
 
-// TapDual performs two taps simultaneously using background shell execution.
+// TapFastAsync is fire-and-forget with jitter; preferred in hot loops.
+func (c *Client) TapFastAsync(x, y int, stdDev float64) error {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	ox := int(r.NormFloat64() * stdDev)
+	oy := int(r.NormFloat64() * stdDev)
+	err := c.routeTap("input tap", x+ox, y+oy, true)
+	c.fireTapHook(TapEvent{Type: "tap_fast_async", X: x, Y: y, ActualX: x + ox, ActualY: y + oy, StdDev: stdDev, Error: errStr(err)})
+	return err
+}
+
+// TapDual performs two taps sequentially with a 50ms inter-tap settle so
+// Clash's UI properly registers each as a separate gesture. When the
+// persistent shell pipe is alive each tap round-trips in ~1-5ms instead of
+// ~200ms; falls back to legacy transport.Exec per tap if the pipe is broken.
 func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -353,18 +471,22 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 	oy2 := int(r2.NormFloat64() * stdDev2)
 
 	c.log.Debugf("ADB DUAL TAP (sequential): (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
-	err1 := c.tapLocked(x1+ox1, y1+oy1)
+	err1 := c.routeTap("input tap", x1+ox1, y1+oy1, false)
 	c.fireTapHook(TapEvent{Type: "tap_dual_1", X: x1, Y: y1, ActualX: x1 + ox1, ActualY: y1 + oy1, StdDev: stdDev1, Error: errStr(err1)})
 	if err1 != nil {
 		return err1
 	}
 	time.Sleep(50 * time.Millisecond)
-	err2 := c.tapLocked(x2+ox2, y2+oy2)
+	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_dual_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	return err2
 }
 
-// TapTriple performs three taps simultaneously using background shell execution.
+// TapTriple performs three taps sequentially with 50ms inter-tap settles
+// so Clash's UI properly registers each as a separate deploy gesture. When
+// the persistent shell pipe is alive each tap round-trips in ~1-5ms
+// instead of ~200ms; falls back to legacy transport.Exec per tap if the
+// pipe is broken.
 func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float64, x3, y3 int, stdDev3 float64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -389,19 +511,19 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	oy3 := int(r3.NormFloat64() * stdDev3)
 
 	c.log.Debugf("ADB TRIPLE TAP (sequential): (%d, %d), (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
-	err1 := c.tapLocked(x1+ox1, y1+oy1)
+	err1 := c.routeTap("input tap", x1+ox1, y1+oy1, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_1", X: x1, Y: y1, ActualX: x1 + ox1, ActualY: y1 + oy1, StdDev: stdDev1, Error: errStr(err1)})
 	if err1 != nil {
 		return err1
 	}
 	time.Sleep(50 * time.Millisecond)
-	err2 := c.tapLocked(x2+ox2, y2+oy2)
+	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	if err2 != nil {
 		return err2
 	}
 	time.Sleep(50 * time.Millisecond)
-	err3 := c.tapLocked(x3+ox3, y3+oy3)
+	err3 := c.routeTap("input tap", x3+ox3, y3+oy3, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_3", X: x3, Y: y3, ActualX: x3 + ox3, ActualY: y3 + oy3, StdDev: stdDev3, Error: errStr(err3)})
 	return err3
 }
@@ -410,7 +532,7 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 func (c *Client) TapHuman(x, y int, stdDev float64) error {
 	// Small hesitation before tapping (50-150ms)
 	c.HumanSleep(100, 25)
-	
+
 	return c.TapFast(x, y, stdDev)
 }
 
@@ -422,12 +544,18 @@ func (c *Client) Swipe(x1, y1, x2, y2 int, ms int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if p := c.currentPipe(); p != nil {
+		full := fmt.Sprintf("input swipe %d %d %d %d %d", x1, y1, x2, y2, ms)
+		if err := p.Send(full); err == nil {
+			return nil
+		}
+		c.markPipeBroken()
+	}
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
 			return err
 		}
 	}
-
 	_, err := c.transport.Exec(fmt.Sprintf("shell:input swipe %d %d %d %d %d", x1, y1, x2, y2, ms))
 	return err
 }
@@ -436,14 +564,14 @@ func (c *Client) Swipe(x1, y1, x2, y2 int, ms int) error {
 func (c *Client) SwipeHuman(x1, y1, x2, y2, ms int) error {
 	// For simplicity in standard ADB, we use the basic swipe but randomize the points and duration
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	
+
 	// Randomize start and end points slightly
 	ox1, oy1 := int(r.NormFloat64()*5), int(r.NormFloat64()*5)
 	ox2, oy2 := int(r.NormFloat64()*5), int(r.NormFloat64()*5)
-	
+
 	// Randomize duration (+/- 15%)
 	duration := int(float64(ms) * (0.85 + r.Float64()*0.3))
-	
+
 	return c.Swipe(x1+ox1, y1+oy1, x2+ox2, y2+oy2, duration)
 }
 
@@ -465,12 +593,19 @@ func (c *Client) Text(text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if p := c.currentPipe(); p != nil {
+		// Quote the text to defend against spaces, etc.
+		full := "input text '" + strings.ReplaceAll(text, "'", `\'`) + "'"
+		if err := p.Send(full); err == nil {
+			return nil
+		}
+		c.markPipeBroken()
+	}
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
 			return err
 		}
 	}
-
 	_, err := c.transport.Exec("shell:input text " + text)
 	return err
 }
@@ -479,12 +614,18 @@ func (c *Client) KeyEvent(code int) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if p := c.currentPipe(); p != nil {
+		full := fmt.Sprintf("input keyevent %d", code)
+		if err := p.Send(full); err == nil {
+			return nil
+		}
+		c.markPipeBroken()
+	}
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
 			return err
 		}
 	}
-
 	_, err := c.transport.Exec(fmt.Sprintf("shell:input keyevent %d", code))
 	return err
 }
@@ -612,6 +753,12 @@ func (c *Client) Close() error {
 		c.transport.Close()
 		c.transport = nil
 	}
+	c.pipeMu.Lock()
+	if c.pipe != nil {
+		_ = c.pipe.Close()
+		c.pipe = nil
+	}
+	c.pipeMu.Unlock()
 	return nil
 }
 
