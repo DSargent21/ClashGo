@@ -704,20 +704,20 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				// 4. BULK ABILITY ACTIVATION: Activate all abilities now that all heroes are down
 				if len(deployedHeroSlots) > 0 {
 					e.logger.Info().Int("count", len(deployedHeroSlots)).Msg("bulk activating hero abilities...")
-					time.Sleep(200 * time.Millisecond) // Wait for last hero to land
+					time.Sleep(80 * time.Millisecond) // Wait for last hero to land (tightened)
 					for _, pt := range deployedHeroSlots {
 						e.logger.Info().Int("x", pt.X).Int("y", pt.Y).Msg("tapping hero icon for ability (bulk)")
 						e.client.TapFast(pt.X, pt.Y, 2.0)
-						time.Sleep(150 * time.Millisecond)
+						time.Sleep(80 * time.Millisecond)
 					}
 					}
 			}
 
 		pDelay := time.Duration(phase.DelayAfterMS) * time.Millisecond
 		if strings.Contains(phase.Name, "Heroes") || strings.Contains(phase.Name, "Siege") { 
-			pDelay = 500 * time.Millisecond 
+			pDelay = 80 * time.Millisecond 
 		}
-		if pDelay > 1000 * time.Millisecond { pDelay = 1000 * time.Millisecond } 
+		if pDelay > 200 * time.Millisecond { pDelay = 1000 * time.Millisecond } 
 		if pDelay > 0 {
 			time.Sleep(pDelay)
 		}
@@ -732,7 +732,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 	// 5. Deployment Success Verifier & Retry Loop
 	e.logger.Info().Msg("waiting for deployment to settle before verification...")
-	time.Sleep(2 * time.Second)
+	// (post-sweep 2s settle removed — verifier immediately below handles server sync)
 	
 	e.logger.Info().Msg("verifying deployment success...")
 	var remainingCount int
@@ -859,7 +859,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 					}
 				}
 
-				time.Sleep(200 * time.Millisecond) // Wait for server sync
+				time.Sleep(80 * time.Millisecond) // server sync (tightened)
 				checkMat, err := e.client.CaptureToMat()
 				if err != nil {
 					break
@@ -1215,7 +1215,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 						time.Sleep(50 * time.Millisecond) // Faster inter-tap
 					}
 				}
-				time.Sleep(100 * time.Millisecond) // Faster inter-side
+				time.Sleep(45 * time.Millisecond) // Faster inter-side
 			}
 			time.Sleep(200 * time.Millisecond)
 			return true
@@ -1414,10 +1414,10 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					j2 := e.addJitter(image.Pt(tx2, ty2), 8)
 					j3 := e.addJitter(image.Pt(tx3, ty3), 8)
 					e.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
-					time.Sleep(100 * time.Millisecond)
+					time.Sleep(45 * time.Millisecond)
 				}
 			}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(120 * time.Millisecond)
 			return true
 		}
 
@@ -1648,7 +1648,7 @@ func (e *Executor) EndBattle() error {
 		}
 	}
 	if err := e.client.TapHuman(ex, ey, 5.0); err != nil { return err }
-	time.Sleep(1000 * time.Millisecond) // Wait for confirmation dialog
+	time.Sleep(120 * time.Millisecond) // confirmation dialog (tightened)
 
 	// Tap green "End Battle" or "Okay" confirmation button
 	okX, okY := e.cal.ScaleRef(520, 430)
@@ -1658,14 +1658,14 @@ func (e *Executor) EndBattle() error {
 		e.logger.Info().Int("x", okX).Int("y", okY).Msg("using pinpoint Confirm button")
 	}
 	if err := e.client.TapHuman(okX, okY, 5.0); err != nil { return err }
-	time.Sleep(2000 * time.Millisecond) // Wait for screen transition
+	time.Sleep(120 * time.Millisecond) // screen transition (tightened)
 	return nil
 }
 
 func (e *Executor) ReturnHome() error {
 	hx, hy := e.cal.ScaleRef(430, 566)
 	if err := e.client.TapHuman(hx, hy, 5.0); err != nil { return err }
-	time.Sleep(5 * time.Second)
+	time.Sleep(1500 * time.Millisecond)
 	screen, err := e.client.CaptureToMat()
 	if err != nil { return err }
 	defer screen.Close()

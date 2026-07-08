@@ -318,8 +318,8 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		// so authors can spot unintentional bloat. The cap is high
 		// enough for spells (which legitimately need a long settle for
 		// the multi-tap flow to register).
-		const heroSiegeDefault = 100 * time.Millisecond
-		const maxPhaseDelay = 700 * time.Millisecond
+		const heroSiegeDefault = 30 * time.Millisecond
+		const maxPhaseDelay = 200 * time.Millisecond
 		pDelay := time.Duration(plan.Phase.DelayAfterMS) * time.Millisecond
 		isHeroOrSiege := strings.Contains(plan.Phase.Name, "Heroes") || strings.Contains(plan.Phase.Name, "Siege")
 		if isHeroOrSiege && pDelay <= 0 {

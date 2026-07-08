@@ -675,7 +675,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 
 		// High-Speed Loop: reduced sleep for faster cycling
-		time.Sleep(1200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 
 		screen, err := b.client.CaptureToMat()
 		if err != nil {
@@ -771,7 +771,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 
 		// Wait briefly for the "Clouds" to appear (transition start)
-		time.Sleep(1500 * time.Millisecond)
+		time.Sleep(600 * time.Millisecond)
 	}
 
 	b.logger.Info().Msg("battle deployment complete, waiting for battle to end naturally...")
@@ -975,7 +975,7 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	time.Sleep(1500 * time.Millisecond) // Wait for menu slide-in
+	time.Sleep(500 * time.Millisecond) // menu slide-in (tightened)
 
 	// Step 2: Click the yellow Find Match button (retry up to 3 times)
 	findMatchClicked := false
@@ -994,7 +994,7 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	time.Sleep(1500 * time.Millisecond) // Wait for search screen/army bar
+	time.Sleep(500 * time.Millisecond) // search screen (tightened)
 
 	// Step 3: Click the white army arrow to expand army selection (retry up to 3 times)
 	armyArrowClicked := false
@@ -1013,7 +1013,7 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	time.Sleep(1200 * time.Millisecond) // Wait for expansion animation
+	time.Sleep(500 * time.Millisecond) // army expansion (tightened)
 
 	// Step 4: Click army composition 1 (retry up to 3 times)
 	army1Clicked := false
@@ -1031,7 +1031,7 @@ func (b *Bot) clickSequence() bool {
 			screen.Close()
 		}
 	}
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	// Step 5: Click the green Battle button (retry up to 3 times)
 	battleClicked := false
@@ -1378,7 +1378,7 @@ func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
 		Msg("executing dynamic attack plan")
 
 	// Wait for clouds/battle transition to settle and troop bar to become responsive
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 
 	remaining, err := b.attackExec.DeployDynamicV2(strat, screen, b.cfg.Attack.StrategyFile)
 	if err != nil {

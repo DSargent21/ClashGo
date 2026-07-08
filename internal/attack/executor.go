@@ -149,10 +149,10 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 				j1 := t.addJitter(image.Pt(tx, ty), jitterPx)
 				t.client.TapFast(j1.X, j1.Y, 12.0)
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(45 * time.Millisecond)
 		}
 	}
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(120 * time.Millisecond)
 }
 
 // TapHeroAbility taps a hero slot for ability activation.
@@ -171,7 +171,9 @@ func (t *TapExecutor) TapBulkAbilities(slots []*TrackedSlot, delayMs int) {
 		return
 	}
 	t.logger.Info().Int("count", len(slots)).Msg("bulk activating hero abilities")
-	time.Sleep(500 * time.Millisecond) // Wait for heroes to land
+	// Short settle so heroes have a chance to spawn on the map before the
+	// first ability fires; full deploy-time wait is in hero_manager.go.
+	time.Sleep(120 * time.Millisecond)
 
 	for _, slot := range slots {
 		t.TapHeroAbility(slot)
@@ -203,13 +205,17 @@ func (t *TapExecutor) WaitForSettle(duration time.Duration) {
 	time.Sleep(duration)
 }
 
-// SleepBetweenBatches waits between tap batches.
+// sleepBetweenBatches waits between tap batches.
+// Tightened for speed: 60±20ms is the empirical floor below which CoC
+// stacks consecutive tap triples as a single deploy gesture. The 10%
+// "long pause" branch preserves a touch of variability for the anti-cheat
+// heuristic but stays under 100ms.
 func (t *TapExecutor) sleepBetweenBatches() {
-	sleepBase := 200
-	sleepDev := 40
+	sleepBase := 60
+	sleepDev := 20
 	if rand.Float64() < 0.10 {
-		sleepBase = 300
-		sleepDev = 50
+		sleepBase = 90
+		sleepDev = 25
 	}
 	t.client.HumanSleep(sleepBase, sleepDev)
 }

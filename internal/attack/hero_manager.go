@@ -186,7 +186,7 @@ func (hm *HeroManager) deploySingleHero(d HeroDeployment) bool {
 		Msg("selected hero slot")
 
 	// 2. CoC selection-animation window.
-	hm.executor.client.HumanSleep(350, 60)
+	hm.executor.client.HumanSleep(150, 30)
 
 	// 3. Drop with a tight cluster of 3 jittered taps.
 	p1, _ := hm.resolveHeroTarget(slot)
@@ -205,7 +205,7 @@ func (hm *HeroManager) deploySingleHero(d HeroDeployment) bool {
 	// 350±50ms is symmetric with the front-side cursor wait and
 	// empirically gives CoC enough time to commit the slot icon
 	// transition. Lower than 300ms produces false verify negatives.
-	hm.executor.client.HumanSleep(350, 50)
+	hm.executor.client.HumanSleep(150, 30)
 
 	// 5. Capture post-drop ratio and verify via DELTA.
 	postRatio, capturedPost := hm.captureSlotRatio(slot)
@@ -265,7 +265,7 @@ func (hm *HeroManager) activateAbilities(deployedSlots []*TrackedSlot) {
 	hm.logger.Info().Int("count", len(deployedSlots)).Msg("activating hero abilities")
 
 	// Wait for heroes to land on map
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	for _, slot := range deployedSlots {
 		// Heroes always remain on bar (cooldown) - just tap ability
@@ -274,7 +274,7 @@ func (hm *HeroManager) activateAbilities(deployedSlots []*TrackedSlot) {
 			Str("unit", slot.UnitName).
 			Int("x", slot.X).
 			Msg("hero ability activated")
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(60 * time.Millisecond)
 	}
 }
 
@@ -389,8 +389,8 @@ func (hm *HeroManager) DeployTroops(
 		hm.executor.TapDeployLine(p1, p2, tapCount, 10)
 	}
 
-	// Verify slot emptied
-	time.Sleep(300 * time.Millisecond)
+	// Verify slot emptied (80ms = empirical post-depart floor)
+	time.Sleep(80 * time.Millisecond)
 	freshScreen, err := hm.executor.CaptureFresh()
 	if err == nil {
 		defer freshScreen.Close()
@@ -435,7 +435,7 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 	hm.executor.TapDeployLine(p1, p2, 12, 10)
 
 	// Verify
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(80 * time.Millisecond)
 	freshScreen, err := hm.executor.CaptureFresh()
 	if err == nil {
 		defer freshScreen.Close()

@@ -23,7 +23,7 @@ func DefaultVerifyConfig() VerifyConfig {
 		AbilityThreshold: 0.4,
 		MaxRetryAttempts: 3,
 		RetryDelay:       500 * time.Millisecond,
-		SettleWait:       2 * time.Second,
+		SettleWait:       250 * time.Millisecond,
 	}
 }
 
@@ -70,6 +70,13 @@ func (v *Verifier) VerifyAll() int {
 	remainingCount := 0
 
 	for attempt := 1; attempt <= v.config.MaxRetryAttempts; attempt++ {
+		// First-attempt settle: only the first attempt needs an extra 300ms
+		// post-deploy-sync window. Subsequent attempts are gated by the
+		// retryDeploy()'s own cap-with-emit-check, which already sees a
+		// fresh "empty=false → retry" path. Sized to ~3x ADB capture round-trip.
+		if attempt == 1 {
+			v.executor.WaitForSettle(300 * time.Millisecond)
+		}
 		// Capture fresh screen
 		screen, err := v.executor.CaptureFresh()
 		if err != nil {
@@ -194,9 +201,9 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 			v.executor.client.TapTriple(tx1, ty1, 15.0, tx2, ty2, 15.0, tx3, ty3, 15.0)
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(80 * time.Millisecond)
 
-		// Verify
+		// Verify (tightened from 200/50ms to 80/35ms)
 		checkScreen, err := v.executor.CaptureFresh()
 		if err == nil {
 			empty := isSlotEmptyStatic(checkScreen, slot.X, slot.Y, v.w, v.h)
@@ -209,7 +216,7 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 
 		// Re-select
 		v.executor.TapSlot(slot, 4)
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(35 * time.Millisecond)
 	}
 
 	// Mark as failed after retries

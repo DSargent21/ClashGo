@@ -152,7 +152,7 @@ func (sd *SpellDeployer) deployPointSpell(unit strategy.Unit, slot *TrackedSlot,
 		sd.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target point")
 		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
 		if idx < len(points)-1 {
-			sd.executor.client.HumanSleep(180, 40)
+			sd.executor.client.HumanSleep(80, 20)
 		}
 	}
 	return true
@@ -234,7 +234,7 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 		sd.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target line")
 		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
 		if idx < len(points)-1 {
-			sd.executor.client.HumanSleep(180, 40)
+			sd.executor.client.HumanSleep(80, 20)
 		}
 	}
 	return true
@@ -268,15 +268,15 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 	for idx, pt := range pointsA {
 		sd.logger.Info().Int("idx", idx).Interface("pt", pt).Msg("tapping rage spell Line A")
 		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
-		sd.executor.client.HumanSleep(180, 40)
+		sd.executor.client.HumanSleep(80, 20)
 		deployed++
 	}
 
 	// Re-select the rage spell slot before the Line B drop. CoC needs a
 	// real re-select or the second drop falls on an empty cursor.
-	sd.executor.client.HumanSleep(300, 50)
+	sd.executor.client.HumanSleep(80, 20)
 	sd.executor.TapSlot(slot, 8)
-	sd.executor.client.HumanSleep(260, 40)
+	sd.executor.client.HumanSleep(80, 20)
 	sd.logger.Debug().
 		Str("unit", slot.UnitName).
 		Int("slot_x", slot.X).
@@ -289,7 +289,7 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 		sd.logger.Info().Int("idx", idx+3).Interface("pt", pt).Msg("tapping rage spell Line B")
 		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
 		deployed++
-		sd.executor.client.HumanSleep(180, 40)
+		sd.executor.client.HumanSleep(80, 20)
 	}
 
 	sd.logger.Info().Int("wanted", len(pointsA)+len(pointsB)).Int("delivered", deployed).Msg("rage spells deployment complete")
@@ -464,7 +464,7 @@ func (sd *SpellDeployer) deployFormulaLine(unit strategy.Unit, _ *TrackedSlot, e
 		// Brief settle between sub-lines gives CoC time to recognize
 		// the cursor hasn't desynced before the second drop. Slot
 		// re-select is handled upstream by the DeploySpell wrapper.
-		sd.executor.client.HumanSleep(300, 50)
+		sd.executor.client.HumanSleep(80, 20)
 		innerPts := sd.distributeAlong(p1In, p2In, inner, jitter)
 		sd.tapSeries(unit, innerPts, jitter, "formula line inner")
 		return true
@@ -569,9 +569,9 @@ func (sd *SpellDeployer) deployFormulaLines(unit strategy.Unit, slot *TrackedSlo
 
 		if li > 0 {
 			// Re-select between sub-lines (mirrors deployRageSpecial).
-			sd.executor.client.HumanSleep(300, 50)
+			sd.executor.client.HumanSleep(80, 20)
 			sd.executor.TapSlot(slot, 8)
-			sd.executor.client.HumanSleep(260, 40)
+			sd.executor.client.HumanSleep(80, 20)
 		}
 		for idx, pt := range points {
 			sd.logger.Info().
@@ -581,7 +581,7 @@ func (sd *SpellDeployer) deployFormulaLines(unit strategy.Unit, slot *TrackedSlo
 				Msg("tapping formula lines spell")
 			sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
 			deployed++
-			sd.executor.client.HumanSleep(180, 40)
+			sd.executor.client.HumanSleep(80, 20)
 		}
 	}
 
@@ -628,6 +628,6 @@ func (sd *SpellDeployer) tapSeries(unit strategy.Unit, points []image.Point, _ i
 			Interface("pt", pt).
 			Msg("tapping spell formula point")
 		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
-		sd.executor.client.HumanSleep(180, 40)
+		sd.executor.client.HumanSleep(80, 20)
 	}
 }
