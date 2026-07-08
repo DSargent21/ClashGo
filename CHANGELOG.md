@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`target_edge: "Rotate"` YAML mode** - cycles through the 4 corners (TopLeft -> TopRight -> BottomRight -> BottomLeft) across attacks via a persistent on-disk counter (`rotation_state.json` in the config dir). Survives process restarts so a long-running bot distributes attacks evenly across all 4 sides instead of re-starting at TopLeft on every launch. Backward compatible - "Random" and any direct corner string still work as before.
+- **Per-corner hero drop pinning** - `pCfg.HeroTargets[corner]` in `precision_config.json` is now honored by `HeroManager.resolveHeroTarget` in addition to the formula path. Combined with "Rotate", every attack in the cycle drops heroes at the user's per-corner pinned point without requiring a per-unit `formula.json`.
+
 ### Fixed
 - **Theme defaults to light** instead of honoring OS
   `prefers-color-scheme`. macOS defaults to dark and Wails also
@@ -27,7 +31,6 @@ All notable changes to this project will be documented in this file.
   returns; body now guards against missing `status`.
 - **Sidebar brand swap** to `clashgo-logo.png`.
 
-### Added
 - **In-app update system** — ClashGO now talks to GitHub Releases. On
   every startup (and every 6 hours thereafter) a lightweight Go
   service checks for a new release, compares versions with a tiny

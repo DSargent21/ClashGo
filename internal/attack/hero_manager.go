@@ -298,8 +298,16 @@ func (hm *HeroManager) activateAbilities(deployedSlots []*TrackedSlot) {
 // resolveHeroTarget returns the deployment point for a hero.
 //
 // Order of precedence:
-//  1. Formula entry (the user pinned a specific point or line).
-//  2. Random interpolation along the chosen edge.
+//  1. Formula entry (the user pinned a specific point or line) — wins
+//     whenever a point OR a line is present, so users with both
+//     formula.json AND pCfg.HeroTargets keep the formula's per-unit
+//     pins and do not silently get demoted to the corner pin.
+//  2. Per-corner pin from precision_config.json (pCfg.HeroTargets) —
+//     looked up first by exact targetEdge (TopLeft/TopRight/...), then
+//     by the physical side via cornerToSide (so users who pin
+//     hero_targets.top get the same point for both top corners).
+//  3. Grand Warden drops in the screen center (Eternal Tome radius).
+//  4. Random interpolation along the chosen edge (legacy fallback).
 func (hm *HeroManager) resolveHeroTarget(slot *TrackedSlot) (image.Point, image.Point) {
 	unitName := strings.ToLower(slot.UnitName)
 
@@ -320,6 +328,33 @@ func (hm *HeroManager) resolveHeroTarget(slot *TrackedSlot) (image.Point, image.
 			py := p1.Y + int(float64(p2.Y-p1.Y)*t)
 			return image.Pt(px, py), image.Pt(px, py)
 		}
+	}
+
+	// pCfg.HeroTargets (precision_config.json) - user pinned a per-corner
+	// hero drop point. Without this wire-up, "Rotate" mode would still
+	// randomize hero drops along the chosen edge instead of using the
+	// user's per-corner pins. We check the active targetEdge first, then
+	// fall back to the matching side (so a user who pins
+	// hero_targets.top + hero_targets.bottom gets the same point for both
+	// top corners and the same point for both bottom corners). Zero-
+	// defaults (0,0) are treated as "not pinned" and skipped.
+	if pt, ok := hm.pCfg.HeroTargets[hm.targetEdge]; ok && (pt.X != 0 || pt.Y != 0) {
+		hm.logger.Debug().
+			Str("unit", unitName).
+			Str("corner", hm.targetEdge).
+			Interface("target", pt).
+			Msg("hero target from precision_config.json")
+		return pt, pt
+	}
+	if side := cornerToSide(hm.targetEdge); side != "" {
+		if pt, ok := hm.pCfg.HeroTargets[side]; ok && (pt.X != 0 || pt.Y != 0) {
+			hm.logger.Debug().
+				Str("unit", unitName).
+				Str("side", side).
+				Interface("target", pt).
+				Msg("hero target from precision_config.json (side fallback)")
+			return pt, pt
+	}
 	}
 
 	// Grand Warden is the only hero that should drop in the SCREEN CENTER.

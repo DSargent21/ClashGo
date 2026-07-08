@@ -31,11 +31,25 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		return 0, err
 	}
 
-	// 0. Resolve "Random" targetEdge BEFORE we read configuration that
-	//    depends on it. Previously this happened AFTER the red-zone pass,
-	//    so heroes/sweep saw a different edge than troops — a silent
+	// 0. Resolve "Rotate" / "Random" targetEdge BEFORE we read configuration
+	//    that depends on it. Previously this happened AFTER the red-zone
+	//    pass, so heroes/sweep saw a different edge than troops — a silent
 	//    coordinate-mismatch bug.
-	if strings.EqualFold(targetEdge, "Random") {
+	switch {
+	case strings.EqualFold(targetEdge, "Rotate"):
+		// EqualFold is intentional: YAML authors may type "rotate" or
+		// "ROTATE" or "Rotate" and the bot should not silently fall
+		// through to the per-corner default. Parity with the "Random"
+		// branch below, which uses the same case-insensitive match.
+		//
+		// Cycle through the 4 corners in a top→right→bottom→left
+		// pattern via a persistent on-disk counter. The bot distributes
+		// attacks evenly across sides over multiple runs instead of
+		// re-picking TopLeft every process restart. See
+		// rotation_state.go for the failure-mode / concurrency story.
+		targetEdge = NextEdgeIndex()
+		e.logger.Info().Str("edge", targetEdge).Msg("rotated to next edge")
+	case strings.EqualFold(targetEdge, "Random"):
 		edges := []string{"TopLeft", "TopRight", "BottomLeft", "BottomRight"}
 		targetEdge = edges[rand.Intn(len(edges))]
 		e.logger.Info().Str("edge", targetEdge).Msg("random edge selected")

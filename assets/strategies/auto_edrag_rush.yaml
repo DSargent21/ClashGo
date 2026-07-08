@@ -1,6 +1,10 @@
 name: "Auto EDrag Rush"
 description: "Professional Balloon + EDrag attack with Double Diamond precision"
-target_edge: "Random"
+# target_edge options:
+#   "TopLeft" / "TopRight" / "BottomLeft" / "BottomRight" - pin a single side
+#   "Random" - pick a random corner per attack
+#   "Rotate"  - cycle TL -> TR -> BR -> BL across attacks (persistent state)
+target_edge: "Rotate"
 auto_deploy_eventTroops: true
 phases:
   - name: "Balloons"
