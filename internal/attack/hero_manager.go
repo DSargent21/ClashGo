@@ -354,7 +354,7 @@ func (hm *HeroManager) resolveHeroTarget(slot *TrackedSlot) (image.Point, image.
 				Interface("target", pt).
 				Msg("hero target from precision_config.json (side fallback)")
 			return pt, pt
-	}
+		}
 	}
 
 	// Grand Warden is the only hero that should drop in the SCREEN CENTER.
@@ -413,7 +413,39 @@ func (hm *HeroManager) DeployTroops(
 	isFourSides := pattern == "FourSides" || phasePattern == "FourSides"
 
 	if isFourSides {
-		hm.executor.TapDeployFourSides(hm.pCfg, hm.targetEdge, 12, 8)
+		// FourSides pattern deploys on all 4 corners simultaneously
+		// using pCfg.Edges. Apply the phase's offset to a local copy of
+		// the edges so the outer (balloons) / inner (EDs) / spell
+		// lines all sit at distinct distances from base center.
+		// Without this, the offset parameter was silently ignored for
+		// FourSides (only Line deploys applied it), so all 3 lines
+		// landed at the same depth — breaking the "Double Diamond"
+		// formation.
+		cfg := hm.pCfg
+		if offset > 0 {
+			cfg.Edges = make(map[string]ManualEdge)
+			cx, cy := hm.w/2, hm.h/2
+			pct := float64(offset) / 200.0
+			for k, e := range hm.pCfg.Edges {
+				p1 := image.Pt(
+					int(float64(e.P1.X)+float64(cx-e.P1.X)*pct),
+					int(float64(e.P1.Y)+float64(cy-e.P1.Y)*pct),
+				)
+				p2 := image.Pt(
+					int(float64(e.P2.X)+float64(cx-e.P2.X)*pct),
+					int(float64(e.P2.Y)+float64(cy-e.P2.Y)*pct),
+				)
+				cfg.Edges[k] = ManualEdge{P1: p1, P2: p2}
+			}
+		}
+		hm.executor.TapDeployFourSides(cfg, hm.targetEdge, 12, 8)
+		// Mark the slot deployed so the sweeper doesn't re-tap. The
+		// slot may visually persist (CC-troop icon for balloons, etc.)
+		// which used to be a problem for the Line/Point path that
+		// polled isSlotEmptyStatic, but FourSides taps 12× per corner
+		// (48 total) so we trust the deploy and mark now to avoid 4
+		// wasted deploySlot retries in the sweep phase.
+		hm.slotManager.MarkDeployed(unitName)
 		return true
 	}
 

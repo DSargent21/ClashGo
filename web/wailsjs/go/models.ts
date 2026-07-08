@@ -214,6 +214,8 @@ export namespace config {
 	    save_screenshots: boolean;
 	    template_debug: boolean;
 	    state_debug: boolean;
+	    use_shell_pipe: boolean;
+	    shell_pipe_sync_flush: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new DebugConfig(source);
@@ -225,6 +227,8 @@ export namespace config {
 	        this.save_screenshots = source["save_screenshots"];
 	        this.template_debug = source["template_debug"];
 	        this.state_debug = source["state_debug"];
+	        this.use_shell_pipe = source["use_shell_pipe"];
+	        this.shell_pipe_sync_flush = source["shell_pipe_sync_flush"];
 	    }
 	}
 	export class UpgradeConfig {

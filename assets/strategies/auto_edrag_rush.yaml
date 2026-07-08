@@ -1,24 +1,24 @@
 name: "Auto EDrag Rush"
-description: "Professional Balloon + EDrag attack with Double Diamond precision"
+description: "Professional Balloon + EDrag attack with Double Diamond precision. Per-unit deploy coordinates come from auto_edrag_rush_formula.json (authored once via cmd/design_attack). target_edge: Random picks a corner per attack; if a per-corner override exists in formula.corner_overrides[<CORNER>] the bot uses it as-authored, otherwise it falls back to mirroring the formula's BottomRight default. This gives an unpredictable per-attack landing side while keeping a single authored formula. See docs/formula-authoring.md for the full workflow."
 # target_edge options:
 #   "TopLeft" / "TopRight" / "BottomLeft" / "BottomRight" - pin a single side
-#   "Random" - pick a random corner per attack
+#   "Random" - pick a random corner per attack (recommended for unattended runs)
 #   "Rotate"  - cycle TL -> TR -> BR -> BL across attacks (persistent state)
-target_edge: "Rotate"
+target_edge: "Random"
 auto_deploy_eventTroops: true
 phases:
   - name: "Balloons"
     units: [{ name: "Balloon", amount: "All" }]
-    pattern: "Line"
-    offset: 80 # Near the outer Yellow line
+    pattern: "Line" # Formula drives coords (auto_edrag_rush_formula.json → "balloon")
+    offset: 80 # Fallback only — used if formula is missing the unit
     retry: 3
     verify_before_next: true
     delay_after_ms: 10
 
   - name: "Electro Dragons"
     units: [{ name: "Electro Dragon", amount: "All" }]
-    pattern: "Line"
-    offset: 60 # Slightly inside balloons
+    pattern: "Line" # Formula drives coords (auto_edrag_rush_formula.json → "electro dragon")
+    offset: 60 # Fallback only — used if formula is missing the unit
     retry: 3
     verify_before_next: true
     delay_after_ms: 10
@@ -53,8 +53,8 @@ phases:
     units:
       - { name: "Rage Spell", amount: "All" }
       - { name: "Ice Spell", amount: "All" }
-    pattern: "Line"
-    offset: 30 # Near the point of entry
+    pattern: "Line" # Formula drives coords (auto_edrag_rush_formula.json → "rage spell", "ice spell")
+    offset: 30 # Fallback only — used if formula is missing the unit
     retry: 3
     delay_after_ms: 10
 

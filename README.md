@@ -12,6 +12,7 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
 - **Fast**: Uses a persistent ADB connection, so screen captures and taps are instant.
 - **Lightweight**: Just a single binary.
 - **Customizable strategies**: Drop a YAML strategy + matching `formula.json` (per-unit deploy coords) into `assets/strategies/` and the bot deploys each unit where you want. See `assets/strategies/auto_edrag_rush.yaml` + `assets/strategies/auto_edrag_rush_formula.json` for an end-to-end example (Balloon + EDrag + Rage + Ice).
+- **Per-corner formula workflow**: `target_edge: "Random"` (the default in `auto_edrag_rush.yaml`) picks a random corner per attack. `cmd/design_attack -live -corner BR|BL|TR|TL` authors the per-corner deploy coords; per-corner overrides in `formula.corner_overrides[<CORNER>]` are used as-authored (the mirror is only a fallback). See [`docs/formula-authoring.md`](docs/formula-authoring.md) for the full walkthrough.
 - **Replayable attacks**: `make attack-record` records a deploy you perform on the emulator; `make attack-replay` re-fires that JSON on the device with classification + extras. Useful for sharing working attacks without re-engineering.
 - **In-app updater**: New releases ship through GitHub Releases. Once a version is published, ClashGO's UI shows a banner; clicking it downloads + verifies (SHA256), then opens Finder so you can drag-replace. No new servers, no manual checks. Skip / later are honored.
 

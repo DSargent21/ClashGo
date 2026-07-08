@@ -5,43 +5,23 @@
     "h": 732
   },
   "units": {
-    "_event_spell": {
-      "type": "line",
-      "jitter": 3,
-      "p1": {
-        "x": 449,
-        "y": 509
-      },
-      "p2": {
-        "x": 642,
-        "y": 363
-      }
-    },
-    "_event_troop": {
-      "type": "point",
-      "p": {
-        "x": 644,
-        "y": 513
-      },
-      "jitter": 5
-    },
     "_rage_inner": {
       "type": "line",
       "jitter": 3,
       "p1": {
-        "x": 416,
-        "y": 458
+        "x": 452,
+        "y": 452
       },
       "p2": {
-        "x": 567,
-        "y": 337
+        "x": 588,
+        "y": 344
       }
     },
     "archer queen": {
       "type": "point",
       "p": {
-        "x": 642,
-        "y": 513
+        "x": 636,
+        "y": 510
       },
       "jitter": 5
     },
@@ -49,27 +29,27 @@
       "type": "line",
       "jitter": 3,
       "p1": {
-        "x": 542,
-        "y": 590
+        "x": 547,
+        "y": 581
       },
       "p2": {
-        "x": 736,
-        "y": 441
+        "x": 726,
+        "y": 442
       }
     },
     "barbarian king": {
       "type": "point",
       "p": {
-        "x": 642,
-        "y": 513
+        "x": 636,
+        "y": 510
       },
       "jitter": 5
     },
     "dragon duke": {
       "type": "point",
       "p": {
-        "x": 235,
-        "y": 521
+        "x": 629,
+        "y": 176
       },
       "jitter": 5
     },
@@ -77,19 +57,19 @@
       "type": "line",
       "jitter": 3,
       "p1": {
-        "x": 542,
-        "y": 590
+        "x": 546,
+        "y": 580
       },
       "p2": {
-        "x": 736,
-        "y": 440
+        "x": 726,
+        "y": 442
       }
     },
     "grand warden": {
       "type": "point",
       "p": {
-        "x": 642,
-        "y": 513
+        "x": 636,
+        "y": 510
       },
       "jitter": 5
     },
@@ -97,19 +77,19 @@
       "type": "line",
       "jitter": 3,
       "p1": {
-        "x": 478,
-        "y": 456
+        "x": 480,
+        "y": 429
       },
       "p2": {
-        "x": 563,
-        "y": 398
+        "x": 537,
+        "y": 391
       }
     },
     "minion prince": {
       "type": "point",
       "p": {
-        "x": 642,
-        "y": 513
+        "x": 636,
+        "y": 510
       },
       "jitter": 5
     },
@@ -117,21 +97,353 @@
       "type": "line",
       "jitter": 3,
       "p1": {
-        "x": 474,
-        "y": 534
+        "x": 453,
+        "y": 535
       },
       "p2": {
-        "x": 669,
-        "y": 386
+        "x": 678,
+        "y": 363
       }
     },
     "stone slammer": {
       "type": "point",
       "p": {
-        "x": 642,
-        "y": 513
+        "x": 635,
+        "y": 511
       },
       "jitter": 5
+    }
+  },
+  "corner_overrides": {
+    "BottomLeft": {
+      "_rage_inner": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 250,
+          "y": 276
+        },
+        "p2": {
+          "x": 421,
+          "y": 399
+        }
+      },
+      "archer queen": {
+        "type": "point",
+        "p": {
+          "x": 190,
+          "y": 482
+        },
+        "jitter": 5
+      },
+      "balloon": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 81,
+          "y": 397
+        },
+        "p2": {
+          "x": 289,
+          "y": 562
+        }
+      },
+      "barbarian king": {
+        "type": "point",
+        "p": {
+          "x": 190,
+          "y": 482
+        },
+        "jitter": 5
+      },
+      "dragon duke": {
+        "type": "point",
+        "p": {
+          "x": 228,
+          "y": 176
+        },
+        "jitter": 5
+      },
+      "electro dragon": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 80,
+          "y": 401
+        },
+        "p2": {
+          "x": 299,
+          "y": 569
+        }
+      },
+      "grand warden": {
+        "type": "point",
+        "p": {
+          "x": 190,
+          "y": 482
+        },
+        "jitter": 5
+      },
+      "ice spell": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 306,
+          "y": 313
+        },
+        "p2": {
+          "x": 357,
+          "y": 350
+        }
+      },
+      "minion prince": {
+        "type": "point",
+        "p": {
+          "x": 190,
+          "y": 482
+        },
+        "jitter": 5
+      },
+      "rage spell": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 142,
+          "y": 306
+        },
+        "p2": {
+          "x": 412,
+          "y": 501
+        }
+      },
+      "stone slammer": {
+        "type": "point",
+        "p": {
+          "x": 190,
+          "y": 482
+        },
+        "jitter": 5
+      }
+    },
+    "TopLeft": {
+      "_rage_inner": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 242,
+          "y": 362
+        },
+        "p2": {
+          "x": 448,
+          "y": 222
+        }
+      },
+      "archer queen": {
+        "type": "point",
+        "p": {
+          "x": 195,
+          "y": 183
+        },
+        "jitter": 5
+      },
+      "balloon": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 103,
+          "y": 253
+        },
+        "p2": {
+          "x": 308,
+          "y": 97
+        }
+      },
+      "barbarian king": {
+        "type": "point",
+        "p": {
+          "x": 195,
+          "y": 183
+        },
+        "jitter": 5
+      },
+      "dragon duke": {
+        "type": "point",
+        "p": {
+          "x": 623,
+          "y": 165
+        },
+        "jitter": 5
+      },
+      "electro dragon": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 104,
+          "y": 255
+        },
+        "p2": {
+          "x": 286,
+          "y": 112
+        }
+      },
+      "grand warden": {
+        "type": "point",
+        "p": {
+          "x": 195,
+          "y": 183
+        },
+        "jitter": 5
+      },
+      "ice spell": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 321,
+          "y": 308
+        },
+        "p2": {
+          "x": 400,
+          "y": 257
+        }
+      },
+      "minion prince": {
+        "type": "point",
+        "p": {
+          "x": 195,
+          "y": 183
+        },
+        "jitter": 5
+      },
+      "rage spell": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 125,
+          "y": 337
+        },
+        "p2": {
+          "x": 420,
+          "y": 132
+        }
+      },
+      "stone slammer": {
+        "type": "point",
+        "p": {
+          "x": 195,
+          "y": 183
+        },
+        "jitter": 5
+      }
+    },
+    "TopRight": {
+      "_rage_inner": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 601,
+          "y": 335
+        },
+        "p2": {
+          "x": 444,
+          "y": 208
+        }
+      },
+      "archer queen": {
+        "type": "point",
+        "p": {
+          "x": 631,
+          "y": 181
+        },
+        "jitter": 5
+      },
+      "balloon": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 722,
+          "y": 249
+        },
+        "p2": {
+          "x": 537,
+          "y": 114
+        }
+      },
+      "barbarian king": {
+        "type": "point",
+        "p": {
+          "x": 631,
+          "y": 181
+        },
+        "jitter": 5
+      },
+      "dragon duke": {
+        "type": "point",
+        "p": {
+          "x": 230,
+          "y": 178
+        },
+        "jitter": 5
+      },
+      "electro dragon": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 724,
+          "y": 250
+        },
+        "p2": {
+          "x": 536,
+          "y": 113
+        }
+      },
+      "grand warden": {
+        "type": "point",
+        "p": {
+          "x": 631,
+          "y": 181
+        },
+        "jitter": 5
+      },
+      "ice spell": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 557,
+          "y": 287
+        },
+        "p2": {
+          "x": 497,
+          "y": 242
+        }
+      },
+      "minion prince": {
+        "type": "point",
+        "p": {
+          "x": 631,
+          "y": 181
+        },
+        "jitter": 5
+      },
+      "rage spell": {
+        "type": "line",
+        "jitter": 3,
+        "p1": {
+          "x": 700,
+          "y": 320
+        },
+        "p2": {
+          "x": 443,
+          "y": 127
+        }
+      },
+      "stone slammer": {
+        "type": "point",
+        "p": {
+          "x": 631,
+          "y": 181
+        },
+        "jitter": 5
+      }
     }
   }
 }

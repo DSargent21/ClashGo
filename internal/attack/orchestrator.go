@@ -157,9 +157,46 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		e.logger.Warn().Err(ferr).Str("strategy_path", strategyPath).Msg("formula found but failed to parse")
 	}
 	if hasFormula {
-		// Scale the formula's authored coordinates to the live screen
-		// dimensions. Without this, a JSON pinned on a 860×732 PNG
-		// won't land correctly on a different live resolution.
+		// Per-corner override (if present) wins over the mirror. The
+		// user may have authored explicit coords for this corner via
+		// `cmd/design_attack -corner BL` (which writes to
+		// formula.corner_overrides.BL). This is more accurate than
+		// reflecting the BR default — different base geometries have
+		// different red-line positions on each side, and a mirror
+		// across a non-symmetric base puts the line either too close
+		// to the new side's red line (overlap) or too far from it.
+		usedOverride := false
+		if formulaPtr.CornerOverrides != nil {
+			if cornerUnits, ok := formulaPtr.CornerOverrides[targetEdge]; ok {
+				// Merge: per-corner overrides win per-unit. Typical
+				// override is PARTIAL — only the units that differ
+				// from the mirrored BR default. Units not in the
+				// override fall through to formula.units so the
+				// user only re-pins the units that actually need it.
+				merged := make(map[string]formula.UnitEntry, len(formulaPtr.Units)+len(cornerUnits))
+				for k, v := range formulaPtr.Units {
+					merged[k] = v
+				}
+				for k, v := range cornerUnits {
+					merged[k] = v
+				}
+				formulaPtr.Units = merged
+				usedOverride = true
+			}
+		}
+		if !usedOverride {
+			// No explicit override for this corner: mirror the BR
+			// default (formula.units) around the formula's authored
+			// 860×732 reference frame. This is the simpler
+			// replacement for the previous FourSides pattern: the
+			// user authors ONE attack in cmd/design_attack, the
+			// orchestrator mirrors it per-corner.
+			formulaPtr.MirrorForCorner(targetEdge)
+		}
+		// Scale (the merged or mirrored units) to the live screen.
+		// Doing mirror-before-scale keeps formula.Screen.W/H
+		// meaningful as the formula's intent reference and avoids
+		// "which center do we reflect around" ambiguity.
 		formulaPtr.ApplyScreenScale(formulaPtr.Screen.W, formulaPtr.Screen.H, w, h)
 		e.logger.Info().
 			Str("strategy", s.Name).

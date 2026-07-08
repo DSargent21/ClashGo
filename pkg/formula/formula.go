@@ -56,10 +56,11 @@ type LinePoint struct {
 // UnitEntry is the per-unit deploy instruction.
 //
 // Type discriminator (inferred from populated fields):
-//   "point" - single tap target (heroes, siege)
-//   "line"  - taps evenly distributed from P1 to P2 (balloons, EDrag)
-//   "lines" - rage-style split (each LinePoint is one sub-line)
-//   empty   - no entry; caller falls back to pCfg.Edges
+//
+//	"point" - single tap target (heroes, siege)
+//	"line"  - taps evenly distributed from P1 to P2 (balloons, EDrag)
+//	"lines" - rage-style split (each LinePoint is one sub-line)
+//	empty   - no entry; caller falls back to pCfg.Edges
 type UnitEntry struct {
 	Type string `json:"type,omitempty"`
 
@@ -92,13 +93,35 @@ func (e UnitEntry) IsLines() bool {
 }
 
 // Formula is the top-level deploy plan.
+//
+// `Units` is the per-unit deploy geometry authored for one canonical
+// corner (BottomRight by convention). The orchestrator mirrors Units
+// to the active target edge at runtime (see MirrorForCorner).
+//
+// `CornerOverrides` is an optional map of per-corner partial overrides.
+// When present, the orchestrator uses the override for that corner
+// INSTEAD OF mirroring Units — because the user has authored explicit
+// coordinates for that side (e.g. with `cmd/design_attack -corner BL`)
+// that better match the base's actual red-line position on that side.
+//
+// Keys are the canonical corner names produced by NextEdgeIndex:
+// "TopLeft" / "TopRight" / "BottomRight" / "BottomLeft" (case
+// sensitive — the orchestrator's switch uses the raw value). The
+// per-corner value is a per-unit map with the SAME schema as Units;
+// typically a PARTIAL formula (only the units that differ from the
+// mirrored BR default). The orchestrator merges the override with
+// Units per-unit, with the override winning.
+//
+// `corner_overrides` is omitted from JSON when nil, so old formulas
+// (with only Units) continue to round-trip cleanly.
 type Formula struct {
-	Name   string                `json:"name"`
+	Name   string `json:"name"`
 	Screen struct {
 		W int `json:"w"`
 		H int `json:"h"`
 	} `json:"screen"`
-	Units map[string]UnitEntry `json:"units"`
+	Units           map[string]UnitEntry            `json:"units"`
+	CornerOverrides map[string]map[string]UnitEntry `json:"corner_overrides,omitempty"`
 }
 
 // Load finds and reads a formula file. Strategy path is the YAML file
@@ -142,6 +165,25 @@ func (f *Formula) LookUp(unitName string) (UnitEntry, bool) {
 	return UnitEntry{}, false
 }
 
+// LoadFile reads a formula from a direct path. Use Load() instead when
+// the path is a strategy YAML (Load auto-resolves <stem>_formula.json).
+// Used by cmd/design_attack -verify to load a previously-saved formula
+// for visual inspection of the 4-corner mirror.
+func LoadFile(path string) (*Formula, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var f Formula
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, fmt.Errorf("formula %s: %w", path, err)
+	}
+	if f.Units == nil {
+		f.Units = map[string]UnitEntry{}
+	}
+	return &f, nil
+}
+
 // candidatePaths returns all plausible locations for a formula file
 // given the strategy YAML path.
 func candidatePaths(strategyPath string) []string {
@@ -169,4 +211,101 @@ func (f *Formula) Save(path string) error {
 		return err
 	}
 	return os.WriteFile(path, raw, 0o644)
+}
+
+// MirrorForCorner reflects every P / P1 / P2 / Lines[i].P1 / Lines[i].P2
+// across the screen axes as needed so a formula authored for ONE corner
+// (BottomRight by convention) applies to any of the 4 corners. Used by
+// the orchestrator with `target_edge: "Rotate"` so the same authored
+// attack lands on a different side each run without the user having to
+// pin all 4 corners in `precision_config.json`.
+//
+// Reflection rules (mirror around the formula's authored screen center):
+//
+//	BottomRight: identity (formula as-authored)        — no-op
+//	BottomLeft:  reflect X (newX = W - X)              — flip horizontally
+//	TopRight:    reflect Y (newY = H - Y)              — flip vertically
+//	TopLeft:     reflect both (newX = W - X; newY = H - Y)
+//
+// Accepts BOTH the full canonical names ("BottomLeft", "TopRight", etc.
+// — used by the orchestrator via NextEdgeIndex) AND the abbreviated
+// 2-letter forms ("BL", "TR", etc. — used by cmd/design_attack -verify
+// for its 2x2 grid labels). Freeform values like "left" or "right"
+// also work via the substring fallback so a user-authored strategy
+// with `target_edge: "left"` still gets a reasonable mirror.
+//
+// Designed to be called BEFORE ApplyScreenScale so the mirror uses the
+// formula's authored 860x732 reference frame. After the mirror,
+// ApplyScreenScale does the live-screen projection. The Grand Warden
+// "always at screen center" hardcode in HeroManager is NOT mirrored —
+// center stays center — so a pin authored at the formula's (430, 366)
+// center mirrors to itself, which is the right behavior either way.
+func (f *Formula) MirrorForCorner(targetEdge string) {
+	if f == nil {
+		return
+	}
+	corner := strings.ToLower(strings.TrimSpace(targetEdge))
+	var mirrorX, mirrorY bool
+	switch corner {
+	case "bottomright", "br", "bottom_right":
+		// identity
+	case "bottomleft", "bl", "bottom_left":
+		mirrorX = true
+	case "topright", "tr", "top_right":
+		mirrorY = true
+	case "topleft", "tl", "top_left":
+		mirrorX = true
+		mirrorY = true
+	default:
+		// Freeform fallback: any value containing "left" mirrors X,
+		// any containing "top" mirrors Y. Lets `target_edge: "left"`
+		// or similar user inputs still produce a reasonable mirror.
+		mirrorX = strings.Contains(corner, "left")
+		mirrorY = strings.Contains(corner, "top")
+	}
+	if !mirrorX && !mirrorY {
+		return // identity (BR or unknown) — formula used as-authored.
+	}
+
+	w, h := f.Screen.W, f.Screen.H
+	if w == 0 {
+		w = 1
+	}
+	if h == 0 {
+		h = 1
+	}
+
+	for name, e := range f.Units {
+		if mirrorX {
+			if e.P != nil {
+				e.P.X = w - e.P.X
+			}
+			if e.P1 != nil {
+				e.P1.X = w - e.P1.X
+			}
+			if e.P2 != nil {
+				e.P2.X = w - e.P2.X
+			}
+			for i := range e.Lines {
+				e.Lines[i].P1.X = w - e.Lines[i].P1.X
+				e.Lines[i].P2.X = w - e.Lines[i].P2.X
+			}
+		}
+		if mirrorY {
+			if e.P != nil {
+				e.P.Y = h - e.P.Y
+			}
+			if e.P1 != nil {
+				e.P1.Y = h - e.P1.Y
+			}
+			if e.P2 != nil {
+				e.P2.Y = h - e.P2.Y
+			}
+			for i := range e.Lines {
+				e.Lines[i].P1.Y = h - e.Lines[i].P1.Y
+				e.Lines[i].P2.Y = h - e.Lines[i].P2.Y
+			}
+		}
+		f.Units[name] = e
+	}
 }

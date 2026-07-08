@@ -5,8 +5,30 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **`target_edge: "Rotate"` YAML mode** - cycles through the 4 corners (TopLeft -> TopRight -> BottomRight -> BottomLeft) across attacks via a persistent on-disk counter (`rotation_state.json` in the config dir). Survives process restarts so a long-running bot distributes attacks evenly across all 4 sides instead of re-starting at TopLeft on every launch. Backward compatible - "Random" and any direct corner string still work as before.
-- **Per-corner hero drop pinning** - `pCfg.HeroTargets[corner]` in `precision_config.json` is now honored by `HeroManager.resolveHeroTarget` in addition to the formula path. Combined with "Rotate", every attack in the cycle drops heroes at the user's per-corner pinned point without requiring a per-unit `formula.json`.
+- **`target_edge: "Random"` mode** (now the default for `auto_edrag_rush.yaml`) — picks a random corner per attack (TopLeft / TopRight / BottomLeft / BottomRight) for an unpredictable per-attack landing side, ideal for unattended runs. Backward compatible: `"Rotate"` (deterministic cycle), specific corner names, and legacy side names (`top` / `right` / `bottom` / `left`) all still work.
+- **Per-corner formula override workflow** — `Formula.CornerOverrides` (`map[string]map[string]UnitEntry`, omitempty) holds optional per-corner partial overrides authored via `cmd/design_attack -corner BL/TR/TL`. The orchestrator (`internal/attack/orchestrator.go::DeployDynamicV2`) merges a per-corner override with `Units` per-unit and uses the result INSTEAD of mirroring when present, so the user can pin coords that match the base's actual red-line position on each side. This fixes the previous "mirror lands too close to the red line on BL/TR/TL" symptom. `assets/strategies/auto_edrag_rush_formula.json` now has `units` (BR default) + 3 `corner_overrides` (BL/TR/TL) populated.
+- **`docs/formula-authoring.md`** — canonical reference for the per-corner formula workflow. Sections: TL;DR with 4 corner commands, `target_edge` modes, `cmd/design_attack` flag reference, per-corner authoring walkthrough, partial override semantics, schema reference, `MirrorForCorner` reflection rules table.
+- **`Formula.MirrorForCorner(targetEdge)`** in `pkg/formula/formula.go` — reflects every `P` / `P1` / `P2` / `Lines[i].P1` / `Lines[i].P2` across the screen axes (`BottomRight: identity`, `BottomLeft: mirrorX`, `TopRight: mirrorY`, `TopLeft: mirror both`). Accepts both full canonical names (`BottomLeft`) and abbreviated forms (`BL` / `TR` etc.) plus a substring fallback for freeform values like `"left"`.
+- **`Formula.LoadFile(path)`** — loads a formula from a direct path. Used by `cmd/design_attack -verify` to read a previously-saved formula for visual inspection.
+- **`cmd/design_attack` is now the one-stop tool for authoring + verifying per-attack formulas**:
+  - `-live` — captures the screen from adb via `adb exec-out screencap -p` (no pre-saved `-screen` PNG needed)
+  - `-verify <formula.json>` — loads an existing formula, shows a 2x2 grid of the formula mirrored to all 4 corners via `MirrorForCorner`. The grid PNG is saved to `verify_grid.png`. Press any key to exit
+  - `-corner <BR|BL|TR|TL>` — which corner is being authored. `BR` (default) saves to `formula.units`; the others save to `formula.corner_overrides[<CORNER>]` (preserves previously-saved corners)
+  - Required-flag check now happens BEFORE the live capture so a missing `-strategy` / `-out` fails fast without an adb screencap
+
+### Changed
+- **`auto_edrag_rush.yaml` switched to `target_edge: "Random"`** — combined with the per-corner override path, this is the new canonical "all 4 sides" workflow. Replaces both the previous `Rotate` cycle and the 5 redundant single-side strategies.
+- **Removed 5 redundant strategy files** — `top_edrag_rush.yaml`, `bottom_edrag_rush.yaml`, `left_edrag_rush.yaml`, `right_edrag_rush.yaml`, `balloon_edrag_rush.yaml`. All were single-side variants of `auto_edrag_rush.yaml` (different `target_edge` value, otherwise identical unit composition). `auto_edrag_rush.yaml` + `target_edge: "Random"` + per-corner overrides covers all use cases. `valk_spam.yaml` is kept (different attack system — FourSides Valkyrie ring).
+- **Stray PNG cleanup** — removed untracked debug artifacts (`verify_grid.png`, `last_failure.png`, `last_battle_result.png`, `diag_*.png`). These were runtime output, never intended for the repo.
+
+### Fixed
+- **`MirrorForCorner` failed for abbreviated corner names** — the previous `strings.Contains(corner, "left")` / `"top"` substring matching worked for the orchestrator's full names (`BottomLeft` / `TopRight`) but produced a no-op for the abbreviated forms (`BL` / `TR`) used by `cmd/design_attack -verify`'s 2x2 grid labels. All 4 quadrants rendered the same unmirrored geometry. Replaced with a switch on the normalized corner name covering both full + abbreviated forms (plus a freeform substring fallback).
+- **Mirror pointer-aliasing in `runVerify`** — `MirrorForCorner` mutates `*Point` in place, so 4 sequential mirrors on shared pointers all collapsed to the TL geometry. Fixed by deep-copying `P` / `P1` / `P2` into fresh `*Point` allocations and the `Lines` slice (LinePoint is a value type) per iteration.
+- **2x2 grid scaling** in `runVerify` — formula's authored coords are in 860×732 frame, quadrants are at `w/2 × h/2`. Added `ApplyScreenScale(mirrored.Screen.W, mirrored.Screen.H, halfW, halfH)` after the mirror so the deploy lines land on the quadrants (a BL mirror of `(60, 110)` was previously off the right edge of a 430×366 quadrant).
+- **Required-flag check happened after the live capture** in `cmd/design_attack` — missing `-strategy` wasted an adb screencap before showing the usage. Reordered so the check fires before the capture.
+
+### Security
+- **`.gitignore` covers `rotation_state.json`** — runtime state of the `Rotate` cycle (per-process index + last-written `last_index`). Not code, not committed.
 
 ### Fixed
 - **Theme defaults to light** instead of honoring OS
