@@ -29,16 +29,19 @@ func DefaultVerifyConfig() VerifyConfig {
 
 // Verifier handles post-deployment verification.
 type Verifier struct {
-	executor    *TapExecutor
-	slotManager *SlotManager
-	pCfg        PrecisionConfig
-	targetEdge  string
-	w, h        int
-	config      VerifyConfig
-	logger      zerolog.Logger
+	executor     *TapExecutor
+	slotManager  *SlotManager
+	pCfg         PrecisionConfig
+	targetEdge   string
+	w, h         int
+	config       VerifyConfig
+	troopCounter *TroopCounter // optional; enables live-OCR count + reconcile
+	logger       zerolog.Logger
 }
 
-// NewVerifier creates a new verifier.
+// NewVerifier creates a new verifier. troopCounter may be nil; when
+// non-nil, retryDeploy uses it to live-OCR the slot before re-firing
+// so we never under-spot a slot whose cards still hold troops.
 func NewVerifier(
 	executor *TapExecutor,
 	slotManager *SlotManager,
@@ -46,17 +49,19 @@ func NewVerifier(
 	targetEdge string,
 	w, h int,
 	config VerifyConfig,
+	troopCounter *TroopCounter,
 	logger zerolog.Logger,
 ) *Verifier {
 	return &Verifier{
-		executor:    executor,
-		slotManager: slotManager,
-		pCfg:        pCfg,
-		targetEdge:  targetEdge,
-		w:           w,
-		h:           h,
-		config:      config,
-		logger:      logger.With().Str("component", "verifier").Logger(),
+		executor:     executor,
+		slotManager:  slotManager,
+		pCfg:         pCfg,
+		targetEdge:   targetEdge,
+		w:            w,
+		h:            h,
+		config:       config,
+		troopCounter: troopCounter,
+		logger:       logger.With().Str("component", "verifier").Logger(),
 	}
 }
 
@@ -148,50 +153,78 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 
 // retryDeploy attempts to redeploy a slot with retries.
 //
-// Empty-slot guard: at the top of each batch, capture the live screen
-// and bail out immediately if the slot's card is already empty. The
-// previous version unconditionally fired 9 taps then checked — over-
-// deploying on slots that emptied during the spike of earlier troop
-// phases. The fresh-capture check here also lets a slot that emptied
-// mid-retry short-circuit the second batch entirely.
+// Live-OCR-driven fire count: previous version fired a fixed 9-step
+// triple regardless of how many troops were still on the bar. When the
+// real count was larger (e.g. 12 EDs after a mid-deploy session
+// hiccup) the retry under-fired and the slot was marked failed even
+// though 3+ troops remained. Now each retry round live-OCRs the per-
+// card count and fires exactly that many taps — the user-reported
+// "balloons/EDs sometimes don't all get placed" symptom closes here
+// as well as in HeroManager / Sweeper.
+//
+// Reconcile-after: each retry loop ends with a fresh capture +
+// count+visual-empty confirmation before declaring success.
 func (v *Verifier) retryDeploy(slot *TrackedSlot) {
-	for batch := 0; batch < 2; batch++ {
-		// Empty-slot pre-check before any new tap. Cheap (~120ms)
-		// ADB screencap + ratio check; saves 9 wasted taps when the
-		// slot emptied from the prior batch.
-		preScreen, err := v.executor.CaptureFresh()
-		if err == nil {
-			empty := isSlotEmptyStatic(preScreen, slot.X, slot.Y, v.w, v.h)
-			preScreen.Close()
-			if empty {
-				v.logger.Info().
-					Int("x", slot.X).
-					Str("unit", slot.UnitName).
-					Int("batch", batch).
-					Msg("retry: slot already empty; marking deployed without retap")
-				v.slotManager.MarkDeployed(slot.UnitName)
-				return
-			}
+	const retryBatches = 2
+
+	edge, ok := v.pCfg.Edges[v.targetEdge]
+	if !ok {
+		v.logger.Warn().Str("unit", slot.UnitName).Msg("retry: no edge configured; marking failed")
+		v.slotManager.MarkFailed(slot.UnitName)
+		return
+	}
+	scaled := ScaleEdge(edge, v.pCfg.Width, v.pCfg.Height, v.w, v.h)
+	p1, p2 := scaled.P1, scaled.P2
+
+	for batch := 0; batch < retryBatches; batch++ {
+		live, empty := v.verifierLiveCount(slot)
+		if live <= 0 && empty {
+			v.logger.Info().
+				Int("x", slot.X).
+				Str("unit", slot.UnitName).
+				Int("batch", batch).
+				Msg("retry: slot already empty on fresh capture; marking deployed")
+			v.slotManager.MarkDeployed(slot.UnitName)
+			return
+		}
+		count := live
+		if count <= 0 {
+			// OCR failed and slot visually non-empty — fall back to a
+			// safe minimum (typical balloons/EDs) so the slot can
+			// actually drain. The reconcile after the batch catches
+			// over-firing.
+			count = 8
+		} else if count >= 6 {
+			count++ // safety pad (single-digit OCR under-reads)
 		}
 
 		// Select slot
 		v.executor.TapSlot(slot, 4)
-		v.executor.HumanSleep(35, 10)
+		v.executor.HumanSleep(150, 30)
 
-		// Deploy
-		edge, ok := v.pCfg.Edges[v.targetEdge]
-		if !ok {
-			return
-		}
-		scaled := ScaleEdge(edge, v.pCfg.Width, v.pCfg.Height, v.w, v.h)
-		p1, p2 := scaled.P1, scaled.P2
-
-		// Line deployment. The loop fires TapTriple triples along
-		// the line at fixed 9-step positions. We do NOT re-check
-		// emptiness between the 3 taps inside a single batch because
-		// each batch is one logical "deploy" gesture to CoC.
-		steps := 9
-		for i := 0; i < steps; i += 3 {
+		// Fire exactly `count` taps distributed along the edge line.
+		// Steps must be ≥ 2 before using `i / (steps-1)` to avoid a
+		// divide-by-zero producing NaN coords (which would batch-tap
+		// at pixel (0,0) the first time a single-troop slot is
+		// retried). For count < 3 we cluster all taps at single point.
+		for i := 0; i < count; i += 3 {
+			batchSize := 3
+			if i+3 > count {
+				batchSize = count - i
+			}
+			if count < 3 {
+				// Single/dual troop cluster: fire as one TapTriple.
+				tx, ty := intLerp(p1, p2, 0)
+				if batchSize == 3 {
+					v.executor.client.TapTriple(tx, ty, 15.0, tx+5, ty+3, 15.0, tx-3, ty+6, 15.0)
+				} else if batchSize == 2 {
+					v.executor.client.TapTriple(tx, ty, 15.0, tx+5, ty+3, 15.0, tx, ty, 15.0)
+				} else {
+					v.executor.client.TapTriple(tx, ty, 15.0, tx, ty, 15.0, tx, ty, 15.0)
+				}
+				continue
+			}
+			steps := count
 			pct1 := float64(i) / float64(steps-1)
 			pct2 := float64(i+1) / float64(steps-1)
 			pct3 := float64(i+2) / float64(steps-1)
@@ -201,26 +234,42 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 			v.executor.client.TapTriple(tx1, ty1, 15.0, tx2, ty2, 15.0, tx3, ty3, 15.0)
 		}
 
-		time.Sleep(80 * time.Millisecond)
-
-		// Verify (tightened from 200/50ms to 80/35ms)
-		checkScreen, err := v.executor.CaptureFresh()
-		if err == nil {
-			empty := isSlotEmptyStatic(checkScreen, slot.X, slot.Y, v.w, v.h)
-			checkScreen.Close()
-			if empty {
-				v.slotManager.MarkDeployed(slot.UnitName)
-				return
-			}
+		// ─── Reconcile after batch ─────────────────────────────────
+		v.executor.HumanSleep(150, 30)
+		liveAfter, emptyAfter := v.verifierLiveCount(slot)
+		if liveAfter <= 0 && emptyAfter {
+			v.logger.Info().
+				Int("x", slot.X).
+				Str("unit", slot.UnitName).
+				Int("batch", batch).
+				Int("fired", count).
+				Msg("retry: reconciled slot empty; deploy complete")
+			v.slotManager.MarkDeployed(slot.UnitName)
+			return
 		}
-
-		// Re-select
-		v.executor.TapSlot(slot, 4)
-		time.Sleep(35 * time.Millisecond)
 	}
 
-	// Mark as failed after retries
+	// Reconcile budget exhausted. Mark failed so the operator can spot
+	// the persistent under-deployment in the deploy health output.
+	v.logger.Warn().
+		Int("x", slot.X).
+		Str("unit", slot.UnitName).
+		Int("batches", retryBatches).
+		Msg("retry: reconcile exhausted; marking failed")
 	v.slotManager.MarkFailed(slot.UnitName)
+}
+
+// verifierLiveCount is a thin shim to the shared captureSlotLiveCount
+// helper in live_count.go. Same semantics as HeroManager / Sweeper's
+// shims so the reconcile contract is identical across phases.
+func (v *Verifier) verifierLiveCount(slot *TrackedSlot) (int, bool) {
+	return captureSlotLiveCount(
+		v.executor,
+		v.troopCounter,
+		slot,
+		v.slotManager.GetBarY(),
+		v.w, v.h,
+	)
 }
 
 // CheckSlotEmpty checks if a slot is empty using the verifier's config.

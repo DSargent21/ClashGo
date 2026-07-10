@@ -247,6 +247,10 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	troopCounts := troopCounter.DetectCounts(screen, slotMgr.GetAllSlots(), mBarY)
 	countMap := GetAllCounts(troopCounts)
 	e.logger.Info().Interface("counts", countMap).Msg("detected troop counts")
+	// troopCounter is threaded below to NewHeroManager / NewSweeper /
+	// NewVerifier so they can live-OCR per-slot counts at deploy time
+	// and reconcile until the slot is truly empty (fixes the
+	// "balloons/EDs sometimes don't all get placed" bug).
 
 	// 6. Initialize tap executor
 	tapExec := NewTapExecutor(e.client, e.cal, e.logger)
@@ -300,7 +304,7 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		}
 
 		// Deploy troops
-		heroMgr := NewHeroManager(tapExec, slotMgr, pCfg, targetEdge, w, h, formulaPtr, e.logger)
+		heroMgr := NewHeroManager(tapExec, slotMgr, pCfg, targetEdge, w, h, formulaPtr, troopCounter, e.logger)
 		// Bridge: when HeroManager's resolveHeroTarget fires for the
 		// Dragon Duke, route the event through Executor.OnDukePick so a
 		// single observer (live bot's NDJSON writer, debug_test's
@@ -428,11 +432,11 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// DeployHeroes / DeployTroops already do. Without this the bot
 	// silently dropped event troops on the dynamically-detected
 	// red-zone line, ignoring the user's pin entirely.
-	sweeper := NewSweeper(tapExec, slotMgr, pCfg, deployLine, w, h, formulaPtr, e.logger)
+	sweeper := NewSweeper(tapExec, slotMgr, pCfg, deployLine, w, h, formulaPtr, troopCounter, e.logger)
 	sweeper.Sweep(strategyNames, countMap)
 
 	// 11. Verify
-	verifier := NewVerifier(tapExec, slotMgr, pCfg, targetEdge, w, h, DefaultVerifyConfig(), e.logger)
+	verifier := NewVerifier(tapExec, slotMgr, pCfg, targetEdge, w, h, DefaultVerifyConfig(), troopCounter, e.logger)
 	remainingCount := verifier.VerifyAll()
 
 	return remainingCount, nil

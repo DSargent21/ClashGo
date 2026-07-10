@@ -419,6 +419,13 @@ func (sm *SlotManager) GetSlotY() int {
 	return sm.slotY
 }
 
+// GetBarY returns the Y coordinate of the troop-bar top (where deck
+// counts are printed above each card). HeroManager / Sweeper / Verifier
+// use this to live-OCR the per-card count above each slot.
+func (sm *SlotManager) GetBarY() int {
+	return sm.barY
+}
+
 // GetUndeployedSlots returns slots not in Deployed or Failed state.
 func (sm *SlotManager) GetUndeployedSlots() []*TrackedSlot {
 	var result []*TrackedSlot

@@ -357,6 +357,24 @@ func (tc *TroopCounter) HasDigitTemplates() bool {
 	return false
 }
 
+// DetectCount returns the live detected count above a single slot's card
+// in the provided screen. Convenience wrapper around the per-slot OCR so
+// HeroManager / Sweeper / Verifier can re-read counts at deploy time
+// instead of trusting the once-cached snapshot.
+//
+// Returns 0 when OCR fails or the count read is 0 — caller should treat
+// 0 as "unknown" and combine with a visual empty check to decide whether
+// the slot is actually empty.
+func (tc *TroopCounter) DetectCount(screen gocv.Mat, slot *TrackedSlot, barY int) int {
+	if screen.Empty() || slot == nil {
+		return 0
+	}
+	scaleX := float64(screen.Cols()) / 860.0
+	scaleY := float64(screen.Rows()) / 732.0
+	res := tc.detectSlotCount(screen, slot.X, slot.Y, barY, scaleX, scaleY)
+	return res.Count
+}
+
 // troopNameClean cleans a troop name for matching.
 func troopNameClean(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))

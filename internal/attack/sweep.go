@@ -12,13 +12,14 @@ import (
 
 // Sweeper handles final sweep to catch undeployed troops.
 type Sweeper struct {
-	executor    *TapExecutor
-	slotManager *SlotManager
-	pCfg        PrecisionConfig
-	deployLine  DeployLine
-	formula     *formula.Formula
-	w, h        int
-	logger      zerolog.Logger
+	executor     *TapExecutor
+	slotManager  *SlotManager
+	pCfg         PrecisionConfig
+	deployLine   DeployLine
+	formula      *formula.Formula
+	troopCounter *TroopCounter // optional; enables live-OCR count + reconcile
+	w, h         int
+	logger       zerolog.Logger
 }
 
 // NewSweeper creates a new sweeper. formula may be nil; when non-nil,
@@ -26,6 +27,11 @@ type Sweeper struct {
 // coordinates win over the dynamic red-zone fallback. Without this, even
 // with a per-unit formula authored, the sweep phase re-tapped along the
 // old red-zone line, scattering event troops to the wrong side.
+// troopCounter may also be nil; when non-nil, the sweeper uses it to
+// live-OCR the slot's per-card count at retry time AND runs the
+// reconcile loop until the slot is truly empty (live count 0 AND
+// visual-empty). This is the belt-and-braces fix for the
+// "balloons/EDs sometimes don't all get placed" user-reported bug.
 func NewSweeper(
 	executor *TapExecutor,
 	slotManager *SlotManager,
@@ -33,17 +39,19 @@ func NewSweeper(
 	deployLine DeployLine,
 	w, h int,
 	f *formula.Formula,
+	troopCounter *TroopCounter,
 	logger zerolog.Logger,
 ) *Sweeper {
 	return &Sweeper{
-		executor:    executor,
-		slotManager: slotManager,
-		pCfg:        pCfg,
-		deployLine:  deployLine,
-		formula:     f,
-		w:           w,
-		h:           h,
-		logger:      logger.With().Str("component", "sweeper").Logger(),
+		executor:     executor,
+		slotManager:  slotManager,
+		pCfg:         pCfg,
+		deployLine:   deployLine,
+		formula:      f,
+		troopCounter: troopCounter,
+		w:            w,
+		h:            h,
+		logger:       logger.With().Str("component", "sweeper").Logger(),
 	}
 }
 
@@ -220,16 +228,16 @@ func (sw *Sweeper) eventFormulaEntry(slot *TrackedSlot) (formula.UnitEntry, bool
 // TapTriple batches × 3 taps = ~36 wasted taps per attack when the
 // empty-check returned false even though the siege was already down).
 //
-// Empty-slot guard: between TapTriple batches, capture a fresh screen
-// and check `isSlotEmptyStatic`. If the slot emptied, mark `IsEmpty`
-// + return success IMMEDIATELY so we don't fire extra troops into a
-// dead card. This is the surgical fix for the "retapping empty spaces"
-// symptom — the previous loop ran the full `count` taps unconditionally
-// even when the slot card count already hit zero on attempt 1.
-//
 // isEventTroop signals the formula lookup path: event troops are
 // typically not in the strategy YAML, so we don't second-guess their
 // unit-name spelling when consulting the formula.
+//
+// Reconcile-after-pass: the previous version used a mid-batch single-
+// frame empty-check that was too eager (a transient frame mid-burst can
+// false-positive). The new path lets fireTapsBatched run all the
+// planned taps and reconciles AFTER the pass with both live OCR and a
+// visual empty check. Any troops still on the bar trigger a top-up
+// re-fire on the same line, guaranteeing the slot ends empty.
 func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) bool {
 	if slot.Category == "Hero" {
 		return sw.deployHeroSlotOnce(slot)
@@ -256,8 +264,28 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 		return false
 	}
 
+	// Live-OCR pre-deploy. Prefer live count over the cached map
+	// passed from the orchestrator AND over the heuristic `count`
+	// that the legacy code used. When OCR fails AND the slot is
+	// visually empty, the slot is genuinely done — no taps needed.
+	livePre, visualEmptyPre := sw.sweepLiveCount(slot)
+	if visualEmptyPre && livePre <= 0 {
+		slot.IsEmpty = true
+		sw.logger.Info().
+			Str("unit", slot.UnitName).
+			Bool("event_troop", isEventTroop).
+			Msg("sweep: slot already empty on fresh capture; marking deployed")
+		return true
+	}
+	if livePre > 0 {
+		count = padCount(livePre)
+	}
 	if entry, ok := sw.eventFormulaEntry(slot); ok && entry.Count > 0 {
+		// Explicit formula count wins (the user authored this).
 		count = entry.Count
+	}
+	if count <= 0 {
+		count = 1
 	}
 
 	maxAttempts := 3
@@ -281,48 +309,69 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 			Bool("event_troop", isEventTroop).
 			Msg("sweep deploying")
 
-		// Deploy the correct number of troops. BATCH exits early as
-		// soon as the slot card empties — no further taps fire into
-		// dead space.
-		fired := sw.fireTapsBatched(slot, p1, p2, count)
-
-		// If we bailed out because the slot is empty, the deploy is
-		// already successful — return immediately to skip the
-		// re-select + second attempt.
-		if fired < 0 {
+		// Deploy the correct number of troops. fireTapsBatched bails
+		// early ONLY when BOTH live OCR AND visual empty agree, so we
+		// don't false-positive on a transient frame mid-burst while
+		// still saving taps when the slot genuinely emptied.
+		bailedEarly := sw.fireTapsBatched(slot, p1, p2, count)
+		if bailedEarly {
+			slot.IsEmpty = true
 			sw.logger.Info().
-				Int("x", slot.X).
+				Str("unit", slot.UnitName).
 				Int("attempt", attempt+1).
-				Msg("sweep detected empty mid-batch; slot emptied cleanly")
+				Int("requested", count).
+				Msg("sweep: mid-batch genuine-empty bail; slot drained")
 			return true
 		}
 
-		time.Sleep(300 * time.Millisecond)
-
-		// Final verify before next retry attempt.
-		checkScreen, err := sw.executor.CaptureFresh()
-		if err == nil {
-			empty := isSlotEmptyStatic(checkScreen, slot.X, slot.Y, sw.w, sw.h)
-			checkScreen.Close()
-			if empty {
-				sw.logger.Info().Int("x", slot.X).Int("attempt", attempt+1).Msg("swept slot empty")
-				return true
-			}
+		// ─── Reconcile after pass ────────────────────────────────
+		sw.executor.HumanSleep(150, 30)
+		liveAfter, visualAfter := sw.sweepLiveCount(slot)
+		if liveAfter <= 0 && visualAfter {
+			slot.IsEmpty = true
+			sw.logger.Info().
+				Str("unit", slot.UnitName).
+				Int("attempt", attempt+1).
+				Int("fired", count).
+				Msg("sweep reconciled slot empty; deploy complete")
+			return true
 		}
-
-		// Re-select for next attempt
-		sw.executor.TapSlot(slot, 4)
-		sw.executor.HumanSleep(50, 10)
+		if liveAfter > 0 {
+			// Slot still has troops on the bar. Re-select and fire a
+			// top-up batch on the same line so the next reconcile sees
+			// the depleted state.
+			sw.executor.TapSlot(slot, 4)
+			sw.executor.HumanSleep(150, 30)
+			sw.fireTapsBatched(slot, p1, p2, liveAfter)
+			sw.logger.Info().
+				Str("unit", slot.UnitName).
+				Int("attempt", attempt+1).
+				Int("remaining_read", liveAfter).
+				Int("topup_fired", liveAfter).
+				Msg("sweep reconcile: fired top-up taps")
+			continue
+		}
+		// visual non-empty but live OCR returned 0 — could be a queued
+		// CC troop or a transient frame. Wait and let the next attempt
+		// try again.
+		time.Sleep(200 * time.Millisecond)
 	}
 
+	sw.logger.Warn().
+		Str("unit", slot.UnitName).
+		Int("attempts", maxAttempts).
+		Msg("sweep reconcile exhausted; slot still non-empty")
 	return false
 }
 
 // fireTapsBatched fires up to `count` taps distributed along (p1,p2)
-// in batches of 3 (matching the legacy TapTriple shape). Returns the
-// remaining count NOT fired. Returns -1 when the slot emptied mid-batch
-// (early-exit sentinel) so the caller can short-circuit the retry loop.
-func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count int) int {
+// in batches of 3 (matching the legacy TapTriple shape) AND exits
+// early when BOTH the live OCR count reads 0 AND the visual empty
+// check agrees — so we never tap past the real count, but we ALSO
+// never false-positive on a transient empty frame mid-burst.
+// Returns true when the function bailed early because the slot became
+// genuinely empty mid-pass.
+func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count int) bool {
 	for i := 0; i < count; i += 3 {
 		batchSize := 3
 		if i+3 > count {
@@ -343,21 +392,46 @@ func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count 
 		}
 		sw.executor.HumanSleep(50, 15)
 
-		// Empty-slot check. If the slot card emptied on this batch,
-		// bail out — no further taps fire into dead space.
+		// Smart mid-batch bail. Only exit early when BOTH conditions
+		// agree the slot is currently empty: a transient empty frame
+		// in the troop bar (very common mid-burst) won't satisfy both,
+		// so we keep firing. Cost: one ~150ms screencap per 3-tap batch.
 		if i+batchSize < count {
-			checkScreen, err := sw.executor.CaptureFresh()
-			if err == nil {
-				empty := isSlotEmptyStatic(checkScreen, slot.X, slot.Y, sw.w, sw.h)
-				checkScreen.Close()
-				if empty {
-					slot.IsEmpty = true
-					return -1
-				}
+			live, visualEmpty := captureSlotLiveCount(
+				sw.executor, sw.troopCounter, slot,
+				sw.slotManager.GetBarY(), sw.w, sw.h,
+			)
+			if live <= 0 && visualEmpty {
+				slot.IsEmpty = true
+				return true
 			}
 		}
 	}
-	return count
+	return false
+}
+
+// sweepLiveCount is a thin shim to the shared captureSlotLiveCount
+// helper in live_count.go. The single-source-of-truth helper ensures
+// the live-OCR reconcile semantics stay identical across
+// HeroManager / Sweeper / Verifier.
+func (sw *Sweeper) sweepLiveCount(slot *TrackedSlot) (int, bool) {
+	return captureSlotLiveCount(
+		sw.executor,
+		sw.troopCounter,
+		slot,
+		sw.slotManager.GetBarY(),
+		sw.w, sw.h,
+	)
+}
+
+// padCount returns n+1 when n >= 6 (absorbs single-digit OCR under-reads
+// like "x9" misread for "x10"); returns n unchanged for small counts.
+func padCount(n int) int {
+	const padFloor = 6
+	if n >= padFloor {
+		return n + 1
+	}
+	return n
 }
 
 // resolveSweepLine returns the deploy line for the sweep retry. Formula

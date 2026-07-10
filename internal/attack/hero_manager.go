@@ -16,13 +16,14 @@ import (
 
 // HeroManager handles hero-specific deployment logic.
 type HeroManager struct {
-	executor    *TapExecutor
-	slotManager *SlotManager
-	pCfg        PrecisionConfig
-	formula     *formula.Formula
-	targetEdge  string
-	w, h        int
-	logger      zerolog.Logger
+	executor     *TapExecutor
+	slotManager  *SlotManager
+	pCfg         PrecisionConfig
+	formula      *formula.Formula
+	troopCounter *TroopCounter // optional; enables live per-slot re-OCR
+	targetEdge   string
+	w, h         int
+	logger       zerolog.Logger
 
 	// OnDukeDeployed (debug-only). When non-nil and the unit being
 	// deployed is the Dragon Duke, fire after resolveHeroTarget. The
@@ -36,7 +37,11 @@ type HeroManager struct {
 // NewHeroManager creates a new hero manager. formula may be nil; when
 // non-nil, per-unit formula entries override the legacy pCfg.Edges /
 // dynamic red-zone deploy coordinates so the user can pin exact side
-// positions via cmd/design_attack.
+// positions via cmd/design_attack. troopCounter may also be nil; when
+// non-nil, DeployTroops uses it to live-OCR the slot's per-card count
+// at deploy time AND after the main tap pass — so balloons/EDs (and any
+// "amount: All" troop) always reach a true empty state before being
+// marked deployed.
 func NewHeroManager(
 	executor *TapExecutor,
 	slotManager *SlotManager,
@@ -44,17 +49,19 @@ func NewHeroManager(
 	targetEdge string,
 	w, h int,
 	formula *formula.Formula,
+	troopCounter *TroopCounter,
 	logger zerolog.Logger,
 ) *HeroManager {
 	return &HeroManager{
-		executor:    executor,
-		slotManager: slotManager,
-		pCfg:        pCfg,
-		formula:     formula,
-		targetEdge:  targetEdge,
-		w:           w,
-		h:           h,
-		logger:      logger.With().Str("component", "hero_manager").Logger(),
+		executor:     executor,
+		slotManager:  slotManager,
+		pCfg:         pCfg,
+		formula:      formula,
+		troopCounter: troopCounter,
+		targetEdge:   targetEdge,
+		w:            w,
+		h:            h,
+		logger:       logger.With().Str("component", "hero_manager").Logger(),
 	}
 }
 
@@ -400,6 +407,29 @@ func offsetEdgeOutward(p1, p2 image.Point, screenW, screenH, offsetPx int) (imag
 }
 
 // DeployTroops deploys a group of regular troops (non-hero, non-spell).
+//
+// Root-cause fix for the "balloons/EDs sometimes don't all get placed"
+// user-reported bug: the previous path fired `count` taps and either
+// returned success (formula-driven) or did a single visual-empty check,
+// then marked the slot SlotDeployed regardless of whether troop icons
+// remained. When the cached detectedCount was wrong (template-OCR is
+// brittle across themes / emulator sizes), troops were left behind
+// without ever being re-counted.
+//
+// The new path:
+//  1. Live-OCR the slot's per-card count BEFORE the main tap pass.
+//     Live count wins over detectedCount/YAML when > 0. When OCR fails
+//     AND the slot is visually empty, the deploy is a true no-op and
+//     we mark deployed without firing taps.
+//  2. Main pass fires exactly `count` taps on the formula/pinned or
+//     legacy edge line.
+//  3. Reconcile loop: up to reconcileRounds rounds, each one captures
+//     a fresh screen, live-OCRs + visual-empty checks, and re-selects
+//     + fires compensating taps if there's still count > 0. The slot
+//     is only MarkDeployed after a (live OCR == 0 AND visual-empty)
+//     confirmation — or after the reconcile budget runs out, in which
+//     case we record SlotAttempted so the sweep phase retries with its
+//     own reconcile loop.
 func (hm *HeroManager) DeployTroops(
 	unit strategy.Unit,
 	slot *TrackedSlot,
@@ -449,51 +479,126 @@ func (hm *HeroManager) DeployTroops(
 		return true
 	}
 
-	// Formula check FIRST. When the user pinned this unit's deploy line
-	// via cmd/design_attack, use those explicit coordinates and skip
-	// the pCfg.Edges / dynamic red-zone fallback.
+	// Resolve target line once so the reconcile loop can re-fire on
+	// the SAME coordinates as the main pass. Formula check FIRST so
+	// user-pinned coords win everywhere.
+	var p1, p2 image.Point
+	hasFormula := false
 	if entry, ok := hm.formulaEntry(unit.Name); ok {
-		ok := hm.deployFromFormula(unit, slot, entry, detectedCount)
-		if ok {
-			hm.slotManager.MarkDeployed(unitName)
+		switch {
+		case entry.IsLine() && entry.P1 != nil && entry.P2 != nil:
+			p1 = entry.P1.Image()
+			p2 = entry.P2.Image()
+			hasFormula = true
+		case entry.IsPoint() && entry.P != nil:
+			p := entry.P.Image()
+			p1, p2 = p, p
+			hasFormula = true
+		default:
+			// Formula entry has no usable coords — fall back to the
+			// dynamic/pinned edge path below.
+			hasFormula = false
 		}
-		return ok
+	}
+	if !hasFormula {
+		p1, p2 = hm.resolveTroopTarget(slot, offset)
 	}
 
-	// Get deployment target
-	p1, p2 := hm.resolveTroopTarget(slot, offset)
-
-	// Calculate tap count: use detected count if available, otherwise fallback
-	tapCount := hm.resolveTapCount(unit, slot)
-	if detectedCount > 0 {
-		tapCount = detectedCount
+	// ─── Live-OCR pre-deploy ───────────────────────────────────────
+	// Verify the slot hasn't already been emptied by a prior phase
+	// (e.g. live-troop-bar transition). If visually empty we skip the
+	// main pass and mark deployed — no wasted taps.
+	preCount, preVisualEmpty := hm.liveCountAndEmpty(slot)
+	if preVisualEmpty && preCount <= 0 {
 		hm.logger.Info().
 			Str("unit", unit.Name).
-			Int("detected_count", detectedCount).
-			Msg("using detected troop count")
+			Bool("formula_pinned", hasFormula).
+			Msg("slot already empty at deploy start; marking deployed (no taps fired)")
+		hm.slotManager.MarkDeployed(unitName)
+		return true
 	}
 
-	// Point vs Line deployment
+	tapCount := hm.resolveLiveTapCount(unit, slot, preCount, detectedCount)
+
+	// ─── Main tap pass ─────────────────────────────────────────────
+	var deployed func(int, int) // (count, jitterPx) -> no return
 	if p1 == p2 {
-		hm.logger.Info().Str("unit", unit.Name).Int("count", tapCount).Msg("deploying troop point")
-		hm.executor.TapDeployPoint(p1, tapCount, 8)
+		deployed = func(c, j int) { hm.executor.TapDeployPoint(p1, c, j) }
 	} else {
-		hm.logger.Info().Str("unit", unit.Name).Int("count", tapCount).Msg("deploying troop line")
-		hm.executor.TapDeployLine(p1, p2, tapCount, 10)
+		deployed = func(c, j int) { hm.executor.TapDeployLine(p1, p2, c, j) }
 	}
+	if hasFormula {
+		hm.logger.Info().
+			Str("unit", unit.Name).
+			Str("src", "formula").
+			Int("count", tapCount).
+			Int("live_count", preCount).
+			Int("detected_count", detectedCount).
+			Interface("p1", p1).
+			Interface("p2", p2).
+			Msg("deploying troop (formula-driven live-count)")
+	} else {
+		hm.logger.Info().
+			Str("unit", unit.Name).
+			Str("src", "edge").
+			Int("count", tapCount).
+			Int("live_count", preCount).
+			Int("detected_count", detectedCount).
+			Msg("deploying troop (live-count-driven)")
+	}
+	deployed(tapCount, hm.lineJitter(hasFormula))
 
-	// Verify slot emptied (80ms = empirical post-depart floor)
-	time.Sleep(80 * time.Millisecond)
-	freshScreen, err := hm.executor.CaptureFresh()
-	if err == nil {
-		defer freshScreen.Close()
-		empty := isSlotEmptyStatic(freshScreen, slot.X, slot.Y, hm.w, hm.h)
-		if empty {
+	// ─── Reconcile loop ────────────────────────────────────────────
+	const reconcileRounds = 3
+	const reconcileSettleMs = 150
+	for round := 0; round < reconcileRounds; round++ {
+		hm.executor.HumanSleep(reconcileSettleMs, 30)
+
+		live, visualEmpty := hm.liveCountAndEmpty(slot)
+		if live <= 0 && visualEmpty {
 			hm.slotManager.MarkDeployed(unitName)
+			hm.logger.Info().
+				Str("unit", unit.Name).
+				Int("round", round+1).
+				Int("fired_total", tapCount).
+				Msg("reconcile confirmed slot empty; deploy complete")
 			return true
 		}
+		if live <= 0 {
+			// Visual non-empty but OCR didn't see a count — likely a
+			// ghost of a queued CC troop. Wait one more round and let
+			// CoC settle into a stable state. We do NOT mark deployed.
+			hm.logger.Warn().
+				Str("unit", unit.Name).
+				Int("round", round+1).
+				Bool("visual_empty", visualEmpty).
+				Msg("reconcile: visual-empty-but-OCR-zero; treating as transient ghost")
+			continue
+		}
+
+		// Still troops on the bar. Re-select the slot (CoC deselects
+		// after the natural fire-window expires) and fire live more
+		// taps on the same line.
+		hm.executor.TapSlot(slot, 4)
+		hm.executor.HumanSleep(reconcileSettleMs, 30)
+		deployed(live, hm.lineJitter(hasFormula))
+		hm.logger.Info().
+			Str("unit", unit.Name).
+			Int("round", round+1).
+			Int("remaining", live).
+			Msg("reconcile: re-selected slot and fired top-up taps")
 	}
 
+	// Reconcile budget exhausted. We deliberately DO NOT mark deployed —
+	// we leave the state as SlotAttempted so the sweep phase takes over
+	// with its own reconcile loop. The slot will be picked up by the
+	// next phase's verifier pass.
+	hm.logger.Warn().
+		Str("unit", unit.Name).
+		Int("reconcile_rounds", reconcileRounds).
+		Int("initial_count", tapCount).
+		Msg("reconcile exhausted; leaving slot in SlotAttempted for sweep to retry")
+	hm.slotManager.RecordAttempt(unitName, false)
 	return false
 }
 
@@ -571,16 +676,6 @@ func (hm *HeroManager) resolveTroopTarget(slot *TrackedSlot, offset int) (image.
 	return p1, p2
 }
 
-// resolveTapCount returns the number of taps for a troop unit.
-func (hm *HeroManager) resolveTapCount(unit strategy.Unit, slot *TrackedSlot) int {
-	if unit.Amount != "All" && unit.Amount != "" {
-		if val := parseAmount(unit.Amount); val > 0 {
-			return val
-		}
-	}
-	return 12 // Default
-}
-
 // parseAmount parses an amount string to int.
 func parseAmount(s string) int {
 	if s == "All" || s == "" {
@@ -606,38 +701,12 @@ func (hm *HeroManager) formulaEntry(unitName string) (formula.UnitEntry, bool) {
 	return hm.formula.LookUp(unitName)
 }
 
-// deployFromFormula uses the user-pinned line/point coordinates from the
-// formula instead of the pCfg.Edges / dynamic red-zone detection result.
-// Counts fall back to detectedCount → unit.Amount → resolveTapCount.
-func (hm *HeroManager) deployFromFormula(unit strategy.Unit, slot *TrackedSlot, entry formula.UnitEntry, detectedCount int) bool {
-	count := hm.resolveFormulaCount(unit, slot, entry.Count, detectedCount)
-	jitter := entry.Jitter
-	if jitter <= 0 {
-		jitter = 3
-	}
-
-	switch {
-	case entry.IsLine() && entry.P1 != nil && entry.P2 != nil:
-		p1 := entry.P1.Image()
-		p2 := entry.P2.Image()
-		hm.logger.Info().Str("unit", unit.Name).Int("count", count).
-			Interface("p1", p1).Interface("p2", p2).
-			Msg("formula-driven line troop deploy")
-		hm.executor.TapDeployLine(p1, p2, count, jitter)
-		return true
-	case entry.IsPoint() && entry.P != nil:
-		p := entry.P.Image()
-		hm.logger.Info().Str("unit", unit.Name).Int("count", count).
-			Interface("p", p).
-			Msg("formula-driven point troop deploy")
-		hm.executor.TapDeployPoint(p, count, jitter)
-		return true
-	default:
-		hm.logger.Warn().Str("unit", unit.Name).Str("type", entry.Type).
-			Msg("formula entry present but has no usable coordinates; falling back to legacy path")
-		return false
-	}
-}
+// (deployFromFormula — REMOVED. DeployTroops now owns the formula-driven
+// path inline, with the live-OCR reconcile loop. The previous standalone
+// function returned true unconditionally after firing its taps and marked
+// the slot SlotDeployed without verifying — the silent under-deployment
+// bug for balloons/EDs. The SpellDeployer has its own private
+// deployFromFormula for spell-specific deployment and is unrelated.)
 
 // deploySiegeFromFormula drops the siege at the user-pinned point (or
 // along a pinned line for wrecker-style multi-tap drops). When the
@@ -665,25 +734,89 @@ func (hm *HeroManager) deploySiegeFromFormula(unit strategy.Unit, slot *TrackedS
 	return false
 }
 
-// resolveFormulaCount selects the tap count for a formula-driven unit,
-// preferring (in order): explicit count → detected → YAML amount →
-// heuristic default.
+// resolveFormulaCount is removed: DeployTroops uses resolveLiveTapCount
+// (which threads live OCR + heuristic fallbacks) directly, including the
+// "+1 when count >= 6" safety pad for OCR under-reads. The dedicated
+// formula-only helper is no longer reachable.
+
+// liveCountAndEmpty is a thin shim to the shared captureSlotLiveCount
+// helper in live_count.go. Kept as a method to keep call-site code
+// readable inside HeroManager.DeployTroops's reconcile loop.
+func (hm *HeroManager) liveCountAndEmpty(slot *TrackedSlot) (int, bool) {
+	return captureSlotLiveCount(
+		hm.executor,
+		hm.troopCounter,
+		slot,
+		hm.slotManager.GetBarY(),
+		hm.w, hm.h,
+	)
+}
+
+// resolveLiveTapCount chooses the canonical tap count for the main pass.
+// Order of precedence:
 //
-// Safety pad: when the formula has no Count AND detectedCount >= 6,
-// pad by +1 to absorb single-digit OCR mis-reads. Live data showed the
-// troop_counter sometimes reports 9 when the icon shows x10, dropping
-// the last troop. Pads only at >= 6 so small counts (5 balloons, 3
-// rage) are not over-deployed into the slot-empty-state, which would
-// silently waste taps.
-func (hm *HeroManager) resolveFormulaCount(unit strategy.Unit, slot *TrackedSlot, entryCount, detectedCount int) int {
-	if entryCount > 0 {
-		return entryCount
-	}
-	if detectedCount > 0 {
-		if detectedCount >= 6 {
-			return detectedCount + 1
+//  1. Live OCR count from the pre-deploy screen (most authoritative —
+//     captures whatever CoC currently shows). Padded by +1 when ≥ 6 to
+//     absorb single-digit OCR under-reads.
+//  2. detectedCount (the once-cached orchestrator-start OCR). Same +1
+//     pad. Fallback when live OCR is unavailable (e.g. troopCounter
+//     not threaded through).
+//  3. YAML amount (parseAmount with the "All" → 0 → default path).
+//  4. Safe heuristic default (8) — reconcile corrects under-firing.
+func (hm *HeroManager) resolveLiveTapCount(unit strategy.Unit, slot *TrackedSlot, liveCount, detectedCount int) int {
+	const padFloor = 6
+	pad := func(n int) int {
+		if n >= padFloor {
+			return n + 1
 		}
-		return detectedCount
+		if n > 0 {
+			return n
+		}
+		return 0
 	}
-	return hm.resolveTapCount(unit, slot)
+	if v := pad(liveCount); v > 0 {
+		hm.logger.Debug().
+			Str("unit", unit.Name).
+			Int("live_count", liveCount).
+			Int("padded", v).
+			Msg("tap count from live OCR")
+		return v
+	}
+	if v := pad(detectedCount); v > 0 {
+		hm.logger.Debug().
+			Str("unit", unit.Name).
+			Int("detected_count", detectedCount).
+			Int("padded", v).
+			Msg("tap count from orchestrator-cached detected count")
+		return v
+	}
+	if unit.Amount != "" && unit.Amount != "All" {
+		if v := parseAmount(unit.Amount); v > 0 {
+			hm.logger.Debug().
+				Str("unit", unit.Name).
+				Str("amount", unit.Amount).
+				Int("count", v).
+				Msg("tap count from YAML amount")
+			return v
+		}
+	}
+	// Safe default \u2014 the reconcile loop corrects under-firing. We pick
+	// 8 (typical balloon/ED count) instead of the legacy 12 so the worst
+	// case wastes fewer taps when OCR is completely broken AND the slot
+	// genuinely holds a small army.
+	hm.logger.Debug().
+		Str("unit", unit.Name).
+		Msg("tap count fallback: heuristic default 8 + reconcile")
+	return 8
+}
+
+// lineJitter returns the per-tap jitter for the main/reconcile tap
+// sequence. Formula-pinned units have authored jitter (default 3); the
+// legacy edge path uses 10 for lines / 8 for points (matching the
+// pre-refactor values).
+func (hm *HeroManager) lineJitter(formulaPinned bool) int {
+	if formulaPinned {
+		return 3
+	}
+	return 10
 }
