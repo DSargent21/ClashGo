@@ -82,21 +82,39 @@ func Init(debug bool, extraWriters ...io.Writer) {
 		FormatMessage: func(i interface{}) string {
 			return fmt.Sprintf("%s", i)
 		},
-		// Specifically exclude fields that zerolog might try to append (errors, etc)
-		FieldsExclude: []string{"error", "stack", "pkg", "file", "line"},
-		// Hide extra fields by returning empty string. 
-		// The cleanWriter wrapper will handle any trailing spaces left by the separator.
+		// Only suppress the noise (caller file/line/pkg) and the stack
+		// trace. The `error` field is INTENTIONALLY shown — without it
+		// every boot failure used to print as bare
+		// `ERR | failed to initialize bot` with the wrapped cause
+		// silently dropped. The file/line info is still in the JSON
+		// file log for developers who need it.
+		FieldsExclude: []string{"stack", "pkg", "file", "line"},
+		// Render non-error fields as `key=value` pairs after the message
+		// for human readability. The cleanWriter wrapper still trims
+		// trailing whitespace and forces a single newline.
 		FormatFieldName: func(i interface{}) string {
-			return ""
+			return fmt.Sprintf("%s=", i)
 		},
 		FormatFieldValue: func(i interface{}) string {
-			return ""
+			// zerolog's ConsoleWriter hands us unquoted values as
+			// []byte to avoid allocations; fmt's default %v formats
+			// a []byte as a decimal byte stream (e.g. `[102 97 108
+			// 115 101]` for "false"). That made the bot's boot logs
+			// unreadable — every bool/JSON field looked like garbage.
+			// Convert []byte to its string form first.
+			if b, ok := i.([]byte); ok {
+				return string(b)
+			}
+			return fmt.Sprintf("%v", i)
 		},
+		// Errors get the same `error=...` rendering as a normal field,
+		// so the user sees e.g. `error=android boot timeout: timeout
+		// waiting for boot after 1m30s` in their terminal.
 		FormatErrFieldName: func(i interface{}) string {
-			return ""
+			return "error="
 		},
 		FormatErrFieldValue: func(i interface{}) string {
-			return ""
+			return fmt.Sprintf("%v", i)
 		},
 	}
 

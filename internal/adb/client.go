@@ -1,10 +1,12 @@
 package adb
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,9 +200,36 @@ func (c *Client) Devices() ([]string, error) {
 	return devs, nil
 }
 
-// AutoDetectDevice attempts to find a suitable ADB device if the current one is disconnected.
-// It prioritizes common emulator addresses.
+// AutoDetectDevice verifies the configured DeviceID is a real,
+// reachable BlueStacks emulator; otherwise it scans the adb device
+// list for one. If none is found, it returns an error rather than
+// silently picking a wrong device (e.g. an Android Studio AVD at
+// emulator-5554 when the user wanted BlueStacks at localhost:5555).
+//
+// Verification is delegated to isBlueStacksDevice, which opens a
+// fresh transport and checks getprop. A stale adb-server ghost
+// entry (e.g. "localhost:5555 device" that's actually offline)
+// will fail the 2s reachability check and be skipped — unlike the
+// prior code that trusted the adb devices list verbatim.
+//
+// Note on `adb connect localhost:5555`: after `adb kill-server`
+// the local adb server's device list is wiped. The BlueStacks
+// ADB daemon will re-register itself, but on a fresh start this
+// re-registration can lag by a few seconds. Without the explicit
+// `adb connect`, the very first `c.Devices()` call (right after
+// EnsureBlueStacksMac launches BlueStacks) can return an empty
+// list even though the device is reachable from a shell. The
+// connect is best-effort (errors ignored) and a no-op for
+// non-TCP devices like USB or emulator-NNNN.
 func (c *Client) AutoDetectDevice() error {
+	// Best-effort: ensure localhost:5555 is registered with the
+	// local adb server. Needed when the server was recently
+	// restarted; no-op if already connected. We do this for any
+	// configured DeviceID that looks like a TCP host:port.
+	if c.DeviceID != "" && (strings.Contains(c.DeviceID, ":") || strings.HasPrefix(c.DeviceID, "localhost")) {
+		_ = exec.Command("adb", "connect", c.DeviceID).Run()
+	}
+
 	devs, err := c.Devices()
 	if err != nil {
 		return fmt.Errorf("list devices: %w", err)
@@ -210,38 +239,41 @@ func (c *Client) AutoDetectDevice() error {
 		return errors.New("no ADB devices found")
 	}
 
-	// 1. Check if current ID is still in the list
-	for _, d := range devs {
-		if d == c.DeviceID {
-			return nil
+	// 1. Verify the configured DeviceID. This used to be an early
+	// return on mere presence in the list, which meant a stale
+	// "localhost:5555 device" entry (e.g. from a previous BlueStacks
+	// session that was force-killed) would silently pass and the
+	// bot would then spend 90s probing a dead socket.
+	if c.DeviceID != "" {
+		for _, d := range devs {
+			if d == c.DeviceID && c.isBlueStacksDevice(d) {
+				return nil
+			}
 		}
+		c.log.Warn(fmt.Sprintf("configured device %q failed BlueStacks verification; scanning for a working one", c.DeviceID))
 	}
 
-	// 2. Look for real devices first (not emulator-like)
+	// 2. Scan all emulator-class devices for a verified BlueStacks
+	// instance. We only consider hosts (127.0.0.1, localhost,
+	// emulator-*) — physical devices wouldn't be running BlueStacks.
 	var bestMatch string
 	for _, d := range devs {
+		if d == c.DeviceID {
+			continue
+		}
 		low := strings.ToLower(d)
 		isEmulator := strings.Contains(low, "127.0.0.1") || strings.Contains(low, "localhost") || strings.Contains(low, "emulator-")
 		if !isEmulator {
+			continue
+		}
+		if c.isBlueStacksDevice(d) {
 			bestMatch = d
 			break
 		}
 	}
 
-	// 3. Fallback to emulator-like devices if no real device found
 	if bestMatch == "" {
-		for _, d := range devs {
-			low := strings.ToLower(d)
-			if strings.Contains(low, "127.0.0.1") || strings.Contains(low, "localhost") || strings.Contains(low, "emulator-") {
-				bestMatch = d
-				break
-			}
-		}
-	}
-
-	// 4. Fallback to first device in list
-	if bestMatch == "" {
-		bestMatch = devs[0]
+		return fmt.Errorf("no running BlueStacks device found in adb device list (%d devices checked: %v)", len(devs), devs)
 	}
 
 	if c.DeviceID != bestMatch {
@@ -655,6 +687,224 @@ func (c *Client) Shell(cmd string) (string, error) {
 	return strings.TrimSpace(string(resp)), err
 }
 
+// ShellRunner is the minimal interface the boot orchestrator (and any
+// other future code) needs from an ADB client. It exists so unit tests
+// can inject a fake that scripts responses without a live device.
+//
+// Note: the interface deliberately exposes only the *context-aware*
+// variants (Shell, CaptureScreen, Exec that all take ctx). The plain
+// Client.CaptureScreen() is the legacy entry point used by the hot
+// capture loop; production code reaches the interface through
+// NewShellRunner(client) which adapts the legacy methods to the
+// context-aware signatures.
+type ShellRunner interface {
+	Shell(ctx context.Context, cmd string) (string, error)
+	CaptureScreen(ctx context.Context) ([]byte, error)
+	Exec(ctx context.Context, service string) ([]byte, error)
+}
+
+// ShellWithContext mirrors Client.Shell but takes a context so a
+// caller (notably the boot orchestrator) can apply a timeout without
+// reaching into the transport. The default Client.Shell is the
+// un-context-aware path used by the hot tap loop; this is the
+// boot-only path that wants timeouts.
+//
+// The implementation is a thin wrapper: it captures the transport
+// pointer under the client mutex (so it doesn't move while we use
+// it) and then calls Exec with read/write deadlines derived from
+// the context's deadline. If the context has no deadline, the
+// transport's configured timeout applies as before.
+func (c *Client) ShellWithContext(ctx context.Context, cmd string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	if c.transport == nil {
+		if err := c.connectTransport(); err != nil {
+			c.mu.Unlock()
+			return "", err
+		}
+	}
+	transport := c.transport
+	c.mu.Unlock()
+
+	// Use the context's deadline if set, else fall back to the
+	// transport's full timeout. Wrap in a derived context so a
+	// caller-passed cancel tears the call down.
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, err := transport.Exec("shell:" + cmd)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		done <- result{out: strings.TrimSpace(string(resp))}
+	}()
+	select {
+	case <-ctx.Done():
+		// Force-close the transport to unblock the in-flight read
+		// the background goroutine is stuck on. Without this, a
+		// per-call timeout left the transport's read syscall hanging
+		// for the full 30s transport.Exec budget, holding its
+		// internal mutex and starving every subsequent probe signal.
+		// The `done` channel is buffered (cap 1) so the goroutine
+		// can still write its error result and exit cleanly when
+		// the closed transport makes Exec return.
+		c.mu.Lock()
+		if c.transport != nil {
+			c.transport.Close()
+			c.transport = nil
+		}
+		c.mu.Unlock()
+		return "", ctx.Err()
+	case r := <-done:
+		return r.out, r.err
+	}
+}
+
+// CaptureScreenWithContext mirrors Client.CaptureToMat but returns
+// the raw bytes (for callers like BootProber that only need the
+// luma, not the BGR mat). Context-aware so the probe's per-signal
+// timeout is honored.
+func (c *Client) CaptureScreenWithContext(ctx context.Context) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.transport == nil {
+		if err := c.connectTransport(); err != nil {
+			c.mu.Unlock()
+			c.health.RecordFailure(err)
+			return nil, err
+		}
+	}
+	transport := c.transport
+	c.mu.Unlock()
+
+	type result struct {
+		buf []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		// Pool the capture to avoid the 10MB alloc on every probe.
+		bufPtr, n, err := transport.CaptureScreenPooled()
+		if err != nil {
+			if reconnErr := transport.Reconnect(); reconnErr == nil {
+				bufPtr, n, err = transport.CaptureScreenPooled()
+			}
+		}
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		// Copy out of the pool buffer so the caller doesn't have to
+		// know about ReturnBuffer.
+		cp := make([]byte, n)
+		copy(cp, (*bufPtr)[:n])
+		ReturnBuffer(bufPtr)
+		done <- result{buf: cp}
+	}()
+	select {
+	case <-ctx.Done():
+		// Force-close the transport to unblock the in-flight
+		// CaptureScreenPooled read. The background goroutine will
+		// see the close (CaptureScreenPooled returns an error),
+		// write to the buffered `done`, and exit. Any pool buffer
+		// it had checked out is returned by its own defer/cleanup
+		// path, so we don't leak it here.
+		c.mu.Lock()
+		if c.transport != nil {
+			c.transport.Close()
+			c.transport = nil
+		}
+		c.mu.Unlock()
+		return nil, ctx.Err()
+	case r := <-done:
+		if r.err != nil {
+			c.health.RecordFailure(r.err)
+		}
+		return r.buf, r.err
+	}
+}
+
+// ExecWithContext is the context-aware wrapper around transport.Exec
+// used by the boot orchestrator for non-shell services (e.g.
+// "host:devices" to verify the transport is up).
+func (c *Client) ExecWithContext(ctx context.Context, service string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.transport == nil {
+		if err := c.connectTransport(); err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+	}
+	transport := c.transport
+	c.mu.Unlock()
+
+	type result struct {
+		out []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := transport.Exec(service)
+		done <- result{out: out, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		// Force-close the transport to unblock the in-flight Exec
+		// read. See ShellWithContext for the full rationale; the
+		// same transport-mutex-hang pattern applies here.
+		c.mu.Lock()
+		if c.transport != nil {
+			c.transport.Close()
+			c.transport = nil
+		}
+		c.mu.Unlock()
+		return nil, ctx.Err()
+	case r := <-done:
+		return r.out, r.err
+	}
+}
+
+// ClientShellRunner adapts *Client to the ShellRunner interface by
+// calling the context-aware wrappers above. Production code that
+// needs an ShellRunner can pass clientShellRunner{c: client} rather
+// than depending on a method set that may grow.
+type clientShellRunner struct{ c *Client }
+
+// NewShellRunner returns a ShellRunner that delegates to the given
+// Client. Provided as a convenience for the boot orchestrator's
+// constructor; tests typically use a fake implementation.
+func NewShellRunner(c *Client) ShellRunner {
+	return clientShellRunner{c: c}
+}
+
+func (s clientShellRunner) Shell(ctx context.Context, cmd string) (string, error) {
+	return s.c.ShellWithContext(ctx, cmd)
+}
+func (s clientShellRunner) CaptureScreen(ctx context.Context) ([]byte, error) {
+	return s.c.CaptureScreenWithContext(ctx)
+}
+func (s clientShellRunner) Exec(ctx context.Context, service string) ([]byte, error) {
+	return s.c.ExecWithContext(ctx, service)
+}
+
+// Compile-time check that the adapter (not Client directly)
+// satisfies ShellRunner. *Client deliberately does NOT satisfy
+// ShellRunner directly because it has a non-context CaptureScreen
+// method; the adapter is the single chokepoint that maps the
+// context-aware interface to the legacy methods.
+var _ ShellRunner = clientShellRunner{}
+
 func (c *Client) ScreenSize() (int, int, error) {
 	out, err := c.Shell("wm size")
 	if err != nil {
@@ -773,6 +1023,93 @@ func (c *Client) ForceStop(pkg string) error {
 		return err
 	}
 	return c.transport.StopApp(pkg)
+}
+
+// SoftResetAndroid issues `adb shell stop && adb shell start` which
+// brings the Android runtime back without killing the BlueStacks
+// process. This is the cheap, non-destructive recovery for the
+// "boot_completed never appeared" failure mode — the kernel
+// continues running, the BlueStacks window stays up, and the boot
+// sequence restarts as if the user rebooted just the Android side.
+//
+// Behavior: stop blocks until Android has finished halting (typically
+// 3-5s); start blocks until the package manager is responsive
+// (typically 5-10s more). We use the per-call transport timeout (30s
+// default) for each leg so a wedged shutdown cannot stall the
+// recovery beyond that budget.
+func (c *Client) SoftResetAndroid() error {
+	if err := c.EnsureConnected(); err != nil {
+		return err
+	}
+	if _, err := c.transport.Exec("shell:stop"); err != nil {
+		return fmt.Errorf("android stop: %w", err)
+	}
+	// Brief pause to let the kernel finish halting. Without this,
+	// `start` can race the shutdown and fail with "service not found".
+	time.Sleep(1 * time.Second)
+	if _, err := c.transport.Exec("shell:start"); err != nil {
+		return fmt.Errorf("android start: %w", err)
+	}
+	return nil
+}
+
+// ResetAdbServer kills the local adb-server and starts a fresh one.
+// Fixes the "localhost:5555 offline in adb devices list, but actually
+// reachable from a fresh adb invocation" failure mode that often
+// follows a hard BlueStacks kill (killall -9) or a previous wails dev
+// session — the local adb-server's stale device registrations
+// pointing at a now-dead socket. The new server starts with an empty
+// device list; the next AutoDetectDevice() call re-registers the
+// BlueStacks instance from scratch.
+//
+// SAFETY NOTE: `adb kill-server` is GLOBAL — it drops every active
+// adb connection on the host Mac, including physical phones or other
+// emulators. Appropriate for a dedicated botting machine; on a shared
+// host the user should be told this is happening (it's surfaced in
+// the orchestrator's BootReport under recovery_used + in the UI's
+// `suggested_action` panel).
+func (c *Client) ResetAdbServer() error {
+	c.pipeMu.Lock()
+	// Close the persistent shell pipe first. It holds its own TCP
+	// socket to localhost:5037; after kill-server that socket is
+	// dead but the pipe struct stays non-nil until something
+	// detects its broken state. Explicit close here so future
+	// currentPipe() calls return nil instead of a wedged pipe.
+	if c.pipe != nil {
+		_ = c.pipe.Close()
+		c.pipe = nil
+	}
+	c.pipeMu.Unlock()
+
+	c.mu.Lock()
+	if c.transport != nil {
+		// Note: this Close() runs BEFORE kill-server so it can race
+		// with any in-flight transport.Exec (which holds t.mu for
+		// the duration of io.ReadAll). In practice the boot
+		// orchestrator calls ResetAdbServer only after all its
+		// prior Context-Aware Shell/Capture calls have returned, so
+		// there shouldn't be an in-flight reader. If one ever does
+		// exist, the OS-level TCP drop from kill-server is what
+		// wakes it (read returns ECONNRESET, releases t.mu, then
+		// Close proceeds) — Close itself is best-effort cleanup,
+		// not the wake mechanism.
+		c.transport.Close()
+		c.transport = nil
+	}
+	c.mu.Unlock()
+
+	if err := exec.Command("adb", "kill-server").Run(); err != nil {
+		return fmt.Errorf("adb kill-server: %w", err)
+	}
+	// Brief pause so the OS releases the listening socket cleanly.
+	time.Sleep(1 * time.Second)
+	if err := exec.Command("adb", "start-server").Run(); err != nil {
+		return fmt.Errorf("adb start-server: %w", err)
+	}
+	// Brief pause for the listening socket to be ready before the
+	// boot orchestrator's poll loop starts probing again.
+	time.Sleep(1 * time.Second)
+	return nil
 }
 
 func (c *Client) StartApp(pkg string) error {

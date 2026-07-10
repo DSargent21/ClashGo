@@ -128,8 +128,9 @@ boot_profile.json
 attack_runtime.json
 adb_last_known.json
 
-# One-off root build outputs (have source in cmd/<name>/; can be re-derived)
-adb_probe
-boot_debug
+# One-off root build outputs (have source in cmd/<name>/; can be re-derived).
+# Patterns are root-anchored so the cmd/<name>/ source directories are NOT ignored.
+/adb_probe
+/boot_debug
 /device_probe
 /capture_template

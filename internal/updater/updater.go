@@ -50,6 +50,22 @@ const PollInterval = 6 * time.Hour
 // the UI (or a future scheduler bug).
 const minCheckDelay = 5 * time.Second
 
+// errNoReleases is returned by fetchLatestRelease when the GitHub
+// releases API responds 404 to /releases/latest. This is NOT an
+// error condition — it means the repo has zero published releases,
+// so the app is trivially "up to date" (nothing to update TO).
+// The Check() caller translates this into StateUpToDate instead
+// of StateError, so the UI doesn't show "Update error" on every
+// launch for repos that haven't cut a release yet.
+var errNoReleases = errors.New("no releases published for this repository")
+
+// errBodyLimit caps how much of a non-JSON error body we surface
+// to the UI. GitHub's error payloads are small (<300 B) but a
+// misconfigured proxy could dump megabytes; 512 B is plenty for
+// the inline `message` field and keeps the status struct tidy.
+// int64 so it slots into io.LimitReader without a cast.
+const errBodyLimit int64 = 512
+
 // State is the typed lifecycle of an update.
 type State string
 
@@ -64,30 +80,30 @@ const (
 	// the helper script is detached and ClashGO is about to exit.
 	// The React UI uses this to render a non-dismissible splash
 	// over the 1–3s gap before the new bundle launches.
-	StateRestarting  State = "restarting"
-	StateError       State = "error" // soft error; recoils to idle next cycle
-	StateUpToDate    State = "up_to_date"
+	StateRestarting State = "restarting"
+	StateError      State = "error" // soft error; recoils to idle next cycle
+	StateUpToDate   State = "up_to_date"
 )
 
 // Status is the typed value exposed to the UI via Wails bindings.
 // JSON shape is stable — do not rename fields without coordinating with
 // the React UpdateBanner component.
 type Status struct {
-	CurrentVersion string   `json:"current_version"`
-	LatestVersion  string   `json:"latest_version"`
-	Available      bool     `json:"available"`
-	State          State    `json:"state"`
-	Progress       float64  `json:"progress"` // 0..1
-	Notes          string   `json:"notes"`
-	ReleaseURL     string   `json:"release_url"`
-	AssetName      string   `json:"asset_name"`
-	DownloadPath   string   `json:"download_path"` // empty until Download completes
-	ExpectedSize   int64    `json:"expected_size"`
-	DownloadedSize int64    `json:"downloaded_size"`
-	Error          string   `json:"error"`
+	CurrentVersion  string  `json:"current_version"`
+	LatestVersion   string  `json:"latest_version"`
+	Available       bool    `json:"available"`
+	State           State   `json:"state"`
+	Progress        float64 `json:"progress"` // 0..1
+	Notes           string  `json:"notes"`
+	ReleaseURL      string  `json:"release_url"`
+	AssetName       string  `json:"asset_name"`
+	DownloadPath    string  `json:"download_path"` // empty until Download completes
+	ExpectedSize    int64   `json:"expected_size"`
+	DownloadedSize  int64   `json:"downloaded_size"`
+	Error           string  `json:"error"`
 	LastCheckedUnix int64   `json:"last_checked_unix"`
-	SkipVersion    string   `json:"skip_version"`
-	MinSupported   string   `json:"min_supported"`
+	SkipVersion     string  `json:"skip_version"`
+	MinSupported    string  `json:"min_supported"`
 }
 
 // serviceConfig configures New.
@@ -125,6 +141,7 @@ func DefaultConfig(currentVersion string) serviceConfig {
 //   - etagMu        – separate so asset HTTP requests don't contend with status updates
 //   - skipMu        – file-level mutex protecting the skip_version.txt read/write
 //   - lastCheckMu   – rate-limits manual "Check now" clicks
+//
 // downloadSpec is a plain struct set under statusMu that's reused by
 // Download() so we don't re-hit GitHub just to fetch the SHA.
 //
@@ -287,6 +304,11 @@ func (s *Service) StartBackgroundPoller(ctx context.Context) {
 // Check performs a single release-availability check. It always
 // returns a non-nil Status; errors are also reflected on the status
 // struct so a transient network blip doesn't erase "available" state.
+//
+// A 404 from the GitHub releases API (errNoReleases) is NOT treated
+// as an error — it just means the repo has no published releases,
+// so we report StateUpToDate with cleared fields instead of alarming
+// the user with "Update error" on every launch.
 func (s *Service) Check(ctx context.Context) (Status, error) {
 	// Throttle manual checks.
 	s.lastCheckMu.Lock()
@@ -314,6 +336,14 @@ func (s *Service) Check(ctx context.Context) (Status, error) {
 	// 2. Fallback: GitHub releases API. No SHA256 (we can't verify
 	// without the manifest), but at least we can notify.
 	rel, err := s.fetchLatestRelease(ctx)
+	if errors.Is(err, errNoReleases) {
+		// Repo has no published releases. Not an error — a normal,
+		// expected state for a repo that hasn't cut a release yet.
+		// The background poller therefore gets nil here and won't
+		// spam warnings on every 6h tick.
+		s.markNoReleases()
+		return s.GetStatus(), nil
+	}
 	if err != nil {
 		s.statusMu.Lock()
 		s.status.State = StateError
@@ -384,6 +414,11 @@ func (s *Service) fetchManifest(ctx context.Context, url string) (*Manifest, err
 
 // fetchLatestRelease hits the GitHub releases API for the latest
 // non-draft, non-prerelease release.
+//
+// Returns errNoReleases (NOT a generic error) when the API responds
+// 404 — the caller (Check) uses this sentinel to distinguish
+// "repo has no releases" (a normal state) from real network / API
+// failures (which should surface to the UI as StateError).
 func (s *Service) fetchLatestRelease(ctx context.Context) (githubRelease, error) {
 	url := fmt.Sprintf(
 		"https://api.github.com/repos/%s/%s/releases/latest",
@@ -402,12 +437,31 @@ func (s *Service) fetchLatestRelease(ctx context.Context) (githubRelease, error)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return githubRelease{}, errNoReleases
+	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		return githubRelease{}, fmt.Errorf("github rate limit hit (HTTP %d)", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return githubRelease{}, fmt.Errorf("github API HTTP %d: %s", resp.StatusCode, string(body))
+		// Try to extract GitHub's human-readable `message` field
+		// instead of dumping the raw JSON body into the status —
+		// the user-facing error pill was previously showing
+		// `{"message":"Not Found","documentation_url":"github.com",...}`
+		// which is noisy and leaks API internals. The 512-byte
+		// cap is deliberate: this is a best-effort human-message
+		// extraction, NOT a full body download. GitHub's error
+		// payloads are <300 B; the cap just guards against a
+		// misconfigured proxy dumping megabytes into the status.
+		var ghErr struct {
+			Message string `json:"message"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, errBodyLimit))
+		_ = json.Unmarshal(body, &ghErr)
+		if ghErr.Message != "" {
+			return githubRelease{}, fmt.Errorf("github API HTTP %d: %s", resp.StatusCode, ghErr.Message)
+		}
+		return githubRelease{}, fmt.Errorf("github API HTTP %d", resp.StatusCode)
 	}
 
 	var rel githubRelease
@@ -684,6 +738,34 @@ func (s *Service) recordDownloadError(err error) {
 	// Reset progress so a stale bar doesn't haunt the UI after a fail.
 	s.progress.Store(0)
 	log.Warn().Err(err).Msg("update download failed")
+}
+
+// markNoReleases is the canonical "no published releases" state
+// transition. Extracted from Check() so the transition lives in
+// exactly one place — if a future field needs clearing (or the
+// State value changes), both Check() and the regression test see
+// the update. Holds statusMu itself; do NOT call with the lock
+// already held.
+//
+// Also clears downloadSpec: if a prior Check() resolved a release
+// and Download() cached the asset URL/SHA, a subsequent empty
+// repo would otherwise leave stale downloadSpec fields. Download()
+// already guards on st.Available so this is hygiene, not a
+// correctness fix.
+func (s *Service) markNoReleases() {
+	s.statusMu.Lock()
+	s.status.State = StateUpToDate
+	s.status.LatestVersion = ""
+	s.status.Available = false
+	s.status.MinSupported = ""
+	s.status.Notes = ""
+	s.status.ReleaseURL = ""
+	s.status.AssetName = ""
+	s.status.ExpectedSize = 0
+	s.status.Error = ""
+	s.status.LastCheckedUnix = s.cfg.Now().Unix()
+	s.downloadSpec = downloadSpec{}
+	s.statusMu.Unlock()
 }
 
 // fileSHA256 is the hex SHA256 of the file at path.

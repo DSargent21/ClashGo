@@ -263,8 +263,16 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 	go func() {
 		b, err := bot.NewBot(cfg)
 		if err != nil {
+			// The orchestrator wraps the error with a Summary(); the
+			// underlying cause is still reachable via errors.Unwrap
+			// for programmatic consumers. The console logger now
+			// surfaces `error="..."` so the user no longer has to
+			// grep app.log to see what failed.
 			log.Error().Err(err).Msg("failed to initialize bot")
 			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Initialization Error: %v", err))
+			runtime.EventsEmit(a.ctx, "bot_init_failed", map[string]interface{}{
+				"message": err.Error(),
+			})
 
 			a.mu.Lock()
 			a.cancel()

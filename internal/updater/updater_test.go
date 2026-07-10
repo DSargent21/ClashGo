@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,7 +38,7 @@ func TestNormalizeVersion(t *testing.T) {
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
 		a, b string
-		want  int
+		want int
 	}{
 		// Equal
 		{"0.1.0-beta", "0.1.0-beta", 0},
@@ -115,6 +116,95 @@ func TestPlatformKey(t *testing.T) {
 }
 
 // ----- HTTP / Service flow -----
+
+// TestServiceCheckNoReleases is the regression test for the
+// "Update error on every launch" bug. When the repo exists but
+// has zero published releases, the GitHub API returns 404 for
+// /releases/latest. The updater must NOT surface this as an
+// error to the UI — it should report StateUpToDate and clear any
+// stale release fields.
+func TestServiceCheckNoReleases(t *testing.T) {
+	mux := http.NewServeMux()
+	// Both endpoints 404, mimicking a repo with no published
+	// releases. The manifest path already handles 404 internally
+	// (returns nil, nil), so the real test is the API fallback.
+	mux.HandleFunc("/repos/owner/repo/releases/latest/download/latest.json",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+	mux.HandleFunc("/repos/owner/repo/releases/latest",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found","documentation_url":"github.com","status":"404"}`))
+		})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Point the Service at the test server by overriding the URL
+	// builders. We can't easily redirect Service.manifestURL /
+	// fetchLatestRelease without changing production code, so we
+	// call them directly with the test server URL — same code path.
+	s := newServiceForTest(t, "0.1.0-beta", srv.Client())
+
+	// Pre-seed with a stale "available update" to verify the
+	// no-releases branch CLEARS it (regression guard: previously
+	// the status would keep showing v0.2.0 as available after the
+	// 404, because the error path only updated State/Error).
+	s.statusMu.Lock()
+	s.status.LatestVersion = "0.2.0-beta"
+	s.status.Available = true
+	s.status.MinSupported = "0.1.0-beta"
+	s.status.Notes = "stale notes"
+	s.status.ReleaseURL = "https://github.com/owner/repo/releases/tag/v0.2.0-beta"
+	s.status.AssetName = "stale.zip"
+	s.status.ExpectedSize = 999
+	s.statusMu.Unlock()
+
+	// Drive the same fetchLatestRelease path Check() uses.
+	_, err := s.fetchLatestRelease(context.Background())
+	if !errors.Is(err, errNoReleases) {
+		t.Fatalf("expected errNoReleases, got %v", err)
+	}
+
+	// Now exercise the exact same transition Check() would run.
+	// markNoReleases is the single source of truth for the
+	// "no published releases" state reset, so the test stays in
+	// sync with production — any future field added to the
+	// clearing block will be covered automatically.
+	s.markNoReleases()
+
+	st := s.GetStatus()
+	if st.State != StateUpToDate {
+		t.Errorf("State = %s want %s", st.State, StateUpToDate)
+	}
+	if st.Error != "" {
+		t.Errorf("Error = %q want empty (no-releases is not an error)", st.Error)
+	}
+	if st.Available {
+		t.Errorf("Available = true want false")
+	}
+	if st.LatestVersion != "" {
+		t.Errorf("LatestVersion = %q want empty (stale value not cleared)", st.LatestVersion)
+	}
+	if st.Notes != "" {
+		t.Errorf("Notes = %q want empty (stale value not cleared)", st.Notes)
+	}
+	if st.MinSupported != "" {
+		t.Errorf("MinSupported = %q want empty (stale value not cleared)", st.MinSupported)
+	}
+	if st.ReleaseURL != "" {
+		t.Errorf("ReleaseURL = %q want empty (stale value not cleared)", st.ReleaseURL)
+	}
+	if st.AssetName != "" {
+		t.Errorf("AssetName = %q want empty (stale value not cleared)", st.AssetName)
+	}
+	if st.ExpectedSize != 0 {
+		t.Errorf("ExpectedSize = %d want 0 (stale value not cleared)", st.ExpectedSize)
+	}
+	if st.LastCheckedUnix == 0 {
+		t.Errorf("LastCheckedUnix should be set even for no-releases")
+	}
+}
 
 func TestServiceCheckManifestPath(t *testing.T) {
 	manifest := Manifest{
@@ -424,10 +514,10 @@ func TestService_UpdateSequenceEndToEnd(t *testing.T) {
 	}
 	if manifestHits.Load() != 1 {
 		// manifestHits must be exactly 1 — anything else means the test
-	// setup itself is broken (e.g. httptest handler firing twice or
-	// not at all), so we abort here rather than let downstream
-	// assertions run on stale state.
-	t.Fatalf("expected 1 manifest hit, got %d", manifestHits.Load())
+		// setup itself is broken (e.g. httptest handler firing twice or
+		// not at all), so we abort here rather than let downstream
+		// assertions run on stale state.
+		t.Fatalf("expected 1 manifest hit, got %d", manifestHits.Load())
 	}
 
 	// Step 2: absorb the manifest. This populates downloadSpec and

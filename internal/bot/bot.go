@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -90,58 +91,68 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 
 	log.Info().Msg("initializing bot startup sequence...")
 
-	if runtime.GOOS == "darwin" {
-		log.Info().Msg("verifying BlueStacks configuration...")
-		restartNeeded := true
-		if err := client.Connect(); err == nil {
-			w, h, _ := client.ScreenSize()
-			if w == cfg.Device.Width && h == cfg.Device.Height {
-				log.Info().Msg("BlueStacks already running with correct resolution")
-				restartNeeded = false
-			}
-		}
-
-		if restartNeeded {
-			if err := client.EnsureBlueStacksMac(cfg.Device.Width, cfg.Device.Height, cfg.Device.DPI); err != nil {
-				log.Error().Err(err).Msg("failed to enforce BlueStacks configuration")
-			}
-		}
+	// Construct the boot orchestrator. The orchestrator owns the
+	// connect → BlueStacks ensure → multi-signal boot probe →
+	// screen-size flow with layered recovery (RetryTransport →
+	// SoftReset → RelaunchGame → RestartBlueStacks) and emits a
+	// structured BootReport that the app surfaces to the UI.
+	//
+	// Dev mode (env CLASHGO_DEV_FAST_FAIL=1, or detected by the
+	// app startup path) shrinks the timeouts so a coding error in
+	// wails dev cycles in 25s instead of 180s+. In production the
+	// defaults are used as-is.
+	bootCfg := NewBootConfigFromBotConfig(cfg)
+	if devFastFail() {
+		bootCfg = bootCfg.WithDevFastFail()
+	}
+	orchestrator := NewBootOrchestrator(bootCfg, client, log.Logger)
+	bctx, err := orchestrator.Boot(context.Background())
+	if err != nil {
+		// Wrap with the summary so the call site in app.go gets a
+		// human-readable line in the log, while err itself stays
+		// the structured cause for programmatic use.
+		wrapped := fmt.Errorf("%s: %w", orchestrator.Report().Summary(), err)
+		log.Error().Err(wrapped).
+			Str("suggested_action", orchestrator.Report().Snapshot().SuggestedAction).
+			Str("steps", orchestrator.Report().JoinedStepSummary(200)).
+			Msg("boot orchestrator failed; structured report at logs/last_boot_report.json")
+		return nil, wrapped
 	}
 
-	// Wait for ADB server and device to become available
-	log.Info().Msg("waiting for ADB connection (up to 90s)...")
-	deadline := time.Now().Add(90 * time.Second)
-	connected := false
-	for time.Now().Before(deadline) {
-		_ = client.AutoDetectDevice()
-		if err := client.Reconnect(); err == nil {
-			connected = true
-			break
-		}
-		time.Sleep(3 * time.Second)
+	log.Info().
+		Int("screen_w", bctx.ScreenW).
+		Int("screen_h", bctx.ScreenH).
+		Str("recovery", strings.Join(bctx.RecoveryUsed, ",")).
+		Dur("boot_duration", bctx.BootDuration).
+		Msg("boot complete; calibrating...")
+
+	// Build calibration directly from the orchestrator's verified
+	// screen size. Calibrate() used to be the source of truth for
+	// dimensions; now it's a re-verification helper that the
+	// bot only calls periodically (e.g. on a stuck-watchdog tick).
+	w, h := bctx.ScreenW, bctx.ScreenH
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("boot returned invalid screen size %dx%d; cannot calibrate", w, h)
+	}
+	cal := &game.Calibration{
+		PhysicalW:  w,
+		PhysicalH:  h,
+		ScaleX:     float64(w) / float64(game.RefWidth),
+		ScaleY:     float64(h) / float64(game.RefHeight),
+		MidOffsetY: (h - game.RefHeight) / 2,
+		BottomOffY: h - game.RefHeight,
+		Verified:   true,
 	}
 
-	if !connected {
-		return nil, fmt.Errorf("timeout waiting for ADB connection")
-	}
-	log.Info().Msg("ADB connected successfully")
-
-	// Ensure system is booted
-	log.Info().Msg("waiting for Android system to report 'boot_completed'...")
-	if err := client.WaitForBoot(90 * time.Second); err != nil {
-		return nil, fmt.Errorf("android boot timeout: %w", err)
-	}
-	log.Info().Msg("Android system is ready")
-
-	// Ensure game is started
-	log.Info().Msg("checking game status...")
+	// Optional game restart. The orchestrator deliberately did NOT
+	// launch the game — that's a Bot concern, not a boot concern.
+	// We keep the existing semantics: if RestartOnStartup is true,
+	// force-stop + start the game, then sleep the settle window.
 	packageName := cfg.Device.PackageName
 	if packageName == "" {
 		packageName = "com.supercell.clashofclans"
 	}
-
 	if cfg.Device.RestartOnStartup {
-		// Always close the app to start out for a clean state
 		log.Info().Str("package", packageName).Msg("ensuring clean state by restarting game...")
 		if err := client.ForceStop(packageName); err != nil {
 			log.Warn().Err(err).Msg("failed to force stop game during startup")
@@ -152,19 +163,24 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		if err := client.StartApp(packageName); err != nil {
 			return nil, fmt.Errorf("failed to start game: %w", err)
 		}
-
-		// Brief wait for game to start rendering, then rely on template polling
 		log.Info().Msg("waiting for game to settle...")
-		time.Sleep(15 * time.Second)
+		time.Sleep(bootCfg.WaitForGameSettle)
 	} else {
 		log.Info().Msg("skipping game restart on startup (restart_on_startup=false)")
 	}
 
-	log.Info().Msg("starting calibration...")
-	calibrator := game.NewCalibrator(client)
-	cal, err := calibrator.Calibrate()
-	if err != nil {
-		return nil, fmt.Errorf("calibrate: %w", err)
+	// Persist a successful-boot sample so the BootProfile can
+	// tighten its recommended timeout over time. Best-effort: a
+	// write failure is logged at debug and ignored.
+	if profile, perr := LoadBootProfile(paths.ResolveConfig("boot_profile.json")); perr == nil {
+		profile.AddSample(BootProfileSample{
+			StartedAt: bctx.Report.StartedAt,
+			Duration:  bctx.BootDuration.Milliseconds(),
+			Outcome:   "ok",
+		})
+		if perr := profile.Save(paths.ResolveConfig("boot_profile.json")); perr != nil {
+			log.Debug().Err(perr).Msg("failed to persist boot profile")
+		}
 	}
 
 	graph := game.NewStateGraph()
@@ -173,7 +189,12 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	// Open the Duke-pick NDJSON writer BEFORE constructing the
 	// attackExec so the callback closure captures the file handle.
 	startedWall := time.Now()
-	dukePicksDir := "output/duke_picks"
+	// Route Duke-pick NDJSON through paths.ResolveConfig so the write
+	// never lands in the project root — wails dev's filesystem watcher
+	// sees writes inside the project tree as a build trigger and
+	// kills the active bot session. (See internal/paths/paths.go for
+	// the full rationale.)
+	dukePicksDir := paths.ResolveConfig("output/duke_picks")
 	if err := os.MkdirAll(dukePicksDir, 0o755); err != nil {
 		log.Warn().Err(err).Str("dir", dukePicksDir).Msg("failed to create duke_picks dir")
 	}
@@ -1349,6 +1370,17 @@ func (b *Bot) dismissInterruptions() {
 	case game.StateChatOpen:
 		b.client.Back()
 	}
+}
+
+// dismissSelection taps in the background/empty space to close any active
+// selection menus. Used as the production Dismiss hook for the wall-upgrade
+// loop in RunWallUpgradeLoop. The 500ms settle waits for the menu
+// close-animation; without it the next capture can race the menu's
+// fade-out and confuse the next template match.
+func (b *Bot) dismissSelection() {
+	tx, ty := b.cal.ScaleRef(50, 450)
+	_ = b.client.Tap(tx, ty)
+	time.Sleep(500 * time.Millisecond)
 }
 
 func (b *Bot) waitForBattleState(timeout time.Duration) bool {
