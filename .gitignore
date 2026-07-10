@@ -8,7 +8,6 @@ Thumbs.db
 
 # Local configurations (never commit secrets)
 config.json
-config.json.bak
 .env
 stats.json
 rotation_state.json
@@ -114,3 +113,23 @@ web/package.json.md5
 
 # Misc
 .agents/
+
+# Python cache (created by ad-hoc `python3 tools/picker.py` runs)
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Backup / restore artifacts (never commit)
+*.bak
+*.orig
+
+# In-process / per-run state files (not code)
+boot_profile.json
+attack_runtime.json
+adb_last_known.json
+
+# One-off root build outputs (have source in cmd/<name>/; can be re-derived)
+adb_probe
+boot_debug
+/device_probe
+/capture_template

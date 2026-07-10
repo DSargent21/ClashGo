@@ -127,7 +127,7 @@ func (t *Transport) connectLocked() error {
 		// If it's a TCP device, try connecting it to the ADB server and retry once
 		if strings.Contains(t.deviceID, ":") {
 			_ = t.connectDeviceLocked()
-			
+
 			// Retry connect to the target transport
 			conn2, err2 := net.DialTimeout("tcp", addr, DialTimeout)
 			if err2 == nil {

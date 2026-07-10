@@ -8,13 +8,13 @@ import (
 )
 
 const (
-	standoff     = 80  // min distance from red zone
-	margin       = 30  // distance from screen edge
-	yTopMin      = 110 // below top HUD
-	yBotPad      = 80  // above troop bar
-	xMinPad      = 60  // left screen edge padding
-	linePoints   = 15  // points per deployment line
-	lineSpacing  = 35  // spacing between points
+	standoff    = 80  // min distance from red zone
+	margin      = 30  // distance from screen edge
+	yTopMin     = 110 // below top HUD
+	yBotPad     = 80  // above troop bar
+	xMinPad     = 60  // left screen edge padding
+	linePoints  = 15  // points per deployment line
+	lineSpacing = 35  // spacing between points
 )
 
 // DeployLine represents a calculated deployment line.
@@ -268,13 +268,21 @@ func (d *DeployLineCalculator) SpellLine(
 }
 
 func clamp(v, min, max int) int {
-	if v < min { return min }
-	if v > max { return max }
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
 	return v
 }
 
 func clampF(v, min, max float64) float64 {
-	if v < min { return min }
-	if v > max { return max }
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
 	return v
 }

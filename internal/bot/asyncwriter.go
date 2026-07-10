@@ -9,10 +9,10 @@ import (
 )
 
 type writeRequest struct {
-	path    string
-	data    []byte
-	perms   os.FileMode
-	done    chan error
+	path  string
+	data  []byte
+	perms os.FileMode
+	done  chan error
 }
 
 type AsyncWriter struct {

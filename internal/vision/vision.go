@@ -271,10 +271,18 @@ func MatchTemplateRegion(screen, template gocv.Mat, rect image.Rectangle, thresh
 	}
 
 	// Ensure rect is within screen bounds
-	if rect.Min.X < 0 { rect.Min.X = 0 }
-	if rect.Min.Y < 0 { rect.Min.Y = 0 }
-	if rect.Max.X > screen.Cols() { rect.Max.X = screen.Cols() }
-	if rect.Max.Y > screen.Rows() { rect.Max.Y = screen.Rows() }
+	if rect.Min.X < 0 {
+		rect.Min.X = 0
+	}
+	if rect.Min.Y < 0 {
+		rect.Min.Y = 0
+	}
+	if rect.Max.X > screen.Cols() {
+		rect.Max.X = screen.Cols()
+	}
+	if rect.Max.Y > screen.Rows() {
+		rect.Max.Y = screen.Rows()
+	}
 
 	if rect.Dx() < template.Cols() || rect.Dy() < template.Rows() {
 		return image.Point{}, 0, fmt.Errorf("region smaller than template")
@@ -297,18 +305,30 @@ func PixelSearch(screen gocv.Mat, rect image.Rectangle, r, g, b int, tolerance i
 	defer region.Close()
 
 	lb := b - tolerance
-	if lb < 0 { lb = 0 }
+	if lb < 0 {
+		lb = 0
+	}
 	lg := g - tolerance
-	if lg < 0 { lg = 0 }
+	if lg < 0 {
+		lg = 0
+	}
 	lr := r - tolerance
-	if lr < 0 { lr = 0 }
+	if lr < 0 {
+		lr = 0
+	}
 
 	ub := b + tolerance
-	if ub > 255 { ub = 255 }
+	if ub > 255 {
+		ub = 255
+	}
 	ug := g + tolerance
-	if ug > 255 { ug = 255 }
+	if ug > 255 {
+		ug = 255
+	}
 	ur := r + tolerance
-	if ur > 255 { ur = 255 }
+	if ur > 255 {
+		ur = 255
+	}
 
 	lower := gocv.NewScalar(float64(lb), float64(lg), float64(lr), 0)
 	upper := gocv.NewScalar(float64(ub), float64(ug), float64(ur), 0)
@@ -359,7 +379,7 @@ func MultiPixelSearch(screen gocv.Mat, rect image.Rectangle, pixels []Pixel, tol
 }
 
 type Pixel struct {
-	X, Y int
+	X, Y    int
 	R, G, B int
 }
 
@@ -480,10 +500,18 @@ func CalculateBaseEdges(screen gocv.Mat, minArea int) (top, bottom, left, right 
 	for i := 1; i < hull.Rows(); i++ {
 		idx := int(hull.GetIntAt(i, 0))
 		pt := allContourPoints.At(idx)
-		if pt.Y < top.Y { top = pt }
-		if pt.Y > bottom.Y { bottom = pt }
-		if pt.X < left.X { left = pt }
-		if pt.X > right.X { right = pt }
+		if pt.Y < top.Y {
+			top = pt
+		}
+		if pt.Y > bottom.Y {
+			bottom = pt
+		}
+		if pt.X < left.X {
+			left = pt
+		}
+		if pt.X > right.X {
+			right = pt
+		}
 	}
 
 	return top, bottom, left, right, nil
@@ -561,7 +589,7 @@ func GenerateFilterPipelineImage(src gocv.Mat, gray gocv.Mat, thresh gocv.Mat) g
 	gocv.CvtColor(thresh, &threshBGR, gocv.ColorGrayToBGR)
 
 	canvas := gocv.NewMatWithSize(h, w*3, gocv.MatTypeCV8UC3)
-	
+
 	r1 := image.Rect(0, 0, w, h)
 	r2 := image.Rect(w, 0, w*2, h)
 	r3 := image.Rect(w*2, 0, w*3, h)
@@ -584,4 +612,3 @@ func GenerateFilterPipelineImage(src gocv.Mat, gray gocv.Mat, thresh gocv.Mat) g
 
 	return canvas
 }
-

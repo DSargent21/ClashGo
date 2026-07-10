@@ -11,11 +11,11 @@ import (
 )
 
 type PrecisionConfig struct {
-	Edges        map[string]ManualEdge   `json:"edges"`
-	SpellEdgesA  map[string]ManualEdge   `json:"spell_edges_a"`
-	SpellEdgesB  map[string]ManualEdge   `json:"spell_edges_b"`
-	HeroTargets  map[string]image.Point  `json:"hero_targets"`
-	SpellTargets map[string]image.Point  `json:"spell_targets"`
+	Edges        map[string]ManualEdge  `json:"edges"`
+	SpellEdgesA  map[string]ManualEdge  `json:"spell_edges_a"`
+	SpellEdgesB  map[string]ManualEdge  `json:"spell_edges_b"`
+	HeroTargets  map[string]image.Point `json:"hero_targets"`
+	SpellTargets map[string]image.Point `json:"spell_targets"`
 	BarY         int                    `json:"bar_y"`
 	Width        int                    `json:"width"`
 	Height       int                    `json:"height"`
@@ -58,12 +58,12 @@ func main() {
 	fmt.Println("\n--- ULTIMATE PRECISION SETUP (MIRRORED SINGLE-EDGE FLOW) ---")
 	fmt.Println("Configure BottomLeft reference edge, and we will mirror to all other sides.")
 	fmt.Println("\nControls: 'r' to reset, 'u' to undo last click, 's' to save, 'q' to quit.")
-	
+
 	step := 0
 	win.SetMouseHandler(func(event int, x, y int, flags int, userdata interface{}) {
 		if event == 1 { // LBUTTONDOWN
 			p := image.Pt(x, y)
-			
+
 			switch step {
 			case 0: // Troop Line Start
 				tempPoints = append(tempPoints, p)
@@ -104,22 +104,33 @@ func main() {
 
 	for {
 		display := img.Clone()
-		
+
 		msg := ""
 		switch step {
-		case 0: msg = "CLICK TROOP LINE START (BottomLeft)"
-		case 1: msg = "CLICK TROOP LINE END (BottomLeft)"
-		case 2: msg = "CLICK HERO/SIEGE TARGET Point (BottomLeft)"
-		case 3: msg = "CLICK SPELL LINE A START (BottomLeft)"
-		case 4: msg = "CLICK SPELL LINE A END (BottomLeft)"
-		case 5: msg = "CLICK SPELL LINE B START (BottomLeft)"
-		case 6: msg = "CLICK SPELL LINE B END (BottomLeft)"
-		case 7: msg = "CLICK SPELL TARGET SPOT (BottomLeft)"
-		case 8: msg = "CLICK VILLAGE CENTER POINT (Town Hall)"
-		case 9: msg = "CLICK TOP OF TROOP BAR (Safety limit)"
-		default: msg = "ALL DONE! PRESS 'S' TO SAVE"
+		case 0:
+			msg = "CLICK TROOP LINE START (BottomLeft)"
+		case 1:
+			msg = "CLICK TROOP LINE END (BottomLeft)"
+		case 2:
+			msg = "CLICK HERO/SIEGE TARGET Point (BottomLeft)"
+		case 3:
+			msg = "CLICK SPELL LINE A START (BottomLeft)"
+		case 4:
+			msg = "CLICK SPELL LINE A END (BottomLeft)"
+		case 5:
+			msg = "CLICK SPELL LINE B START (BottomLeft)"
+		case 6:
+			msg = "CLICK SPELL LINE B END (BottomLeft)"
+		case 7:
+			msg = "CLICK SPELL TARGET SPOT (BottomLeft)"
+		case 8:
+			msg = "CLICK VILLAGE CENTER POINT (Town Hall)"
+		case 9:
+			msg = "CLICK TOP OF TROOP BAR (Safety limit)"
+		default:
+			msg = "ALL DONE! PRESS 'S' TO SAVE"
 		}
-		
+
 		gocv.PutText(&display, msg, image.Pt(20, 40), gocv.FontHersheySimplex, 0.7, color.RGBA{0, 255, 255, 255}, 2)
 		gocv.PutText(&display, "'U' to UNDO last click | 'R' to RESET", image.Pt(20, img.Rows()-20), gocv.FontHersheySimplex, 0.5, color.RGBA{200, 200, 200, 255}, 1)
 
@@ -138,7 +149,7 @@ func main() {
 		}
 		// Draw Hero Targets (Blue)
 		for _, p := range config.HeroTargets {
-			gocv.Circle(&display, p, 10, color.RGBA{255, 0, 0, 255}, 2) 
+			gocv.Circle(&display, p, 10, color.RGBA{255, 0, 0, 255}, 2)
 		}
 		// Draw Spell Targets (Magenta)
 		for _, p := range config.SpellTargets {
@@ -190,10 +201,14 @@ func main() {
 				if len(tempPoints) > 0 {
 					tempPoints = tempPoints[:len(tempPoints)-1]
 				}
-			case 1: delete(config.Edges, "BottomLeft")
-			case 2: delete(config.HeroTargets, "BottomLeft")
-			case 4: delete(config.SpellEdgesA, "BottomLeft")
-			case 6: delete(config.SpellEdgesB, "BottomLeft")
+			case 1:
+				delete(config.Edges, "BottomLeft")
+			case 2:
+				delete(config.HeroTargets, "BottomLeft")
+			case 4:
+				delete(config.SpellEdgesA, "BottomLeft")
+			case 6:
+				delete(config.SpellEdgesB, "BottomLeft")
 			}
 			fmt.Printf("↶ Undid last step. Back to step %d\n", step+1)
 		} else if key == 's' && step == 10 {

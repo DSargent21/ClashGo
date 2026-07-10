@@ -264,13 +264,13 @@ func loadPrecisionConfig(path string, w, h int) (attack.PrecisionConfig, error) 
 // ({x,y,w,h,nil}) so jq consumers can filter on coordinates.
 func simplifyReport(rep attack.PlanReport) map[string]interface{} {
 	out := map[string]interface{}{
-		"screen":             rep.Screen,
-		"red_zone_valid":     rep.RedZoneValid,
-		"deploy_side":        rep.DeploySide,
+		"screen":              rep.Screen,
+		"red_zone_valid":      rep.RedZoneValid,
+		"deploy_side":         rep.DeploySide,
 		"decided_target_edge": rep.DecidedTargetEdge,
-		"phases":             rep.Phases,
-		"mismatches":         rep.Mismatches,
-		"diagonal_corners":   rep.DiagonalCorners,
+		"phases":              rep.Phases,
+		"mismatches":          rep.Mismatches,
+		"diagonal_corners":    rep.DiagonalCorners,
 	}
 	corners := map[string]map[string]int{}
 	for k, r := range rep.Corners {

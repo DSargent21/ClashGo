@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/rs/zerolog"
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
 
@@ -45,24 +45,39 @@ func (lr *LootRecognizer) prepareDigitTemplates() {
 	for i := 0; i < 10; i++ {
 		name := fmt.Sprintf("digit_%d", i)
 		tpl, ok := lr.templates.Get(name)
-		if !ok || tpl.Empty() { continue }
+		if !ok || tpl.Empty() {
+			continue
+		}
 		gray := gocv.NewMat()
-		if tpl.Channels() == 3 { gocv.CvtColor(tpl, &gray, gocv.ColorBGRToGray) } else { tpl.CopyTo(&gray) }
+		if tpl.Channels() == 3 {
+			gocv.CvtColor(tpl, &gray, gocv.ColorBGRToGray)
+		} else {
+			tpl.CopyTo(&gray)
+		}
 		bin := gocv.NewMat()
 		gocv.Threshold(gray, &bin, 128, 255, gocv.ThresholdBinary)
 		rect := tightBoundingBox(bin)
 		if !rect.Empty() {
-			tight := bin.Region(rect); lr.digitTemplates[i] = tight.Clone(); tight.Close()
-		} else { lr.digitTemplates[i] = bin.Clone() }
-		bin.Close(); gray.Close()
+			tight := bin.Region(rect)
+			lr.digitTemplates[i] = tight.Clone()
+			tight.Close()
+		} else {
+			lr.digitTemplates[i] = bin.Clone()
+		}
+		bin.Close()
+		gray.Close()
 	}
 }
 
 func (lr *LootRecognizer) Close() {
-	for _, tpl := range lr.digitTemplates { if !tpl.Empty() { tpl.Close() } }
+	for _, tpl := range lr.digitTemplates {
+		if !tpl.Empty() {
+			tpl.Close()
+		}
+	}
 }
 
-type LootReport struct { Resources Resources }
+type LootReport struct{ Resources Resources }
 
 type BattleResult struct {
 	Loot  Resources
@@ -197,12 +212,24 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 }
 
 func (lr *LootRecognizer) safeRect(img gocv.Mat, r image.Rectangle) image.Rectangle {
-	if r.Min.X < 0 { r.Min.X = 0 }
-	if r.Min.Y < 0 { r.Min.Y = 0 }
-	if r.Max.X > img.Cols() { r.Max.X = img.Cols() }
-	if r.Max.Y > img.Rows() { r.Max.Y = img.Rows() }
-	if r.Max.X < r.Min.X { r.Max.X = r.Min.X }
-	if r.Max.Y < r.Min.Y { r.Max.Y = r.Min.Y }
+	if r.Min.X < 0 {
+		r.Min.X = 0
+	}
+	if r.Min.Y < 0 {
+		r.Min.Y = 0
+	}
+	if r.Max.X > img.Cols() {
+		r.Max.X = img.Cols()
+	}
+	if r.Max.Y > img.Rows() {
+		r.Max.Y = img.Rows()
+	}
+	if r.Max.X < r.Min.X {
+		r.Max.X = r.Min.X
+	}
+	if r.Max.Y < r.Min.Y {
+		r.Max.Y = r.Min.Y
+	}
 	return r
 }
 
@@ -211,7 +238,9 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 	x1, y1, x2, y2 int
 }, minConfThreshold float32) Resources {
 	searchRoi = lr.safeRect(screen, searchRoi)
-	if searchRoi.Empty() { return Resources{} }
+	if searchRoi.Empty() {
+		return Resources{}
+	}
 
 	region := screen.Region(searchRoi)
 	defer region.Close()
@@ -255,7 +284,10 @@ func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.
 func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) {
 	// High-Precision ROIs for Scouting (Reference 860x732)
 	// We use very inclusive X range (starting at 40) because digits start immediately after icons
-	icons := []struct { name, tpl string; y1, y2 int }{
+	icons := []struct {
+		name, tpl string
+		y1, y2    int
+	}{
 		{"gold", "icon_gold", 66, 100},
 		{"elixir", "icon_elixir", 95, 128},
 		{"de", "icon_de", 124, 157},
@@ -293,7 +325,9 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 
 func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	roi = lr.safeRect(screen, roi)
-	if roi.Empty() { return 0 }
+	if roi.Empty() {
+		return 0
+	}
 
 	sub := screen.Region(roi)
 	defer sub.Close()
@@ -301,7 +335,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	gray := gocv.NewMat()
 	defer gray.Close()
 	gocv.CvtColor(sub, &gray, gocv.ColorBGRToGray)
-	
+
 	hsv := gocv.NewMat()
 	defer hsv.Close()
 	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
@@ -370,16 +404,20 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	var detected []detectedDigit
 	for i := 0; i < contours.Size(); i++ {
 		rect := gocv.BoundingRect(contours.At(i))
-		minH := int(7 * lr.cal.ScaleY) * 5
-		maxH := int(40 * lr.cal.ScaleY) * 5
-		minW := int(1 * lr.cal.ScaleX) * 5
-		maxW := int(40 * lr.cal.ScaleX) * 5
-		
-		if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW { continue }
-		
+		minH := int(7*lr.cal.ScaleY) * 5
+		maxH := int(40*lr.cal.ScaleY) * 5
+		minW := int(1*lr.cal.ScaleX) * 5
+		maxW := int(40*lr.cal.ScaleX) * 5
+
+		if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW {
+			continue
+		}
+
 		// Vertical alignment check
 		blobCenterY := rect.Min.Y + rect.Dy()/2
-		if math.Abs(float64(blobCenterY-roiCenterY)) > float64(scaled.Rows())/2.0 { continue }
+		if math.Abs(float64(blobCenterY-roiCenterY)) > float64(scaled.Rows())/2.0 {
+			continue
+		}
 
 		// Color Filter: Digits are strictly white/grey (Low Saturation)
 		// Sample from the original HSV region by scaling coordinates back down 5x
@@ -393,7 +431,9 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 			// Saturation check is our primary icon-rejection tool.
 			// White text Saturation is usually < 40. Icons are > 100.
 			// Increased to 105 to tolerate colorful/grass background bleeding into transparent text regions.
-			if mean.Val2 > 105 { continue } 
+			if mean.Val2 > 105 {
+				continue
+			}
 		}
 
 		blob := binary.Region(rect)
@@ -408,7 +448,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 
 	if len(detected) > 0 {
 		sort.Slice(detected, func(i, j int) bool { return detected[i].rect.Min.X < detected[j].rect.Min.X })
-		
+
 		// Deduplicate overlaps
 		cleaned := []detectedDigit{}
 		for _, d := range detected {
@@ -416,11 +456,15 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 			for i, c := range cleaned {
 				if d.rect.Min.X >= c.rect.Min.X-2 && d.rect.Min.X <= c.rect.Min.X+2 {
 					found = true
-					if d.conf > c.conf { cleaned[i] = d }
+					if d.conf > c.conf {
+						cleaned[i] = d
+					}
 					break
 				}
 			}
-			if !found { cleaned = append(cleaned, d) }
+			if !found {
+				cleaned = append(cleaned, d)
+			}
 		}
 
 		// Cluster Detection: Find the group of digits with small gaps
@@ -457,7 +501,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		score := float64(len(cleaned)*len(cleaned)) * 100.0
 		s := ""
 		details := ""
-		for _, d := range cleaned { 
+		for _, d := range cleaned {
 			// Get mean intensity for logging
 			origRect := lr.safeRect(gray, d.rect)
 			if !origRect.Empty() {
@@ -473,18 +517,22 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		}
 		if score > bestScore {
 			val, _ := strconv.Atoi(s)
-			if val < 100000000 { bestVal = val; bestScore = score }
+			if val < 100000000 {
+				bestVal = val
+				bestScore = score
+			}
 		}
 	}
 	return bestVal
 }
 
-
 func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 	bestDigit, maxConf := -1, float32(0.0)
 	bw, bh := bin.Cols(), bin.Rows()
 	for i, tpl := range lr.digitTemplates {
-		if tpl.Empty() { continue }
+		if tpl.Empty() {
+			continue
+		}
 		scaledTpl := gocv.NewMat()
 		gocv.Resize(tpl, &scaledTpl, image.Point{X: bw, Y: bh}, 0, 0, gocv.InterpolationLinear)
 		res := gocv.NewMat()
@@ -492,21 +540,29 @@ func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 		gocv.MatchTemplate(bin, scaledTpl, &res, gocv.TmCcoeffNormed, mask)
 		mask.Close()
 		_, conf, _, _ := gocv.MinMaxLoc(res)
-		if float32(conf) > maxConf { maxConf = float32(conf); bestDigit = i }
-		res.Close(); scaledTpl.Close()
+		if float32(conf) > maxConf {
+			maxConf = float32(conf)
+			bestDigit = i
+		}
+		res.Close()
+		scaledTpl.Close()
 	}
-	
+
 	// Thin vertical blobs are almost always '1'
 	if bestDigit == -1 || maxConf < 0.55 {
 		minH1 := int(12 * lr.cal.ScaleY)
 		maxW1 := int(6 * lr.cal.ScaleX)
 		if bw >= 1 && bw <= maxW1 && bh >= minH1 { // Narrower and taller
 			fill := float64(gocv.CountNonZero(bin)) / float64(bw*bh)
-			if fill > 0.65 { return detectedDigit{digit: 1, conf: 0.6} }
+			if fill > 0.65 {
+				return detectedDigit{digit: 1, conf: 0.6}
+			}
 		}
 	}
 
-	if maxConf < 0.5 { return detectedDigit{digit: -1} }
+	if maxConf < 0.5 {
+		return detectedDigit{digit: -1}
+	}
 	return detectedDigit{digit: bestDigit, conf: maxConf}
 }
 
@@ -517,12 +573,24 @@ func tightBoundingBox(bin gocv.Mat) image.Rectangle {
 	for y := 0; y < rows; y++ {
 		for x := 0; x < cols; x++ {
 			if bin.GetUCharAt(y, x) > 128 {
-				if x < xMin { xMin = x }; if x > xMax { xMax = x }
-				if y < yMin { yMin = y }; if y > yMax { yMax = y }
+				if x < xMin {
+					xMin = x
+				}
+				if x > xMax {
+					xMax = x
+				}
+				if y < yMin {
+					yMin = y
+				}
+				if y > yMax {
+					yMax = y
+				}
 				found = true
 			}
 		}
 	}
-	if !found { return image.Rectangle{} }
+	if !found {
+		return image.Rectangle{}
+	}
 	return image.Rect(xMin, yMin, xMax+1, yMax+1)
 }

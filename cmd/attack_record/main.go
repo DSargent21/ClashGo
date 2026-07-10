@@ -2,18 +2,18 @@
 //
 // Record mode (-mode=record -out macro.json):
 //
-//   Captures the device screen into a GoCV window. Every left-click on
-//   the window is BOTH forwarded to the device via adb shell input tap
-//   AND appended to an in-memory tap list with a relative timestamp.
-//   Press 's' to save the tap list to disk and quit, 'q' to discard.
-//   The user drives the attack; the tool watches. ~200ms round-trip
-//   per tap is normal (PC click → adb → emulator).
+//	Captures the device screen into a GoCV window. Every left-click on
+//	the window is BOTH forwarded to the device via adb shell input tap
+//	AND appended to an in-memory tap list with a relative timestamp.
+//	Press 's' to save the tap list to disk and quit, 'q' to discard.
+//	The user drives the attack; the tool watches. ~200ms round-trip
+//	per tap is normal (PC click → adb → emulator).
 //
 // Replay mode (-mode=replay -in macro.json):
 //
-//   Reads the JSON tap list and emits device taps at the recorded
-//   cadence. Use relative timestamps (ms_since_start) so pauses,
-//   pauses-to-zoom, etc. are preserved.
+//	Reads the JSON tap list and emits device taps at the recorded
+//	cadence. Use relative timestamps (ms_since_start) so pauses,
+//	pauses-to-zoom, etc. are preserved.
 //
 // Why this exists: lets the user "teach by demonstration". Play an
 // attack once manually, save the macro, replay N times on N different
@@ -22,10 +22,11 @@
 // procedural.
 //
 // Output schema (macro.json):
-//   {
-//     "meta": {"width": <int>, "height": <int>},    // device dim at record time
-//     "taps": [{"t": <ms_since_start>, "x": <px>, "y": <px>}]
-//   }
+//
+//	{
+//	  "meta": {"width": <int>, "height": <int>},    // device dim at record time
+//	  "taps": [{"t": <ms_since_start>, "x": <px>, "y": <px>}]
+//	}
 //
 // Caveats (intentional, not bugs):
 //   - Coordinates are device-pixel, recorded from whatever screen the
@@ -243,15 +244,15 @@ func runRecord(client *adb.Client, outPath string) {
 //
 // Troop/spell classification runs at replay time:
 //
-//   taps are classified by x/y on each iteration. A slot-tap updates
-//   lastSelected ("hero"|"troop"|"spell"|"other"); subsequent deploy
-//   taps inherit that suffix ("deploy-hero"/"deploy-troop"/...). When
-//   the inherited class is NOT hero AND the suffix is a known troop/
-//   spell/other (i.e. classifyTap ranged the slot tap confidently),
-//   --extra-tap-count extra fires right after the primary tap, spaced
-//   by --extra-tap-delay ms. This matches CoC's tolerance for repeated
-//   deploy-position taps on the same spot (single tap sometimes fails
-//   to register on BlueStacks).
+//	taps are classified by x/y on each iteration. A slot-tap updates
+//	lastSelected ("hero"|"troop"|"spell"|"other"); subsequent deploy
+//	taps inherit that suffix ("deploy-hero"/"deploy-troop"/...). When
+//	the inherited class is NOT hero AND the suffix is a known troop/
+//	spell/other (i.e. classifyTap ranged the slot tap confidently),
+//	--extra-tap-count extra fires right after the primary tap, spaced
+//	by --extra-tap-delay ms. This matches CoC's tolerance for repeated
+//	deploy-position taps on the same spot (single tap sometimes fails
+//	to register on BlueStacks).
 //
 // dryRun=true logs classification + extras planning but never fires a
 // device tap. Use it via `make attack-classify` to preview behavior.
@@ -357,4 +358,3 @@ func saveMacro(path string, w, h int, taps []Tap, mu *sync.Mutex) {
 	log.Info().Str("path", path).Int("count", len(out.Taps)).
 		Int("w", w).Int("h", h).Msg("macro saved")
 }
-

@@ -32,11 +32,11 @@ import (
 // Field tags are stable; new fields may be added but existing field names
 // must not change without a schema_version bump.
 type Snapshot struct {
-	SchemaVersion int       `json:"schema_version"`
-	UpdatedMS     int64     `json:"updated_ms"`
-	BootID        string    `json:"boot_id,omitempty"`
-	SessionID     string    `json:"session_id,omitempty"`
-	AttackID      string    `json:"attack_id,omitempty"`
+	SchemaVersion int    `json:"schema_version"`
+	UpdatedMS     int64  `json:"updated_ms"`
+	BootID        string `json:"boot_id,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	AttackID      string `json:"attack_id,omitempty"`
 
 	CurrentState string `json:"current_state,omitempty"`
 	PrevState    string `json:"prev_state,omitempty"`
@@ -57,20 +57,20 @@ type Snapshot struct {
 }
 
 type ClassifierSnapshot struct {
-	TopScore       int            `json:"top_score"`
-	Alternatives   map[string]int `json:"alternatives,omitempty"`
-	ConfirmFrames  int            `json:"confirm_frames"`
-	UpdatedMS      int64          `json:"updated_ms"`
+	TopScore      int            `json:"top_score"`
+	Alternatives  map[string]int `json:"alternatives,omitempty"`
+	ConfirmFrames int            `json:"confirm_frames"`
+	UpdatedMS     int64          `json:"updated_ms"`
 }
 
 type ADBSnapshot struct {
-	Connected       bool    `json:"connected"`
-	Device          string  `json:"device,omitempty"`
-	Resolution      string  `json:"resolution,omitempty"`
-	LastCaptureMS   int64   `json:"last_capture_ms"`
-	AvgCaptureMS    float64 `json:"avg_capture_ms"`
-	ConsecutiveFails int32  `json:"consecutive_fails"`
-	UptimeS         int64   `json:"uptime_s"`
+	Connected        bool    `json:"connected"`
+	Device           string  `json:"device,omitempty"`
+	Resolution       string  `json:"resolution,omitempty"`
+	LastCaptureMS    int64   `json:"last_capture_ms"`
+	AvgCaptureMS     float64 `json:"avg_capture_ms"`
+	ConsecutiveFails int32   `json:"consecutive_fails"`
+	UptimeS          int64   `json:"uptime_s"`
 }
 
 type SequenceSnapshot struct {
@@ -82,12 +82,12 @@ type SequenceSnapshot struct {
 }
 
 type DeploymentSnapshot struct {
-	RedZoneValid bool          `json:"red_zone_valid"`
-	RedZone      *BoxSnapshot  `json:"red_zone,omitempty"`
-	DeploySide   string        `json:"deploy_side,omitempty"`
+	RedZoneValid bool            `json:"red_zone_valid"`
+	RedZone      *BoxSnapshot    `json:"red_zone,omitempty"`
+	DeploySide   string          `json:"deploy_side,omitempty"`
 	DeployPoints []PointSnapshot `json:"deploy_points,omitempty"`
-	Anchor       *PointSnapshot `json:"anchor,omitempty"`
-	BarY         int           `json:"bar_y,omitempty"`
+	Anchor       *PointSnapshot  `json:"anchor,omitempty"`
+	BarY         int             `json:"bar_y,omitempty"`
 }
 
 type BoxSnapshot struct {
@@ -103,28 +103,28 @@ type PointSnapshot struct {
 }
 
 type SlotSnapshot struct {
-	Idx       int    `json:"idx"`
-	X         int    `json:"x"`
-	Y         int    `json:"y,omitempty"`
-	Category  string `json:"category"`
-	UnitHint  string `json:"unit_hint,omitempty"`
-	Count     int    `json:"count,omitempty"`
-	Deployed  bool   `json:"deployed"`
+	Idx      int    `json:"idx"`
+	X        int    `json:"x"`
+	Y        int    `json:"y,omitempty"`
+	Category string `json:"category"`
+	UnitHint string `json:"unit_hint,omitempty"`
+	Count    int    `json:"count,omitempty"`
+	Deployed bool   `json:"deployed"`
 }
 
 type StatsSnapshot struct {
-	AttacksCompleted      int32 `json:"attacks_completed"`
-	Skips                 int32 `json:"skips"`
-	Stars                 int32 `json:"stars"`
-	Stars0                int32 `json:"stars_0"`
-	Stars1                int32 `json:"stars_1"`
-	Stars2                int32 `json:"stars_2"`
-	Stars3                int32 `json:"stars_3"`
-	Gold                  int64 `json:"gold"`
-	Elixir                int64 `json:"elixir"`
-	DarkElixir            int64 `json:"dark_elixir"`
-	SessionAvgAttackMS    int64 `json:"session_avg_attack_ms,omitempty"`
-	LastAttackID          string `json:"last_attack_id,omitempty"`
+	AttacksCompleted   int32  `json:"attacks_completed"`
+	Skips              int32  `json:"skips"`
+	Stars              int32  `json:"stars"`
+	Stars0             int32  `json:"stars_0"`
+	Stars1             int32  `json:"stars_1"`
+	Stars2             int32  `json:"stars_2"`
+	Stars3             int32  `json:"stars_3"`
+	Gold               int64  `json:"gold"`
+	Elixir             int64  `json:"elixir"`
+	DarkElixir         int64  `json:"dark_elixir"`
+	SessionAvgAttackMS int64  `json:"session_avg_attack_ms,omitempty"`
+	LastAttackID       string `json:"last_attack_id,omitempty"`
 }
 
 type FSMSnapshot struct {
@@ -134,15 +134,15 @@ type FSMSnapshot struct {
 }
 
 type ConfigSnapshot struct {
-	Strategy    string             `json:"strategy,omitempty"`
-	TargetEdge  string             `json:"target_edge,omitempty"`
-	Thresholds  map[string]float32 `json:"thresholds,omitempty"`
+	Strategy   string             `json:"strategy,omitempty"`
+	TargetEdge string             `json:"target_edge,omitempty"`
+	Thresholds map[string]float32 `json:"thresholds,omitempty"`
 }
 
 type FrameSnapshot struct {
-	TSMillis  int64  `json:"ts_ms"`
-	PHash     string `json:"phash,omitempty"`
-	Ref       string `json:"ref,omitempty"`
+	TSMillis int64  `json:"ts_ms"`
+	PHash    string `json:"phash,omitempty"`
+	Ref      string `json:"ref,omitempty"`
 }
 
 type TapSnapshot struct {
@@ -171,14 +171,14 @@ type TapSnapshot struct {
 //   - All writes to snap are serialized through the writer goroutine OR through
 //     UpdateImmediate (which takes the write lock).
 type World struct {
-	mu     sync.RWMutex
-	snap   Snapshot
-	path   string
-	bootID string
+	mu            sync.RWMutex
+	snap          Snapshot
+	path          string
+	bootID        string
 	lastWrittenAt time.Time
-	dirty bool
-	closed atomic.Bool
-	dropped atomic.Int64
+	dirty         bool
+	closed        atomic.Bool
+	dropped       atomic.Int64
 
 	patches chan patch
 	stop    chan struct{}

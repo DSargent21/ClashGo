@@ -115,15 +115,23 @@ func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int,
 	// The number is typically centered horizontally on the card
 	// and positioned just above the card image (between barY and slotY)
 	roiX1 := slotX - cardWidth/2 + int(5.0*scaleX) // Slight inset from card edge
-	roiY1 := barY - int(5.0*scaleY)                 // Just above bar line
+	roiY1 := barY - int(5.0*scaleY)                // Just above bar line
 	roiX2 := slotX + cardWidth/2 - int(5.0*scaleX)
-	roiY2 := slotY - int(25.0*scaleY)               // Above the card icon
+	roiY2 := slotY - int(25.0*scaleY) // Above the card icon
 
 	// Clamp to screen bounds
-	if roiX1 < 0 { roiX1 = 0 }
-	if roiY1 < 0 { roiY1 = 0 }
-	if roiX2 > screen.Cols() { roiX2 = screen.Cols() }
-	if roiY2 > screen.Rows() { roiY2 = screen.Rows() }
+	if roiX1 < 0 {
+		roiX1 = 0
+	}
+	if roiY1 < 0 {
+		roiY1 = 0
+	}
+	if roiX2 > screen.Cols() {
+		roiX2 = screen.Cols()
+	}
+	if roiY2 > screen.Rows() {
+		roiY2 = screen.Rows()
+	}
 
 	if roiX2 <= roiX1 || roiY2 <= roiY1 {
 		return result
@@ -297,10 +305,18 @@ func tightBoundingBox(bin gocv.Mat) image.Rectangle {
 	for y := 0; y < rows; y++ {
 		for x := 0; x < cols; x++ {
 			if bin.GetUCharAt(y, x) > 128 {
-				if x < xMin { xMin = x }
-				if x > xMax { xMax = x }
-				if y < yMin { yMin = y }
-				if y > yMax { yMax = y }
+				if x < xMin {
+					xMin = x
+				}
+				if x > xMax {
+					xMax = x
+				}
+				if y < yMin {
+					yMin = y
+				}
+				if y > yMax {
+					yMax = y
+				}
 				found = true
 			}
 		}

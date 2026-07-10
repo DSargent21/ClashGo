@@ -63,7 +63,7 @@ func main() {
 	log.Info().Msg("zooming out for maximum deployment area...")
 	for i := 0; i < 5; i++ {
 		client.ZoomOut()
-		time.Sleep(50 * time.Millisecond) 
+		time.Sleep(50 * time.Millisecond)
 	}
 	time.Sleep(300 * time.Millisecond)
 

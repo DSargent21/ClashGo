@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"gocv.io/x/gocv"
 	"github.com/Ducky705/ClashGO/internal/vision"
+	"gocv.io/x/gocv"
 )
 
 func main() {

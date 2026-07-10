@@ -57,7 +57,7 @@ func (b *Bot) DumpDiagnostics(reason string, screen gocv.Mat, context map[string
 	// Also symlink or copy to "last_failure" for easy access
 	_ = os.Remove(paths.ResolveConfig("last_failure.png"))
 	_ = os.Remove(paths.ResolveConfig("last_failure.json"))
-	
+
 	// Copy files to last_failure (safer than symlinks on some systems/setups)
 	if !screen.Empty() {
 		_ = gocv.IMWrite(paths.ResolveConfig("last_failure.png"), screen)

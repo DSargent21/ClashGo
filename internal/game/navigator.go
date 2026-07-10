@@ -259,8 +259,8 @@ func (n *Navigator) NavigateToMainVillage(ctx *GameContext) bool {
 
 	seq := []struct {
 		from, to GameState
-		action  TransitionAction
-		x, y    int
+		action   TransitionAction
+		x, y     int
 	}{
 		{StateBattle, StateBattleEnd, ActionTap, 34, 588},
 		{StateBattleEnd, StateReturnHome, ActionTap, 430, 566},
@@ -292,7 +292,7 @@ func (n *Navigator) NavigateToBattle(ctx *GameContext) bool {
 
 	if ctx.State == StateMainVillage {
 		ax, ay := n.cal.ScaleRef(60, 548)
-		
+
 		// Try to find the battle button via template matching
 		if n.templates != nil {
 			tpl, ok := n.templates.Get("btn_battle")

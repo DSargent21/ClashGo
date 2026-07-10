@@ -35,21 +35,21 @@ func main() {
 	ts.LoadTemplates()
 
 	tpl, _ := ts.Get("btn_attack")
-	
+
 	fmt.Println("🔍 Matching btn_attack...")
 	matches, _ := vision.MatchMultiScale(screen, tpl, 0.2, 1.0, 40, 0.4)
-	
+
 	if len(matches) > 0 {
 		sort.Slice(matches, func(i, j int) bool {
 			return matches[i].Confidence > matches[j].Confidence
 		})
 		m := matches[0]
 		fmt.Printf("Best match: Conf=%.4f at %v Scale=%.2f\n", m.Confidence, m.Point, m.Scale)
-		
+
 		// Draw on screen
 		w := int(float64(tpl.Cols()) * m.Scale)
 		h := int(float64(tpl.Rows()) * m.Scale)
-		rect := image.Rect(m.Point.X - w/2, m.Point.Y - h/2, m.Point.X + w/2, m.Point.Y + h/2)
+		rect := image.Rect(m.Point.X-w/2, m.Point.Y-h/2, m.Point.X+w/2, m.Point.Y+h/2)
 		gocv.Rectangle(&screen, rect, color.RGBA{255, 0, 0, 0}, 3)
 		gocv.PutText(&screen, fmt.Sprintf("%.2f", m.Confidence), image.Pt(rect.Min.X, rect.Min.Y-10), gocv.FontHersheySimplex, 1.0, color.RGBA{255, 0, 0, 0}, 2)
 	} else {

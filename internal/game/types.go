@@ -11,16 +11,17 @@
 //   - Pass cal to NewClassifier and NewNavigator
 //
 // Detection loop:
-//   for {
-//       ctx.Detect(ctx, classifier)
-//       select {
-//       case t := <-ctx.StateChange:
-//           // react to state transitions
-//       case <-ctx.Done:
-//           return
-//       default:
-//       }
-//   }
+//
+//	for {
+//	    ctx.Detect(ctx, classifier)
+//	    select {
+//	    case t := <-ctx.StateChange:
+//	        // react to state transitions
+//	    case <-ctx.Done:
+//	        return
+//	    default:
+//	    }
+//	}
 package game
 
 import (
@@ -59,19 +60,19 @@ var stateNames = map[GameState]string{
 	StateMainVillage:    "MainVillage",
 	StateBuilderBase:    "BuilderBase",
 	StateBattle:         "Battle",
-	StateBattleEnd:       "BattleEnd",
-	StateArmyCamp:        "ArmyCamp",
-	StateSearchMap:       "SearchMap",
-	StateFindMatch:       "FindMatch",
-	StateSettings:        "Settings",
-	StateObstacleDialog:  "ObstacleDialog",
-	StateGemDialog:       "GemDialog",
-	StateChatOpen:        "ChatOpen",
-	StateShieldInfo:      "ShieldInfo",
-	StateReturnHome:      "ReturnHome",
-	StateLoading:         "Loading",
-	StateWelcomeBack:     "WelcomeBack",
-	StateArmySelection:   "ArmySelection",
+	StateBattleEnd:      "BattleEnd",
+	StateArmyCamp:       "ArmyCamp",
+	StateSearchMap:      "SearchMap",
+	StateFindMatch:      "FindMatch",
+	StateSettings:       "Settings",
+	StateObstacleDialog: "ObstacleDialog",
+	StateGemDialog:      "GemDialog",
+	StateChatOpen:       "ChatOpen",
+	StateShieldInfo:     "ShieldInfo",
+	StateReturnHome:     "ReturnHome",
+	StateLoading:        "Loading",
+	StateWelcomeBack:    "WelcomeBack",
+	StateArmySelection:  "ArmySelection",
 }
 
 func (s GameState) String() string {
@@ -123,10 +124,10 @@ type StateTransition struct {
 
 // Clickable represents a detected interactive element on screen.
 type Clickable struct {
-	Type      string // "button", "tab", "dialog", "resource"
-	Region    Rectangle
-	Center    Point
-	Color     RGB
+	Type       string // "button", "tab", "dialog", "resource"
+	Region     Rectangle
+	Center     Point
+	Color      RGB
 	Confidence float64
 }
 
@@ -135,8 +136,8 @@ type Rectangle struct {
 	X1, Y1, X2, Y2 int
 }
 
-func (r Rectangle) Width() int  { return r.X2 - r.X1 }
-func (r Rectangle) Height() int { return r.Y2 - r.Y1 }
+func (r Rectangle) Width() int   { return r.X2 - r.X1 }
+func (r Rectangle) Height() int  { return r.Y2 - r.Y1 }
 func (r Rectangle) CenterX() int { return (r.X1 + r.X2) / 2 }
 func (r Rectangle) CenterY() int { return (r.Y1 + r.Y2) / 2 }
 func (r Rectangle) Contains(px, py int) bool {
@@ -188,10 +189,10 @@ func (h SystemHealth) IsHealthy() bool {
 
 // StateChange represents a confirmed state transition event.
 type StateChange struct {
-	From      GameState
-	To        GameState
-	At        time.Time
-	Duration  time.Duration // time spent in From state
+	From     GameState
+	To       GameState
+	At       time.Time
+	Duration time.Duration // time spent in From state
 }
 
 // Device defines the interface for an automation device (like ADB).
@@ -227,42 +228,42 @@ type PixelCheck struct {
 
 // StateRule describes how to detect a specific game state.
 type StateRule struct {
-	State     GameState
-	Checks    []PixelCheck
-	Template  string // optional template name to match
-	MinPass   int    // minimum checks that must pass
-	Weight    int    // score boost when matched
-	Priority  int    // higher = checked first
-	Desc      string
+	State    GameState
+	Checks   []PixelCheck
+	Template string // optional template name to match
+	MinPass  int    // minimum checks that must pass
+	Weight   int    // score boost when matched
+	Priority int    // higher = checked first
+	Desc     string
 }
 
 // ExplorerConfig holds parameters for the auto-explorer.
 type ExplorerConfig struct {
-	MaxDepth       int
-	SettleTime     time.Duration
-	MinDiffPixels  int
-	ClickJitter     int
-	BackTimeout    time.Duration
-	MaxRetries     int
+	MaxDepth      int
+	SettleTime    time.Duration
+	MinDiffPixels int
+	ClickJitter   int
+	BackTimeout   time.Duration
+	MaxRetries    int
 }
 
 func DefaultExplorerConfig() ExplorerConfig {
 	return ExplorerConfig{
-		MaxDepth:       3,
-		SettleTime:     1500 * time.Millisecond,
-		MinDiffPixels:  50,
-		ClickJitter:    5,
-		BackTimeout:    3 * time.Second,
-		MaxRetries:     3,
+		MaxDepth:      3,
+		SettleTime:    1500 * time.Millisecond,
+		MinDiffPixels: 50,
+		ClickJitter:   5,
+		BackTimeout:   3 * time.Second,
+		MaxRetries:    3,
 	}
 }
 
 // ClassifierConfig holds detection parameters.
 type ClassifierConfig struct {
-	ColorTolerance  int
+	ColorTolerance    int
 	TemplateThreshold float32
-	ConfirmFrames   int
-	RequireSharp    bool
+	ConfirmFrames     int
+	RequireSharp      bool
 }
 
 func DefaultClassifierConfig() ClassifierConfig {
@@ -276,26 +277,26 @@ func DefaultClassifierConfig() ClassifierConfig {
 
 // NavigatorConfig holds navigation parameters.
 type NavigatorConfig struct {
-	TapJitter       int
-	SettleTime      time.Duration
+	TapJitter      int
+	SettleTime     time.Duration
 	MaxRetries     int
-	InterruptDepth  int
+	InterruptDepth int
 }
 
 func DefaultNavigatorConfig() NavigatorConfig {
 	return NavigatorConfig{
 		TapJitter:      5,
-		SettleTime:    1200 * time.Millisecond,
-		MaxRetries:    3,
+		SettleTime:     1200 * time.Millisecond,
+		MaxRetries:     3,
 		InterruptDepth: 5,
 	}
 }
 
 type safeScreen struct {
-	mu       sync.RWMutex
-	mat      gocv.Mat
-	at       time.Time
-	hasMat   bool
+	mu     sync.RWMutex
+	mat    gocv.Mat
+	at     time.Time
+	hasMat bool
 }
 
 func (s *safeScreen) Store(mat gocv.Mat) {

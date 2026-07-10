@@ -6,9 +6,9 @@ import (
 	"math"
 	"time"
 
-	"gocv.io/x/gocv"
 	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/rs/zerolog"
+	"gocv.io/x/gocv"
 )
 
 type Explorer struct {
@@ -212,10 +212,10 @@ func (e *Explorer) findClickableElements(screen gocv.Mat) []Clickable {
 
 		avgR, avgG, avgB, _ := e.rec.RegionMeanColor(screen, toImageRect(r))
 		elements = append(elements, Clickable{
-			Type:      "button",
-			Region:    r,
-			Center:    Point{X: r.CenterX(), Y: r.CenterY()},
-			Color:     RGB{R: uint8(avgR), G: uint8(avgG), B: uint8(avgB)},
+			Type:       "button",
+			Region:     r,
+			Center:     Point{X: r.CenterX(), Y: r.CenterY()},
+			Color:      RGB{R: uint8(avgR), G: uint8(avgG), B: uint8(avgB)},
 			Confidence: 0.7,
 		})
 	}
@@ -240,10 +240,10 @@ func (e *Explorer) findClickableElements(screen gocv.Mat) []Clickable {
 		if !isDup {
 			avgR, avgG, avgB, _ := e.rec.RegionMeanColor(screen, image.Rect(sx-20, sy-20, sx+20, sy+20))
 			elements = append(elements, Clickable{
-				Type:      "button",
-				Region:    Rectangle{X1: sx - 20, Y1: sy - 20, X2: sx + 20, Y2: sy + 20},
-				Center:    Point{X: sx, Y: sy},
-				Color:     RGB{R: uint8(avgR), G: uint8(avgG), B: uint8(avgB)},
+				Type:       "button",
+				Region:     Rectangle{X1: sx - 20, Y1: sy - 20, X2: sx + 20, Y2: sy + 20},
+				Center:     Point{X: sx, Y: sy},
+				Color:      RGB{R: uint8(avgR), G: uint8(avgG), B: uint8(avgB)},
 				Confidence: 0.9,
 			})
 		}

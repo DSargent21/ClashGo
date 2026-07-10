@@ -19,7 +19,7 @@ func main() {
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"}).With().Timestamp().Logger()
 
 	cfg := config.LoadOrDefault("config.json")
-	
+
 	client := adb.NewClient(
 		adb.WithHost(cfg.Device.ADBHost),
 		adb.WithPort(cfg.Device.ADBPort),
@@ -97,7 +97,7 @@ func main() {
 			fmt.Printf("  %d: %s Pos(%d, %d) Found RGB(%d, %d, %d) Want RGB(%d, %d, %d) Dist=%.1f Tol=%d\n",
 				i, status, sx, sy, r, g, b, chk.R, chk.G, chk.B, dist, chk.Tolerance)
 		}
-		
+
 		totalStatus := "FAIL"
 		if passed >= rule.MinPass {
 			totalStatus = "PASS"

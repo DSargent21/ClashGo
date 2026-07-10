@@ -171,10 +171,10 @@ func runUpdate(dir string, classifier *game.Classifier, lootRec *game.LootRecogn
 			return nil
 		}
 
-		if strings.Contains(path, "node_modules") || strings.Contains(path, "assets/templates") || 
-		   strings.Contains(path, "assets/debug_seg") || strings.Contains(path, "assets/grab") ||
-		   strings.Contains(path, "tools/") || strings.Contains(path, "build/") ||
-		   strings.Contains(path, ".git/") {
+		if strings.Contains(path, "node_modules") || strings.Contains(path, "assets/templates") ||
+			strings.Contains(path, "assets/debug_seg") || strings.Contains(path, "assets/grab") ||
+			strings.Contains(path, "tools/") || strings.Contains(path, "build/") ||
+			strings.Contains(path, ".git/") {
 			return nil
 		}
 
@@ -187,10 +187,10 @@ func runUpdate(dir string, classifier *game.Classifier, lootRec *game.LootRecogn
 		defer img.Close()
 
 		state, _ := classifier.ClassifyState(img)
-		
+
 		// If classifier says Unknown but we see lot of stars/bonus, it might be BattleEnd
 		battle, _ := lootRec.ReadBattleResult(img)
-		
+
 		isBattleEnd := state.String() == "BattleEnd"
 		if !isBattleEnd {
 			// Heuristic: If we found stars or bonus loot, it's definitely BattleEnd
@@ -319,10 +319,10 @@ func runSingleTest(path string, classifier *game.Classifier, lootRec *game.LootR
 		for _, tVal := range []float32{145, 175, 205} {
 			thresh := gocv.NewMat()
 			gocv.Threshold(gray, &thresh, tVal, 255, gocv.ThresholdBinary)
-			
+
 			canvas := vision.GenerateFilterPipelineImage(img, gray, thresh)
 			gocv.IMWrite(filepath.Join(diagDir, fmt.Sprintf("pipeline_t%d.png", int(tVal))), canvas)
-			
+
 			canvas.Close()
 			thresh.Close()
 		}

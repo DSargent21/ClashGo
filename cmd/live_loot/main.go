@@ -79,7 +79,7 @@ func main() {
 			}
 
 			lr := game.NewLootRecognizer(cal, ts, log.Logger)
-			
+
 			start := time.Now()
 			loot, err := lr.ReadAvailableLoot(screen)
 			elapsed := time.Since(start)

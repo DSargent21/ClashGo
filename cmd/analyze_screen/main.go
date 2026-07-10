@@ -48,10 +48,14 @@ func main() {
 					xSum += int64(x)
 					ySum += int64(y)
 					pts++
-					if pts > 10000 { break } // Limit
+					if pts > 10000 {
+						break
+					} // Limit
 				}
 			}
-			if pts > 10000 { break }
+			if pts > 10000 {
+				break
+			}
 		}
 		if pts > 0 {
 			fmt.Printf("Centroid of first 10k orange pixels: (%d, %d)\n", xSum/int64(pts), ySum/int64(pts))

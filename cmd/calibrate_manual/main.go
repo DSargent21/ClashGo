@@ -73,7 +73,7 @@ func main() {
 
 	for {
 		display := originalImg.Clone()
-		
+
 		// Draw points and lines
 		for i, p := range points {
 			gocv.Circle(&display, p, 5, color.RGBA{0, 255, 255, 255}, -1)

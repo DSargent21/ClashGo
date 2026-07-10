@@ -328,9 +328,10 @@ func (sd *SpellDeployer) formulaEntry(unitName string) (formula.UnitEntry, bool)
 // handling — the user owns the geometry now.
 //
 // Supported entry shapes:
-//   "point" — clusters maxSpells around P (mirrors deployPointSpell ring).
-//   "line"  — distributes (entry.Count or maxSpells) along P1→P2.
-//   "lines" — for each LinePoint taps Count taps along P1→P2 with jitter.
+//
+//	"point" — clusters maxSpells around P (mirrors deployPointSpell ring).
+//	"line"  — distributes (entry.Count or maxSpells) along P1→P2.
+//	"lines" — for each LinePoint taps Count taps along P1→P2 with jitter.
 func (sd *SpellDeployer) deployFromFormula(unit strategy.Unit, slot *TrackedSlot, entry formula.UnitEntry) bool {
 	switch {
 	case entry.IsLines() && len(entry.Lines) > 0:

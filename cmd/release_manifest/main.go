@@ -31,11 +31,11 @@ import (
 )
 
 type minimalManifest struct {
-	Version      string                                  `json:"version"`
-	ReleaseDate  time.Time                               `json:"release_date"`
-	Notes        string                                  `json:"notes"`
-	MinSupported string                                  `json:"min_supported,omitempty"`
-	Platforms    map[string]updater.PlatformSpec         `json:"platforms"`
+	Version      string                          `json:"version"`
+	ReleaseDate  time.Time                       `json:"release_date"`
+	Notes        string                          `json:"notes"`
+	MinSupported string                          `json:"min_supported,omitempty"`
+	Platforms    map[string]updater.PlatformSpec `json:"platforms"`
 }
 
 func main() {
@@ -94,19 +94,19 @@ func run() error {
 
 	assetName := filepath.Base(*zipPath)
 	manifest := minimalManifest{
-			Version:      *version,
-			ReleaseDate:  time.Now().UTC(),
-			Notes:        notes,
-			MinSupported: *minSupported,
-			Platforms: map[string]updater.PlatformSpec{
-				*platformOS: {
-					AssetName: assetName,
-					AssetURL:  fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s", *repo, *version, assetName),
-					Size:      size,
-					SHA256:    sha,
-				},
+		Version:      *version,
+		ReleaseDate:  time.Now().UTC(),
+		Notes:        notes,
+		MinSupported: *minSupported,
+		Platforms: map[string]updater.PlatformSpec{
+			*platformOS: {
+				AssetName: assetName,
+				AssetURL:  fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s", *repo, *version, assetName),
+				Size:      size,
+				SHA256:    sha,
 			},
-		}
+		},
+	}
 
 	b, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {

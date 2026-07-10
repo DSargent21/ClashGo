@@ -86,12 +86,12 @@ func (t *Trainer) IdentifyTroops(screen gocv.Mat) ([]TroopCount, error) {
 	defer regionMat.Close()
 
 	var detected []TroopCount
-	
+
 	// List all templates in the 'troops' category (assuming naming convention or category filter)
 	// For now, we'll look for templates with "troop_" prefix or in a sub-store
 	// To simplify, let's assume any template starting with "troop_" is a troop icon
 	allNames := t.templates.List(game.StateArmyCamp)
-	
+
 	for _, name := range allNames {
 		// Only process troop templates
 		// For this implementation, we assume the user provides templates named "Barbarian", "Archer", etc.

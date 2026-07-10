@@ -32,11 +32,11 @@ type Logger interface {
 
 type nopLogger struct{}
 
-func (nopLogger) Debug() bool                         { return false }
-func (nopLogger) Debugf(string, ...any)               {}
-func (nopLogger) Info(string)                         {}
-func (nopLogger) Warn(string)                         {}
-func (nopLogger) Error(string)                        {}
+func (nopLogger) Debug() bool                        { return false }
+func (nopLogger) Debugf(string, ...any)              {}
+func (nopLogger) Info(string)                        {}
+func (nopLogger) Warn(string)                        {}
+func (nopLogger) Error(string)                       {}
 func (n nopLogger) WithFields(map[string]any) Logger { return n }
 
 type Option func(*Client)

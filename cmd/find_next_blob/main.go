@@ -32,7 +32,7 @@ func main() {
 	// Silver range (BGR)
 	lower := gocv.NewScalar(150, 150, 150, 0)
 	upper := gocv.NewScalar(220, 220, 220, 0)
-	
+
 	mask := gocv.NewMat()
 	defer mask.Close()
 	gocv.InRangeWithScalar(screen, lower, upper, &mask)
@@ -49,15 +49,19 @@ func main() {
 	found := 0
 	for i := 0; i < contours.Size(); i++ {
 		area := gocv.ContourArea(contours.At(i))
-		if area < 500 { continue } 
+		if area < 500 {
+			continue
+		}
 
 		rect := gocv.BoundingRect(contours.At(i))
-		
+
 		// Only look in the bottom-right quadrant
-		if rect.Min.X < 400 || rect.Min.Y < 400 { continue }
+		if rect.Min.X < 400 || rect.Min.Y < 400 {
+			continue
+		}
 
 		center := image.Pt(rect.Min.X+rect.Dx()/2, rect.Min.Y+rect.Dy()/2)
-		fmt.Printf("Blob %d: Center=(%d, %d) Area=%.0f  Bounds=%v\n", 
+		fmt.Printf("Blob %d: Center=(%d, %d) Area=%.0f  Bounds=%v\n",
 			i, center.X, center.Y, area, rect)
 		found++
 	}

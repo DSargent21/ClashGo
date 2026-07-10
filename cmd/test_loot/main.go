@@ -9,9 +9,9 @@ import (
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/vision"
+	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 	"image"
-	"github.com/rs/zerolog"
 )
 
 func main() {
@@ -19,8 +19,8 @@ func main() {
 
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 	cfg := config.LoadOrDefault("config.json")
-	
-	fmt.Printf("🎯 Target Requirements: Gold=%d, Elixir=%d, DE=%d\n", 
+
+	fmt.Printf("🎯 Target Requirements: Gold=%d, Elixir=%d, DE=%d\n",
 		cfg.Search.MinLootGold, cfg.Search.MinLootElixir, cfg.Search.MinLootDarkElixir)
 
 	client := adb.NewClient(func(c *adb.Client) {
@@ -37,10 +37,10 @@ func main() {
 	ts.LoadTemplates()
 
 	lr := game.NewLootRecognizer(cal, ts, logger)
-	
+
 	for i := 1; ; i++ {
 		fmt.Printf("\n--- Scouting Base #%d ---\n", i)
-		
+
 		screen, err := client.CaptureToMat()
 		if err != nil {
 			fmt.Printf("❌ Capture failed: %v, retrying...\n", err)
@@ -72,21 +72,21 @@ func main() {
 		// 1. Check for Silver/Grey (text/highlights)
 		lowerSilver := gocv.NewScalar(160, 160, 160, 0)
 		upperSilver := gocv.NewScalar(245, 245, 245, 0)
-		
+
 		maskSilver := gocv.NewMat()
 		gocv.InRangeWithScalar(screen, lowerSilver, upperSilver, &maskSilver)
 
 		// Focus on bottom-right ROI for Next button
 		searchROI := image.Rect(
-			int(600*cal.ScaleX), 
-			int(450*cal.ScaleY), 
-			int(860*cal.ScaleX), 
+			int(600*cal.ScaleX),
+			int(450*cal.ScaleY),
+			int(860*cal.ScaleX),
 			int(732*cal.ScaleY),
 		)
-		
+
 		subSilver := maskSilver.Region(searchROI)
 		countSilver := gocv.CountNonZero(subSilver)
-		
+
 		subSilver.Close()
 		maskSilver.Close()
 

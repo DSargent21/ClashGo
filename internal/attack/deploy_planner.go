@@ -11,21 +11,21 @@ import (
 
 // RetryPolicy defines retry behavior for a unit deployment.
 type RetryPolicy struct {
-	MaxRetries   int
-	RetryDelay   time.Duration
-	VerifyAfter  bool
+	MaxRetries  int
+	RetryDelay  time.Duration
+	VerifyAfter bool
 }
 
 // UnitPlan represents a resolved deployment plan for a single unit.
 type UnitPlan struct {
-	Unit       strategy.Unit
-	Slot       *TrackedSlot
-	IsSpell    bool
-	IsHero     bool
-	IsSiege    bool
-	IsAbility  bool
-	Priority   int // 0=spell, 1=regular, 2=ability
-	Retry      RetryPolicy
+	Unit      strategy.Unit
+	Slot      *TrackedSlot
+	IsSpell   bool
+	IsHero    bool
+	IsSiege   bool
+	IsAbility bool
+	Priority  int // 0=spell, 1=regular, 2=ability
+	Retry     RetryPolicy
 }
 
 // PhasePlan represents a resolved deployment plan for a phase.
@@ -37,12 +37,12 @@ type PhasePlan struct {
 
 // DeployPlanner resolves strategy YAML into concrete deployment plans.
 type DeployPlanner struct {
-	slotManager *SlotManager
-	pCfg        PrecisionConfig
-	targetEdge  string
-	w, h        int
+	slotManager  *SlotManager
+	pCfg         PrecisionConfig
+	targetEdge   string
+	w, h         int
 	defaultRetry RetryPolicy
-	logger      zerolog.Logger
+	logger       zerolog.Logger
 }
 
 // NewDeployPlanner creates a new deployment planner.

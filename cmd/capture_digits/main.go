@@ -35,14 +35,14 @@ const (
 //
 // Then update these constants and re-run.
 var lootTextROIs = []struct {
-	name          string
+	name           string
 	x1, y1, x2, y2 int
 }{
 	// DE position confirmed working (y=140-162 at ref = y=137-159 at 1280x720).
 	// Gold and elixir are relative guesses above DE.
-	{"gold",   15, 88, 300, 110},
+	{"gold", 15, 88, 300, 110},
 	{"elixir", 15, 114, 300, 136},
-	{"de",     15, 140, 300, 162},
+	{"de", 15, 140, 300, 162},
 }
 
 type candidate struct {

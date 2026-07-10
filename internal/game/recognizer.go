@@ -10,8 +10,8 @@ import (
 )
 
 type Recognizer struct {
-	pool  sync.Pool
-	width int
+	pool   sync.Pool
+	width  int
 	height int
 }
 
@@ -35,7 +35,7 @@ func (r *Recognizer) ExtractPixels(mat gocv.Mat) []uint8 {
 
 	for row := 0; row < mat.Rows(); row++ {
 		for col := 0; col < mat.Cols(); col++ {
-			i := (row*mat.Cols()+col)*3
+			i := (row*mat.Cols() + col) * 3
 			if i+2 < n {
 				buf[i+2] = mat.GetUCharAt(row, col*3+2)
 				buf[i+1] = mat.GetUCharAt(row, col*3+1)

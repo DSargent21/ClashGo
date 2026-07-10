@@ -16,9 +16,9 @@ const (
 )
 
 type srcDef struct {
-	path, name string
+	path, name     string
 	x1, y1, x2, y2 int
-	value string
+	value          string
 }
 
 type sample struct {
@@ -37,10 +37,10 @@ func main() {
 
 func run() error {
 	sources := []srcDef{
-		{"assets/captures/scout.png",  "Gold",    15, 88,  300, 110, "408303"},
-		{"assets/captures/scout.png",  "Elixir",  15, 114, 300, 136, "570948"},
-		{"assets/captures/scout.png",  "DE",      15, 140, 300, 162, "2170"},
-		{"assets/captures/scout2.png", "DE",      15, 190, 300, 212, "6362"},
+		{"assets/captures/scout.png", "Gold", 15, 88, 300, 110, "408303"},
+		{"assets/captures/scout.png", "Elixir", 15, 114, 300, 136, "570948"},
+		{"assets/captures/scout.png", "DE", 15, 140, 300, 162, "2170"},
+		{"assets/captures/scout2.png", "DE", 15, 190, 300, 212, "6362"},
 	}
 
 	samplesByDigit := make(map[int][]sample)
@@ -230,12 +230,30 @@ func countWhitePixels(mat gocv.Mat) int {
 }
 
 func clamp(r image.Rectangle, w, h int) image.Rectangle {
-	if r.Min.X < 0 { r.Min.X = 0 }
-	if r.Min.Y < 0 { r.Min.Y = 0 }
-	if r.Max.X > w { r.Max.X = w }
-	if r.Max.Y > h { r.Max.Y = h }
+	if r.Min.X < 0 {
+		r.Min.X = 0
+	}
+	if r.Min.Y < 0 {
+		r.Min.Y = 0
+	}
+	if r.Max.X > w {
+		r.Max.X = w
+	}
+	if r.Max.Y > h {
+		r.Max.Y = h
+	}
 	return r
 }
 
-func max(a, b int) int { if a > b { return a }; return b }
-func min(a, b int) int { if a < b { return a }; return b }
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

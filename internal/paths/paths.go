@@ -42,19 +42,19 @@ func init() {
 			// execPath is typically ClashGO.app/Contents/MacOS/ClashGO
 			// Resources are in ClashGO.app/Contents/Resources
 			// We look for Assets inside Resources
-			
+
 			// Potential paths:
 			// 1. ProjectRoot/build/bin/ClashGO.app/Contents/MacOS/ClashGO
 			// 2. /Applications/ClashGO.app/Contents/MacOS/ClashGO
-			
+
 			dir := filepath.Dir(execPath) // ClashGO.app/Contents/MacOS
 			if filepath.Base(dir) == "MacOS" {
 				contentsDir := filepath.Dir(dir) // ClashGO.app/Contents
 				resourcesAssets := filepath.Join(contentsDir, "Resources", "assets")
-				
+
 				if _, err := os.Stat(resourcesAssets); err == nil {
 					assetsDir = resourcesAssets
-					
+
 					// For writable config, use Application Support
 					home, _ := os.UserHomeDir()
 					configDir = filepath.Join(home, "Library", "Application Support", "ClashGO")

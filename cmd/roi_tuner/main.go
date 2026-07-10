@@ -15,16 +15,16 @@ import (
 var templates [][]gocv.Mat
 
 type resource struct {
-	name                                    string
-	x1, y1, x2, y2                          int
-	want                                     int
-	got                                      int
+	name           string
+	x1, y1, x2, y2 int
+	want           int
+	got            int
 }
 
 var resources = []*resource{
-	{name: "Gold",   x1: 46, y1: 72,  x2: 260, y2: 94,  want: 443168},
+	{name: "Gold", x1: 46, y1: 72, x2: 260, y2: 94, want: 443168},
 	{name: "Elixir", x1: 46, y1: 102, x2: 420, y2: 130, want: 434311},
-	{name: "DE",     x1: 46, y1: 132, x2: 220, y2: 160, want: 4822},
+	{name: "DE", x1: 46, y1: 132, x2: 220, y2: 160, want: 4822},
 }
 
 var selected = 0

@@ -42,7 +42,10 @@ func main() {
 	defer lr.Close()
 
 	// DEBUG: Check star pixel colors
-	starPoints := []struct { name string; x, y int }{
+	starPoints := []struct {
+		name string
+		x, y int
+	}{
 		{"Left Star", 327, 205},
 		{"Middle Star", 430, 196},
 		{"Right Star", 535, 210},
@@ -76,7 +79,7 @@ func main() {
 	fmt.Printf("Gold:   %d\n", result.Bonus.Gold)
 	fmt.Printf("Elixir: %d\n", result.Bonus.Elixir)
 	fmt.Printf("DE:     %d\n", result.Bonus.DarkElixir)
-	
+
 	fmt.Println("\n--- Session Tracking Simulation ---")
 	totalGold := result.Loot.Gold + result.Bonus.Gold
 	totalElixir := result.Loot.Elixir + result.Bonus.Elixir

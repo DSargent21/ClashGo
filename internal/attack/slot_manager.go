@@ -20,11 +20,11 @@ import (
 type SlotState int
 
 const (
-	SlotDetected  SlotState = iota // Found on bar
-	SlotIdentified                 // Unit name resolved
-	SlotAttempted                  // Tap attempted
-	SlotDeployed                   // Confirmed empty
-	SlotFailed                     // Retries exhausted
+	SlotDetected   SlotState = iota // Found on bar
+	SlotIdentified                  // Unit name resolved
+	SlotAttempted                   // Tap attempted
+	SlotDeployed                    // Confirmed empty
+	SlotFailed                      // Retries exhausted
 )
 
 func (s SlotState) String() string {
@@ -46,13 +46,13 @@ func (s SlotState) String() string {
 
 // TrackedSlot extends TroopSlot with state tracking.
 type TrackedSlot struct {
-	TroopSlot                  // Embedded: X, Y, Category
-	State      SlotState       `json:"state"`
-	UnitName   string          `json:"unit_name"`
-	Confidence float64         `json:"confidence"`
-	Attempts   int             `json:"attempts"`
-	LastTapAt  time.Time       `json:"last_tap_at"`
-	IsEmpty    bool            `json:"is_empty"` // Last known emptiness
+	TroopSlot            // Embedded: X, Y, Category
+	State      SlotState `json:"state"`
+	UnitName   string    `json:"unit_name"`
+	Confidence float64   `json:"confidence"`
+	Attempts   int       `json:"attempts"`
+	LastTapAt  time.Time `json:"last_tap_at"`
+	IsEmpty    bool      `json:"is_empty"` // Last known emptiness
 }
 
 // SlotManager handles slot detection, classification, identity resolution, and state tracking.

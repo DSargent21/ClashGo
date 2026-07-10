@@ -49,7 +49,7 @@ func main() {
 	currentIndex := 0
 	startPt := image.Point{-1, -1}
 	currentPt := image.Point{-1, -1}
-	
+
 	type Result struct {
 		Target Target
 		Rect   image.Rectangle
@@ -100,7 +100,7 @@ func main() {
 
 	for {
 		canvas := img.Clone()
-		
+
 		// Draw previous results
 		for _, res := range results {
 			if res.Target.IsArea {
@@ -116,7 +116,7 @@ func main() {
 		if currentIndex < len(targets) {
 			target := targets[currentIndex]
 			header := fmt.Sprintf("STEP %d/%d: %s", currentIndex+1, len(targets), target.Label)
-			
+
 			// Background bar for text
 			gocv.Rectangle(&canvas, image.Rect(0, 0, img.Cols(), 40), color.RGBA{0, 0, 0, 180}, -1)
 			gocv.PutText(&canvas, header, image.Pt(20, 30), gocv.FontHersheySimplex, 0.7, color.RGBA{255, 255, 0, 255}, 2)

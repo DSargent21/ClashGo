@@ -11,9 +11,9 @@ import (
 func TestClassifySide(t *testing.T) {
 	const refW, refH = 860, 732
 	cases := []struct {
-		name string
+		name   string
 		p1, p2 image.Point
-		want string
+		want   string
 	}{
 		{"horizontal at top", image.Pt(100, 110), image.Pt(760, 110), SideTop},
 		{"horizontal at bottom", image.Pt(100, 590), image.Pt(760, 590), SideBottom},

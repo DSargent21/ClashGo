@@ -28,7 +28,7 @@ func main() {
 	// Scan around (64, 704)
 	centerX, centerY := 64, 704
 	radius := 40
-	
+
 	fmt.Printf("🔍 Scanning 80x80 area around (%d, %d)...\n", centerX, centerY)
 
 	bestR, bestG, bestB := 0, 0, 0
@@ -54,11 +54,13 @@ func main() {
 		}
 	}
 
-	fmt.Printf("Best Orange Pixel: Pos(%d, %d) RGB(%d, %d, %d) Score=%.1f\n", 
+	fmt.Printf("Best Orange Pixel: Pos(%d, %d) RGB(%d, %d, %d) Score=%.1f\n",
 		bestX, bestY, bestR, bestG, bestB, maxOrangeScore)
 }
 
 func absDiff(a, b int) int {
-	if a > b { return a - b }
+	if a > b {
+		return a - b
+	}
 	return b - a
 }

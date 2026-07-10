@@ -20,11 +20,11 @@ import (
 type GameContext struct {
 	sync.RWMutex
 
-	State          GameState
-	prevState      GameState
-	StateSince     time.Time
-	StateDuration  time.Duration
-	StateChanges   int
+	State         GameState
+	prevState     GameState
+	StateSince    time.Time
+	StateDuration time.Duration
+	StateChanges  int
 
 	pending       GameState
 	confirmFrames int
@@ -34,17 +34,17 @@ type GameContext struct {
 	BuilderCount  int
 	BuilderTotal  int
 
-	ArmyFull      bool
-	CCStatus      string
+	ArmyFull bool
+	CCStatus string
 
-	BattleStars   int
-	EnemyTHLevel  int
+	BattleStars    int
+	EnemyTHLevel   int
 	EnemyResources Resources
-	IsWeakBase    bool
+	IsWeakBase     bool
 
-	Health        SystemHealth
+	Health SystemHealth
 
-	screen        safeScreen
+	screen safeScreen
 
 	StateChange chan StateChange
 }

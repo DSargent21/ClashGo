@@ -13,8 +13,8 @@ import (
 )
 
 type TemplateStore struct {
-	mu       sync.RWMutex
-	dir      string
+	mu        sync.RWMutex
+	dir       string
 	templates map[string]gocv.Mat
 	registry  map[string]TemplateMeta
 }
@@ -36,7 +36,7 @@ func NewTemplateStore(dir string) (*TemplateStore, error) {
 		return nil, fmt.Errorf("create template dir: %w", err)
 	}
 	return &TemplateStore{
-		dir:      dir,
+		dir:       dir,
 		templates: make(map[string]gocv.Mat),
 		registry:  make(map[string]TemplateMeta),
 	}, nil

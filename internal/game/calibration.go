@@ -14,13 +14,13 @@ const (
 )
 
 type Calibration struct {
-	PhysicalW   int
-	PhysicalH   int
-	ScaleX      float64
-	ScaleY      float64
-	MidOffsetY  int
-	BottomOffY  int
-	Verified    bool
+	PhysicalW  int
+	PhysicalH  int
+	ScaleX     float64
+	ScaleY     float64
+	MidOffsetY int
+	BottomOffY int
+	Verified   bool
 }
 
 func NewCalibrator(client *adb.Client) *Calibrator {
@@ -41,13 +41,13 @@ func (c *Calibrator) Calibrate() (*Calibration, error) {
 	w, h := mat.Cols(), mat.Rows()
 
 	cal := &Calibration{
-		PhysicalW:   w,
-		PhysicalH:   h,
-		ScaleX:      float64(w) / RefWidth,
-		ScaleY:      float64(h) / RefHeight,
-		MidOffsetY:  (h - RefHeight) / 2,
-		BottomOffY:  h - RefHeight,
-		Verified:    false,
+		PhysicalW:  w,
+		PhysicalH:  h,
+		ScaleX:     float64(w) / RefWidth,
+		ScaleY:     float64(h) / RefHeight,
+		MidOffsetY: (h - RefHeight) / 2,
+		BottomOffY: h - RefHeight,
+		Verified:   false,
 	}
 
 	cal.Verified = true

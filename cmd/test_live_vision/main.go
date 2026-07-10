@@ -5,9 +5,9 @@ import (
 	"log"
 	"strings"
 
-	"gocv.io/x/gocv"
 	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/vision"
+	"gocv.io/x/gocv"
 )
 
 func main() {
@@ -34,13 +34,13 @@ func main() {
 
 	// 3. Test every template in the attack folder
 	units := []string{"Balloon", "Electro Dragon", "Archer Queen", "Grand Warden", "Minion Prince", "Rage Spell"}
-	
+
 	fmt.Println("\n🔍 Testing Template Matching (Confidence Threshold: 0.1 to see raw values):")
-	
+
 	for _, name := range units {
 		fileName := strings.ToLower(strings.ReplaceAll(name, " ", "_"))
 		tplPath := fmt.Sprintf("assets/templates/attack/%s.png", fileName)
-		
+
 		tpl := gocv.IMRead(tplPath, gocv.IMReadColor)
 		if tpl.Empty() {
 			fmt.Printf("❌ [%s] Template file not found: %s\n", name, tplPath)

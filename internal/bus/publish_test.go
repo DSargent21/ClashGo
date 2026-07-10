@@ -29,13 +29,27 @@ func TestPublishNewEvents_NilBusIsSafe(t *testing.T) {
 		fn   func() error
 	}{
 		{"PublishScreen", func() error { return w.PublishScreen(&ScreenEvent{TimestampMs: now, Width: 860, Height: 732}) }},
-		{"PublishTap", func() error { return w.PublishTap(&TapEvent{TimestampMs: now, TargetName: "btn_attack", TierUsed: "pinpoint", X: 100, Y: 200, Success: true}) }},
-		{"PublishSequenceStep", func() error { return w.PublishSequenceStep(&SequenceStepEvent{TimestampMs: now, StepName: "Attack", Outcome: "ok"}) }},
-		{"PublishClassifier", func() error { return w.PublishClassifier(&ClassifierEvent{TimestampMs: now, State: GameState_MAIN_VILLAGE, TopScore: 87}) }},
-		{"PublishDeploy", func() error { return w.PublishDeploy(&DeployEvent{TimestampMs: now, Phase: "Balloons", Unit: "Balloon"}) }},
-		{"PublishSummary", func() error { return w.PublishSummary(&AttackSummaryEvent{TimestampMs: now, AttackId: "atk_x", Stars: 3}) }},
-		{"PublishRestart", func() error { return w.PublishRestart(&RestartEvent{TimestampMs: now, Trigger: RestartTrigger_RESTART_STUCK_TIMEOUT}) }},
-		{"PublishStuck", func() error { return w.PublishStuck(&StuckEvent{TimestampMs: now, LastState: "MAIN_VILLAGE", IdleMs: 30000}) }},
+		{"PublishTap", func() error {
+			return w.PublishTap(&TapEvent{TimestampMs: now, TargetName: "btn_attack", TierUsed: "pinpoint", X: 100, Y: 200, Success: true})
+		}},
+		{"PublishSequenceStep", func() error {
+			return w.PublishSequenceStep(&SequenceStepEvent{TimestampMs: now, StepName: "Attack", Outcome: "ok"})
+		}},
+		{"PublishClassifier", func() error {
+			return w.PublishClassifier(&ClassifierEvent{TimestampMs: now, State: GameState_MAIN_VILLAGE, TopScore: 87})
+		}},
+		{"PublishDeploy", func() error {
+			return w.PublishDeploy(&DeployEvent{TimestampMs: now, Phase: "Balloons", Unit: "Balloon"})
+		}},
+		{"PublishSummary", func() error {
+			return w.PublishSummary(&AttackSummaryEvent{TimestampMs: now, AttackId: "atk_x", Stars: 3})
+		}},
+		{"PublishRestart", func() error {
+			return w.PublishRestart(&RestartEvent{TimestampMs: now, Trigger: RestartTrigger_RESTART_STUCK_TIMEOUT})
+		}},
+		{"PublishStuck", func() error {
+			return w.PublishStuck(&StuckEvent{TimestampMs: now, LastState: "MAIN_VILLAGE", IdleMs: 30000})
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -113,5 +127,3 @@ func TestPublishRaw_NewSubjects(t *testing.T) {
 		})
 	}
 }
-
-

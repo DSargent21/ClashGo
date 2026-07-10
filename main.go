@@ -21,11 +21,11 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:             "ClashGO Mission Control",
-		Width:             1200,
-		Height:            850,
-		MinWidth:          1024,
-		MinHeight:         768,
+		Title:     "ClashGO Mission Control",
+		Width:     1200,
+		Height:    850,
+		MinWidth:  1024,
+		MinHeight: 768,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

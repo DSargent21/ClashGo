@@ -23,11 +23,12 @@ func normalizeVersion(raw string) string {
 // non-numeric ones.
 //
 // Examples:
-//   0.1.0-beta < 0.1.0
-//   0.2.0-alpha < 0.2.0-beta (alpha lex < beta)
-//   0.2.0-1   < 0.2.0-2
-//   0.2.0-dev < 0.2.0-rc.1?  No — non-numeric identifiers come first in pre-release
-//     per semver.org, so a.0 < a.b
+//
+//	0.1.0-beta < 0.1.0
+//	0.2.0-alpha < 0.2.0-beta (alpha lex < beta)
+//	0.2.0-1   < 0.2.0-2
+//	0.2.0-dev < 0.2.0-rc.1?  No — non-numeric identifiers come first in pre-release
+//	  per semver.org, so a.0 < a.b
 //
 // We honor the semver.org rule: a pre-release identifier that consists
 // of only digits compares numerically; identifiers with letters or
@@ -103,11 +104,11 @@ func compareCore(a, b string) int {
 // comparePre compares two dot-separated pre-release identifiers per
 // semver.org §11.
 //
-// 1. Identifiers consisting of only digits are compared numerically.
-// 2. Identifiers with letters or hyphens are compared lexically (ASCII).
-// 3. Numeric identifiers always have lower precedence than non-numeric.
-// 4. A larger set of identifiers sorts higher than a smaller set when
-//    all preceding identifiers are equal.
+//  1. Identifiers consisting of only digits are compared numerically.
+//  2. Identifiers with letters or hyphens are compared lexically (ASCII).
+//  3. Numeric identifiers always have lower precedence than non-numeric.
+//  4. A larger set of identifiers sorts higher than a smaller set when
+//     all preceding identifiers are equal.
 func comparePre(a, b string) int {
 	aIDs := strings.Split(a, ".")
 	bIDs := strings.Split(b, ".")

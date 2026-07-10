@@ -72,7 +72,7 @@ func main() {
 		// 3. Initialize Recognizer
 		lr := game.NewLootRecognizer(cal, ts, log.Logger)
 		// lr.Debug = true
-		
+
 		// 4. Perform Recognition
 		loot, err := lr.ReadAvailableLoot(img)
 		lr.Close()
@@ -90,9 +90,9 @@ func main() {
 			got  int
 			want int
 		}{
-			{"Gold",   loot.Gold,       tc.wantGold},
-			{"Elixir", loot.Elixir,     tc.wantElix},
-			{"DE",     loot.DarkElixir, tc.wantDE},
+			{"Gold", loot.Gold, tc.wantGold},
+			{"Elixir", loot.Elixir, tc.wantElix},
+			{"DE", loot.DarkElixir, tc.wantDE},
 		}
 
 		for _, r := range results {

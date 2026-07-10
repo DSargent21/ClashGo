@@ -34,14 +34,14 @@ func run() error {
 	scaleY := float64(phyH) / float64(refHeight)
 
 	type testCase struct {
-		name   string
+		name           string
 		x1, y1, x2, y2 int
 	}
 
 	tests := []testCase{
-		{"Gold",   15, 88,  300, 110},
+		{"Gold", 15, 88, 300, 110},
 		{"Elixir", 15, 114, 300, 136},
-		{"DE",     15, 140, 300, 162},
+		{"DE", 15, 140, 300, 162},
 	}
 
 	outDir := "assets/debug_seg"
@@ -169,9 +169,17 @@ func countWhitePixels(mat gocv.Mat) int {
 }
 
 func clamp(r image.Rectangle, w, h int) image.Rectangle {
-	if r.Min.X < 0 { r.Min.X = 0 }
-	if r.Min.Y < 0 { r.Min.Y = 0 }
-	if r.Max.X > w { r.Max.X = w }
-	if r.Max.Y > h { r.Max.Y = h }
+	if r.Min.X < 0 {
+		r.Min.X = 0
+	}
+	if r.Min.Y < 0 {
+		r.Min.Y = 0
+	}
+	if r.Max.X > w {
+		r.Max.X = w
+	}
+	if r.Max.Y > h {
+		r.Max.Y = h
+	}
 	return r
 }

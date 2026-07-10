@@ -22,7 +22,7 @@ func main() {
 			fmt.Printf("Error: Could not read template %s\n", name)
 			continue
 		}
-		
+
 		res := gocv.NewMat()
 		gocv.MatchTemplate(screen, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
 		_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)

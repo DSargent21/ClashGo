@@ -225,9 +225,17 @@ func run() error {
 }
 
 func clamp(r image.Rectangle, w, h int) image.Rectangle {
-	if r.Min.X < 0 { r.Min.X = 0 }
-	if r.Min.Y < 0 { r.Min.Y = 0 }
-	if r.Max.X > w { r.Max.X = w }
-	if r.Max.Y > h { r.Max.Y = h }
+	if r.Min.X < 0 {
+		r.Min.X = 0
+	}
+	if r.Min.Y < 0 {
+		r.Min.Y = 0
+	}
+	if r.Max.X > w {
+		r.Max.X = w
+	}
+	if r.Max.Y > h {
+		r.Max.Y = h
+	}
 	return r
 }

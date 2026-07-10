@@ -116,7 +116,7 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 		if pixelPassed && (passed > 0 || templatePassed) {
 			totalScore += int(bestConf * 1000)
 			totalScore += rule.Weight // Add weight exactly once
-			
+
 			scores = append(scores, scoredState{
 				State:    rule.State,
 				Score:    totalScore,
@@ -254,16 +254,16 @@ func (c *Classifier) buildRules() {
 				// Gold Icon Yellow (Top Left) - handles bright and dark gold colors
 				{35, 85, 0xB2, 0x8D, 0x07, 50},
 				{35, 85, 0xFF, 0xC5, 0x09, 50},
-				
+
 				// Elixir Icon Purple (Top Left) - handles bright and dark purple colors
 				{35, 115, 0x9C, 0x17, 0xB2, 50},
 				{35, 115, 0xD6, 0x1A, 0xFF, 50},
-				
+
 				// End Battle (Red) - typical locations (including double-row/shifted)
 				{34, 588, 0xAD, 0x09, 0x0F, 50},
 				{67, 570, 0xCE, 0x0D, 0x0E, 50},
 				{112, 408, 0xCE, 0x0D, 0x0E, 50},
-				
+
 				// Next Button (Orange/Yellow)
 				{813, 509, 0xFC, 0xBA, 0x36, 50},
 				{796, 564, 0xFC, 0xBA, 0x36, 50},
@@ -331,11 +331,11 @@ func (c *Classifier) buildRules() {
 				// Gold storage icon (Top Right) - dark and bright versions
 				{830, 35, 0xB2, 0x90, 0x0F, 40},
 				{830, 35, 255, 208, 22, 40},
-				
+
 				// Elixir storage icon (Top Right) - dark and bright versions
 				{830, 95, 0x54, 0x19, 0x59, 40},
 				{830, 95, 125, 37, 127, 40},
-				
+
 				// Attack button orange/brown (Bottom Left) - supports Y=640 and Y=700 layouts
 				{40, 640, 0xAF, 0x81, 0x39, 40},
 				{40, 700, 0x91, 0x50, 0x2E, 40},
@@ -528,11 +528,11 @@ func ClassifyStateFast(screen gocv.Mat, cal *Calibration, r []StateRule) GameSta
 }
 
 type ClassifierResult struct {
-	State       GameState
-	Score       int
-	Confirm     bool
-	ClassifyMs  time.Duration
-	DetectedAt  time.Time
+	State      GameState
+	Score      int
+	Confirm    bool
+	ClassifyMs time.Duration
+	DetectedAt time.Time
 }
 
 func (c *Classifier) ClassifyWithTiming(screen gocv.Mat) ClassifierResult {

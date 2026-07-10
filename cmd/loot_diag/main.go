@@ -190,13 +190,13 @@ func drawROI(img gocv.Mat, rect image.Rectangle, c color.RGBA, label string) {
 		return
 	}
 	gocv.Rectangle(&img, rect, c, 2)
-	
+
 	// Draw label background
 	labelPos := image.Pt(rect.Min.X, rect.Min.Y-10)
 	if labelPos.Y < 20 {
 		labelPos.Y = rect.Max.Y + 20
 	}
-	
+
 	gocv.PutText(&img, label, labelPos, gocv.FontHersheySimplex, 0.8, c, 2)
 }
 
@@ -204,9 +204,11 @@ type adbLogAdapter struct {
 	log zerolog.Logger
 }
 
-func (a *adbLogAdapter) Debug() bool                         { return a.log.GetLevel() <= zerolog.DebugLevel }
-func (a *adbLogAdapter) Debugf(format string, v ...any)      { a.log.Debug().Msgf(format, v...) }
-func (a *adbLogAdapter) Info(msg string)                     { a.log.Info().Msg(msg) }
-func (a *adbLogAdapter) Warn(msg string)                     { a.log.Warn().Msg(msg) }
-func (a *adbLogAdapter) Error(msg string)                    { a.log.Error().Msg(msg) }
-func (a *adbLogAdapter) WithFields(f map[string]any) adb.Logger { return &adbLogAdapter{log: a.log.With().Fields(f).Logger()} }
+func (a *adbLogAdapter) Debug() bool                    { return a.log.GetLevel() <= zerolog.DebugLevel }
+func (a *adbLogAdapter) Debugf(format string, v ...any) { a.log.Debug().Msgf(format, v...) }
+func (a *adbLogAdapter) Info(msg string)                { a.log.Info().Msg(msg) }
+func (a *adbLogAdapter) Warn(msg string)                { a.log.Warn().Msg(msg) }
+func (a *adbLogAdapter) Error(msg string)               { a.log.Error().Msg(msg) }
+func (a *adbLogAdapter) WithFields(f map[string]any) adb.Logger {
+	return &adbLogAdapter{log: a.log.With().Fields(f).Logger()}
+}

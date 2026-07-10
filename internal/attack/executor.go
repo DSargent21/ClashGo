@@ -1,9 +1,9 @@
 package attack
 
 import (
-	"strings"
 	"image"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/adb"
@@ -278,5 +278,3 @@ func intLerp(p1, p2 image.Point, pct float64) (int, int) {
 	return int(float64(p1.X) + float64(p2.X-p1.X)*pct),
 		int(float64(p1.Y) + float64(p2.Y-p1.Y)*pct)
 }
-
-

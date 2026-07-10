@@ -67,9 +67,9 @@ func (r Rect) Center() Point {
 	return Point{(r.Min.X + r.Max.X) / 2, (r.Min.Y + r.Max.Y) / 2}
 }
 
-func (r Rect) TopLeft()     Point { return r.Min }
-func (r Rect) TopRight()    Point { return Point{r.Max.X, r.Min.Y} }
-func (r Rect) BottomLeft()  Point { return Point{r.Min.X, r.Max.Y} }
+func (r Rect) TopLeft() Point     { return r.Min }
+func (r Rect) TopRight() Point    { return Point{r.Max.X, r.Min.Y} }
+func (r Rect) BottomLeft() Point  { return Point{r.Min.X, r.Max.Y} }
 func (r Rect) BottomRight() Point { return r.Max }
 
 func (r Rect) Shrink(margin int) Rect {
@@ -87,7 +87,7 @@ func (r Rect) Expand(margin int) Rect {
 }
 
 type Diamond struct {
-	Center Point
+	Center                   Point
 	Left, Right, Top, Bottom int
 }
 

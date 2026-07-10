@@ -68,13 +68,13 @@ type PlanReport struct {
 		W int `json:"w"`
 		H int `json:"h"`
 	} `json:"screen"`
-	RedZoneValid     bool             `json:"red_zone_valid"`
-	RedZoneBBox      image.Rectangle  `json:"red_zone_bbox"`
-	DeploySide       string           `json:"deploy_side"`
-	DecidedTargetEdge string          `json:"decided_target_edge"`
-	Corners          map[string]image.Rectangle `json:"corners_after_override"`
-	Phases           []PlanPhaseSummary        `json:"phases"`
-	Mismatches       []PlanMismatch            `json:"mismatches"`
+	RedZoneValid      bool                       `json:"red_zone_valid"`
+	RedZoneBBox       image.Rectangle            `json:"red_zone_bbox"`
+	DeploySide        string                     `json:"deploy_side"`
+	DecidedTargetEdge string                     `json:"decided_target_edge"`
+	Corners           map[string]image.Rectangle `json:"corners_after_override"`
+	Phases            []PlanPhaseSummary         `json:"phases"`
+	Mismatches        []PlanMismatch             `json:"mismatches"`
 
 	// DiagonalCorners lists every pCfg.Edges key whose endpoint pair
 	// spans MULTIPLE screen sides. This is the actual signal the user
@@ -170,9 +170,9 @@ func SidesForCorner(edge string) []string {
 
 // Planner holds the immutable inputs needed to plan a deployment.
 type Planner struct {
-	PCfg      PrecisionConfig
-	Strategy  *strategy.DynamicStrategy
-	RedZone   RedZone
+	PCfg       PrecisionConfig
+	Strategy   *strategy.DynamicStrategy
+	RedZone    RedZone
 	DeployLine DeployLine
 	TargetEdge string
 	W, H       int

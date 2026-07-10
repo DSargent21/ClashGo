@@ -118,7 +118,7 @@ func SpotsForSide(pCfg PrecisionConfig, side string, count, screenW, screenH int
 	for i := 0; i < count; i++ {
 		t := 0.5
 		if count > 1 {
-			t = float64(i) / float64(count - 1)
+			t = float64(i) / float64(count-1)
 		}
 		points[i] = image.Pt(
 			edge.P1.X+int(float64(edge.P2.X-edge.P1.X)*t),

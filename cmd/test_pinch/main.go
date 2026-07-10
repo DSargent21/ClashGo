@@ -22,7 +22,7 @@ func main() {
 	}
 
 	time.Sleep(2 * time.Second)
-	
+
 	fmt.Println("Testing ZoomOut Ctrl+-...")
 	client.Shell("input keycombination CTRL_LEFT MINUS")
 

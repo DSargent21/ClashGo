@@ -27,28 +27,28 @@ import (
 // --- Data Structures ---
 
 type TapLog struct {
-	Seq      int64   `json:"seq"`
-	Type     string  `json:"type"`
-	X        int     `json:"x"`
-	Y        int     `json:"y"`
-	ActualX  int     `json:"actual_x"`
-	ActualY  int     `json:"actual_y"`
-	StdDev   float64 `json:"std_dev,omitempty"`
-	Error    string  `json:"error,omitempty"`
-	Ts       int64   `json:"ts_ms"`
-	Unit     string  `json:"unit,omitempty"`
-	Phase    string  `json:"phase,omitempty"`
-	Edge     string  `json:"edge,omitempty"`
+	Seq          int64   `json:"seq"`
+	Type         string  `json:"type"`
+	X            int     `json:"x"`
+	Y            int     `json:"y"`
+	ActualX      int     `json:"actual_x"`
+	ActualY      int     `json:"actual_y"`
+	StdDev       float64 `json:"std_dev,omitempty"`
+	Error        string  `json:"error,omitempty"`
+	Ts           int64   `json:"ts_ms"`
+	Unit         string  `json:"unit,omitempty"`
+	Phase        string  `json:"phase,omitempty"`
+	Edge         string  `json:"edge,omitempty"`
 	DistFromEdge float64 `json:"dist_from_edge,omitempty"`
-	HitTarget   bool     `json:"hit_target"`
+	HitTarget    bool    `json:"hit_target"`
 }
 
 type PhaseLog struct {
-	Name       string        `json:"name"`
-	Edge       string        `json:"edge"`
-	Units      []string      `json:"units"`
-	Taps       []TapLog      `json:"taps"`
-	SlotHealth []SlotHealth  `json:"slot_health_before"`
+	Name       string       `json:"name"`
+	Edge       string       `json:"edge"`
+	Units      []string     `json:"units"`
+	Taps       []TapLog     `json:"taps"`
+	SlotHealth []SlotHealth `json:"slot_health_before"`
 }
 
 type SlotHealth struct {
@@ -59,15 +59,15 @@ type SlotHealth struct {
 }
 
 type SlotDiagnostics struct {
-	X           int     `json:"x"`
-	Category    string  `json:"category"`
-	Template    string  `json:"template,omitempty"`
-	TotalTaps   int     `json:"total_taps"`
+	X            int      `json:"x"`
+	Category     string   `json:"category"`
+	Template     string   `json:"template,omitempty"`
+	TotalTaps    int      `json:"total_taps"`
 	PhasesTapped []string `json:"phases_tapped"`
-	FinalEmpty  bool    `json:"final_empty"`
-	FinalRatio  float64 `json:"final_ratio"`
-	Deployed    bool    `json:"deployed"`
-	MissedReason string `json:"missed_reason,omitempty"`
+	FinalEmpty   bool     `json:"final_empty"`
+	FinalRatio   float64  `json:"final_ratio"`
+	Deployed     bool     `json:"deployed"`
+	MissedReason string   `json:"missed_reason,omitempty"`
 }
 
 type DebugManifest struct {
@@ -101,16 +101,16 @@ type TemplateLog struct {
 }
 
 type AttackSummary struct {
-	TotalSlots       int     `json:"total_slots"`
-	DeployedSlots    int     `json:"deployed_slots"`
-	FailedSlots      int     `json:"failed_slots"`
-	TotalTaps        int     `json:"total_taps"`
-	TapsOnTarget     int     `json:"taps_on_target"`
-	TapsOffTarget    int     `json:"taps_off_target"`
-	AvgDistFromEdge  float64 `json:"avg_dist_from_edge"`
-	BarTaps          int     `json:"bar_taps"`
-	CenterTaps       int     `json:"center_taps"`
-	FalsePositives   int     `json:"false_positives"`
+	TotalSlots      int     `json:"total_slots"`
+	DeployedSlots   int     `json:"deployed_slots"`
+	FailedSlots     int     `json:"failed_slots"`
+	TotalTaps       int     `json:"total_taps"`
+	TapsOnTarget    int     `json:"taps_on_target"`
+	TapsOffTarget   int     `json:"taps_off_target"`
+	AvgDistFromEdge float64 `json:"avg_dist_from_edge"`
+	BarTaps         int     `json:"bar_taps"`
+	CenterTaps      int     `json:"center_taps"`
+	FalsePositives  int     `json:"false_positives"`
 }
 
 // --- Main ---
@@ -392,17 +392,17 @@ func main() {
 
 	client.SetTapHook(func(ev adb.TapEvent) {
 		tl := TapLog{
-			Seq:      ev.Seq,
-			Type:     ev.Type,
-			X:        ev.X,
-			Y:        ev.Y,
-			ActualX:  ev.ActualX,
-			ActualY:  ev.ActualY,
-			StdDev:   ev.StdDev,
-			Error:    ev.Error,
-			Ts:       ev.Ts,
-			Phase:    currentPhase,
-			Edge:     currentEdge,
+			Seq:     ev.Seq,
+			Type:    ev.Type,
+			X:       ev.X,
+			Y:       ev.Y,
+			ActualX: ev.ActualX,
+			ActualY: ev.ActualY,
+			StdDev:  ev.StdDev,
+			Error:   ev.Error,
+			Ts:      ev.Ts,
+			Phase:   currentPhase,
+			Edge:    currentEdge,
 		}
 		// Calculate distance from target edge
 		if currentEdge != "" {
@@ -568,12 +568,12 @@ func main() {
 		var c color.RGBA
 		radius := 5
 		if tl.HitTarget {
-			c = color.RGBA{0, 255, 0, 255}   // green = on target
+			c = color.RGBA{0, 255, 0, 255} // green = on target
 		} else if tl.ActualY > mBarY {
-			c = color.RGBA{255, 128, 0, 255}  // orange = bar tap
+			c = color.RGBA{255, 128, 0, 255} // orange = bar tap
 			radius = 4
 		} else {
-			c = color.RGBA{255, 0, 0, 255}    // red = off target
+			c = color.RGBA{255, 0, 0, 255} // red = off target
 		}
 		gocv.Circle(&hitMap, pt, radius, c, 2)
 		if i%10 == 0 || i == len(allTaps)-1 {
@@ -592,14 +592,14 @@ func main() {
 
 	// --- Draw tap scatter grouped by phase ---
 	phaseColors := map[int]color.RGBA{
-		0: {255, 255, 0, 255},   // yellow
-		1: {0, 255, 0, 255},     // green
-		2: {0, 0, 255, 255},     // blue
-		3: {255, 0, 255, 255},   // purple
-		4: {255, 128, 0, 255},   // orange
-		5: {0, 255, 255, 255},   // cyan
-		6: {255, 0, 0, 255},     // red
-		7: {128, 128, 0, 255},   // olive
+		0: {255, 255, 0, 255}, // yellow
+		1: {0, 255, 0, 255},   // green
+		2: {0, 0, 255, 255},   // blue
+		3: {255, 0, 255, 255}, // purple
+		4: {255, 128, 0, 255}, // orange
+		5: {0, 255, 255, 255}, // cyan
+		6: {255, 0, 0, 255},   // red
+		7: {128, 128, 0, 255}, // olive
 	}
 	scatterImg := preScreen.Clone()
 	defer scatterImg.Close()
@@ -773,10 +773,10 @@ func buildSlotDiagnostics(slots []attack.TroopSlot, allTaps []TapLog, preHealth,
 
 func buildSummary(slots []attack.TroopSlot, diags []SlotDiagnostics, allTaps []TapLog, tapAreas map[string]int) AttackSummary {
 	s := AttackSummary{
-		TotalSlots:  len(slots),
-		TotalTaps:   len(allTaps),
-		BarTaps:     tapAreas["bar"],
-		CenterTaps:  tapAreas["center"],
+		TotalSlots: len(slots),
+		TotalTaps:  len(allTaps),
+		BarTaps:    tapAreas["bar"],
+		CenterTaps: tapAreas["center"],
 	}
 
 	for _, d := range diags {

@@ -12,9 +12,9 @@ import (
 )
 
 type StateGraph struct {
-	mu      sync.RWMutex
-	nodes   map[GameState]*StateNode
-	edges   map[GameState][]StateTransition
+	mu    sync.RWMutex
+	nodes map[GameState]*StateNode
+	edges map[GameState][]StateTransition
 }
 
 type StateNode struct {
@@ -335,7 +335,7 @@ func (pq priorityQueue) Less(i, j int) bool {
 	return pq[i].dist < pq[j].dist
 }
 func (pq priorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
-func (pq *priorityQueue) Push(x any) { *pq = append(*pq, x.(*pathNode)) }
+func (pq *priorityQueue) Push(x any)   { *pq = append(*pq, x.(*pathNode)) }
 func (pq *priorityQueue) Pop() any {
 	old := *pq
 	n := len(old)
@@ -356,10 +356,10 @@ func SetFileIO(r fileReader, w fileWriter) {
 }
 
 type StateGraphManager struct {
-	graph  *StateGraph
-	path   string
-	mu     sync.Mutex
-	dirty  bool
+	graph *StateGraph
+	path  string
+	mu    sync.Mutex
+	dirty bool
 }
 
 func NewGraphManager(path string) *StateGraphManager {

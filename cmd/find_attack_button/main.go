@@ -56,16 +56,16 @@ func main() {
 	}
 
 	if bestConf > 0.1 {
-		fmt.Printf("Best match: Conf=%.4f at Phys=(%d, %d) Scale=%.2f\n", 
+		fmt.Printf("Best match: Conf=%.4f at Phys=(%d, %d) Scale=%.2f\n",
 			bestConf, bestMatch.Point.X, bestMatch.Point.Y, bestMatch.Scale)
-		
+
 		if bestConf < 0.5 {
 			fmt.Println("⚠️  Match confidence is very low. Button might be hidden, different, or resolution is too low.")
 		}
 	} else {
 		fmt.Println("❌ No match found even at low confidence.")
 	}
-	
+
 	// Save the capture for manual verification if possible
 	gocv.IMWrite("last_capture.png", screen)
 	fmt.Println("💾 Saved current screen to last_capture.png")

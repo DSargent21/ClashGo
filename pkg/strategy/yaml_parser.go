@@ -16,14 +16,14 @@ type Unit struct {
 }
 
 type Phase struct {
-	Name              string `yaml:"name"`
-	Units             []Unit `yaml:"units"`
-	Pattern           string `yaml:"pattern"`            // "Line", "Point", "FourSides"
-	Position          string `yaml:"position"`           // "Center", "Left", "Right", "Full"
-	Offset            int    `yaml:"offset"`
-	DelayAfterMS      int    `yaml:"delay_after_ms"`
-	Retry             int    `yaml:"retry"`              // Max retry attempts per unit (default: 3)
-	VerifyBeforeNext  bool   `yaml:"verify_before_next"` // Wait for slot empty before next phase
+	Name             string `yaml:"name"`
+	Units            []Unit `yaml:"units"`
+	Pattern          string `yaml:"pattern"`  // "Line", "Point", "FourSides"
+	Position         string `yaml:"position"` // "Center", "Left", "Right", "Full"
+	Offset           int    `yaml:"offset"`
+	DelayAfterMS     int    `yaml:"delay_after_ms"`
+	Retry            int    `yaml:"retry"`              // Max retry attempts per unit (default: 3)
+	VerifyBeforeNext bool   `yaml:"verify_before_next"` // Wait for slot empty before next phase
 }
 
 type DynamicStrategy struct {

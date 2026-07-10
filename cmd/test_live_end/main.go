@@ -59,7 +59,7 @@ func main() {
 			fmt.Printf("❌ Capture Error: %v\n", err)
 			return
 		}
-		
+
 		// Save captured screen for manual inspection
 		vision.SaveImage(img, "battle_end_capture.png")
 		fmt.Println("💾 Saved screen to battle_end_capture.png")
@@ -111,7 +111,7 @@ func main() {
 	fmt.Printf("   Elixir: %d\n", result.Bonus.Elixir)
 	fmt.Printf("   DE:     %d\n", result.Bonus.DarkElixir)
 	fmt.Println("========================================")
-	
+
 	totalGold := result.Loot.Gold + result.Bonus.Gold
 	totalElixir := result.Loot.Elixir + result.Bonus.Elixir
 	totalDE := result.Loot.DarkElixir + result.Bonus.DarkElixir

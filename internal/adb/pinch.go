@@ -33,8 +33,10 @@ func (c *Client) PinchZoom(zoomOut bool) error {
 
 	// BlueStacks Virtual Touch uses 0-32767
 	const touchMax = 32767
-	scale := func(pixel, size int) int { 
-		if size == 0 { return 0 }
+	scale := func(pixel, size int) int {
+		if size == 0 {
+			return 0
+		}
 		return (pixel * touchMax) / size
 	}
 
@@ -60,12 +62,12 @@ func (c *Client) PinchZoom(zoomOut bool) error {
 	}
 
 	// 1. LANDING: Both fingers down in one frame
-	add(3, 57, 1) // ID 1
+	add(3, 57, 1)  // ID 1
 	add(1, 330, 1) // BTN_TOUCH DOWN
 	add(3, 53, scale(f1Start[0], w))
 	add(3, 54, scale(f1Start[1], h))
 	add(0, 2, 0) // SYN_MT_REPORT
-	
+
 	add(3, 57, 2) // ID 2
 	add(3, 53, scale(f2Start[0], w))
 	add(3, 54, scale(f2Start[1], h))
@@ -75,11 +77,11 @@ func (c *Client) PinchZoom(zoomOut bool) error {
 	// 2. MOVEMENT: 10 steps (enough for game engine to track)
 	steps := 10
 	for i := 1; i <= steps; i++ {
-		add(3, 53, scale(f1Start[0] + (f1End[0]-f1Start[0])*i/steps, w))
-		add(3, 54, scale(f1Start[1] + (f1End[1]-f1Start[1])*i/steps, h))
+		add(3, 53, scale(f1Start[0]+(f1End[0]-f1Start[0])*i/steps, w))
+		add(3, 54, scale(f1Start[1]+(f1End[1]-f1Start[1])*i/steps, h))
 		add(0, 2, 0)
-		add(3, 53, scale(f2Start[0] + (f2End[0]-f2Start[0])*i/steps, w))
-		add(3, 54, scale(f2Start[1] + (f2End[1]-f2Start[1])*i/steps, h))
+		add(3, 53, scale(f2Start[0]+(f2End[0]-f2Start[0])*i/steps, w))
+		add(3, 54, scale(f2Start[1]+(f2End[1]-f2Start[1])*i/steps, h))
 		add(0, 2, 0)
 		add(0, 0, 0)
 	}

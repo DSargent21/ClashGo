@@ -279,4 +279,3 @@ func TestLootVictory(t *testing.T) {
 		t.Errorf("Bonus.DE = %d, want 2310", result.Bonus.DarkElixir)
 	}
 }
-

@@ -25,7 +25,10 @@ func main() {
 	}
 	defer screen.Close()
 
-	pts := []struct{x, y int; name string}{
+	pts := []struct {
+		x, y int
+		name string
+	}{
 		{64, 705, "Attack Button Center"},
 		{35, 705, "Attack Button Left"},
 		{255, 10, "Top Left Sky"},

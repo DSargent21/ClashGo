@@ -28,11 +28,11 @@ func main() {
 
 	mean := screen.Mean()
 	fmt.Printf("Screen Average Color: BGR(%.1f, %.1f, %.1f)\n", mean.Val1, mean.Val2, mean.Val3)
-	
+
 	gray := gocv.NewMat()
 	defer gray.Close()
 	gocv.CvtColor(screen, &gray, gocv.ColorBGRToGray)
-	
+
 	_, maxVal, _, _ := gocv.MinMaxLoc(gray)
 	fmt.Printf("Max Brightness: %.1f\n", maxVal)
 }

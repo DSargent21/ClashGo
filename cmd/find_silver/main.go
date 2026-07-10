@@ -43,7 +43,7 @@ func main() {
 	// Silver/Grey in HSV: Saturation is very low, Value is high
 	lower := gocv.NewScalar(0, 0, 150, 0)
 	upper := gocv.NewScalar(180, 50, 255, 0)
-	
+
 	mask := gocv.NewMat()
 	defer mask.Close()
 	gocv.InRangeWithScalar(hsv, lower, upper, &mask)
@@ -58,10 +58,12 @@ func main() {
 
 	for i := 0; i < contours.Size(); i++ {
 		area := gocv.ContourArea(contours.At(i))
-		if area < 1000 { continue }
-		
+		if area < 1000 {
+			continue
+		}
+
 		rect := gocv.BoundingRect(contours.At(i))
-		center := image.Pt(rect.Min.X+rect.Dx()/2 + roi.Min.X, rect.Min.Y+rect.Dy()/2 + roi.Min.Y)
+		center := image.Pt(rect.Min.X+rect.Dx()/2+roi.Min.X, rect.Min.Y+rect.Dy()/2+roi.Min.Y)
 		fmt.Printf("Found Silver Blob: Center=(%d, %d) Area=%.0f\n", center.X, center.Y, area)
 	}
 }

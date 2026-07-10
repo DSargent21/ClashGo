@@ -10,9 +10,9 @@ import (
 
 // RedZone represents detected deployment boundary.
 type RedZone struct {
-	BBox    image.Rectangle // Bounding box of red zone
-	Valid   bool            // Whether detection succeeded
-	Contours int            // Number of contours found
+	BBox     image.Rectangle // Bounding box of red zone
+	Valid    bool            // Whether detection succeeded
+	Contours int             // Number of contours found
 }
 
 // RedLineDetector finds the red deployment boundary on screen.
@@ -101,8 +101,8 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 			Msg("red zone detected")
 
 		return RedZone{
-			BBox:      rect,
-			Valid:     true,
+			BBox:     rect,
+			Valid:    true,
 			Contours: contours.Size(),
 		}
 	}
@@ -111,10 +111,18 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 	xMin, yMin := w, uiCutoff
 	xMax, yMax := 0, 0
 	for _, b := range boxes {
-		if b.rect.Min.X < xMin { xMin = b.rect.Min.X }
-		if b.rect.Min.Y < yMin { yMin = b.rect.Min.Y }
-		if b.rect.Max.X > xMax { xMax = b.rect.Max.X }
-		if b.rect.Max.Y > yMax { yMax = b.rect.Max.Y }
+		if b.rect.Min.X < xMin {
+			xMin = b.rect.Min.X
+		}
+		if b.rect.Min.Y < yMin {
+			yMin = b.rect.Min.Y
+		}
+		if b.rect.Max.X > xMax {
+			xMax = b.rect.Max.X
+		}
+		if b.rect.Max.Y > yMax {
+			yMax = b.rect.Max.Y
+		}
 	}
 
 	combined := image.Rect(xMin, yMin, xMax, yMax)
@@ -125,8 +133,8 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 			Msg("red zone detected (combined contours)")
 
 		return RedZone{
-			BBox:      combined,
-			Valid:     true,
+			BBox:     combined,
+			Valid:    true,
 			Contours: contours.Size(),
 		}
 	}

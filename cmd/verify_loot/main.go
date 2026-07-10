@@ -29,7 +29,7 @@ func main() {
 	// 1. Load or Capture Screen
 	var screen gocv.Mat
 	var cal *game.Calibration
-	
+
 	if *inputPath != "" && fileExists(*inputPath) {
 		log.Info().Str("path", *inputPath).Msg("loading local image")
 		screen = gocv.IMRead(*inputPath, gocv.IMReadColor)
@@ -50,7 +50,7 @@ func main() {
 		)
 
 		log.Info().Msg("connecting to ADB...")
-		
+
 		// If no device specified, try to find one
 		if *deviceID == "" {
 			devs, err := client.Devices()
@@ -76,14 +76,14 @@ func main() {
 			}
 			log.Info().Str("device", *deviceID).Msg("auto-selected device")
 		}
-		
+
 		client.DeviceID = *deviceID
 
 		if err := client.Connect(); err != nil {
 			log.Fatal().Err(err).Msg("ADB connect error")
 		}
 		defer client.Close()
-		
+
 		log.Info().Msg("capturing live screen...")
 		var err error
 		screen, err = client.CaptureToMat()
@@ -140,12 +140,14 @@ type adbLogAdapter struct {
 	log zerolog.Logger
 }
 
-func (a *adbLogAdapter) Debug() bool                         { return a.log.GetLevel() <= zerolog.DebugLevel }
-func (a *adbLogAdapter) Debugf(format string, v ...any)      { a.log.Debug().Msgf(format, v...) }
-func (a *adbLogAdapter) Info(msg string)                     { a.log.Info().Msg(msg) }
-func (a *adbLogAdapter) Warn(msg string)                     { a.log.Warn().Msg(msg) }
-func (a *adbLogAdapter) Error(msg string)                    { a.log.Error().Msg(msg) }
-func (a *adbLogAdapter) WithFields(f map[string]any) adb.Logger { return &adbLogAdapter{log: a.log.With().Fields(f).Logger()} }
+func (a *adbLogAdapter) Debug() bool                    { return a.log.GetLevel() <= zerolog.DebugLevel }
+func (a *adbLogAdapter) Debugf(format string, v ...any) { a.log.Debug().Msgf(format, v...) }
+func (a *adbLogAdapter) Info(msg string)                { a.log.Info().Msg(msg) }
+func (a *adbLogAdapter) Warn(msg string)                { a.log.Warn().Msg(msg) }
+func (a *adbLogAdapter) Error(msg string)               { a.log.Error().Msg(msg) }
+func (a *adbLogAdapter) WithFields(f map[string]any) adb.Logger {
+	return &adbLogAdapter{log: a.log.With().Fields(f).Logger()}
+}
 
 func fileExists(path string) bool {
 	_, err := os.Stat(path)

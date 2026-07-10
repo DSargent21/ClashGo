@@ -139,7 +139,7 @@ func main() {
 		}
 
 		gocv.Circle(&debugImg, image.Pt(slot.X, slot.Y), 22, c, 2)
-		
+
 		// Draw a solid dark background rectangle for text readability
 		rectText := image.Rect(slot.X-42, slot.Y-80, slot.X+42, slot.Y-28)
 		gocv.Rectangle(&debugImg, rectText, color.RGBA{20, 20, 20, 255}, -1)
@@ -154,7 +154,7 @@ func main() {
 
 		// Confidence and manual override text
 		txtConf := fmt.Sprintf("C:%.2f", bestConf)
-		
+
 		txtMan := manualLabel
 		if len(txtMan) > 10 {
 			txtMan = txtMan[:10]
@@ -164,7 +164,7 @@ func main() {
 		gocv.PutText(&debugImg, txtAuto, image.Pt(slot.X-38, slot.Y-68), gocv.FontHersheySimplex, 0.30, color.RGBA{0, 255, 0, 255}, 1)
 		gocv.PutText(&debugImg, txtConf, image.Pt(slot.X-38, slot.Y-53), gocv.FontHersheySimplex, 0.30, color.RGBA{150, 255, 150, 255}, 1)
 		gocv.PutText(&debugImg, txtMan, image.Pt(slot.X-38, slot.Y-38), gocv.FontHersheySimplex, 0.30, color.RGBA{0, 255, 255, 255}, 1)
-		
+
 		// Draw X coord below circle
 		gocv.PutText(&debugImg, fmt.Sprintf("%d", slot.X), image.Pt(slot.X-15, slot.Y+40), gocv.FontHersheySimplex, 0.35, color.RGBA{200, 200, 200, 255}, 1)
 	}
