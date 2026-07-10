@@ -97,6 +97,23 @@ func (lr *LootRecognizer) ReadDestructionPercentage(screen gocv.Mat, roi image.R
 	return lr.readRow(screen, roi)
 }
 
+// ReadBattleResult reads the loot and star counts shown on the Clash of
+// Clans end-of-battle screen. Implementation mirrors ReadLootDetailed so
+// end-of-battle parses at the same accuracy as scout-screen filtrering:
+//
+//   - Icon template match anchors the digit region (proven pattern from
+//     ReadLootDetailed; 0.65 is the empirically safe threshold across
+//     themes and emulator sizes).
+//   - Static per-column slot rectangles are the universal safety net;
+//     they are derived once from the column ROI so HUD shifts no longer
+//     pull digits out of alignment (the old code hard-coded absolute
+//     coordinates and went negative once calibrated ROIs moved).
+//   - Digit extraction is bounded to the column width, preventing bleed
+//     from the Bonus column into Battle Loot (or vice versa).
+//
+// Column ROIs can be overridden by assets/battle_loot_rois.json (preferred)
+// and assets/star_points.json (star pixel centers); both files are written
+// by tools/picker.py --preset battle-loot / star-points.
 func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error) {
 	gray := gocv.NewMat()
 	gocv.CvtColor(screen, &gray, gocv.ColorBGRToGray)
@@ -104,71 +121,37 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 
 	var result BattleResult
 
-	// Battle Loot (Center column)
-	battleRois := []struct {
-		name           string
-		x1, y1, x2, y2 int
-	}{
-		{"gold", 50, 318, 450, 345},
-		{"elixir", 50, 357, 450, 385},
-		{"de", 100, 395, 450, 420},
-	}
-	battleSearch := image.Rect(
-		int(20*lr.cal.ScaleX), int(200*lr.cal.ScaleY), // Expanded Y
-		int(480*lr.cal.ScaleX), int(550*lr.cal.ScaleY),
-	)
+	battleSearch := image.Rect(311, 313, 501, 428) // Battle Loot column
+	bonusSearch := image.Rect(571, 366, 674, 452)  // League Bonus column
 
-	// Bonus Loot (Right column box)
-	bonusRois := []struct {
-		name           string
-		x1, y1, x2, y2 int
-	}{
-		{"gold", 520, 368, 720, 387},
-		{"elixir", 520, 401, 720, 420},
-		{"de", 550, 432, 720, 450},
-	}
-	bonusSearch := image.Rect(
-		int(500*lr.cal.ScaleX), int(200*lr.cal.ScaleY), // Expanded Y
-		int(800*lr.cal.ScaleX), int(600*lr.cal.ScaleY), // Expanded X/Y
-	)
-
-	// Load custom ROIs if they exist
 	if data, err := os.ReadFile(paths.Resolve("battle_loot_rois.json")); err == nil {
 		var custom struct {
 			BattleSearch struct{ X1, Y1, X2, Y2 int } `json:"battleSearch"`
 			BonusSearch  struct{ X1, Y1, X2, Y2 int } `json:"bonusSearch"`
 		}
 		if json.Unmarshal(data, &custom) == nil {
-			battleSearch = image.Rect(
-				int(float64(custom.BattleSearch.X1)*lr.cal.ScaleX),
-				int(float64(custom.BattleSearch.Y1)*lr.cal.ScaleY),
-				int(float64(custom.BattleSearch.X2)*lr.cal.ScaleX),
-				int(float64(custom.BattleSearch.Y2)*lr.cal.ScaleY),
-			)
-			bonusSearch = image.Rect(
-				int(float64(custom.BonusSearch.X1)*lr.cal.ScaleX),
-				int(float64(custom.BonusSearch.Y1)*lr.cal.ScaleY),
-				int(float64(custom.BonusSearch.X2)*lr.cal.ScaleX),
-				int(float64(custom.BonusSearch.Y2)*lr.cal.ScaleY),
-			)
-			lr.logger.Info().Msg("Loaded custom battle loot ROIs")
+			if custom.BattleSearch.X2 > custom.BattleSearch.X1 {
+				battleSearch = image.Rect(custom.BattleSearch.X1, custom.BattleSearch.Y1, custom.BattleSearch.X2, custom.BattleSearch.Y2)
+			}
+			if custom.BonusSearch.X2 > custom.BonusSearch.X1 {
+				bonusSearch = image.Rect(custom.BonusSearch.X1, custom.BonusSearch.Y1, custom.BonusSearch.X2, custom.BonusSearch.Y2)
+			}
+			lr.logger.Info().Msg("loaded custom battle loot ROIs")
 		}
 	}
 
-	result.Loot = lr.readLootColumn(screen, gray, battleSearch, battleRois, 0.65)
-	// Force fallback row reading directly for the Bonus column by using 1.1 threshold.
-	// This makes it completely immune to poor icon contrast or shifted graphics.
-	result.Bonus = lr.readLootColumn(screen, gray, bonusSearch, bonusRois, 1.1)
+	lr.captureBattleColumn(screen, battleSearch, &result.Loot)
+	lr.captureBattleColumn(screen, bonusSearch, &result.Bonus)
 
-	// Star Detection: Use brightness at 3 specific points (Left, Middle, Right stars).
-	// Filled stars (yellow/gold/silver) are bright; empty stars are dark.
+	// Star detection. CoC's end-of-battle star centers were captured
+	// empirically (see cmd/verify_end/main.go star debug); old hard-coded
+	// 365/220 / 495/220 sat slightly off the gold pixels and undercounted
+	// earned stars on bigger three-star outbreaks.
 	starPoints := []image.Point{
-		{X: 365, Y: 220}, // Left
-		{X: 430, Y: 190}, // Middle
-		{X: 495, Y: 220}, // Right
+		{X: 327, Y: 205}, // Left
+		{X: 430, Y: 196}, // Middle
+		{X: 535, Y: 210}, // Right
 	}
-
-	// Load custom star points if they exist
 	if data, err := os.ReadFile(paths.Resolve("star_points.json")); err == nil {
 		var custom struct {
 			Stars []struct{ X, Y int } `json:"stars"`
@@ -177,31 +160,23 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 			for i := 0; i < 3; i++ {
 				starPoints[i] = image.Pt(custom.Stars[i].X, custom.Stars[i].Y)
 			}
-			lr.logger.Info().Msg("Loaded custom star points")
+			lr.logger.Info().Msg("loaded custom star points")
 		}
 	}
 
 	validStars := 0
 	for _, pt := range starPoints {
-		// Scale to current resolution
 		sx := int(float64(pt.X) * lr.cal.ScaleX)
 		sy := int(float64(pt.Y) * lr.cal.ScaleY)
-
-		// Define a tiny 5x5 ROI around the point
-		rect := image.Rect(sx-2, sy-2, sx+3, sy+3)
-		rect = lr.safeRect(screen, rect)
+		rect := lr.safeRect(screen, image.Rect(sx-2, sy-2, sx+3, sy+3))
 		if rect.Empty() {
 			continue
 		}
-
 		sub := gray.Region(rect)
-		mean := sub.Mean().Val1
-		sub.Close()
-
-		// A filled star center is bright (>100), an empty one is dark.
-		if mean > 100 {
+		if sub.Mean().Val1 > 100 {
 			validStars++
 		}
+		sub.Close()
 	}
 	result.Stars = validStars
 	if result.Stars > 3 {
@@ -211,6 +186,91 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	return result, nil
 }
 
+// captureBattleColumn reads the three loot values (gold, elixir, DE) for
+// a single column on the end-of-battle screen. `colRef` is the column's
+// reference (860x732) ROI; it is split evenly into three absolute-physical
+// slot rectangles. Each slot is then re-anchored on the icon template, so
+// small theme/scale shifts still find the first digit immediately.
+//
+// Writes gold/elixir/de into the supplied *Resources.
+func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, colRef image.Rectangle, dst *Resources) {
+	if colRef.Empty() {
+		return
+	}
+
+	scaleX, scaleY := lr.cal.ScaleX, lr.cal.ScaleY
+	sx1 := int(float64(colRef.Min.X) * scaleX)
+	sy1 := int(float64(colRef.Min.Y) * scaleY)
+	sx2 := int(float64(colRef.Max.X) * scaleX)
+	sy2 := int(float64(colRef.Max.Y) * scaleY)
+
+	// Inward padding so the row never touches the icon column edge.
+	padL := int(8 * scaleX)
+	padR := int(4 * scaleX)
+	if sx2-sx1 < padL+padR+int(20*scaleX) {
+		padL, padR = 4, 2 // Narrow column (bonus); relax padding proportionally.
+	}
+
+	colHeight := sy2 - sy1
+	rowHeight := colHeight / 3
+	if rowHeight < int(6*scaleY) {
+		rowHeight = colHeight
+	}
+
+	makeRow := func(i int) image.Rectangle {
+		y1 := sy1 + i*rowHeight
+		y2 := y1 + rowHeight
+		if i == 2 {
+			y2 = sy2 // Pin the last row's bottom to the column boundary.
+		}
+		return lr.safeRect(screen, image.Rect(sx1+padL, y1, sx2-padR, y2))
+	}
+	rows := []image.Rectangle{makeRow(0), makeRow(1), makeRow(2)}
+	iconNames := []string{"icon_gold", "icon_elixir", "icon_de"}
+	values := []int{0, 0, 0}
+
+	// Anchor search ROI = full column, but capped to the column boundary
+	// so the icon template never returns hits from the next column.
+	anchorROI := lr.safeRect(screen, image.Rect(sx1, sy1, sx2, sy2))
+
+	const minConf = float32(0.65)
+	for i, name := range iconNames {
+		// Try icon-anchored read first (same proven pattern as
+		// ReadLootDetailed). On match we offset from the icon out into
+		// the slot's right edge, which guarantees digit span fits.
+		if !anchorROI.Empty() {
+			if tpl, ok := lr.templates.Get(name); ok && !tpl.Empty() {
+				region := screen.Region(anchorROI)
+				res := gocv.NewMat()
+				gocv.MatchTemplate(region, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+				_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
+				res.Close()
+				region.Close()
+
+				if maxConf > minConf {
+					absX := anchorROI.Min.X + maxLoc.X
+					absY := anchorROI.Min.Y + maxLoc.Y
+					x1 := absX + int(4*scaleX)
+					if x1 < rows[i].Min.X {
+						x1 = rows[i].Min.X
+					}
+					x2 := min(absX+int(220*scaleX), rows[i].Max.X)
+					rect := image.Rect(x1, absY-int(5*scaleY), x2, absY+tpl.Rows()+int(5*scaleY))
+					values[i] = lr.readRow(screen, rect)
+					continue
+				}
+			}
+		}
+		// Static fallback: the row rectangle derived from the column ROI.
+		values[i] = lr.readRow(screen, rows[i])
+	}
+
+	dst.Gold = values[0]
+	dst.Elixir = values[1]
+	dst.DarkElixir = values[2]
+}
+
+// safeRect clamps r to img bounds. Returns image.Rectangle{} when r collapses.
 func (lr *LootRecognizer) safeRect(img gocv.Mat, r image.Rectangle) image.Rectangle {
 	if r.Min.X < 0 {
 		r.Min.X = 0
@@ -231,54 +291,6 @@ func (lr *LootRecognizer) safeRect(img gocv.Mat, r image.Rectangle) image.Rectan
 		r.Max.Y = r.Min.Y
 	}
 	return r
-}
-
-func (lr *LootRecognizer) readLootColumn(screen, gray gocv.Mat, searchRoi image.Rectangle, fallbacks []struct {
-	name           string
-	x1, y1, x2, y2 int
-}, minConfThreshold float32) Resources {
-	searchRoi = lr.safeRect(screen, searchRoi)
-	if searchRoi.Empty() {
-		return Resources{}
-	}
-
-	region := screen.Region(searchRoi)
-	defer region.Close()
-
-	var results [3]int
-	iconNames := []string{"icon_gold", "icon_elixir", "icon_de"}
-
-	for i, name := range iconNames {
-		tpl, ok := lr.templates.Get(name)
-		if ok && !tpl.Empty() {
-			res := gocv.NewMat()
-			gocv.MatchTemplate(region, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
-			_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
-			res.Close()
-
-			if maxConf > minConfThreshold {
-				// Robust anchor: start slightly inside the icon to catch digits immediately after.
-				// readRow uses color/saturation filtering to ignore the actual icon pixels.
-				rect := image.Rect(
-					maxLoc.X+int(4*lr.cal.ScaleX),
-					maxLoc.Y-int(5*lr.cal.ScaleY),
-					maxLoc.X+int(350*lr.cal.ScaleX), // Large enough to cover all digits
-					maxLoc.Y+tpl.Rows()+int(5*lr.cal.ScaleY),
-				)
-				results[i] = lr.readRow(region, rect)
-				continue
-			}
-		}
-		f := fallbacks[i]
-		rect := image.Rect(
-			int(float64(f.x1)*lr.cal.ScaleX)-searchRoi.Min.X,
-			int(float64(f.y1)*lr.cal.ScaleY)-searchRoi.Min.Y,
-			int(float64(f.x2)*lr.cal.ScaleX)-searchRoi.Min.X,
-			int(float64(f.y2)*lr.cal.ScaleY)-searchRoi.Min.Y,
-		)
-		results[i] = lr.readRow(region, rect)
-	}
-	return Resources{Gold: results[0], Elixir: results[1], DarkElixir: results[2]}
 }
 
 func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) {
