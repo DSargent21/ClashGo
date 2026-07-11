@@ -197,11 +197,19 @@ type patch struct {
 // New creates a world backed by path (typically ~/.clashgo/current_state.json).
 // The directory is created if missing. The returned World must have Start()
 // called to begin the writer goroutine, and Close() on shutdown.
+//
+// MinWriteInterval default: 1s (was 250ms pre-audit). The hot-path
+// in-memory snapshot is updated every patch; only the on-disk JSON
+// flush cadence is throttled. External `jq` consumers reading
+// ~/.clashgo/current_state.json don't need 4 Hz fsync/rename churn
+// during an active battle; 1 Hz matches the React stats poll and
+// lowers SSD wear + syscall overhead by 4×. Override before Start()
+// if a caller needs sub-second disk freshness (none in production).
 func New(path string) *World {
 	return &World{
 		path:             path,
 		bootID:           fmt.Sprintf("boot_%s", time.Now().Format("20060102_150405")),
-		MinWriteInterval: 250 * time.Millisecond,
+		MinWriteInterval: 1 * time.Second,
 		MaxTapsRetained:  64,
 		patches:          make(chan patch, 1024),
 		stop:             make(chan struct{}),

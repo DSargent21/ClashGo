@@ -46,3 +46,17 @@ input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
+
+/* ConfigView strategy-dropdown open animation.
+   Replaces `animate-in fade-in slide-in-from-top-2` (would need
+   the `tailwindcss-animate` plugin, which we don't ship). Using
+   a tiny custom keyframe keeps the same micro-interaction footprint
+   as UpdateBanner's `.animate-fadeIn` / `.animate-scaleIn`. */
+@keyframes dropdown-pop {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)     scale(1); }
+}
+.dropdown-pop {
+  animation: dropdown-pop 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: top center;
+}

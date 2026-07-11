@@ -16,8 +16,14 @@ interface ConfigViewProps {
   setUpgradeWalls: (v: boolean) => void;
   stallTimer: number;
   setStallTimer: (v: number) => void;
-  onSave: (e: React.FormEvent) => void;
+  // Returns the underlying SaveConfig promise so ConfigView can own
+  // the save-status indicator (green flash / red flash + inline
+  // "Saved!" / "Save failed" pill) and surface success or failure to
+  // the user. Errors thrown by Wails are intentionally surfaced.
+  onSave: () => Promise<void>;
 }
+
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   goldThreshold, setGoldThreshold,
@@ -31,7 +37,11 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   onSave
 }) => {
   const [isOpen, setIsOpen] = React.useState(false);
+  const [saveStatus, setSaveStatus] = React.useState<SaveStatus>('idle');
+  const [lastSaveError, setLastSaveError] = React.useState<string | null>(null);
   const dropdownRef = React.useRef<HTMLDivElement>(null);
+  const savedTimerRef = React.useRef<number | null>(null);
+  const errorTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -40,13 +50,75 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      if (savedTimerRef.current) window.clearTimeout(savedTimerRef.current);
+      if (errorTimerRef.current) window.clearTimeout(errorTimerRef.current);
+    };
   }, []);
+
+  // Form submit handler — owns the save-state transitions so the user
+  // can see the result of their click (green ✓ flash on success,
+  // red ✕ flash + inline error on failure). Errors thrown by the
+  // Wails SaveConfig IPC are surfaced here rather than being
+  // swallowed by App.tsx.
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (saveStatus === 'saving') return;
+    if (savedTimerRef.current) { window.clearTimeout(savedTimerRef.current); savedTimerRef.current = null; }
+    if (errorTimerRef.current) { window.clearTimeout(errorTimerRef.current); errorTimerRef.current = null; }
+    setSaveStatus('saving');
+    setLastSaveError(null);
+    try {
+      await onSave();
+      setSaveStatus('saved');
+      savedTimerRef.current = window.setTimeout(() => {
+        setSaveStatus('idle');
+        savedTimerRef.current = null;
+      }, 1800);
+    } catch (err) {
+      setSaveStatus('error');
+      setLastSaveError(err instanceof Error ? err.message : String(err));
+      errorTimerRef.current = window.setTimeout(() => {
+        setSaveStatus('idle');
+        setLastSaveError(null);
+        errorTimerRef.current = null;
+      }, 3000);
+    }
+  };
+
+  // Visual state for the submit button.
+  const saveButtonClasses =
+    saveStatus === 'saved'
+      ? 'bg-emerald-500 text-white shadow-emerald-500/40'
+      : saveStatus === 'error'
+        ? 'bg-rose-500 text-white shadow-rose-500/40'
+        : saveStatus === 'saving'
+          ? 'bg-zinc-700 text-white cursor-wait'
+          : 'bg-zinc-950 dark:bg-zinc-800 text-white dark:text-zinc-100 hover:bg-zinc-800 dark:hover:bg-zinc-700 shadow-premium-hover dark:shadow-none';
+
+  const saveButtonIcon =
+    saveStatus === 'saving'
+      ? 'progress_activity'
+      : saveStatus === 'saved'
+        ? 'check_circle'
+        : saveStatus === 'error'
+          ? 'error'
+          : 'save';
+
+  const saveButtonLabel =
+    saveStatus === 'saving'
+      ? 'Saving…'
+      : saveStatus === 'saved'
+        ? 'Saved'
+        : saveStatus === 'error'
+          ? 'Failed'
+          : 'Save Settings';
 
   return (
     <div className="max-w-4xl mx-auto">
 
-      <form onSubmit={onSave} className="space-y-8">
+      <form onSubmit={handleSubmit} className="space-y-8">
         {/* Resource Thresholds */}
         <div className="bg-white dark:bg-zinc-900 p-8 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none space-y-10 transition-all duration-500">
           <div className="flex justify-between items-start">
@@ -103,7 +175,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 </div>
 
                 {isOpen && searchEnabled && (
-                  <div className="absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-300">
+                  <div className="dropdown-pop absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 overflow-hidden">
                     {strategies.map((s, idx) => {
                       const isActive = selectedStrategy.endsWith(s);
                       return (
@@ -167,13 +239,30 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
         </div>
 
 
-        <div className="flex justify-end pt-4">
-          <button 
+        <div className="flex flex-col items-end gap-3 pt-4">
+          {lastSaveError && saveStatus === 'error' && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="px-4 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-[11px] font-bold text-rose-600 dark:text-rose-400 tracking-wider max-w-md text-right"
+              title={lastSaveError}
+            >
+              <span className="material-symbols-outlined text-sm align-middle mr-1">error</span>
+              Save failed: {lastSaveError.length > 80 ? lastSaveError.slice(0, 77) + '…' : lastSaveError}
+            </div>
+          )}
+          <button
             type="submit"
-            className="h-16 px-12 bg-zinc-950 dark:bg-zinc-800 text-white dark:text-zinc-100 font-black text-xs uppercase tracking-[0.3em] rounded-3xl hover:bg-zinc-800 dark:hover:bg-zinc-700 transition-all shadow-premium-hover dark:shadow-none active:scale-[0.98] group flex items-center gap-4 border border-transparent dark:border-white/10"
+            disabled={saveStatus === 'saving'}
+            aria-label={`${saveButtonLabel} — saves your config to the bot`}
+            data-testid="config-save-btn"
+            data-save-state={saveStatus}
+            className={`h-16 px-12 font-black text-xs uppercase tracking-[0.3em] rounded-3xl transition-all duration-300 active:scale-[0.98] flex items-center gap-4 border border-transparent dark:border-white/10 shadow-lg ${saveButtonClasses}`}
           >
-            Save Settings
-            <span className="material-symbols-outlined text-lg group-hover:translate-x-1 transition-transform">save</span>
+            {saveButtonLabel}
+            <span className={`material-symbols-outlined text-lg transition-transform ${saveStatus === 'saving' ? 'animate-spin' : saveStatus === 'idle' ? 'group-hover:translate-x-1' : ''}`}>
+              {saveButtonIcon}
+            </span>
           </button>
         </div>
       </form>

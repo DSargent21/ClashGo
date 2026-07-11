@@ -1,12 +1,57 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { BotStats } from '../types';
+import { GetLiveScreenshot } from '../../wailsjs/go/main/App';
 
 interface FeedProps {
-  screenshot: string;
   stats: BotStats;
 }
 
-const Feed: React.FC<FeedProps> = React.memo(({ screenshot, stats }) => {
+// Feed owns its own screenshot state + 1Hz poll. The previous
+// implementation let App.tsx drive the polling from a root useEffect,
+// which fired regardless of which tab was active — pushing a base64
+// JPEG across the WailsIPC bridge every second even when no image was
+// being rendered (Dashboard/Settings/Analytics/Config). Moving the
+// interval here scopes the IPC payload to the only mount site that
+// actually consumes it: this component, which only renders when
+// `tab === 'feed'`. Result: zero screenshot bytes cross the bridge
+// unless the user is on Live View.
+//
+// We also drop the `screenshot` prop entirely — the App-level React
+// tree no longer keeps a redundant screenshot state that had to be
+// kept in sync with this component's view.
+const Feed: React.FC<FeedProps> = React.memo(({ stats }) => {
+  const [screenshot, setScreenshot] = useState('');
+  const inflightRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const tick = async () => {
+      // Don't stack IPC calls if a previous tick hasn't resolved
+      // yet — a slow ADB capture response would otherwise pile up
+      // promises here and outrun the bridge.
+      if (inflightRef.current) return;
+      inflightRef.current = true;
+      try {
+        const img = await GetLiveScreenshot();
+        if (!cancelled && img) {
+          setScreenshot('data:image/jpeg;base64,' + img);
+        }
+      } catch {
+        // Silently tolerate transient IPC failures — next tick will retry.
+      } finally {
+        inflightRef.current = false;
+      }
+    };
+
+    void tick();
+    const id = window.setInterval(tick, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+
   return (
     <div className="bg-white dark:bg-zinc-900 p-6 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none flex flex-col items-center max-w-5xl mx-auto transition-all duration-500">
 
@@ -21,7 +66,7 @@ const Feed: React.FC<FeedProps> = React.memo(({ screenshot, stats }) => {
             <span className="uppercase tracking-[0.4em] font-black opacity-30">Device Offline</span>
           </div>
         )}
-        
+
         {/* Overlays */}
         <div className="absolute top-8 left-8 flex items-center gap-4 px-5 py-2 bg-black/60 backdrop-blur-2xl rounded-2xl border border-white/10 shadow-2xl">
            <div className="relative">
@@ -40,11 +85,11 @@ const Feed: React.FC<FeedProps> = React.memo(({ screenshot, stats }) => {
           <div className="flex flex-col">
             <span className="text-[10px] font-black text-zinc-300 dark:text-zinc-700 uppercase tracking-[0.2em] mb-0.5">Capture Latency</span>
             <span className="text-2xl text-zinc-950 dark:text-white font-bold tracking-tight tabular-nums">
-              {(!stats.adb_health.avg_capture_ms || isNaN(stats.adb_health.avg_capture_ms)) 
-                ? '0' 
-                : (stats.adb_health.avg_capture_ms < 1 && stats.adb_health.avg_capture_ms > 0 
-                  ? stats.adb_health.avg_capture_ms.toFixed(1) 
-                  : Math.round(stats.adb_health.avg_capture_ms))} 
+              {(!stats.adb_health.avg_capture_ms || isNaN(stats.adb_health.avg_capture_ms))
+                ? '0'
+                : (stats.adb_health.avg_capture_ms < 1 && stats.adb_health.avg_capture_ms > 0
+                  ? stats.adb_health.avg_capture_ms.toFixed(1)
+                  : Math.round(stats.adb_health.avg_capture_ms))}
               <span className="text-xs text-zinc-400 dark:text-zinc-500 font-medium ml-1">ms</span>
             </span>
           </div>

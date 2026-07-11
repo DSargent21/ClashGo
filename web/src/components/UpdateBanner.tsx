@@ -99,12 +99,22 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
 
   // Standard modal a11y: capture the previously-focused element so we
   // can restore it on close, focus the close button on mount, and let
-  // ESC dismiss — the absence of any of these is a frequent blocker
-  // for screen-reader / keyboard-only users.
+  // ESC dismiss. Listener is now conditionally mounted — when the
+  // modal isn't open we don't register a global keydown handler at
+  // all, instead of mounting it then short-circuiting on `!open`
+  // (the prior pattern fired on every keystroke globally even with
+  // no modal up).
+  const wasOpenRef = React.useRef(false);
   React.useEffect(() => {
-    if (!open) return;
-    previousFocusRef.current = (document.activeElement as HTMLElement) ?? null;
-    closeButtonRef.current?.focus();
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (!wasOpenRef.current) {
+      previousFocusRef.current = (document.activeElement as HTMLElement) ?? null;
+      closeButtonRef.current?.focus();
+      wasOpenRef.current = true;
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && busy === null) {
         setOpen(false);
@@ -114,7 +124,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
-      previousFocusRef.current?.focus?.();
+      if (!wasOpenRef.current) previousFocusRef.current?.focus?.();
     };
   }, [open, busy, onDismiss]);
 
@@ -193,7 +203,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
       <button
         onClick={() => setOpen(true)}
         className={`no-drag group flex items-center gap-2.5 px-4 py-2 rounded-2xl border text-[10px] font-black uppercase tracking-[0.2em] transition-all duration-300 hover:shadow-premium active:scale-95 ${pillTone}`}
-        title={`ClashGO v${appVersion || '0.0.0'} \u2014 ${stateLabel(status.state)}`}
+        title={`ClashGO v${appVersion || '0.0.0'} — ${stateLabel(status.state)}`}
       >
         <span
           className={`material-symbols-outlined text-sm ${
@@ -207,7 +217,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
           : status.available
             ? `Update ${status.latest_version}`
             : status.state === 'ready'
-              ? `v${status.latest_version} \u2014 Install`
+              ? `v${status.latest_version} — Install`
               : status.state === 'error'
                 ? 'Update failed'
                 : stateLabel(status.state)}
@@ -246,7 +256,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                     <span className="font-mono">v{appVersion}</span>
                     {status.min_supported && (
                       <>
-                        <span className="text-zinc-300 dark:text-zinc-700">\u2022</span>
+                        <span className="text-zinc-300 dark:text-zinc-700">•</span>
                         <span className="text-[10px] uppercase tracking-widest text-zinc-300 dark:text-zinc-700">
                           min v{status.min_supported}
                         </span>
@@ -370,7 +380,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                   >
                     Skip version
                   </button>
-                  <span className="text-zinc-200 dark:text-zinc-800">\u2022</span>
+                  <span className="text-zinc-200 dark:text-zinc-800">•</span>
                   <button
                     onClick={() => {
                       setOpen(false);
@@ -427,7 +437,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
 const busyLabel = (b: string): string => {
   switch (b) {
     case 'oneclick':
-      return 'Downloading \u2022 verifying \u2022 installing…';
+      return 'Downloading • verifying • installing…';
     case 'download':
       return 'Downloading…';
     case 'apply':

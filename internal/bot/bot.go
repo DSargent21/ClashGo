@@ -313,6 +313,19 @@ func (b *Bot) Stop() {
 		_ = b.dukePicksFile.Close()
 	}
 }
+
+// Cancel signals the bot's context to stop. The captureLoop and any
+// in-flight attack sequence see the cancellation on their next
+// `b.ctx.Done()` check (sub-millisecond), which is what makes the
+// Stop button feel "instant" to the user — no more taps, captures,
+// state transitions, or attack progression. The full `Stop()` path
+// (ADB close, async-writer drain, file flush) is intentionally kept
+// out of this method so callers can split the work: `Cancel()` for
+// the synchronous "stop what you're doing" signal, and `Stop()` for
+// the heavier teardown that App.StopBot detaches into a goroutine.
+func (b *Bot) Cancel() {
+	b.cancel()
+}
 func (b *Bot) captureLoop() {
 	gc := game.NewGameContext()
 

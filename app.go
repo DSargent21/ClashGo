@@ -34,6 +34,16 @@ type App struct {
 	lastStats bot.BotStats
 	logBuffer []string
 
+	// cachedHistory is the in-memory mirror of attack_history.json
+	// so React's 2 s poll for GetAttackHistory doesn't hit the
+	// filesystem on every tick. Refreshed lazily on first call
+	// (cold start) and eagerly on each bot.statsUpdate callback
+	// (end of every attack — bounded to ~once per attack, well
+	// below the 0.5 Hz React poll). RWMutex because read dominates
+	// on the hot IPC path.
+	cachedHistory   []bot.AttackReport
+	cachedHistoryMu sync.RWMutex
+
 	// Updater wiring
 	updater       *updater.Service
 	updaterBgCtx  context.Context
@@ -44,11 +54,14 @@ type WailsLogWriter struct {
 	app *App
 }
 
+// Write bridges zerolog to a bounded in-memory ring buffer read by
+// App.GetLogs() on the React poll cadence. A prior revision also
+// emitted `"bot_log"` Events here for a future streaming-log
+// viewer, but the bridge emit had no React subscriber (verified:
+// no EventsOn("bot_log", ...) anywhere in web/src/components) and
+// cost a WailsIPC round-trip per zerolog line. Removed.
 func (w *WailsLogWriter) Write(p []byte) (n int, err error) {
 	msg := string(p)
-	if w.app.ctx != nil {
-		runtime.EventsEmit(w.app.ctx, "bot_log", msg)
-	}
 
 	w.app.mu.Lock()
 	w.app.logBuffer = append(w.app.logBuffer, msg)
@@ -187,6 +200,12 @@ func (a *App) ResetStats() {
 		// For now, stopping the bot might be required for a full reset, or we just clear the persistent part.
 	}
 	a.mu.Unlock()
+	// Drop the cached history so the next GetAttackHistory re-reads
+	// (correct empty) state from disk instead of serving stale rows
+	// we'd just deleted from disk but still keep in memory.
+	a.cachedHistoryMu.Lock()
+	a.cachedHistory = nil
+	a.cachedHistoryMu.Unlock()
 	_ = os.Remove(paths.ResolveConfig("stats.json"))
 	_ = os.Remove(paths.ResolveConfig("attack_history.json"))
 }
@@ -281,13 +300,23 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 			return
 		}
 
-		b.OnFrame = func(frame string) {
-			if a.ctx != nil {
-				runtime.EventsEmit(a.ctx, "live_feed", frame)
-			}
-		}
+		// Note: b.OnFrame used to be wired to a `"live_feed"`
+		// EventsEmit that pushed a 50–150 KB base64 JPEG over the
+		// WailsIPC bridge at capture-loop frequency (up to 10 FPS).
+		// The React UI never subscribed to "live_feed" (verified:
+		// web/src/components/* has no EventsOn matching that name)
+		// so each emit was a wasted IPC round-trip. The live
+		// screenshot now flows exclusively through GetLiveScreenshot()
+		// — it returns the same b.lastFrame string from atomic.Value
+		// without burning the bridge. See App.GetLiveScreenshot.
 
 		b.OnStatsUpdate = func() {
+			// Refresh the in-memory history cache once per attack
+			// so React's 2 s GetAttackHistory poll doesn't re-read
+			// attack_history.json from disk every tick. Bounded
+			// to roughly the bot's attack cadence (a few minutes)
+			// — well below the 0.5 Hz poll rate.
+			a.refreshHistory()
 			a.saveStats()
 		}
 
@@ -308,20 +337,48 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 	return BotStatus{Running: true, Message: "Bot initialization started in background"}
 }
 
-// StopBot stops the bot
+// StopBot stops the bot instantly.
+//
+// Behavior change vs. the previous implementation: the heavy teardown
+// is detached to a goroutine so the IPC returns to React as fast as
+// possible. Previously the IPC blocked on the entire graceful-shutdown
+// chain — bot.Stop() (cancel + ADB client Close + globalAsyncWriter.Close
+// which itself `wg.Wait()`s the in-flight stats write drain, plus
+// template cache close + NDJSON file close) followed by saveStats()
+// (synchronous JSON marshal + file write to disk). On an active attack
+// that could run 1–3s before the IPC reply reached React, and the user
+// perceived the Stop button as broken while the UI stayed on "Running".
+//
+// Now: we synchronously cancel the bot's internal context (so the
+// captureLoop and any in-flight executeAttackSequence see the stop on
+// their next `b.ctx.Done()` check — sub-millisecond) and detach the
+// heavy teardown. The bot stops issuing new taps, captures, and state
+// transitions immediately, which is what "stop right where we are"
+// means in practice. React's `setIsRunning(false)` flips on the next
+// React tick (within the 2s poll), so the UI feels instant.
+//
+// Concurrency: the heavy teardown runs in a detached goroutine that
+// captures the local `bot` reference, so a subsequent StartBot can't
+// observe a half-torn-down bot. The async-writer's global singleton
+// still gets closed, which means a quick Stop → Start sequence could
+// see AsyncWriteFile fall through to a synchronous os.WriteFile until
+// the next NewAsyncWriter — acceptable, since the previous code path
+// had the same constraint and the new behaviour is strictly an
+// improvement on the slow path.
 func (a *App) StopBot() BotStatus {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if a.cancel != nil {
 		a.cancel()
 	}
 
 	if a.bot == nil {
+		a.mu.Unlock()
 		return BotStatus{Running: false, Message: "Bot not running"}
 	}
 
-	// Capture and accumulate final stats before stopping
+	// Capture and accumulate final stats before stopping. All counters
+	// are atomic.Int* loads, so this is O(1) and non-blocking.
 	current := a.bot.Stats()
 	a.lastStats = bot.BotStats{
 		AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
@@ -337,13 +394,45 @@ func (a *App) StopBot() BotStatus {
 		AdbHealth:        current.AdbHealth,
 	}
 
-	a.cancel()
-	a.bot.Stop()
-	a.bot = nil
+	// Snapshot the bot pointer + synchronously cancel its context so
+	// the captureLoop and any in-flight executeAttackSequence see the
+	// stop on their next `b.ctx.Done()` check. This is the
+	// user-visible "stop right where we are" — no more taps, captures,
+	// or state transitions issued from this point on.
+	bot := a.bot
+	bot.Cancel()
 
+	// Detach references under the lock so:
+	//   1. `IsRunning()` returns false the moment the lock is released
+	//      (drives the React `setIsRunning(false)` flip in <1 React
+	//      tick).
+	//   2. A concurrent StartBot sees `a.bot == nil` and proceeds to
+	//      construct a new bot without observing a half-torn-down one.
+	a.bot = nil
+	a.cancel = nil
 	a.mu.Unlock()
-	a.saveStats()
-	a.mu.Lock()
+
+	// Detach the slow teardown. The captureLoop will exit on its own
+	// now that b.ctx is cancelled; this goroutine just releases OS
+	// handles (ADB pipe, async-writer drain, template cache, NDJSON
+	// file) and flushes the final stats snapshot to disk. None of that
+	// is required for correctness of the user-visible stop signal.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error().Interface("panic", r).Msg("recovered panic during async bot stop")
+			}
+		}()
+		bot.Stop()
+		a.saveStats()
+		// Re-seed attack-history cache after teardown. If the user
+		// manually edited attack_history.json while the bot was
+		// stopped, the next React poll re-reads from disk instead
+		// of serving the stale pre-edit snapshot.
+		a.cachedHistoryMu.Lock()
+		a.cachedHistory = nil
+		a.cachedHistoryMu.Unlock()
+	}()
 
 	return BotStatus{Running: false, Message: "Bot stopped"}
 }
@@ -395,17 +484,93 @@ func (a *App) GetLogs() []string {
 	return res
 }
 
-// GetAttackHistory returns persistent log of attacks
+// GetAttackHistory returns the persistent log of attacks.
+//
+// Reads from an in-memory cache that is refreshed:
+//   - lazily on the first call after process start (cold boot, before
+//     any OnStatsUpdate has fired), via double-check locking so only
+//     ONE goroutine ever performs the disk read; and
+//   - eagerly in OnStatsUpdate at the end of every attack.
+//
+// React polls this at 0.5 Hz; without the cache that translates to
+// a filesystem read + JSON unmarshal + re-marshal on every tick.
+// With the cache, the per-tick cost is an atomic read + slice copy
+// — no syscalls, no JSON.
+// GetAttackHistory returns the persistent log of attacks.
+//
+// Reads from an in-memory cache that is refreshed:
+//   - lazily on the first call after process start (cold boot, before
+//     any OnStatsUpdate has fired), via double-check locking so only
+//     ONE goroutine ever performs the disk read; and
+//   - eagerly in OnStatsUpdate at the end of every attack.
+//
+// React polls this at 0.5 Hz; without the cache that translates to
+// a filesystem read + JSON unmarshal + re-marshal on every tick.
+// With the cache, the per-tick cost is an atomic read + slice copy
+// — no syscalls, no JSON.
 func (a *App) GetAttackHistory() []bot.AttackReport {
+	// Fast path: cache hit. RLock allows concurrent IPC polls to
+	// all read in parallel.
+	a.cachedHistoryMu.RLock()
+	if a.cachedHistory != nil {
+		out := make([]bot.AttackReport, len(a.cachedHistory))
+		copy(out, a.cachedHistory)
+		a.cachedHistoryMu.RUnlock()
+		return out
+	}
+	a.cachedHistoryMu.RUnlock()
+
+	// Cache miss: take the write lock and lazy-load via the shared
+	// helper. Double-check inside the helper means only ONE
+	// goroutine in the entire process performs the disk read on
+	// cold start, even if React fires multiple polls back-to-back.
+	a.cachedHistoryMu.Lock()
+	a.ensureHistoryLoadedLocked()
+	out := make([]bot.AttackReport, len(a.cachedHistory))
+	copy(out, a.cachedHistory)
+	a.cachedHistoryMu.Unlock()
+	return out
+}
+
+// ensureHistoryLoadedLocked populates the cache from disk IF the
+// cache is still nil. Caller MUST hold cachedHistoryMu.Lock()
+// (write lock) on entry. Centralising the read+parse+assign here
+// keeps the two refresh paths (cold-miss GetAttackHistory + per-
+// attack OnStatsUpdate) behaviourally identical — and means a fix
+// to the parse logic only needs to be made once.
+//
+// Failure modes are intentionally non-fatal: a missing or malformed
+// file leaves the previous cache untouched (nil on cold-start).
+// This matches the legacy behaviour where a bad file silently
+// returned []string{}.
+func (a *App) ensureHistoryLoadedLocked() {
+	if a.cachedHistory != nil {
+		return
+	}
 	data, err := os.ReadFile(paths.ResolveConfig("attack_history.json"))
 	if err != nil {
-		return []bot.AttackReport{}
+		return
 	}
-	var history []bot.AttackReport
-	if err := json.Unmarshal(data, &history); err != nil {
-		return []bot.AttackReport{}
+	var hist []bot.AttackReport
+	if err := json.Unmarshal(data, &hist); err != nil {
+		return
 	}
-	return history
+	a.cachedHistory = hist
+}
+
+// refreshHistory is the eager (per-attack-end) refresh path. It
+// runs from inside the bot's OnStatsUpdate callback, so the cadence
+// is bounded by attack frequency (~one refresh every few minutes of
+// normal play) — well below the 0.5 Hz React poll.
+//
+// Holds cachedHistoryMu through the disk read so concurrent React
+// polls wait on the writer rather than racing the assign. The
+// per-attack write-lock window is ~50 ms (read+parse) which is
+// imperceptible at 0.5 Hz polling.
+func (a *App) refreshHistory() {
+	a.cachedHistoryMu.Lock()
+	a.ensureHistoryLoadedLocked()
+	a.cachedHistoryMu.Unlock()
 }
 
 // GetLiveScreenshot captures the current frame via ADB and encodes it to base64

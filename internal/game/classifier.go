@@ -105,7 +105,16 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 				if norm.Closed() || norm.Empty() {
 					norm = vision.ResizeToHeight(screen, 732)
 				}
-				matches, err := vision.MatchMultiScale(norm, tpl, 0.9, 1.1, 3, c.cfg.TemplateThreshold)
+				// Use the cached variant passing rule.Template as the
+				// cache key. The empty-name bypass in MatchMultiScale()
+				// rebuilds scaled template Mats inside the loop on
+				// every call; this fixes ~3× Mat allocs per matching
+				// rule per frame at 10 FPS in battle state.
+				matches, err := vision.MatchMultiScaleROICached(
+					norm, tpl, rule.Template,
+					0.9, 1.1, 3, c.cfg.TemplateThreshold,
+					image.Rect(0, 0, norm.Cols(), norm.Rows()),
+				)
 				if err == nil && len(matches) > 0 {
 					bestConf = matches[0].Confidence
 					templatePassed = true

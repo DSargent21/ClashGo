@@ -6,7 +6,6 @@ interface DashboardProps {
   stats: BotStats;
   history: AttackReport[];
   logs: string[];
-  onClearLogs: () => void;
   terminalEndRef: React.RefObject<HTMLDivElement>;
 }
 
@@ -24,8 +23,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   stats,
   history,
   logs,
-  onClearLogs,
-  terminalEndRef
+  terminalEndRef,
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [terminalAutoScroll, setTerminalAutoScroll] = React.useState(getTerminalAutoScroll);

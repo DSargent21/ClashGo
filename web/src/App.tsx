@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Feed from './components/Feed';
@@ -10,7 +10,6 @@ import {
   GetStats,
   GetAttackHistory,
   GetLogs,
-  GetLiveScreenshot,
   SaveConfig,
   StartBot,
   StopBot,
@@ -123,7 +122,15 @@ function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [history, setHistory] = useState<bot.AttackReport[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  const [screenshot, setScreenshot] = useState('');
+  // NOTE: screenshot state lives in the Feed component now. The
+  // previous App-level interval fired unconditionally — even when
+  // the user was on Dashboard/Settings/Analytics where no image
+  // consumes it — pushing a 50–150 KB base64 JPEG across the
+  // WailsIPC bridge every 1 s. Moving the poll into Feed's own
+  // useEffect makes the interval mount only when `<Feed/>` is
+  // rendered (i.e. only when tab === 'feed'), so the IPC payload
+  // and the setInterval are both eliminated for users on every
+  // other tab.
   const [adbPort, setAdbPort] = useState(5555);
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
   const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarExpanded);
@@ -202,16 +209,10 @@ function App() {
     fetchData();
     const interval = setInterval(fetchData, 2000);
 
-  const updateScreenshot = async () => {
-      try {
-        const img = await GetLiveScreenshot();
-        if (img) setScreenshot('data:image/jpeg;base64,' + img);
-      } catch (err) {
-        // Silently fail screenshots
-      }
-    };
-
-    const screenInterval = setInterval(updateScreenshot, 1000);
+    // The 1 Hz screenshot poll used to live here. It moved into
+    // <Feed/>'s own useEffect (see web/src/components/Feed.tsx) so
+    // it only runs when the Live View tab is mounted, instead of
+    // burning the WailsIPC bridge every second regardless of tab.
 
     // Subscribe to Wails-pushed events. `safeEventsOn` wraps the runtime
     // bridge so a missing `window.runtime` (e.g. `npm run dev` opened in
@@ -232,7 +233,6 @@ function App() {
 
     return () => {
       clearInterval(interval);
-      clearInterval(screenInterval);
       unsub();
       unsubUpdater();
     };
@@ -260,19 +260,15 @@ function App() {
   }, [sidebarExpanded]);
 
   const saveSettings = async () => {
-    try {
-      await SaveConfig(
-        goldThreshold,
-        elixirThreshold,
-        deThreshold,
-        upgradeWalls,
-        selectedStrategy,
-        searchEnabled,
-        stallTimer
-      );
-    } catch (err) {
-      console.error('Save failed:', err);
-    }
+    await SaveConfig(
+      goldThreshold,
+      elixirThreshold,
+      deThreshold,
+      upgradeWalls,
+      selectedStrategy,
+      searchEnabled,
+      stallTimer,
+    );
   };
 
   const handleStart = async () => {
@@ -348,9 +344,30 @@ function App() {
     stats,
     history,
     logs,
-    onClearLogs: () => setLogs([]), // Local clear for UI if needed, but GetLogs will refill
-    terminalEndRef
+    terminalEndRef,
   }), [stats, history, logs]);
+
+  // ADB connection state — drives the header status pill. Labels stop
+  // calling the local ADB server "localhost:{port}" because the bot
+  // can legitimately attach to remote devices via `adb connect
+  // <ip>:{port}`; the port number is just the local ADB server's
+  // listen port, not the device host regardless.
+  const adbState: 'connected' | 'degraded' | 'disconnected' | 'awaiting' =
+    stats.attacks_completed + stats.search_skips > 0
+      ? stats.adb_health.consecutive_fails === 0
+        ? 'connected'
+        : stats.adb_health.consecutive_fails < 5
+          ? 'degraded'
+          : 'disconnected'
+      : 'awaiting';
+  const adbStateLabel =
+    adbState === 'connected'
+      ? 'Connected'
+      : adbState === 'degraded'
+        ? 'Degraded'
+        : adbState === 'disconnected'
+          ? 'Disconnected'
+          : 'Awaiting';
 
   const configProps = useMemo(() => ({
     goldThreshold, setGoldThreshold,
@@ -361,9 +378,13 @@ function App() {
     searchEnabled, setSearchEnabled,
     upgradeWalls, setUpgradeWalls,
     stallTimer, setStallTimer,
-    onSave: (e: React.FormEvent) => {
-      e.preventDefault();
-      saveSettings();
+    onSave: async () => {
+      // Errors intentionally bubble so ConfigView's save-status
+      // indicator can show a red "Save failed" pill back to the user.
+      // Previously this catch swallowed the error and only logged it,
+      // which made save feel broken when SaveConfig (the Wails IPC)
+      // rejected (e.g. backend down, malformed payload).
+      await saveSettings();
     }
   }), [
     goldThreshold, elixirThreshold, deThreshold,
@@ -414,18 +435,18 @@ function App() {
                   onDismiss={() => setUpdateDismissed(true)}
                 />
               )}
-              <div className="bg-white dark:bg-zinc-900 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md">
+              <div className="bg-white dark:bg-zinc-900 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md" title={`ADB server port ${adbPort} — ${adbStateLabel}`}>
                 <div className="relative">
-                  <div className={`w-2.5 h-2.5 rounded-full ${stats.adb_health.consecutive_fails === 0 ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></div>
-                  {stats.adb_health.consecutive_fails === 0 && <div className="absolute inset-0 w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping opacity-20"></div>}
+                  <div className={`w-2.5 h-2.5 rounded-full ${adbState === 'connected' ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></div>
+                  {adbState === 'connected' && <div className="absolute inset-0 w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping opacity-20"></div>}
                 </div>
-                <span className="text-[11px] font-black uppercase tracking-widest text-zinc-500 dark:text-zinc-400">Node: localhost:{adbPort}</span>
+                <span className="text-[11px] font-black uppercase tracking-widest text-zinc-500 dark:text-zinc-400">ADB: {adbPort} · {adbStateLabel}</span>
               </div>
             </div>
           </header>
 
           {tab === 'dashboard' && <Dashboard {...dashboardProps} />}
-          {tab === 'feed' && <Feed screenshot={screenshot} stats={stats} />}
+          {tab === 'feed' && <Feed stats={stats} />}
           {tab === 'analytics' && <Analytics stats={stats} />}
           {tab === 'config' && <ConfigView {...configProps} />}
           {tab === 'settings' && (
