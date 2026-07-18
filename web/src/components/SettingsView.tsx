@@ -54,11 +54,16 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
           </div>
         </div>
 
-        {[
-          { label: 'Connection Status', value: stats.adb_health.consecutive_fails === 0 ? 'Optimal' : 'Interrupted', status: stats.adb_health.consecutive_fails === 0 ? 'success' : 'error', icon: 'hub' },
-          { label: 'ADB Port', value: adbPort.toString(), status: 'info', icon: 'router' },
-          { label: 'Capture Latency', value: isNaN(stats.adb_health.avg_capture_ms) ? '0ms' : `${stats.adb_health.avg_capture_ms.toFixed(1)}ms`, status: stats.adb_health.avg_capture_ms < 200 ? 'success' : 'info', icon: 'speed' },
-        ].map((item, i) => (
+          {[
+            { label: 'Connection Status', value: stats.adb_health.consecutive_fails === 0 ? 'Optimal' : 'Interrupted', status: stats.adb_health.consecutive_fails === 0 ? 'success' : 'error', icon: 'hub' },
+            { label: 'ADB Port', value: adbPort.toString(), status: 'info', icon: 'router' },
+            { label: 'Capture Latency', value: isNaN(stats.adb_health.avg_capture_ms) ? '0ms' : `${stats.adb_health.avg_capture_ms.toFixed(1)}ms`, status: stats.adb_health.avg_capture_ms < 200 ? 'success' : 'info', icon: 'speed' },
+            // cpu_time_sec is device-independent (absolute CPU seconds since
+            // start). cpu_cores is a fraction of one core; scaled by the host's
+            // logical core count only to render a familiar 0-100% number.
+            { label: 'CPU Time', value: `${stats.cpu_time_sec.toFixed(1)}s`, status: 'info', icon: 'schedule' },
+            { label: 'CPU Usage', value: isNaN(stats.cpu_cores) ? '0%' : `${(stats.cpu_cores * (navigator.hardwareConcurrency || 1) * 100).toFixed(1)}%`, status: stats.cpu_cores < 0.5 ? 'success' : 'info', icon: 'memory' },
+          ].map((item, i) => (
 
           <div key={i} className="flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group">
             <div className="flex items-center gap-5">

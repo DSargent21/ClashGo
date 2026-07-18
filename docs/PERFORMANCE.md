@@ -48,6 +48,33 @@ Verify on your machine with the RSS-sampling recipe under
 (extend the `ps` sample to also cover the BlueStacks process for the
 combined number).
 
+### CPU metric: absolute time, not a percentage
+
+A "% CPU" reading is **device-relative** — it is a fraction of one core on
+the host the bot happens to run on, so it cannot be compared across machines
+and is not "accurate" in an absolute sense. To make CPU measurable and
+comparable everywhere, ClashGO reports two device-independent numbers
+(`internal/bot/cputime.go`, via `getrusage(RUSAGE_SELF)`):
+
+- **`cpu_time_sec`** — total CPU time (user + system) consumed by the bot
+  process since start, in seconds. This is the canonical, portable metric:
+  burning one core for 10 s reports ~10 s on any machine regardless of core
+  count. Compare efficiency by measuring the delta in `cpu_time_sec` over a
+  fixed wall-clock window (e.g. per attack, or per minute of battle).
+- **`cpu_cores`** — CPU usage as a fraction of one core over the last sample
+  window (`Δcpu_time / Δwall`). `1.0` = one full core busy for the whole
+  interval. Multiply by the host's logical-core count **only** if you want a
+  familiar 0–100% number for that specific machine.
+
+The UI's "CPU Usage %" = `cpu_cores × navigator.hardwareConcurrency`; the
+underlying `cpu_time_sec` is what you should log/cite for cross-device
+comparisons.
+
+**Accuracy note:** `getrusage` is kernel-authoritative for process CPU time,
+not a sampling estimate, so `cpu_time_sec` is exact (microsecond resolution),
+not an approximation. The only source of error is the sampling window for
+`cpu_cores`, which smooths over the window duration.
+
 ## What changed (and why)
 
 Each finding pairs the **issue**, the **file:line** it lives in, and the **estimated CPU / RAM savings**.

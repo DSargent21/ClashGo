@@ -177,6 +177,8 @@ func (a *App) saveStats() {
 			Stars2:           a.lastStats.Stars2 + current.Stars2,
 			Stars3:           a.lastStats.Stars3 + current.Stars3,
 			Uptime:           a.lastStats.Uptime + current.Uptime,
+			CPUTimeSec:       current.CPUTimeSec,
+			CPUCores:         current.CPUCores,
 		}
 	}
 	a.mu.Unlock()
@@ -392,6 +394,8 @@ func (a *App) StopBot() BotStatus {
 		Stars3:           a.lastStats.Stars3 + current.Stars3,
 		Uptime:           a.lastStats.Uptime + current.Uptime,
 		AdbHealth:        current.AdbHealth,
+		CPUTimeSec:       current.CPUTimeSec,
+		CPUCores:         current.CPUCores,
 	}
 
 	// Snapshot the bot pointer + synchronously cancel its context so
@@ -469,6 +473,8 @@ func (a *App) GetStats() bot.BotStats {
 			Stars3:           a.lastStats.Stars3 + current.Stars3,
 			Uptime:           a.lastStats.Uptime + current.Uptime,
 			AdbHealth:        current.AdbHealth,
+			CPUTimeSec:       current.CPUTimeSec,
+			CPUCores:         current.CPUCores,
 		}
 	}
 	return res

@@ -44,6 +44,12 @@ validates them on your machine.
 ¹ CPU is single-core; the bot is largely single-threaded per capture frame
 (classify + template match + tap). Higher FPS = proportionally more CPU.
 At 15 FPS the per-frame vision work (~7–15 ms) consumes ~15–25% of one core.
+The bot also reports **`cpu_time_sec`** — absolute CPU time since process
+start — which is the device-independent metric: it means the same on an M1 or
+an M3 Max, so you can compare efficiency across machines without normalizing
+by core count. The "% CPU" shown in the UI is derived by multiplying the
+per-core fraction (`cpu_cores`) by the host's logical core count; treat that
+number as host-relative only.
 ² BlueStacks footprint is driven by the emulator + Android guest, not the
 bot. It scales with emulator window size / DPI and the guest's own memory
 pressure, not with ClashGO's FPS.

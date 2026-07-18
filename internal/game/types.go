@@ -183,6 +183,15 @@ type SystemHealth struct {
 	LastCapture      time.Time
 	AvgCaptureMs     float64
 	ConsecutiveFails int
+	// CPUTimeSec is the absolute CPU time consumed by the bot process since
+	// it started, in seconds. Device-independent (see docs/cputime notes):
+	// comparable across machines, unlike a "% CPU" reading.
+	CPUTimeSec float64
+	// CPUCores is the CPU usage expressed as a fraction of one core over the
+	// last sampling window (1.0 == one full core busy). Device-independent in
+	// meaning; multiply by logical-core count only to render a 0-100% number
+	// for a specific host. 0 on unsupported platforms.
+	CPUCores float64
 }
 
 func (h SystemHealth) IsHealthy() bool {

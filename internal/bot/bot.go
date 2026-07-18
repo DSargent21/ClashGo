@@ -72,6 +72,7 @@ type Bot struct {
 	lastNav              time.Time
 	lastCapture          time.Time
 	stuckTimeout         time.Duration
+	cpuSampler           *cpuSampler
 
 	lastFrame     atomic.Value // Stores the latest base64 encoded frame
 	lastFrameTime time.Time
@@ -258,6 +259,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
 		stuckTimeout:      35 * time.Second,
+		cpuSampler:        newCPUSampler(),
 		dukePicksFile:     dukePicksFile,
 	}
 
@@ -1604,6 +1606,8 @@ func (b *Bot) Health() game.SystemHealth {
 		LastCapture:      b.lastCapture,
 		AvgCaptureMs:     b.client.Health().AvgCaptureMs,
 		ConsecutiveFails: b.client.Health().ConsecutiveFails,
+		CPUTimeSec:       CPUTime().Seconds(),
+		CPUCores:         b.cpuSampler.Usage(),
 	}
 }
 
@@ -1649,6 +1653,8 @@ func (b *Bot) Stats() BotStats {
 		Stars3:           b.stars3.Load(),
 		Uptime:           time.Since(b.startedAt),
 		AdbHealth:        b.client.Health(),
+		CPUTimeSec:       CPUTime().Seconds(),
+		CPUCores:         b.cpuSampler.Usage(),
 	}
 }
 
@@ -1664,6 +1670,12 @@ type BotStats struct {
 	Stars3           int32         `json:"stars_3"`
 	Uptime           time.Duration `json:"uptime"`
 	AdbHealth        adb.Health    `json:"adb_health"`
+	// CPUTimeSec is the absolute CPU time consumed since process start
+	// (device-independent, unlike "% CPU").
+	CPUTimeSec float64 `json:"cpu_time_sec"`
+	// CPUCores is CPU usage as a fraction of one core over the last sample
+	// window (1.0 == one full core busy).
+	CPUCores   float64 `json:"cpu_cores"`
 }
 
 type AttackReport struct {

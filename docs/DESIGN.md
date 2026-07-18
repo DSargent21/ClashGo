@@ -124,7 +124,11 @@ cache + capture cadence). Assume Apple Silicon Mac + BlueStacks at
   at 15 FPS. The idle bulk is the Wails/WebKit GUI harness, not the bot
   logic (~2–4 MB mats + ~1–3 MB template cache + small Live View buffer).
 - **ClashGO CPU**: single-core; ~1–3% idle, ~15–25% at 15 FPS (per-frame
-  vision work ~7–15 ms scales ~linearly with FPS).
+  vision work ~7–15 ms scales ~linearly with FPS). The bot also reports
+  `cpu_time_sec` (absolute CPU seconds since start, device-independent and
+  kernel-accurate via `getrusage`) so efficiency is comparable across
+  machines without normalizing by core count. See
+  [`PERFORMANCE.md`](PERFORMANCE.md#cpu-metric-absolute-time-not-a-percentage).
 - **+ BlueStacks**: ~800 MB–1.2 GB idle, ~1.0–1.5 GB in battle; driven by
   the emulator + Android guest, largely independent of ClashGO's FPS.
 - **Combined**: ~0.9–1.3 GB idle, ~1.1–1.7 GB at 15 FPS.

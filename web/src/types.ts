@@ -9,6 +9,13 @@ export interface BotStats {
   stars_2: number;
   stars_3: number;
   uptime: number; // nanoseconds
+  // Device-independent CPU metrics. cpu_time_sec is absolute CPU seconds
+  // since process start (comparable across machines). cpu_cores is CPU usage
+  // as a fraction of one core over the last sample window (1.0 = one full
+  // core busy). To show a 0-100% number on a specific host, multiply
+  // cpu_cores by that host's logical core count.
+  cpu_time_sec: number;
+  cpu_cores: number;
   adb_health: {
     avg_capture_ms: number;
     consecutive_fails: number;
