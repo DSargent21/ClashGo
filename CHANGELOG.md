@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Device-independent CPU metric** — `internal/bot/cputime.go` reads
+  process CPU time via `getrusage(RUSAGE_SELF)` (user + system) and exposes
+  `cpu_time_sec` (absolute, kernel-accurate, comparable across machines) plus
+  `cpu_cores` (fraction of one core over the last sample window). Wired into
+  `game.SystemHealth` + `bot.BotStats`, surfaced in the GUI Settings view
+  (CPU Time in seconds + host-relative %). A non-unix fallback returns zero so
+  the build stays portable. See
+  [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md#cpu-metric-absolute-time-not-a-percentage).
+- **Resource-usage documentation** — README, `docs/PERFORMANCE.md`, and
+  `docs/DESIGN.md` now carry RAM/CPU estimates for ClashGO alone and combined
+  with BlueStacks at 860×732 / 160 DPI (incl. the 15 FPS battle case). Numbers
+  are principled code-analysis estimates (frame sizing, mat pool, template
+  cache, capture cadence), not live measurements.
+
+### Fixed
+- **MatPool key collision (silent corruption)** — `getPoolKey` previously
+  cast dimensions to a single `rune`, collapsing distinct sizes (e.g. rows
+  100 vs 256) into one key and risking panics / mis-sized Mats for dims
+  >0xFFFF. Keys are now encoded numerically (`%d_%d_%d`).
+- **Frame-encode Mat leak** — the Live View encode path now closes the JPEG
+  buffer on every branch and always returns the pooled half-frame Mat, so a
+  failed encode cannot leak it.
+- **`lastNav` global race** — moved the ArmyCamp navigation cooldown tracker
+  from a package-level `var` to a `Bot` field, removing cross-instance state
+  sharing / data races.
+- **`Health().LastCapture` lied** — now reports the real last successful
+  capture time instead of `time.Now()` on every call.
+- **Attack-history wipe on read error** — the in-memory `historyCache`
+  (seeded from disk at `NewBot`) is now the source of truth, so a transient
+  `attack_history.json` read failure can no longer silently drop all prior
+  attacks.
+- **Duplicated ROI switch** — extracted `Bot.buttonROI()` so the wait-for-button
+  and find-and-click paths share one definition (removed a copy-paste drift
+  risk). Removed a duplicated `GetAttackHistory` doc comment in `app.go`.
+
+### Performance
+- **Aggregate battle-state estimate**: **~10–20% CPU freed + ~10–20 MB RSS +
+  ~40–60% GC-cycle reduction** during battle state. Idle (bot on, no battle)
+  saves ~3–5% CPU. **Verify on your machine** with the recipe at the bottom of
+  [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
+### Added
 - **Bot boot orchestration + ADB recovery module** — a self-contained
   BlueStacks bring-up path that survives the common failure modes on
   macOS Sequoia.
