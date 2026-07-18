@@ -69,6 +69,8 @@ type Bot struct {
 	startedAt            time.Time
 	lastAction           time.Time
 	lastSequenceStart    time.Time
+	lastNav              time.Time
+	lastCapture          time.Time
 	stuckTimeout         time.Duration
 
 	lastFrame     atomic.Value // Stores the latest base64 encoded frame
@@ -80,6 +82,12 @@ type Bot struct {
 	// bridge that funnels HeroManager.resolveHeroTarget picks through
 	// OnDukePick as well. One NDJSON line per pick; jq-friendly.
 	dukePicksFile *os.File
+
+	// historyCache is the in-memory source of truth for the persisted
+	// attack history. It is seeded from disk at startup and updated on
+	// every recorded attack so a transient read error cannot wipe prior
+	// runs.
+	historyCache []AttackReport
 
 	OnFrame       func(string)
 	OnStatsUpdate func()
@@ -269,6 +277,17 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 
 	b.lastFrame.Store("")
 
+	// Seed the in-memory history cache from disk so a later read error
+	// during recordAttack cannot clobber prior runs.
+	if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
+		var seeded []AttackReport
+		if jsonErr := json.Unmarshal(histData, &seeded); jsonErr == nil {
+			b.historyCache = seeded
+		} else {
+			b.logger.Warn().Err(jsonErr).Msg("failed to parse attack history, starting fresh")
+		}
+	}
+
 	b.classifier = game.NewClassifier(cal, game.DefaultClassifierConfig(), b.logger)
 	if b.templates != nil {
 		b.classifier.SetTemplates(b.templates)
@@ -389,6 +408,7 @@ func (b *Bot) captureLoop() {
 			screen, err := b.client.CaptureToMat()
 			dur := time.Since(start)
 			lastCapture = time.Now()
+			b.lastCapture = lastCapture
 
 			// A degenerate capture (empty / zero-size / error) must be
 			// dropped entirely — never classify or forward it. Feeding a
@@ -408,15 +428,20 @@ func (b *Bot) captureLoop() {
 				small := vision.GetMat(screen.Rows()/2, screen.Cols()/2, screen.Type())
 				gocv.Resize(screen, &small, image.Point{}, 0.5, 0.5, gocv.InterpolationLinear)
 
+				// small (the pooled mat) is always returned via defer so a
+				// failed encode cannot leak it. buf is likewise closed on
+				// every path.
 				go func(m gocv.Mat) {
 					defer vision.PutMat(m)
 					buf, err := gocv.IMEncodeWithParams(".jpg", m, []int{gocv.IMWriteJpegQuality, 60})
-					if err == nil {
-						encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
-						b.lastFrame.Store(encoded)
-						b.OnFrame(encoded)
-						buf.Close()
+					if err != nil {
+						b.logger.Debug().Err(err).Msg("frame encode failed, dropped")
+						return
 					}
+					defer buf.Close()
+					encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
+					b.lastFrame.Store(encoded)
+					b.OnFrame(encoded)
 				}(small)
 			}
 
@@ -662,8 +687,8 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	}
 
 	// Classifier-based fallback: only with cooldown to prevent spamming
-	if gc.State == game.StateArmyCamp && time.Since(lastNav) > 3*time.Second {
-		lastNav = time.Now()
+	if gc.State == game.StateArmyCamp && time.Since(b.lastNav) > 3*time.Second {
+		b.lastNav = time.Now()
 		b.logger.Info().Msg("in ArmyCamp, returning to main village...")
 		go b.navigator.NavigateToMainVillage(gc)
 		return
@@ -724,7 +749,27 @@ func (b *Bot) isOrange(screen gocv.Mat, x, y int) bool {
 		20)
 }
 
-var lastNav time.Time
+// buttonROI returns the normalized (reference-resolution) region of interest
+// for a known UI button template. Centralized here so the wait-for-button and
+// find-and-click paths share one definition and cannot drift apart.
+func (b *Bot) buttonROI(templateName string) image.Rectangle {
+	switch templateName {
+	case "btn_attack":
+		return image.Rect(0, 500, 300, 732)
+	case "btn_find_match":
+		return image.Rect(50, 400, 400, 600) // left-middle
+	case "btn_battle":
+		return image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
+	case "btn_army_arrow":
+		return image.Rect(350, 100, 700, 300) // top-center
+	case "btn_army_1":
+		return image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
+	case "btn_next":
+		return image.Rect(600, 450, 860, 732)
+	default:
+		return image.Rect(0, 0, 860, 732)
+	}
+}
 
 func (b *Bot) templateMatch(screen gocv.Mat, name string, threshold float32) bool {
 	tpl, ok := b.templates.Get(name)
@@ -1019,15 +1064,20 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		_ = AsyncWriteFile(paths.ResolveConfig("last_attack_report.json"), repBytes, 0644)
 	}
 
-	// Update persistent history file
-	var history []AttackReport
-	if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
-		_ = json.Unmarshal(histData, &history)
+	// Update persistent history file. Prefer the in-memory cache so a
+	// transient read error cannot silently wipe prior attacks; only fall
+	// back to a fresh read of the on-disk file if the cache is empty.
+	history := b.historyCache
+	if history == nil {
+		if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
+			_ = json.Unmarshal(histData, &history)
+		}
 	}
 	history = append([]AttackReport{rep}, history...)
 	if len(history) > 500 {
 		history = history[:500]
 	}
+	b.historyCache = history
 	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
 		_ = AsyncWriteFile(paths.ResolveConfig("attack_history.json"), histBytes, 0644)
 	}
@@ -1171,23 +1221,7 @@ func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
 	}
 
 	// Define specialized ROIs for known buttons
-	var roi image.Rectangle
-	switch templateName {
-	case "btn_attack":
-		roi = image.Rect(0, 500, 300, 732)
-	case "btn_find_match":
-		roi = image.Rect(50, 400, 400, 600) // left-middle
-	case "btn_battle":
-		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
-	case "btn_army_arrow":
-		roi = image.Rect(350, 100, 700, 300) // top-center
-	case "btn_army_1":
-		roi = image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
-	case "btn_next":
-		roi = image.Rect(600, 450, 860, 732)
-	default:
-		roi = image.Rect(0, 0, 860, 732)
-	}
+	roi := b.buttonROI(templateName)
 
 	physROI := image.Rect(
 		int(float64(roi.Min.X)*b.cal.ScaleX),
@@ -1253,23 +1287,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	}
 
 	// Define specialized ROIs for known buttons
-	var roi image.Rectangle
-	switch templateName {
-	case "btn_attack":
-		roi = image.Rect(0, 500, 300, 732)
-	case "btn_find_match":
-		roi = image.Rect(50, 400, 400, 600) // left-middle
-	case "btn_battle":
-		roi = image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
-	case "btn_army_arrow":
-		roi = image.Rect(350, 100, 700, 300) // top-center
-	case "btn_army_1":
-		roi = image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
-	case "btn_next":
-		roi = image.Rect(600, 450, 860, 732)
-	default:
-		roi = image.Rect(0, 0, 860, 732)
-	}
+	roi := b.buttonROI(templateName)
 
 	physROI := image.Rect(
 		int(float64(roi.Min.X)*b.cal.ScaleX),
@@ -1583,7 +1601,7 @@ func (b *Bot) QuickDeploy() error {
 func (b *Bot) Health() game.SystemHealth {
 	return game.SystemHealth{
 		ADBConnected:     b.client.IsConnected(),
-		LastCapture:      time.Now(),
+		LastCapture:      b.lastCapture,
 		AvgCaptureMs:     b.client.Health().AvgCaptureMs,
 		ConsecutiveFails: b.client.Health().ConsecutiveFails,
 	}

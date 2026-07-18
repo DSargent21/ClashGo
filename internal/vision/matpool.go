@@ -18,8 +18,15 @@ func NewMatPool() *MatPool {
 	}
 }
 
+// getPoolKey builds a collision-free key for a mat of the given size and type.
+// The previous implementation cast dimensions to a single rune
+// (string(rune(rows))), which collapsed distinct dimensions into the same
+// key (e.g. rows 100 and 256 both produced a 1-char string) and could panic
+// or corrupt data for dimensions larger than 0xFFFF. Dimensions are now
+// encoded numerically so every distinct (type, rows, cols) triple maps to a
+// unique key.
 func (p *MatPool) getPoolKey(rows, cols int, matType gocv.MatType) string {
-	return string(rune(matType)) + "_" + string(rune(rows)) + "_" + string(rune(cols))
+	return fmt.Sprintf("%d_%d_%d", matType, rows, cols)
 }
 
 func (p *MatPool) Get(rows, cols int, matType gocv.MatType) gocv.Mat {

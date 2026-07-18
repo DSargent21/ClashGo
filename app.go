@@ -496,18 +496,6 @@ func (a *App) GetLogs() []string {
 // a filesystem read + JSON unmarshal + re-marshal on every tick.
 // With the cache, the per-tick cost is an atomic read + slice copy
 // — no syscalls, no JSON.
-// GetAttackHistory returns the persistent log of attacks.
-//
-// Reads from an in-memory cache that is refreshed:
-//   - lazily on the first call after process start (cold boot, before
-//     any OnStatsUpdate has fired), via double-check locking so only
-//     ONE goroutine ever performs the disk read; and
-//   - eagerly in OnStatsUpdate at the end of every attack.
-//
-// React polls this at 0.5 Hz; without the cache that translates to
-// a filesystem read + JSON unmarshal + re-marshal on every tick.
-// With the cache, the per-tick cost is an atomic read + slice copy
-// — no syscalls, no JSON.
 func (a *App) GetAttackHistory() []bot.AttackReport {
 	// Fast path: cache hit. RLock allows concurrent IPC polls to
 	// all read in parallel.
