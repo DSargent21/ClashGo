@@ -14,6 +14,17 @@ type Match struct {
 	Scale      float64
 }
 
+// emptyMask is a valid (non-nil native handle) empty cv::Mat used as the mask
+// argument to cv::matchTemplate. Passing gocv.Mat{} (which has a NULL native
+// handle) makes gocv dereference a NULL cv::Mat* inside OpenCV and SIGSEGV.
+var emptyMask = gocv.NewMat()
+
+// EmptyMask returns a shared valid (non-nil) empty cv::Mat for use as the mask
+// argument of cv::matchTemplate. Never close the returned Mat.
+func EmptyMask() gocv.Mat {
+	return emptyMask
+}
+
 func ResizeToHeight(src gocv.Mat, targetHeight int) gocv.Mat {
 	if src.Empty() {
 		return gocv.NewMat()
@@ -49,7 +60,11 @@ func MatchMultiScaleROI(screen, template gocv.Mat, minScale, maxScale float64, s
 }
 
 func MatchMultiScaleROICached(screen, template gocv.Mat, templateName string, minScale, maxScale float64, steps int, threshold float32, roi image.Rectangle) ([]Match, error) {
-	if screen.Empty() || template.Empty() {
+	// NOTE: gocv.Mat.Empty() returns FALSE for a zero-size but allocated
+	// Mat (native handle != nil, Cols()==0, Rows()==0). Such a Mat slips
+	// past the historical .Empty() guard and crashes cgo MatchTemplate.
+	// Use explicit dimension checks everywhere instead.
+	if screen.Cols() < 1 || screen.Rows() < 1 || template.Cols() < 1 || template.Rows() < 1 {
 		return nil, fmt.Errorf("empty image or template")
 	}
 
@@ -77,7 +92,7 @@ func MatchMultiScaleROICached(screen, template gocv.Mat, templateName string, mi
 	searchArea := screen.Region(roi)
 	defer searchArea.Close()
 
-	if searchArea.Empty() {
+	if searchArea.Cols() < 1 || searchArea.Rows() < 1 {
 		return nil, nil
 	}
 
@@ -123,9 +138,25 @@ func MatchMultiScaleROICached(screen, template gocv.Mat, templateName string, mi
 				return false
 			}
 
-			res := GetMat(searchArea.Rows()-scaledTpl.Rows()+1, searchArea.Cols()-scaledTpl.Cols()+1, gocv.MatTypeCV32FC1)
+			if searchArea.Empty() || scaledTpl.Empty() {
+				return false
+			}
+			resRows := searchArea.Rows() - scaledTpl.Rows() + 1
+			resCols := searchArea.Cols() - scaledTpl.Cols() + 1
+			if resRows < 1 || resCols < 1 {
+				return false
+			}
+			res := GetMat(resRows, resCols, gocv.MatTypeCV32FC1)
+			if res.Empty() {
+				res = gocv.NewMatWithSize(resRows, resCols, gocv.MatTypeCV32FC1)
+			}
 			defer PutMat(res)
-			gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+			if res.Empty() {
+				return false
+			}
+			if err := gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, emptyMask); err != nil {
+				return false
+			}
 
 			if res.Empty() {
 				return false
@@ -222,9 +253,25 @@ func MatchMultiScaleAllROICached(screen, template gocv.Mat, templateName string,
 				return false
 			}
 
-			res := GetMat(searchArea.Rows()-scaledTpl.Rows()+1, searchArea.Cols()-scaledTpl.Cols()+1, gocv.MatTypeCV32FC1)
+			if searchArea.Empty() || scaledTpl.Empty() {
+				return false
+			}
+			resRows := searchArea.Rows() - scaledTpl.Rows() + 1
+			resCols := searchArea.Cols() - scaledTpl.Cols() + 1
+			if resRows < 1 || resCols < 1 {
+				return false
+			}
+			res := GetMat(resRows, resCols, gocv.MatTypeCV32FC1)
+			if res.Empty() {
+				res = gocv.NewMatWithSize(resRows, resCols, gocv.MatTypeCV32FC1)
+			}
 			defer PutMat(res)
-			gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+			if res.Empty() {
+				return false
+			}
+			if err := gocv.MatchTemplate(searchArea, scaledTpl, &res, gocv.TmCcoeffNormed, emptyMask); err != nil {
+				return false
+			}
 
 			if res.Empty() {
 				return false

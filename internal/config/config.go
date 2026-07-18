@@ -19,16 +19,17 @@ type BotConfig struct {
 }
 
 type DeviceConfig struct {
-	ADBHost          string `json:"adb_host"`
-	ADBPort          int    `json:"adb_port"`
-	DeviceID         string `json:"device_id"`
-	PackageName      string `json:"package_name"`
-	ZoomOutKey       string `json:"zoom_out_key"` // Key to press for zoom out (e.g., "-")
-	ZoomInKey        string `json:"zoom_in_key"`  // Key to press for zoom in (e.g., "+")
-	Width            int    `json:"width"`
-	Height           int    `json:"height"`
-	DPI              int    `json:"dpi"`
-	RestartOnStartup bool   `json:"restart_on_startup"`
+	ADBHost               string `json:"adb_host"`
+	ADBPort               int    `json:"adb_port"`
+	DeviceID              string `json:"device_id"`
+	PackageName           string `json:"package_name"`
+	ZoomOutKey            string `json:"zoom_out_key"` // Key to press for zoom out (e.g., "-")
+	ZoomInKey             string `json:"zoom_in_key"`  // Key to press for zoom in (e.g., "+")
+	Width                 int    `json:"width"`
+	Height                int    `json:"height"`
+	DPI                   int    `json:"dpi"`
+	RestartOnStartup      bool   `json:"restart_on_startup"`
+	DisableChestDismissal bool   `json:"disable_chest_dismissal"`
 }
 
 type TrainingConfig struct {
@@ -90,6 +91,10 @@ type DebugConfig struct {
 	//           batches to preserve ordering).
 	// Only consulted when UseShellPipe is true.
 	ShellPipeSyncFlush bool `json:"shell_pipe_sync_flush"`
+	JitterTaps         bool `json:"jitter_taps"`
+	JitterDelays       bool `json:"jitter_delays"`
+	MaxJitterPixels    float64 `json:"max_jitter_pixels"`
+	JitterFraction     float64 `json:"jitter_fraction"`
 }
 
 type UpgradeConfig struct {
@@ -114,16 +119,17 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 func DefaultConfig() *BotConfig {
 	return &BotConfig{
 		Device: DeviceConfig{
-			ADBHost:          "127.0.0.1",
-			ADBPort:          5037,
-			DeviceID:         "localhost:5555",
-			PackageName:      "com.supercell.clashofclans",
-			ZoomOutKey:       "i",
-			ZoomInKey:        "o",
-			Width:            860,
-			Height:           732,
-			DPI:              160,
-			RestartOnStartup: true,
+			ADBHost:               "127.0.0.1",
+			ADBPort:               5037,
+			DeviceID:              "localhost:5555",
+			PackageName:           "com.supercell.clashofclans",
+			ZoomOutKey:            "i",
+			ZoomInKey:             "o",
+			Width:                 860,
+			Height:                732,
+			DPI:                   160,
+			RestartOnStartup:      true,
+			DisableChestDismissal: false, // chest dismissal loop IS on by default
 		},
 		Training: TrainingConfig{
 			Enabled:              true,
@@ -164,6 +170,10 @@ func DefaultConfig() *BotConfig {
 			StateDebug:         false,
 			UseShellPipe:       false,
 			ShellPipeSyncFlush: true,
+			JitterTaps:         true,
+			JitterDelays:       true,
+			MaxJitterPixels:    2.0,
+			JitterFraction:     0.15,
 		},
 	}
 }

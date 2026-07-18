@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"gocv.io/x/gocv"
 )
 
@@ -97,10 +98,10 @@ func (ts *TemplateStore) Match(screen gocv.Mat, state GameState, threshold float
 		}
 
 		result := gocv.NewMat()
-		gocv.MatchTemplate(screen, tmpl, &result, gocv.TmCcoeffNormed, gocv.NewMat())
-		defer result.Close()
-
+		gocv.MatchTemplate(screen, tmpl, &result, gocv.TmCcoeffNormed, vision.EmptyMask())
 		_, maxVal, _, _ := gocv.MinMaxLoc(result)
+		result.Close()
+
 		if maxVal > bestConf {
 			bestConf = maxVal
 			bestName = name
@@ -117,6 +118,10 @@ func (ts *TemplateStore) MatchMultiScale(screen gocv.Mat, state GameState, minSc
 	bestName := ""
 	bestConf := float32(0.0)
 
+	if steps < 1 {
+		steps = 1
+	}
+
 	for name, meta := range ts.registry {
 		if meta.State != state {
 			continue
@@ -131,23 +136,18 @@ func (ts *TemplateStore) MatchMultiScale(screen gocv.Mat, state GameState, minSc
 			continue
 		}
 
-		scaleStep := (maxScale - minScale) / float64(steps)
-		for s := minScale; s <= maxScale; s += scaleStep {
-			w := int(float64(tmpl.Cols()) * s)
-			h := int(float64(tmpl.Rows()) * s)
-			if w < 5 || h < 5 {
+		// Pre-build the scaled templates once for this template so we don't
+		// re-Resize on every call. Keyed by name+scale params in the cache.
+		scaled := vision.GetScaledTemplates(name, tmpl, minScale, maxScale, steps)
+		for _, resized := range scaled {
+			if resized.Empty() || resized.Cols() > screen.Cols() || resized.Rows() > screen.Rows() {
 				continue
 			}
-
-			resized := gocv.NewMat()
-			gocv.Resize(tmpl, &resized, image.Point{X: w, Y: h}, 0, 0, gocv.InterpolationLinear)
-			defer resized.Close()
-
 			result := gocv.NewMat()
-			gocv.MatchTemplate(screen, resized, &result, gocv.TmCcoeffNormed, gocv.NewMat())
-			defer result.Close()
-
+			gocv.MatchTemplate(screen, resized, &result, gocv.TmCcoeffNormed, vision.EmptyMask())
 			_, maxVal, _, _ := gocv.MinMaxLoc(result)
+			result.Close()
+
 			if maxVal > bestConf {
 				bestConf = maxVal
 				bestName = name
@@ -225,12 +225,23 @@ func (ts *TemplateStore) Count() int {
 	return len(ts.templates)
 }
 
+// Close releases all backing OpenCV buffers held by the store. Each Mat is
+// closed defensively: a stray double-close or a CGO finalizer race can panic
+// with SIGSEGV, so we recover per-Mat and continue freeing the remainder
+// instead of aborting and leaking everything.
 func (ts *TemplateStore) Close() {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	// We clear the maps but avoid manual Mat.Close() which is causing SIGSEGV
-	// due to complex CGO lifecycle/GC interactions.
+	for name, m := range ts.templates {
+		if !m.Empty() {
+			func() {
+				defer func() { _ = recover() }()
+				m.Close()
+			}()
+		}
+		delete(ts.templates, name)
+	}
 	ts.templates = make(map[string]gocv.Mat)
 	ts.registry = make(map[string]TemplateMeta)
 }

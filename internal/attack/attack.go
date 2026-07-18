@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/adb"
@@ -98,6 +99,39 @@ func NewExecutor(client *adb.Client, cal *game.Calibration, cfg *config.AttackCo
 	return exec
 }
 
+// configCache memoizes small attack JSON configs for a short window so steady-state
+// reads (per attack / per phase) do not re-hit disk. Entries are invalidated after a
+// TTL so on-disk edits are still picked up without a restart.
+type configCacheEntry struct {
+	data    []byte
+	readAt  time.Time
+}
+
+var (
+	configCacheMu sync.Mutex
+	configCache   = map[string]configCacheEntry{}
+	configCacheTTL = 5 * time.Second
+)
+
+func readConfigJSON(name string) ([]byte, bool) {
+	configCacheMu.Lock()
+	if e, ok := configCache[name]; ok && time.Since(e.readAt) < configCacheTTL {
+		data := e.data
+		configCacheMu.Unlock()
+		return data, true
+	}
+	configCacheMu.Unlock()
+
+	data, err := os.ReadFile(paths.Resolve(name))
+	if err != nil {
+		return nil, false
+	}
+	configCacheMu.Lock()
+	configCache[name] = configCacheEntry{data: data, readAt: time.Now()}
+	configCacheMu.Unlock()
+	return data, true
+}
+
 func (e *Executor) loadTemplates() {
 	dir := paths.Resolve("templates/attack")
 	files, err := os.ReadDir(dir)
@@ -178,7 +212,7 @@ func (e *Executor) isUnitSelected(screen gocv.Mat, x, y int) bool {
 func (e *Executor) Validate(s *strategy.DynamicStrategy) error {
 	// Load manual labels to see if templates are even needed
 	manualUnits := make(map[string]bool)
-	if data, err := os.ReadFile(paths.Resolve("manual_labels.json")); err == nil {
+	if data, ok := readConfigJSON("manual_labels.json"); ok {
 		var lConf struct {
 			Slots []struct {
 				X    int    `json:"x"`
@@ -225,8 +259,8 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	usePrecision := false
 	mBarY := int(float64(h) * 0.78) // Default fallback
 
-	pData, err := os.ReadFile(paths.Resolve("precision_config.json"))
-	if err == nil && json.Unmarshal(pData, &pCfg) == nil {
+	pData, ok := readConfigJSON("precision_config.json")
+	if ok && json.Unmarshal(pData, &pCfg) == nil {
 		usePrecision = true
 		scaleX, scaleY := float64(w)/float64(pCfg.Width), float64(h)/float64(pCfg.Height)
 		// Scale everything
@@ -300,7 +334,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 	unitCache := make(map[string]*vision.Match)
 	scaleY := float64(h) / float64(pCfg.Height)
 	slotY := mBarY + int(38.0*scaleY)
-	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotY      int `json:"slot_y"`
 			CardHeight int `json:"card_height"`
@@ -317,7 +351,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 	// Load fallback manual labels mapping for safety/failsafe
 	manualMap := make(map[int]string)
-	if data, err := os.ReadFile(paths.Resolve("manual_labels.json")); err == nil {
+	if data, ok := readConfigJSON("manual_labels.json"); ok {
 		var lConf struct {
 			Slots []struct {
 				X    int    `json:"x"`
@@ -918,84 +952,13 @@ func (e *Executor) IsSlotEmpty(screen gocv.Mat, x, y int) bool {
 }
 
 func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
-	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
-		return true
-	}
-
 	size := int(25.0 * e.cal.ScaleX)
-	region := image.Rect(x-size, y-size, x+size, y+size)
-	if region.Min.X < 0 {
-		region.Min.X = 0
-	}
-	if region.Min.Y < 0 {
-		region.Min.Y = 0
-	}
-	if region.Max.X > screen.Cols() {
-		region.Max.X = screen.Cols()
-	}
-	if region.Max.Y > screen.Rows() {
-		region.Max.Y = screen.Rows()
-	}
-	sub := screen.Region(region)
-	defer sub.Close()
-
-	hsv := gocv.NewMat()
-	defer hsv.Close()
-	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
-
-	// Map/Grass Detection (to ignore background)
-	// (hu >= 35 && hu <= 90 && sa > 30)
-	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
-	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
-	maskMap1 := gocv.NewMat()
-	defer maskMap1.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
-
-	// (hu < 30 && sa < 50 && va < 80)
-	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
-	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
-	maskMap2 := gocv.NewMat()
-	defer maskMap2.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
-
-	isMapMask := gocv.NewMat()
-	defer isMapMask.Close()
-	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
-
-	notMapMask := gocv.NewMat()
-	defer notMapMask.Close()
-	gocv.BitwiseNot(isMapMask, &notMapMask)
-
-	// Active Content A: Saturated (>55) and Bright (>90)
-	lowerActA := gocv.NewScalar(0, 56, 91, 0)
-	upperActA := gocv.NewScalar(180, 255, 255, 0)
-	maskActA := gocv.NewMat()
-	defer maskActA.Close()
-	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
-
-	// Active Content B: Very bright white (saturation < 30, value > 220)
-	lowerActB := gocv.NewScalar(0, 0, 221, 0)
-	upperActB := gocv.NewScalar(180, 29, 255, 0)
-	maskActB := gocv.NewMat()
-	defer maskActB.Close()
-	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
-
-	activeContentMask := gocv.NewMat()
-	defer activeContentMask.Close()
-	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
-
-	finalActiveMask := gocv.NewMat()
-	defer finalActiveMask.Close()
-	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
-
-	activePixels := gocv.CountNonZero(finalActiveMask)
-	total := hsv.Rows() * hsv.Cols()
-	activeRatio := float64(activePixels) / float64(total)
-	isEmpty := activeRatio < 0.08
+	ratio := slotActivity(screen, x, y, 860, size)
+	isEmpty := ratio < 0.08
 
 	e.logger.Debug().
 		Int("x", x).
-		Float64("active_ratio", activeRatio).
+		Float64("active_ratio", ratio).
 		Bool("is_empty", isEmpty).
 		Msg("slot occupancy check")
 
@@ -1003,74 +966,8 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 }
 
 func (e *Executor) getSlotActivityRatio(screen gocv.Mat, x, y int) float64 {
-	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
-		return 0
-	}
-
 	size := int(25.0 * e.cal.ScaleX)
-	region := image.Rect(x-size, y-size, x+size, y+size)
-	if region.Min.X < 0 {
-		region.Min.X = 0
-	}
-	if region.Min.Y < 0 {
-		region.Min.Y = 0
-	}
-	if region.Max.X > screen.Cols() {
-		region.Max.X = screen.Cols()
-	}
-	if region.Max.Y > screen.Rows() {
-		region.Max.Y = screen.Rows()
-	}
-	sub := screen.Region(region)
-	defer sub.Close()
-
-	hsv := gocv.NewMat()
-	defer hsv.Close()
-	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
-
-	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
-	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
-	maskMap1 := gocv.NewMat()
-	defer maskMap1.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
-
-	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
-	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
-	maskMap2 := gocv.NewMat()
-	defer maskMap2.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
-
-	isMapMask := gocv.NewMat()
-	defer isMapMask.Close()
-	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
-
-	notMapMask := gocv.NewMat()
-	defer notMapMask.Close()
-	gocv.BitwiseNot(isMapMask, &notMapMask)
-
-	lowerActA := gocv.NewScalar(0, 56, 91, 0)
-	upperActA := gocv.NewScalar(180, 255, 255, 0)
-	maskActA := gocv.NewMat()
-	defer maskActA.Close()
-	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
-
-	lowerActB := gocv.NewScalar(0, 0, 221, 0)
-	upperActB := gocv.NewScalar(180, 29, 255, 0)
-	maskActB := gocv.NewMat()
-	defer maskActB.Close()
-	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
-
-	activeContentMask := gocv.NewMat()
-	defer activeContentMask.Close()
-	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
-
-	finalActiveMask := gocv.NewMat()
-	defer finalActiveMask.Close()
-	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
-
-	activePixels := gocv.CountNonZero(finalActiveMask)
-	total := hsv.Rows() * hsv.Cols()
-	return float64(activePixels) / float64(total)
+	return slotActivity(screen, x, y, 860, size)
 }
 
 // GetSlotActivityRatio is the exported wrapper for debug scripts.
@@ -1081,7 +978,7 @@ func (e *Executor) GetSlotActivityRatio(screen gocv.Mat, x, y int) float64 {
 // GetSlotY returns the Y coordinate used for slot detection.
 func (e *Executor) GetSlotY(h, mBarY int) int {
 	slotY := mBarY + int(38.0*e.cal.ScaleY)
-	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotY      int `json:"slot_y"`
 			CardHeight int `json:"card_height"`
@@ -1677,7 +1574,7 @@ func (e *Executor) EndBattle() error {
 	// Try to load StallConfig for pinpoint accuracy
 	var sCfg StallConfig
 	pinpoint := false
-	if data, err := os.ReadFile(paths.Resolve("stall_config.json")); err == nil && json.Unmarshal(data, &sCfg) == nil {
+	if data, ok := readConfigJSON("stall_config.json"); ok && json.Unmarshal(data, &sCfg) == nil {
 		pinpoint = true
 	}
 
@@ -1760,7 +1657,7 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 	// Load Stall Config for ROI
 	var sCfg StallConfig
 	hasStallROI := false
-	if data, err := os.ReadFile(paths.Resolve("stall_config.json")); err == nil && json.Unmarshal(data, &sCfg) == nil {
+	if data, ok := readConfigJSON("stall_config.json"); ok && json.Unmarshal(data, &sCfg) == nil {
 		hasStallROI = !sCfg.PercentROI.Empty()
 	}
 
@@ -1923,7 +1820,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 	slotY := mBarY + int(38.0*e.cal.ScaleY)
 
 	// 1. Try to load manual calibration for 100% precision
-	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			CardWidth  int   `json:"card_width"`
 			CardHeight int   `json:"card_height"`

@@ -398,7 +398,7 @@ func (e *EventBus) publish(subject string, msg proto.Message) error {
 	if js == nil {
 		return nil
 	}
-	_, err = js.PublishAsync(subject, data, nats.MsgId(fmt.Sprintf("%s-%d", subject, time.Now().UnixNano())))
+	_, err = js.PublishAsync(subject, data)
 	return err
 }
 

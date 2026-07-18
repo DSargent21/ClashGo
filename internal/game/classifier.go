@@ -45,7 +45,7 @@ func (c *Classifier) SetTemplates(ts *TemplateStore) {
 }
 
 func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
-	if screen.Empty() {
+	if screen.Cols() < 1 || screen.Rows() < 1 {
 		return StateUnknown, 0
 	}
 	if screen.Cols() < 600 || screen.Rows() < 500 {
@@ -102,9 +102,17 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 		if rule.Template != "" && c.templates != nil && pixelPassed {
 			tpl, ok := c.templates.Get(rule.Template)
 			if ok {
-				if norm.Closed() || norm.Empty() {
-					norm = vision.ResizeToHeight(screen, 732)
-				}
+			if norm.Closed() || norm.Cols() < 1 || norm.Rows() < 1 {
+				norm = vision.ResizeToHeight(screen, 732)
+			}
+			// Resize can yield an empty/zero-dim Mat on a
+			// degenerate capture; never hand that to MatchTemplate
+			// (cgo segfault on a 0x0 search area). gocv.Mat.Empty()
+			// is unreliable for zero-size allocated Mats, so check
+			// dimensions explicitly.
+			if norm.Cols() < 2 || norm.Rows() < 2 {
+				continue
+			}
 				// Use the cached variant passing rule.Template as the
 				// cache key. The empty-name bypass in MatchMultiScale()
 				// rebuilds scaled template Mats inside the loop on
@@ -198,6 +206,32 @@ func (c *Classifier) buildRules() {
 			MinPass:  1,
 			Checks: []PixelCheck{
 				{324, 499, 0xCB, 0xCD, 0xD3, 15},
+			},
+		},
+		// StateChestReward is the post-attack event-reward chest screen.
+		// Requires MinPass=2 to avoid single-pixel false positives on
+		// dark-overlay modals (clan chat, gem dialog with dark backside).
+		// Priority 94 sits just below the standard obstruction modals
+		// (GemDialog=96, ObstacleDialog=95) so a chest wrapped in one of
+		// those still classifies correctly.
+		//
+		// Hex values are starting estimates — re-tune with
+		// `go run cmd/pick_chest_roi -recafter 5s` (press 'p' to print
+		// the actual pixel colors inside the chosen rect).
+		{
+			State:    StateChestReward,
+			Priority: 94,
+			Weight:   94,
+			Desc:     "post-attack reward chest screen",
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// Top event banner — purple/blue distinctive corner pixels.
+				{350, 40, 0x4B, 0x1E, 0x8A, 30},
+				{510, 40, 0x4B, 0x1E, 0x8A, 30},
+				// Bottom-center "TAP TO OPEN" dim shadow band.
+				{430, 680, 0x1A, 0x1F, 0x22, 35},
+				// Center chest glow (warm yellow/orange).
+				{430, 380, 0xFF, 0xDD, 0x44, 45},
 			},
 		},
 		{

@@ -74,6 +74,9 @@ func (e *Enricher) run() {
 }
 
 func (e *Enricher) process() {
+	if e.templates == nil && e.loot == nil {
+		return
+	}
 	frame := e.ring.LatestFrame()
 	if frame == nil || len(frame.JPEG) == 0 {
 		return

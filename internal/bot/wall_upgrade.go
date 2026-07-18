@@ -366,7 +366,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				continue
 			}
 			// Robust 0.78 threshold, 60 scale steps.
-			matches, _ := vision.MatchMultiScaleROICached(screen, wallTpl, "text_wall", 0.3, 1.5, 60, 0.78, menuROI)
+			matches, _ := vision.MatchMultiScaleROICached(screen, wallTpl, "text_wall", 0.3, 1.5, 20, 0.78, menuROI)
 
 			h.step("wall_text_search", map[string]any{
 				"attempt": attempt,
@@ -801,7 +801,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					continue
 				}
 				bottomROI := image.Rect(0, int(400*h.Cal.ScaleY), modalScreen.Cols(), modalScreen.Rows())
-				confirmMatches, _ := vision.MatchMultiScaleROICached(modalScreen, confirmTpl, "btn_confirm_upgrade", 0.3, 1.5, 60, 0.70, bottomROI)
+				confirmMatches, _ := vision.MatchMultiScaleROICached(modalScreen, confirmTpl, "btn_confirm_upgrade", 0.3, 1.5, 20, 0.70, bottomROI)
 
 				if len(confirmMatches) == 0 {
 					// No confirm dialog → silent spawn = affordable upgrade.
@@ -1144,7 +1144,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// declaration into the loop body, so the candidate path
 			// re-declares it locally.
 			bottomROI := image.Rect(0, int(400*h.Cal.ScaleY), confirmScreen.Cols(), confirmScreen.Rows())
-			confirmMatches, _ := vision.MatchMultiScaleROICached(confirmScreen, confirmTpl, "btn_confirm_upgrade", 0.3, 1.5, 60, 0.70, bottomROI)
+			confirmMatches, _ := vision.MatchMultiScaleROICached(confirmScreen, confirmTpl, "btn_confirm_upgrade", 0.3, 1.5, 20, 0.70, bottomROI)
 			if len(confirmMatches) > 0 {
 				bestConfirm := confirmMatches[0]
 				scale := bestConfirm.Scale

@@ -1,6 +1,7 @@
 package vision
 
 import (
+	"fmt"
 	"gocv.io/x/gocv"
 	"image"
 	"sync"
@@ -90,9 +91,18 @@ func NewScaledTemplateCache() *ScaledTemplateCache {
 	}
 }
 
+// scaleKey uniquely identifies a scaled-template set by template name and the
+// exact scale parameters. Different step counts must not share a cache entry:
+// a caller requesting 20 steps would otherwise silently reuse 60 pre-built
+// mats (and the loop would iterate 60 times), defeating step-count tuning.
+func scaleKey(name string, minScale, maxScale float64, steps int) string {
+	return fmt.Sprintf("%s#%.4f#%.4f#%d", name, minScale, maxScale, steps)
+}
+
 func (c *ScaledTemplateCache) GetOrBuild(name string, template gocv.Mat, minScale, maxScale float64, steps int) []gocv.Mat {
+	key := scaleKey(name, minScale, maxScale, steps)
 	c.mu.RLock()
-	cached, ok := c.cache[name]
+	cached, ok := c.cache[key]
 	c.mu.RUnlock()
 	if ok {
 		return cached
@@ -101,7 +111,7 @@ func (c *ScaledTemplateCache) GetOrBuild(name string, template gocv.Mat, minScal
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if cached, ok = c.cache[name]; ok {
+	if cached, ok = c.cache[key]; ok {
 		return cached
 	}
 
@@ -122,7 +132,7 @@ func (c *ScaledTemplateCache) GetOrBuild(name string, template gocv.Mat, minScal
 		}
 	}
 
-	c.cache[name] = scaled
+	c.cache[key] = scaled
 	return scaled
 }
 

@@ -46,22 +46,30 @@ type Bot struct {
 	cancel context.CancelFunc
 	logger zerolog.Logger
 
-	attackCount       atomic.Int32
-	skipsCount        atomic.Int32
-	totalGold         atomic.Int64
-	totalElixir       atomic.Int64
-	totalDE           atomic.Int64
-	totalStars        atomic.Int32
-	stars0            atomic.Int32
-	stars1            atomic.Int32
-	stars2            atomic.Int32
-	stars3            atomic.Int32
-	seqRunning        atomic.Bool
-	zoomedOut         atomic.Bool
-	startedAt         time.Time
-	lastAction        time.Time
-	lastSequenceStart time.Time
-	stuckTimeout      time.Duration
+	attackCount atomic.Int32
+	skipsCount  atomic.Int32
+	totalGold   atomic.Int64
+	totalElixir atomic.Int64
+	totalDE     atomic.Int64
+	totalStars  atomic.Int32
+	stars0      atomic.Int32
+	stars1      atomic.Int32
+	stars2      atomic.Int32
+	stars3      atomic.Int32
+	seqRunning  atomic.Bool
+	zoomedOut   atomic.Bool
+	// chestDismissInFlight guards against dispatching overlapping
+	// DismissChestReward goroutines when the chest screen persists
+	// across multiple capture frames. The dismiss loop itself has a
+	// 25s wall-clock cap (ChestWallClockLimit) so the worst case is
+	// bounded; without this guard every capture frame that still
+	// sees StateChestReward would spawn a new goroutine and pile
+	// up competing CaptureToMat calls.
+	chestDismissInFlight atomic.Bool
+	startedAt            time.Time
+	lastAction           time.Time
+	lastSequenceStart    time.Time
+	stuckTimeout         time.Duration
 
 	lastFrame     atomic.Value // Stores the latest base64 encoded frame
 	lastFrameTime time.Time
@@ -86,6 +94,10 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		adb.WithLogger(zl),
 		adb.WithTimeout(30*time.Second),
 		adb.WithZoomKeys(cfg.Device.ZoomOutKey, cfg.Device.ZoomInKey),
+		adb.WithJitterTaps(cfg.Debug.JitterTaps),
+		adb.WithJitterDelays(cfg.Debug.JitterDelays),
+		adb.WithMaxJitterPixels(cfg.Debug.MaxJitterPixels),
+		adb.WithJitterFraction(cfg.Debug.JitterFraction),
 	)
 	client.DeviceID = cfg.Device.DeviceID
 
@@ -157,14 +169,14 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		if err := client.ForceStop(packageName); err != nil {
 			log.Warn().Err(err).Msg("failed to force stop game during startup")
 		}
-		time.Sleep(2 * time.Second)
+		client.JitteredSleep(2 * time.Second)
 
 		log.Info().Str("package", packageName).Msg("launching game...")
 		if err := client.StartApp(packageName); err != nil {
 			return nil, fmt.Errorf("failed to start game: %w", err)
 		}
 		log.Info().Msg("waiting for game to settle...")
-		time.Sleep(bootCfg.WaitForGameSettle)
+		client.JitteredSleep(bootCfg.WaitForGameSettle)
 	} else {
 		log.Info().Msg("skipping game restart on startup (restart_on_startup=false)")
 	}
@@ -271,6 +283,11 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	if b.templates != nil {
 		b.navigator.SetTemplates(b.templates)
 	}
+	// Honor the runtime kill-switch for the chest recovery flow. When
+	// disable_chest_dismissal=true the navigator returns nil from
+	// DismissChestReward immediately, deferring chest screens to the
+	// bot's stuck-watchdog / restartGame ladder.
+	b.navigator.SetDisableChestDismissal(b.cfg.Device.DisableChestDismissal)
 
 	b.attackExec.SetClassifier(b.classify)
 	b.trainer.SetClassifier(b.classify)
@@ -298,7 +315,7 @@ func (b *Bot) Start() error {
 	focusX, focusY := b.cal.ScaleRef(842, 345)
 	b.logger.Info().Int("x", focusX).Int("y", focusY).Msg("performing initial focus click")
 	b.client.Tap(focusX, focusY)
-	time.Sleep(1 * time.Second)
+	b.client.JitteredSleep(1 * time.Second)
 
 	go b.captureLoop()
 	return nil
@@ -373,30 +390,40 @@ func (b *Bot) captureLoop() {
 			dur := time.Since(start)
 			lastCapture = time.Now()
 
-			if err == nil && !screen.Empty() {
-				if b.OnFrame != nil {
-					small := vision.GetMat(screen.Rows()/2, screen.Cols()/2, screen.Type())
-					gocv.Resize(screen, &small, image.Point{}, 0.5, 0.5, gocv.InterpolationLinear)
+			// A degenerate capture (empty / zero-size / error) must be
+			// dropped entirely — never classify or forward it. Feeding a
+			// zero-size Mat into gocv.MatchTemplate (via the classifier
+			// or template-match paths) is a hard cgo segfault that kills
+			// the whole process, so the bot silently "never starts".
+			// Note: a failed CaptureToMat now returns a SAFE gocv.NewMat()
+			// (empty=true, cols=0) rather than the nil-backed gocv.Mat{}
+			// literal, so .Empty()/.Cols() are safe to call here.
+			if err != nil || screen.Empty() || screen.Cols() < 2 || screen.Rows() < 2 {
+				screen.Close()
+				b.logger.Debug().Err(err).Msg("empty/degenerate capture dropped")
+				continue
+			}
 
-					go func(m gocv.Mat) {
-						defer vision.PutMat(m)
-						buf, err := gocv.IMEncodeWithParams(".jpg", m, []int{gocv.IMWriteJpegQuality, 60})
-						if err == nil {
-							encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
-							b.lastFrame.Store(encoded)
-							b.OnFrame(encoded)
-							buf.Close()
-						}
-					}(small)
-				}
+			if b.OnFrame != nil {
+				small := vision.GetMat(screen.Rows()/2, screen.Cols()/2, screen.Type())
+				gocv.Resize(screen, &small, image.Point{}, 0.5, 0.5, gocv.InterpolationLinear)
+
+				go func(m gocv.Mat) {
+					defer vision.PutMat(m)
+					buf, err := gocv.IMEncodeWithParams(".jpg", m, []int{gocv.IMWriteJpegQuality, 60})
+					if err == nil {
+						encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
+						b.lastFrame.Store(encoded)
+						b.OnFrame(encoded)
+						buf.Close()
+					}
+				}(small)
 			}
 
 			select {
 			case frames <- frame{mat: screen, err: err, dur: dur}:
 			default:
-				if err == nil && !screen.Empty() {
-					screen.Close()
-				}
+				screen.Close()
 			}
 		}
 	}()
@@ -406,7 +433,7 @@ func (b *Bot) captureLoop() {
 		case <-b.ctx.Done():
 			select {
 			case f := <-frames:
-				if !f.mat.Empty() {
+				if f.mat.Cols() >= 1 && f.mat.Rows() >= 1 {
 					f.mat.Close()
 				}
 			default:
@@ -500,14 +527,14 @@ func (b *Bot) restartGame() {
 		b.logger.Error().Err(err).Msg("failed to force stop game")
 	}
 
-	time.Sleep(2 * time.Second)
+	b.client.JitteredSleep(2 * time.Second)
 
 	if err := b.client.StartApp(pkg); err != nil {
 		b.logger.Error().Err(err).Msg("failed to start app")
 	}
 
 	// Wait for game to launch and settle
-	time.Sleep(15 * time.Second)
+	b.client.JitteredSleep(15 * time.Second)
 	b.zoomedOut.Store(false) // Reset zoom state on restart
 }
 
@@ -515,12 +542,10 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	if err != nil {
 		gc.RecordCaptureError()
 		b.logger.Debug().Err(err).Msg("capture failed")
-		if !screen.Empty() {
-			screen.Close()
-		}
+		screen.Close()
 		return
 	}
-	if screen.Empty() {
+	if screen.Empty() || screen.Cols() < 2 || screen.Rows() < 2 {
 		screen.Close()
 		return
 	}
@@ -573,6 +598,45 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			Str("state", state.String()).
 			Int("score", score).
 			Msg("state detected")
+	}
+
+	// Chest dismissal hook: fires the moment the classifier sees a
+	// confirmed StateChestReward. We dispatch a goroutine (matching
+	// the existing pattern for attack / return-home flows) so the
+	// capture loop stays responsive while the dismiss taps + verifies.
+	//
+	// chestDismissInFlight prevents re-entry — if the chest screen
+	// persists across multiple frames, only one dismiss attempt runs
+	// at a time. The dismiss itself is bounded by ChestWallClockLimit
+	// (25s) and the kill-switch (DisableChestDismissal) short-circuits
+	// the call to a nil return when the operator has turned the
+	// recovery off. Worst-case runaway is caught by the global
+	// stuck-watchdog (35s of no recordActivity → restartGame).
+	if state == game.StateChestReward {
+		if b.cfg.Device.DisableChestDismissal {
+			// Honor the runtime kill-switch at the dispatch site too,
+			// so we don't churn through no-op dismiss attempts every
+			// frame. The bot's stuck-watchdog takes over instead.
+			b.logger.Debug().Msg("chest detected but dismissal disabled by config; deferring to stuck-watchdog")
+			return
+		}
+		if b.chestDismissInFlight.CompareAndSwap(false, true) {
+			b.logger.Info().Msg("chest reward screen detected; dispatching dismiss goroutine")
+			go func() {
+				defer b.chestDismissInFlight.Store(false)
+				start := time.Now()
+				if err := b.navigator.DismissChestReward(); err != nil {
+					b.logger.Warn().Err(err).
+						Dur("elapsed", time.Since(start)).
+						Msg("chest dismiss failed; will retry on next detection if still on screen")
+				} else {
+					b.logger.Info().
+						Dur("elapsed", time.Since(start)).
+						Msg("chest dismissed")
+				}
+			}()
+		}
+		return
 	}
 
 	if b.seqRunning.Load() {
@@ -1012,7 +1076,7 @@ func (b *Bot) clickSequence() bool {
 			attackClicked = true
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		b.client.JitteredSleep(500 * time.Millisecond)
 	}
 	if !attackClicked {
 		b.logger.Warn().Msg("could not find or click Attack button")
@@ -1022,7 +1086,7 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	time.Sleep(500 * time.Millisecond) // menu slide-in (tightened)
+	b.client.JitteredSleep(500 * time.Millisecond) // menu slide-in (tightened)
 
 	// Step 2: Click the yellow Find Match button (retry up to 3 times)
 	findMatchClicked := false
@@ -1031,7 +1095,7 @@ func (b *Bot) clickSequence() bool {
 			findMatchClicked = true
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		b.client.JitteredSleep(500 * time.Millisecond)
 	}
 	if !findMatchClicked {
 		b.logger.Warn().Msg("could not find or click Find Match button")
@@ -1041,7 +1105,7 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	time.Sleep(500 * time.Millisecond) // search screen (tightened)
+	b.client.JitteredSleep(500 * time.Millisecond) // search screen (tightened)
 
 	// Step 3: Click the white army arrow to expand army selection (retry up to 3 times)
 	armyArrowClicked := false
@@ -1050,7 +1114,7 @@ func (b *Bot) clickSequence() bool {
 			armyArrowClicked = true
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		b.client.JitteredSleep(500 * time.Millisecond)
 	}
 	if !armyArrowClicked {
 		b.logger.Warn().Msg("could not find or click Army Arrow button")
@@ -1060,7 +1124,7 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	time.Sleep(500 * time.Millisecond) // army expansion (tightened)
+	b.client.JitteredSleep(500 * time.Millisecond) // army expansion (tightened)
 
 	// Step 4: Click army composition 1 (retry up to 3 times)
 	army1Clicked := false
@@ -1069,7 +1133,7 @@ func (b *Bot) clickSequence() bool {
 			army1Clicked = true
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		b.client.JitteredSleep(500 * time.Millisecond)
 	}
 	if !army1Clicked {
 		b.logger.Warn().Msg("army 1 button did not appear, continuing anyway")
@@ -1078,7 +1142,7 @@ func (b *Bot) clickSequence() bool {
 			screen.Close()
 		}
 	}
-	time.Sleep(500 * time.Millisecond)
+	b.client.JitteredSleep(500 * time.Millisecond)
 
 	// Step 5: Click the green Battle button (retry up to 3 times)
 	battleClicked := false
@@ -1087,7 +1151,7 @@ func (b *Bot) clickSequence() bool {
 			battleClicked = true
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		b.client.JitteredSleep(500 * time.Millisecond)
 	}
 	if !battleClicked {
 		b.logger.Warn().Msg("could not find or click Battle button")
@@ -1532,6 +1596,12 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 	}
 	if b.trainer != nil {
 		b.trainer.UpdateConfig(&cfg.Training)
+	}
+	// Propagate the chest-dismissal kill-switch so toggling
+	// `disable_chest_dismissal` in the settings UI takes effect
+	// immediately, not just on next bot restart.
+	if b.navigator != nil {
+		b.navigator.SetDisableChestDismissal(cfg.Device.DisableChestDismissal)
 	}
 	b.logger.Info().Msg("bot configuration updated in real-time")
 }

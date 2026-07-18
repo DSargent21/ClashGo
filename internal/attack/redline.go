@@ -3,7 +3,9 @@ package attack
 import (
 	"image"
 	"sort"
+	"sync"
 
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
@@ -143,11 +145,28 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 	return RedZone{Valid: false}
 }
 
+// redlineKernels are static structuring elements reused across every
+// detectRedMask call. Building them once avoids repeatedly allocating +
+// freeing kernel Mats on the per-deploy hot path.
+var (
+	redlineKernelsOnce sync.Once
+	redlineKh, redlineKv, redlineKs gocv.Mat
+)
+
+func redlineKernels() (gocv.Mat, gocv.Mat, gocv.Mat) {
+	redlineKernelsOnce.Do(func() {
+		redlineKh = gocv.GetStructuringElement(gocv.MorphRect, image.Pt(35, 3))
+		redlineKv = gocv.GetStructuringElement(gocv.MorphRect, image.Pt(3, 35))
+		redlineKs = gocv.GetStructuringElement(gocv.MorphRect, image.Pt(9, 9))
+	})
+	return redlineKh, redlineKv, redlineKs
+}
+
 // detectRedMask creates binary mask of red/orange/pink/magenta pixels.
 // These colors form the deployment boundary dashed line.
 func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
-	hsv := gocv.NewMat()
-	defer hsv.Close()
+	hsv := vision.GetMat(roi.Rows(), roi.Cols(), gocv.MatTypeCV8UC3)
+	defer vision.PutMat(hsv)
 	gocv.CvtColor(roi, &hsv, gocv.ColorBGRToHSV)
 
 	// Red wraps around 0°/180° in HSV, so two ranges needed
@@ -157,16 +176,16 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	// Pink: H=140-170, S=60-220, V=160-255
 	// Magenta: H=150-175, S=80-255, V=140-255
 
-	m1 := gocv.NewMat()
-	m2 := gocv.NewMat()
-	m3 := gocv.NewMat()
-	m4 := gocv.NewMat()
-	m5 := gocv.NewMat()
-	defer m1.Close()
-	defer m2.Close()
-	defer m3.Close()
-	defer m4.Close()
-	defer m5.Close()
+	m1 := vision.GetMatFrom(hsv)
+	defer vision.PutMat(m1)
+	m2 := vision.GetMatFrom(hsv)
+	defer vision.PutMat(m2)
+	m3 := vision.GetMatFrom(hsv)
+	defer vision.PutMat(m3)
+	m4 := vision.GetMatFrom(hsv)
+	defer vision.PutMat(m4)
+	m5 := vision.GetMatFrom(hsv)
+	defer vision.PutMat(m5)
 
 	gocv.InRangeWithScalar(hsv, gocv.NewScalar(0, 100, 100, 0), gocv.NewScalar(12, 255, 255, 0), &m1)
 	gocv.InRangeWithScalar(hsv, gocv.NewScalar(168, 100, 100, 0), gocv.NewScalar(180, 255, 255, 0), &m2)
@@ -179,8 +198,8 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	// NOTE: do NOT defer mask.Close() - caller owns the returned mask
 	gocv.BitwiseOr(m1, m2, &mask)
 
-	tmp := gocv.NewMat()
-	defer tmp.Close()
+	tmp := vision.GetMatFrom(hsv)
+	defer vision.PutMat(tmp)
 	gocv.BitwiseOr(mask, m3, &tmp)
 	tmp.CopyTo(&mask)
 	gocv.BitwiseOr(mask, m4, &tmp)
@@ -189,21 +208,11 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	tmp.CopyTo(&mask)
 
 	// Morphology closing: bridge dash gaps
-	// Horizontal kernel (35x3) - bridges gaps along x-axis
-	kh := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(35, 3))
-	defer kh.Close()
+	kh, kv, ks := redlineKernels()
 	gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, kh)
 	tmp.CopyTo(&mask)
-
-	// Vertical kernel (3x35) - bridges gaps along y-axis
-	kv := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(3, 35))
-	defer kv.Close()
 	gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, kv)
 	tmp.CopyTo(&mask)
-
-	// Square kernel (9x9) - consolidate
-	ks := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(9, 9))
-	defer ks.Close()
 	gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, ks)
 	tmp.CopyTo(&mask)
 

@@ -216,6 +216,10 @@ export namespace config {
 	    state_debug: boolean;
 	    use_shell_pipe: boolean;
 	    shell_pipe_sync_flush: boolean;
+	    jitter_taps: boolean;
+	    jitter_delays: boolean;
+	    max_jitter_pixels: number;
+	    jitter_fraction: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new DebugConfig(source);
@@ -229,6 +233,10 @@ export namespace config {
 	        this.state_debug = source["state_debug"];
 	        this.use_shell_pipe = source["use_shell_pipe"];
 	        this.shell_pipe_sync_flush = source["shell_pipe_sync_flush"];
+	        this.jitter_taps = source["jitter_taps"];
+	        this.jitter_delays = source["jitter_delays"];
+	        this.max_jitter_pixels = source["max_jitter_pixels"];
+	        this.jitter_fraction = source["jitter_fraction"];
 	    }
 	}
 	export class UpgradeConfig {
@@ -326,6 +334,7 @@ export namespace config {
 	    height: number;
 	    dpi: number;
 	    restart_on_startup: boolean;
+	    disable_chest_dismissal: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new DeviceConfig(source);
@@ -343,6 +352,7 @@ export namespace config {
 	        this.height = source["height"];
 	        this.dpi = source["dpi"];
 	        this.restart_on_startup = source["restart_on_startup"];
+	        this.disable_chest_dismissal = source["disable_chest_dismissal"];
 	    }
 	}
 	export class BotConfig {

@@ -5,9 +5,11 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
@@ -16,10 +18,13 @@ import (
 // Uses template matching on digit_0..digit_9 templates to read the count.
 type TroopCounter struct {
 	digitTemplates [10]gocv.Mat
-	calibrated     bool
-	scaleX         float64
-	scaleY         float64
-	logger         zerolog.Logger
+	// scaledDigitCache holds per-(w,h) pre-scaled digit templates so
+	// matchDigit does not re-Resize all 10 templates for every digit.
+	scaledDigitCache map[string][10]gocv.Mat
+	calibrated       bool
+	scaleX           float64
+	scaleY           float64
+	logger           zerolog.Logger
 }
 
 // TroopCount represents a detected troop count for a slot.
@@ -33,7 +38,8 @@ type TroopCount struct {
 // NewTroopCounter creates a new troop counter with digit templates.
 func NewTroopCounter(refW, refH int, logger zerolog.Logger) *TroopCounter {
 	tc := &TroopCounter{
-		logger: logger.With().Str("component", "troop_counter").Logger(),
+		logger:           logger.With().Str("component", "troop_counter").Logger(),
+		scaledDigitCache: make(map[string][10]gocv.Mat),
 	}
 	tc.loadDigitTemplates()
 	return tc
@@ -76,6 +82,25 @@ func (tc *TroopCounter) loadDigitTemplates() {
 	}
 
 	tc.logger.Info().Int("loaded", loaded).Msg("digit templates loaded")
+}
+
+// Close releases all OpenCV buffers held by the counter (digit templates and
+// any cached scaled copies). Safe to call multiple times.
+func (tc *TroopCounter) Close() {
+	for i := range tc.digitTemplates {
+		if !tc.digitTemplates[i].Empty() {
+			tc.digitTemplates[i].Close()
+			tc.digitTemplates[i] = gocv.Mat{}
+		}
+	}
+	for key, set := range tc.scaledDigitCache {
+		for i := range set {
+			if !set[i].Empty() {
+				set[i].Close()
+			}
+		}
+		delete(tc.scaledDigitCache, key)
+	}
 }
 
 // DetectCounts detects troop counts for all slots on the bar.
@@ -241,34 +266,48 @@ func (tc *TroopCounter) extractDigits(bin gocv.Mat, digitWidth, digitHeight int)
 	return digits
 }
 
-// matchDigit matches a single digit image against templates.
+// matchDigit matches a single digit image against templates. Digit size is
+// fixed within a read, so the 10 templates are scaled to (bw,bh) once per size
+// and cached on the counter — avoiding a Resize of all templates for every
+// digit. The result Mat is drawn from the shared pool; the match mask is the
+// zero-value (no mask), which avoids a throwaway allocation per template.
 func (tc *TroopCounter) matchDigit(digitImg gocv.Mat) (int, float64) {
 	bestDigit := -1
 	maxConf := float32(0.0)
 	bw, bh := digitImg.Cols(), digitImg.Rows()
+	if bw < 1 || bh < 1 {
+		return -1, 0.0
+	}
 
-	for i, tpl := range tc.digitTemplates {
+	key := strconv.Itoa(bw) + "x" + strconv.Itoa(bh)
+	scaled, ok := tc.scaledDigitCache[key]
+	if !ok {
+		var built [10]gocv.Mat
+		for i, tpl := range tc.digitTemplates {
+			if tpl.Empty() {
+				continue
+			}
+			s := gocv.NewMat()
+			gocv.Resize(tpl, &s, image.Point{X: bw, Y: bh}, 0, 0, gocv.InterpolationLinear)
+			built[i] = s
+		}
+		scaled = built
+		tc.scaledDigitCache[key] = built
+	}
+
+	for i, tpl := range scaled {
 		if tpl.Empty() {
 			continue
 		}
-
-		// Resize template to match digit size
-		scaledTpl := gocv.NewMat()
-		gocv.Resize(tpl, &scaledTpl, image.Point{X: bw, Y: bh}, 0, 0, gocv.InterpolationLinear)
-
-		// Template match
-		res := gocv.NewMat()
-		mask := gocv.NewMat()
-		gocv.MatchTemplate(digitImg, scaledTpl, &res, gocv.TmCcoeffNormed, mask)
-		mask.Close()
-
+		res := vision.GetMat(digitImg.Rows()-tpl.Rows()+1, digitImg.Cols()-tpl.Cols()+1, gocv.MatTypeCV32FC1)
+		gocv.MatchTemplate(digitImg, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
 		_, conf, _, _ := gocv.MinMaxLoc(res)
+		vision.PutMat(res)
+
 		if float32(conf) > maxConf {
 			maxConf = float32(conf)
 			bestDigit = i
 		}
-		res.Close()
-		scaledTpl.Close()
 	}
 
 	// Fallback: narrow vertical blob is likely '1'

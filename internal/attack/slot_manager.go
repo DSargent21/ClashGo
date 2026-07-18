@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"image"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/game"
-	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
@@ -87,7 +85,7 @@ func NewSlotManager(
 
 	// Resolve slotY
 	sm.slotY = mBarY + int(38.0*float64(h)/float64(pCfg.Height))
-	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotY      int `json:"slot_y"`
 			CardHeight int `json:"card_height"`
@@ -130,7 +128,7 @@ func NewSlotManager(
 // detectActiveSlots finds all non-empty X positions on the troop bar.
 func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
 	// Try manual calibration first
-	if data, err := os.ReadFile(paths.Resolve("manual_slots.json")); err == nil {
+	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotXs []int `json:"slot_xs"`
 			SlotY  int   `json:"slot_y"`
@@ -333,8 +331,8 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 
 // applyManualLabelsFallback fills unidentified slots with manual_labels.json data.
 func (sm *SlotManager) applyManualLabelsFallback() {
-	data, err := os.ReadFile(paths.Resolve("manual_labels.json"))
-	if err != nil {
+	data, ok := readConfigJSON("manual_labels.json")
+	if !ok {
 		return
 	}
 	var lConf struct {
@@ -564,90 +562,21 @@ func isSpellStatic(name string) bool {
 	return strings.Contains(strings.ToLower(name), "spell")
 }
 
-// isSlotEmptyStatic checks if a slot region is empty (no active content).
-func isSlotEmptyStatic(screen gocv.Mat, x, y, screenW, screenH int) bool {
-	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
-		return true
-	}
-
-	scaleX := float64(screenW) / 860.0
-	size := int(25.0 * scaleX)
-	region := image.Rect(x-size, y-size, x+size, y+size)
-	if region.Min.X < 0 {
-		region.Min.X = 0
-	}
-	if region.Min.Y < 0 {
-		region.Min.Y = 0
-	}
-	if region.Max.X > screen.Cols() {
-		region.Max.X = screen.Cols()
-	}
-	if region.Max.Y > screen.Rows() {
-		region.Max.Y = screen.Rows()
-	}
-	sub := screen.Region(region)
-	defer sub.Close()
-
-	hsv := gocv.NewMat()
-	defer hsv.Close()
-	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
-
-	// Map/Grass Detection
-	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
-	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
-	maskMap1 := gocv.NewMat()
-	defer maskMap1.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
-
-	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
-	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
-	maskMap2 := gocv.NewMat()
-	defer maskMap2.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
-
-	isMapMask := gocv.NewMat()
-	defer isMapMask.Close()
-	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
-
-	notMapMask := gocv.NewMat()
-	defer notMapMask.Close()
-	gocv.BitwiseNot(isMapMask, &notMapMask)
-
-	// Active Content
-	lowerActA := gocv.NewScalar(0, 56, 91, 0)
-	upperActA := gocv.NewScalar(180, 255, 255, 0)
-	maskActA := gocv.NewMat()
-	defer maskActA.Close()
-	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
-
-	lowerActB := gocv.NewScalar(0, 0, 221, 0)
-	upperActB := gocv.NewScalar(180, 29, 255, 0)
-	maskActB := gocv.NewMat()
-	defer maskActB.Close()
-	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
-
-	activeContentMask := gocv.NewMat()
-	defer activeContentMask.Close()
-	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
-
-	finalActiveMask := gocv.NewMat()
-	defer finalActiveMask.Close()
-	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
-
-	activePixels := gocv.CountNonZero(finalActiveMask)
-	total := hsv.Rows() * hsv.Cols()
-	activeRatio := float64(activePixels) / float64(total)
-	return activeRatio < 0.08
-}
-
-// GetSlotActivityRatioStatic returns the ratio of active content pixels in a slot region.
-func GetSlotActivityRatioStatic(screen gocv.Mat, x, y, screenW int) float64 {
+// slotActivity computes the active-content ratio for a slot region using a shared
+// Mat pool, reusing a single HSV conversion and mask buffers across the computation.
+// The single CvtColor + mask set previously ran 3 separate copies of this pipeline
+// (isSlotEmpty, getSlotActivityRatio, GetSlotActivityRatioStatic); this consolidates
+// them and avoids per-call NewMat allocations in the hot deploy loop.
+func slotActivity(screen gocv.Mat, x, y, screenW, sizeHint int) float64 {
 	if screen.Empty() || x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
 		return 0
 	}
 
 	scaleX := float64(screenW) / 860.0
-	size := int(25.0 * scaleX)
+	size := sizeHint
+	if size <= 0 {
+		size = int(25.0 * scaleX)
+	}
 	region := image.Rect(x-size, y-size, x+size, y+size)
 	if region.Min.X < 0 {
 		region.Min.X = 0
@@ -664,51 +593,56 @@ func GetSlotActivityRatioStatic(screen gocv.Mat, x, y, screenW int) float64 {
 	sub := screen.Region(region)
 	defer sub.Close()
 
-	hsv := gocv.NewMat()
-	defer hsv.Close()
+	hsv := vision.GetMat(sub.Rows(), sub.Cols(), gocv.MatTypeCV8UC3)
+	defer vision.PutMat(hsv)
 	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
 
-	lowerMap1 := gocv.NewScalar(35, 31, 0, 0)
-	upperMap1 := gocv.NewScalar(90, 255, 255, 0)
-	maskMap1 := gocv.NewMat()
-	defer maskMap1.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap1, upperMap1, &maskMap1)
+	maskMap1 := vision.GetMatFrom(hsv)
+	defer vision.PutMat(maskMap1)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(35, 31, 0, 0), gocv.NewScalar(90, 255, 255, 0), &maskMap1)
 
-	lowerMap2 := gocv.NewScalar(0, 0, 0, 0)
-	upperMap2 := gocv.NewScalar(29, 49, 79, 0)
-	maskMap2 := gocv.NewMat()
-	defer maskMap2.Close()
-	gocv.InRangeWithScalar(hsv, lowerMap2, upperMap2, &maskMap2)
+	maskMap2 := vision.GetMatFrom(hsv)
+	defer vision.PutMat(maskMap2)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(0, 0, 0, 0), gocv.NewScalar(29, 49, 79, 0), &maskMap2)
 
-	isMapMask := gocv.NewMat()
-	defer isMapMask.Close()
+	isMapMask := vision.GetMatFrom(hsv)
+	defer vision.PutMat(isMapMask)
 	gocv.BitwiseOr(maskMap1, maskMap2, &isMapMask)
 
-	notMapMask := gocv.NewMat()
-	defer notMapMask.Close()
+	notMapMask := vision.GetMatFrom(hsv)
+	defer vision.PutMat(notMapMask)
 	gocv.BitwiseNot(isMapMask, &notMapMask)
 
-	lowerActA := gocv.NewScalar(0, 56, 91, 0)
-	upperActA := gocv.NewScalar(180, 255, 255, 0)
-	maskActA := gocv.NewMat()
-	defer maskActA.Close()
-	gocv.InRangeWithScalar(hsv, lowerActA, upperActA, &maskActA)
+	maskActA := vision.GetMatFrom(hsv)
+	defer vision.PutMat(maskActA)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(0, 56, 91, 0), gocv.NewScalar(180, 255, 255, 0), &maskActA)
 
-	lowerActB := gocv.NewScalar(0, 0, 221, 0)
-	upperActB := gocv.NewScalar(180, 29, 255, 0)
-	maskActB := gocv.NewMat()
-	defer maskActB.Close()
-	gocv.InRangeWithScalar(hsv, lowerActB, upperActB, &maskActB)
+	maskActB := vision.GetMatFrom(hsv)
+	defer vision.PutMat(maskActB)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(0, 0, 221, 0), gocv.NewScalar(180, 29, 255, 0), &maskActB)
 
-	activeContentMask := gocv.NewMat()
-	defer activeContentMask.Close()
+	activeContentMask := vision.GetMatFrom(hsv)
+	defer vision.PutMat(activeContentMask)
 	gocv.BitwiseOr(maskActA, maskActB, &activeContentMask)
 
-	finalActiveMask := gocv.NewMat()
-	defer finalActiveMask.Close()
+	finalActiveMask := vision.GetMatFrom(hsv)
+	defer vision.PutMat(finalActiveMask)
 	gocv.BitwiseAnd(activeContentMask, notMapMask, &finalActiveMask)
 
 	activePixels := gocv.CountNonZero(finalActiveMask)
 	total := hsv.Rows() * hsv.Cols()
+	if total <= 0 {
+		return 0
+	}
 	return float64(activePixels) / float64(total)
+}
+
+// isSlotEmptyStatic checks if a slot region is empty (no active content).
+func isSlotEmptyStatic(screen gocv.Mat, x, y, screenW, screenH int) bool {
+	return slotActivity(screen, x, y, screenW, 0) < 0.08
+}
+
+// GetSlotActivityRatioStatic returns the ratio of active content pixels in a slot region.
+func GetSlotActivityRatioStatic(screen gocv.Mat, x, y, screenW int) float64 {
+	return slotActivity(screen, x, y, screenW, 0)
 }

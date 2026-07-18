@@ -70,6 +70,22 @@ func WithDeviceID(id string) Option {
 	return func(c *Client) { c.DeviceID = id }
 }
 
+func WithJitterTaps(v bool) Option {
+	return func(c *Client) { c.jitterTaps = v }
+}
+
+func WithJitterDelays(v bool) Option {
+	return func(c *Client) { c.jitterDelays = v }
+}
+
+func WithMaxJitterPixels(v float64) Option {
+	return func(c *Client) { c.maxJitterPixels = v }
+}
+
+func WithJitterFraction(v float64) Option {
+	return func(c *Client) { c.jitterFraction = v }
+}
+
 type Health struct {
 	LastCapture      time.Time `json:"last_capture"`
 	AvgCaptureMs     float64   `json:"avg_capture_ms"`

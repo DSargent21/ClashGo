@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"image"
 	"math/rand"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/pkg/formula"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"gocv.io/x/gocv"
@@ -66,8 +64,8 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	//    respect it; otherwise the dynamic red-zone line takes over.
 	var pCfg PrecisionConfig
 	mBarY := int(float64(h) * 0.78)
-	pData, err := os.ReadFile(paths.Resolve("precision_config.json"))
-	if err == nil && json.Unmarshal(pData, &pCfg) == nil {
+	pData, ok := readConfigJSON("precision_config.json")
+	if ok && json.Unmarshal(pData, &pCfg) == nil {
 		scaleX, scaleY := float64(w)/float64(pCfg.Width), float64(h)/float64(pCfg.Height)
 		for k, v := range pCfg.Edges {
 			pCfg.Edges[k] = ManualEdge{

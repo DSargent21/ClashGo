@@ -52,6 +52,11 @@ type Client struct {
 	tapHookMu sync.RWMutex
 	tapHook   func(TapEvent)
 	tapSeq    int64
+
+	jitterTaps      bool
+	jitterDelays    bool
+	maxJitterPixels float64
+	jitterFraction  float64
 }
 
 // EnablePersistentShell activates the persistent adb shell pipe for the
@@ -103,11 +108,15 @@ func (c *Client) currentPipe() *ShellPipe {
 
 func NewClient(opts ...Option) *Client {
 	c := &Client{
-		DeviceID: "",
-		host:     DefaultHost,
-		port:     DefaultPort,
-		timeout:  DefaultTimeout,
-		log:      nopLogger{},
+		DeviceID:        "",
+		host:            DefaultHost,
+		port:            DefaultPort,
+		timeout:         DefaultTimeout,
+		log:             nopLogger{},
+		jitterTaps:      true,
+		jitterDelays:    true,
+		maxJitterPixels: 2.0,
+		jitterFraction:  0.15,
 	}
 	for _, o := range opts {
 		o(c)
@@ -314,6 +323,14 @@ func (c *Client) CaptureScreen() ([]byte, error) {
 }
 
 func (c *Client) CaptureToMat() (gocv.Mat, error) {
+	// emptyMat returns a SAFE, properly-allocated zero Mat (not the
+	// nil-backed gocv.Mat{} literal). The literal's native pointer is
+	// nil, so any subsequent .Cols()/.Rows()/.Empty() call is a hard
+	// cgo segfault — and the capture-loop guards call those methods.
+	// Returning gocv.NewMat() (cols=0, empty=true, safe to inspect)
+	// lets the bot drop bad frames instead of crashing.
+	emptyMat := func() gocv.Mat { return gocv.NewMat() }
+
 	start := time.Now()
 
 	c.mu.Lock()
@@ -321,10 +338,10 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 		if err := c.connectTransport(); err != nil {
 			c.mu.Unlock()
 			c.health.RecordFailure(err)
-			return gocv.Mat{}, err
+			return emptyMat(), err
 		}
 	}
-	transport := c.transport
+		transport := c.transport
 	c.mu.Unlock()
 
 	bufPtr, n, err := transport.CaptureScreenPooled()
@@ -335,7 +352,7 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 	}
 	if err != nil {
 		c.health.RecordFailure(err)
-		return gocv.Mat{}, err
+		return emptyMat(), err
 	}
 	defer ReturnBuffer(bufPtr)
 
@@ -344,7 +361,7 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 	if len(resp) < 12 {
 		err := fmt.Errorf("screencap response too short: %d bytes", len(resp))
 		c.health.RecordFailure(err)
-		return gocv.Mat{}, err
+		return emptyMat(), err
 	}
 
 	width := int(binary.LittleEndian.Uint32(resp[0:4]))
@@ -353,21 +370,21 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 	if width <= 0 || height <= 0 || width > 4096 || height > 4096 {
 		err := fmt.Errorf("invalid screencap dimensions: %dx%d", width, height)
 		c.health.RecordFailure(err)
-		return gocv.Mat{}, err
+		return emptyMat(), err
 	}
 
 	expected := width * height * 4
 	if len(resp) < expected+12 {
 		err := fmt.Errorf("incomplete screencap: got %d, want %d", len(resp), expected+12)
 		c.health.RecordFailure(err)
-		return gocv.Mat{}, err
+		return emptyMat(), err
 	}
 
 	pixels := resp[12 : expected+12]
 	imgRGBA, err := gocv.NewMatFromBytes(height, width, gocv.MatTypeCV8UC4, pixels)
 	if err != nil {
 		c.health.RecordFailure(err)
-		return gocv.Mat{}, fmt.Errorf("mat from bytes: %w", err)
+		return emptyMat(), fmt.Errorf("mat from bytes: %w", err)
 	}
 
 	imgBGR := gocv.NewMat()
@@ -378,7 +395,7 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 		imgBGR.Close()
 		err := errors.New("converted BGR mat is empty")
 		c.health.RecordFailure(err)
-		return gocv.Mat{}, err
+		return emptyMat(), err
 	}
 
 	c.health.RecordSuccess(time.Since(start))
@@ -390,9 +407,19 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 // returns once the bytes have been written to the socket (eliminating the
 // `app_process` JVM spin-up latency from `shell:input tap`).
 func (c *Client) Tap(x, y int) error {
-	c.log.Debugf("ADB TAP: (%d, %d)", x, y)
-	err := c.routeTap("input tap", x, y, false)
-	c.fireTapHook(TapEvent{Type: "tap", X: x, Y: y, ActualX: x, ActualY: y, StdDev: 0, Error: errStr(err)})
+	actualX, actualY := x, y
+	var stdDev float64
+	if c.jitterTaps {
+		stdDev = c.maxJitterPixels
+		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		ox := int(r.NormFloat64() * stdDev)
+		oy := int(r.NormFloat64() * stdDev)
+		actualX += ox
+		actualY += oy
+	}
+	c.log.Debugf("ADB TAP: (%d, %d) actual: (%d, %d)", x, y, actualX, actualY)
+	err := c.routeTap("input tap", actualX, actualY, false)
+	c.fireTapHook(TapEvent{Type: "tap", X: x, Y: y, ActualX: actualX, ActualY: actualY, StdDev: stdDev, Error: errStr(err)})
 	return err
 }
 
@@ -401,9 +428,19 @@ func (c *Client) Tap(x, y int) error {
 // TapDeployLine, TapDeployPoint) where ordering relative to capture is
 // preserved by an explicit HumanSleep/time.Sleep after the batch.
 func (c *Client) TapAsync(x, y int) error {
-	c.log.Debugf("ADB TAP-ASYNC: (%d, %d)", x, y)
-	err := c.routeTap("input tap", x, y, true)
-	c.fireTapHook(TapEvent{Type: "tap_async", X: x, Y: y, ActualX: x, ActualY: y, StdDev: 0, Error: errStr(err)})
+	actualX, actualY := x, y
+	var stdDev float64
+	if c.jitterTaps {
+		stdDev = c.maxJitterPixels
+		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		ox := int(r.NormFloat64() * stdDev)
+		oy := int(r.NormFloat64() * stdDev)
+		actualX += ox
+		actualY += oy
+	}
+	c.log.Debugf("ADB TAP-ASYNC: (%d, %d) actual: (%d, %d)", x, y, actualX, actualY)
+	err := c.routeTap("input tap", actualX, actualY, true)
+	c.fireTapHook(TapEvent{Type: "tap_async", X: x, Y: y, ActualX: actualX, ActualY: actualY, StdDev: stdDev, Error: errStr(err)})
 	return err
 }
 
@@ -615,6 +652,22 @@ func (c *Client) HumanSleep(baseMs, stdDevMs int) {
 		ms = 10 // Minimum floor
 	}
 	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
+
+// JitteredSleep sleeps for a duration and adds a random jitter if jitterDelays is enabled.
+func (c *Client) JitteredSleep(d time.Duration) {
+	if !c.jitterDelays {
+		time.Sleep(d)
+		return
+	}
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	stdDev := float64(d) * c.jitterFraction
+	jitter := time.Duration(r.NormFloat64() * stdDev)
+	finalD := d + jitter
+	if finalD < 5*time.Millisecond {
+		finalD = 5 * time.Millisecond
+	}
+	time.Sleep(finalD)
 }
 
 func (c *Client) Hold(x, y int, ms int) error {

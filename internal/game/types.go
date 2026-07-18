@@ -53,6 +53,7 @@ const (
 	StateLoading
 	StateWelcomeBack
 	StateArmySelection
+	StateChestReward
 )
 
 var stateNames = map[GameState]string{
@@ -73,6 +74,7 @@ var stateNames = map[GameState]string{
 	StateLoading:        "Loading",
 	StateWelcomeBack:    "WelcomeBack",
 	StateArmySelection:  "ArmySelection",
+	StateChestReward:    "ChestReward",
 }
 
 func (s GameState) String() string {

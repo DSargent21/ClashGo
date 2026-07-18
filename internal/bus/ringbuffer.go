@@ -15,6 +15,7 @@ import (
 type RingBuffer struct {
 	mu          sync.RWMutex
 	frames      []FrameEntry
+	latestFrame *FrameEntry
 	events      []EventEntry
 	maxDuration time.Duration
 	maxFrames   int
@@ -49,7 +50,7 @@ func NewRingBuffer(maxDuration time.Duration, maxFrames, maxEvents int) *RingBuf
 		maxDuration = 30 * time.Second
 	}
 	if maxFrames <= 0 {
-		maxFrames = 300
+		maxFrames = 60
 	}
 	if maxEvents <= 0 {
 		maxEvents = 4096
@@ -76,6 +77,11 @@ func (r *RingBuffer) PushFrame(frame FrameEntry) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Keep a direct pointer to the latest frame so LatestFrame() does not
+	// require scanning the full history, and so consumers that only need the
+	// most recent capture don't force us to retain a large JPEG window.
+	latest := frame
+	r.latestFrame = &latest
 	r.frames = append(r.frames, frame)
 	r.pruneLocked(now)
 }
@@ -102,10 +108,10 @@ func (r *RingBuffer) LatestFrame() *FrameEntry {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if len(r.frames) == 0 {
+	if r.latestFrame == nil {
 		return nil
 	}
-	frame := r.frames[len(r.frames)-1]
+	frame := r.latestFrame
 	return &FrameEntry{
 		Timestamp: frame.Timestamp,
 		JPEG:      append([]byte(nil), frame.JPEG...),
@@ -157,17 +163,34 @@ func (r *RingBuffer) Replay(from, to time.Time) []ReplayItem {
 
 func (r *RingBuffer) pruneLocked(now time.Time) {
 	cutoff := now.Add(-r.maxDuration)
-	for len(r.frames) > 0 && r.frames[0].Timestamp.Before(cutoff) {
-		r.frames = r.frames[1:]
+	// Drop expired entries from the front. Re-slicing alone leaves the
+	// underlying array (and its retained JPEG/event backing memory) alive,
+	// so we compact with copy to release the head and keep capacity bounded.
+	fi := 0
+	for fi < len(r.frames) && r.frames[fi].Timestamp.Before(cutoff) {
+		fi++
 	}
-	for len(r.events) > 0 && r.events[0].Timestamp.Before(cutoff) {
-		r.events = r.events[1:]
+	if fi > 0 {
+		copy(r.frames, r.frames[fi:])
+		r.frames = r.frames[:len(r.frames)-fi]
+	}
+	ei := 0
+	for ei < len(r.events) && r.events[ei].Timestamp.Before(cutoff) {
+		ei++
+	}
+	if ei > 0 {
+		copy(r.events, r.events[ei:])
+		r.events = r.events[:len(r.events)-ei]
 	}
 	if len(r.frames) > r.maxFrames {
-		r.frames = r.frames[len(r.frames)-r.maxFrames:]
+		excess := len(r.frames) - r.maxFrames
+		copy(r.frames, r.frames[excess:])
+		r.frames = r.frames[:r.maxFrames]
 	}
 	if len(r.events) > r.maxEvents {
-		r.events = r.events[len(r.events)-r.maxEvents:]
+		excess := len(r.events) - r.maxEvents
+		copy(r.events, r.events[excess:])
+		r.events = r.events[:r.maxEvents]
 	}
 }
 

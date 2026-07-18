@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
@@ -19,9 +20,28 @@ type LootRecognizer struct {
 	cal            *Calibration
 	templates      *TemplateStore
 	digitTemplates []gocv.Mat
-	logger         zerolog.Logger
-	mu             sync.Mutex
-	Debug          bool
+	// scaledDigitCache holds per-(w,h) pre-scaled digit templates so
+	// matchDigit does not re-Resize every template for every blob.
+	scaledDigitCache map[string][]gocv.Mat
+	logger           zerolog.Logger
+	mu               sync.Mutex
+	Debug            bool
+}
+
+// lootKernels are static structuring elements reused across every readRow
+// morphology pass. Built once via sync.Once.
+var (
+	lootKernelOnce  sync.Once
+	lootKernelOpen  gocv.Mat
+	lootKernelClose gocv.Mat
+)
+
+func lootKernels() (gocv.Mat, gocv.Mat) {
+	lootKernelOnce.Do(func() {
+		lootKernelOpen = gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3})
+		lootKernelClose = gocv.GetStructuringElement(gocv.MorphEllipse, image.Point{X: 5, Y: 5})
+	})
+	return lootKernelOpen, lootKernelClose
 }
 
 type detectedDigit struct {
@@ -32,9 +52,11 @@ type detectedDigit struct {
 
 func NewLootRecognizer(cal *Calibration, ts *TemplateStore, logger zerolog.Logger) *LootRecognizer {
 	lr := &LootRecognizer{
-		cal:       cal,
-		templates: ts,
-		logger:    logger.With().Str("component", "loot_recognizer").Logger(),
+		cal:              cal,
+		templates:        ts,
+		digitTemplates:   make([]gocv.Mat, 10),
+		scaledDigitCache: make(map[string][]gocv.Mat),
+		logger:           logger.With().Str("component", "loot_recognizer").Logger(),
 	}
 	lr.prepareDigitTemplates()
 	return lr
@@ -74,6 +96,14 @@ func (lr *LootRecognizer) Close() {
 		if !tpl.Empty() {
 			tpl.Close()
 		}
+	}
+	for key, set := range lr.scaledDigitCache {
+		for _, m := range set {
+			if !m.Empty() {
+				m.Close()
+			}
+		}
+		delete(lr.scaledDigitCache, key)
 	}
 }
 
@@ -242,7 +272,7 @@ func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, colRef image.Rect
 			if tpl, ok := lr.templates.Get(name); ok && !tpl.Empty() {
 				region := screen.Region(anchorROI)
 				res := gocv.NewMat()
-				gocv.MatchTemplate(region, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+				gocv.MatchTemplate(region, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
 				_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
 				res.Close()
 				region.Close()
@@ -310,7 +340,7 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 		tpl, ok := lr.templates.Get(ic.tpl)
 		if ok && !tpl.Empty() {
 			res := gocv.NewMat()
-			gocv.MatchTemplate(screen, tpl, &res, gocv.TmCcoeffNormed, gocv.NewMat())
+			gocv.MatchTemplate(screen, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
 			_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
 			res.Close()
 
@@ -393,13 +423,10 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	gocv.Threshold(norm, &binary, otsuVal*0.60, 255, gocv.ThresholdBinary)
 
 	// 6. Morphological Open (1x to clean noise)
-	kernelOpen := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3})
-	defer kernelOpen.Close()
+	kernelOpen, kernelClose := lootKernels()
 	gocv.MorphologyEx(binary, &binary, gocv.MorphOpen, kernelOpen)
 
 	// 6.5 Morphological Close (5x5 ellipse) to fill hollow digit centers on victory screens
-	kernelClose := gocv.GetStructuringElement(gocv.MorphEllipse, image.Point{X: 5, Y: 5})
-	defer kernelClose.Close()
 	gocv.MorphologyEx(binary, &binary, gocv.MorphClose, kernelClose)
 
 	// 7. Invert colors if background is light (mostly white pixels)
@@ -541,23 +568,39 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 	bestDigit, maxConf := -1, float32(0.0)
 	bw, bh := bin.Cols(), bin.Rows()
-	for i, tpl := range lr.digitTemplates {
+	if bw < 1 || bh < 1 {
+		return detectedDigit{digit: -1}
+	}
+
+	key := strconv.Itoa(bw) + "x" + strconv.Itoa(bh)
+	lr.mu.Lock()
+	scaled, ok := lr.scaledDigitCache[key]
+	if !ok {
+		scaled = make([]gocv.Mat, len(lr.digitTemplates))
+		for i, tpl := range lr.digitTemplates {
+			if tpl.Empty() {
+				continue
+			}
+			s := gocv.NewMat()
+			gocv.Resize(tpl, &s, image.Point{X: bw, Y: bh}, 0, 0, gocv.InterpolationLinear)
+			scaled[i] = s
+		}
+		lr.scaledDigitCache[key] = scaled
+	}
+	lr.mu.Unlock()
+
+	for i, tpl := range scaled {
 		if tpl.Empty() {
 			continue
 		}
-		scaledTpl := gocv.NewMat()
-		gocv.Resize(tpl, &scaledTpl, image.Point{X: bw, Y: bh}, 0, 0, gocv.InterpolationLinear)
-		res := gocv.NewMat()
-		mask := gocv.NewMat()
-		gocv.MatchTemplate(bin, scaledTpl, &res, gocv.TmCcoeffNormed, mask)
-		mask.Close()
+		res := vision.GetMat(bin.Rows()-tpl.Rows()+1, bin.Cols()-tpl.Cols()+1, gocv.MatTypeCV32FC1)
+		gocv.MatchTemplate(bin, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
 		_, conf, _, _ := gocv.MinMaxLoc(res)
+		vision.PutMat(res)
 		if float32(conf) > maxConf {
 			maxConf = float32(conf)
 			bestDigit = i
 		}
-		res.Close()
-		scaledTpl.Close()
 	}
 
 	// Thin vertical blobs are almost always '1'

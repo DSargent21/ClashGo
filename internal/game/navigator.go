@@ -7,10 +7,9 @@ import (
 	"sort"
 	"time"
 
-	"gocv.io/x/gocv"
-
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
+	"gocv.io/x/gocv"
 )
 
 type Navigator struct {
@@ -21,6 +20,28 @@ type Navigator struct {
 	classify  func(gocv.Mat) (GameState, int)
 	templates *TemplateStore
 	logger    zerolog.Logger
+
+	// chestCascadeCount tracks how many times consecutively StateChestReward
+	// has been handled inside one handleInterruptions invocation.
+	// Reset to 0 every time a non-chest state is observed.
+	//
+	// Why: InterruptDepth defaults to 5 and ChestWallClockLimit is 25s.
+	// Without this guard, a non-dismissing chest could earn 5 * 25s = ~2min
+	// of monopolized capture time before the outer loop bails. We instead
+	// cap chest re-entries at 1, return an error after the first attempt,
+	// and let the bot's stuck-watchdog / restart-game ladder take over.
+	chestCascadeCount int
+
+	// disableChestDismissal is the runtime kill-switch for the chest
+	// recovery flow. When true, DismissChestReward returns nil
+	// immediately on any chest state, allowing the bot's other ladders
+	// (stuck-watchdog / restartGame) to handle the modal instead.
+	//
+	// Wired from config.DeviceConfig.DisableChestDismissal at bot
+	// startup via SetDisableChestDismissal. NOT exposed through
+	// NavigatorConfig because the field is feature-flag-shaped
+	// (operator-level switch), not a runtime tunable.
+	disableChestDismissal bool
 }
 
 func NewNavigator(client Device, cal *Calibration, graph *StateGraph, classify func(gocv.Mat) (GameState, int), logger zerolog.Logger) *Navigator {
@@ -36,6 +57,19 @@ func NewNavigator(client Device, cal *Calibration, graph *StateGraph, classify f
 
 func (n *Navigator) SetTemplates(ts *TemplateStore) {
 	n.templates = ts
+}
+
+// SetDisableChestDismissal flips the runtime kill-switch for the
+// chest recovery flow. When true, DismissChestReward becomes a
+// no-op (returns nil immediately) and the bot's other ladders
+// (stuck-watchdog / restartGame) take over. Wire this once at bot
+// startup from config.DeviceConfig.DisableChestDismissal.
+//
+// Lives on Navigator (not NavigatorConfig) because the flag is
+// feature-flag-shaped (operator-level switch), not a runtime
+// tunable like SettleTime or InterruptDepth.
+func (n *Navigator) SetDisableChestDismissal(disable bool) {
+	n.disableChestDismissal = disable
 }
 
 func (n *Navigator) Navigate(ctx *GameContext, target GameState) bool {
@@ -102,15 +136,24 @@ func (n *Navigator) executeStep(edge *StateTransition) bool {
 	}
 }
 
+// handleInterruptions runs the modal-dismiss ladder. Returns an error
+// if no nested-interrupt strategy resolves the current state.
+//
+// Capture Mat lifetime is INLINE (close after classify) rather than
+// `defer`, because deferring across for-loop iterations accumulates
+// Mat handles until the function returns — with the chest dismissal
+// loop nested inside, that could pile up ~25 live Mats for ~125s
+// of wall-clock.
 func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 	for i := 0; i < n.cfg.InterruptDepth; i++ {
 		screen, err := n.client.CaptureToMat()
 		if err != nil {
 			return err
 		}
-		defer screen.Close()
-
 		state, _ := n.classify(screen)
+		if !screen.Empty() {
+			screen.Close()
+		}
 
 		switch state {
 		case StateObstacleDialog:
@@ -123,7 +166,24 @@ func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 			n.dismissShieldInfo()
 		case StateChatOpen:
 			n.client.Back()
+		case StateChestReward:
+			// Cascade guard: only ONE chest-dismiss attempt per
+			// handleInterruptions invocation. If the chest is STILL
+			// detected after DismissChestReward has run its full
+			// bounded loop, escalate to the caller instead of looping.
+			if n.chestCascadeCount >= 1 {
+				n.logger.Warn().
+					Int("attempts", n.chestCascadeCount).
+					Msg("chest still detected after dismiss attempt; escalating")
+				return fmt.Errorf("chest loop did not converge (cascade cap hit)")
+			}
+			n.chestCascadeCount++
+			if err := n.DismissChestReward(); err != nil {
+				return err
+			}
 		default:
+			// Any non-chest state resets the cascade counter.
+			n.chestCascadeCount = 0
 			return nil
 		}
 
@@ -224,6 +284,10 @@ func (n *Navigator) Back() error {
 	return n.client.Back()
 }
 
+// WaitForState polls capture+classify until target is observed OR
+// the deadline expires. Capture Mat lifetime is INLINE close — same
+// defer-in-for-loop accumulation risk as handleInterruptions, just
+// bounded by the caller-supplied timeout.
 func (n *Navigator) WaitForState(ctx *GameContext, target GameState, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -232,9 +296,11 @@ func (n *Navigator) WaitForState(ctx *GameContext, target GameState, timeout tim
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		defer screen.Close()
-
 		state, _ := n.classify(screen)
+		if !screen.Empty() {
+			screen.Close()
+		}
+
 		if state == target {
 			return true
 		}

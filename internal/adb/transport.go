@@ -230,17 +230,19 @@ func (t *Transport) CaptureScreenPooled() (*[]byte, int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if err := t.connectLocked(); err != nil {
+	if t.conn == nil {
+		if err := t.connectLocked(); err != nil {
+			return nil, 0, err
+		}
+	}
+	if err := t.setTransportLocked(); err != nil {
+		t.conn.Close()
+		t.conn = nil
 		return nil, 0, err
 	}
-	defer func() {
-		if t.conn != nil {
-			t.conn.Close()
-			t.conn = nil
-		}
-	}()
-
 	if err := t.sendServiceLocked("exec:/system/bin/screencap"); err != nil {
+		t.conn.Close()
+		t.conn = nil
 		return nil, 0, err
 	}
 
@@ -256,6 +258,8 @@ func (t *Transport) CaptureScreenPooled() (*[]byte, int, error) {
 				break
 			}
 			bufferPool.Put(bufPtr)
+			t.conn.Close()
+			t.conn = nil
 			return nil, 0, err
 		}
 		if total == len(buf) {
