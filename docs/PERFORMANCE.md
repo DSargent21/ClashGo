@@ -18,6 +18,36 @@ on your own machine.
 These are principled **estimates from code analysis**, not live measurements.
 The recipe at the bottom of this doc validates them on your machine.
 
+## Resource usage (RAM / CPU)
+
+Same methodology as the perf audit above (code analysis, not live capture).
+Assumes **Apple Silicon Mac**, **BlueStacks at 860×732 / 160 DPI**.
+
+**Frame math (860×732, RGB):**
+- Full capture frame: `860 × 732 × 3 ≈ 1.80 MB`
+- Half-size frame (Live View JPEG encode): `430 × 366 × 3 ≈ 0.47 MB`
+
+| Scenario | ClashGO (Go) RSS | ClashGO CPU | + BlueStacks RSS | Combined RSS (est.) |
+|----------|----------------:|------------:|-----------------:|--------------------:|
+| Idle / UI only (1 FPS) | ~60–90 MB | ~1–3% (1 core) | ~800 MB–1.2 GB | ~0.9–1.3 GB |
+| Active battle @ 15 FPS | ~90–140 MB | ~15–25% (1 core) | ~1.0–1.5 GB | ~1.1–1.7 GB |
+
+Notes:
+- CPU is single-core. The bot processes one capture frame at a time
+  (classify → template match → tap), so cost scales ~linearly with FPS.
+  At 15 FPS the per-frame vision work (~7–15 ms) is ~15–25% of one core.
+- BlueStacks RAM is driven by the emulator + Android guest, not the bot,
+  and is largely independent of ClashGO's FPS.
+- The bot's own RAM splits roughly: capture/working Mats (mat pool)
+  ~2–4 MB, `ScaledTemplateCache` ~1–3 MB, Live View base64 buffer a few
+  hundred KB. The rest of the idle ~60–90 MB is the Wails/WebKit GUI
+  harness, not the Go bot logic.
+
+Verify on your machine with the RSS-sampling recipe under
+[How to verify on your machine](#measurement-a--rss-sampling-during-a-battle-no-code-changes)
+(extend the `ps` sample to also cover the BlueStacks process for the
+combined number).
+
 ## What changed (and why)
 
 Each finding pairs the **issue**, the **file:line** it lives in, and the **estimated CPU / RAM savings**.

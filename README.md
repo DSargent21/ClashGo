@@ -23,6 +23,42 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
    - CLI: `make build-cli && ./build/bin/bot_cli`
    - GUI: `make build-gui` and run `build/bin/ClashGO.app`
 
+### 💾 Resource usage (estimates)
+
+All numbers below are **principled estimates from code analysis** (frame
+sizing, mat pool, template cache, capture-loop cadence), not live
+measurements. They assume an **Apple Silicon Mac**, **BlueStacks at
+860×732 / 160 DPI**, and the bot running at the configured capture rate.
+The recipe in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md#how-to-verify-on-your-machine)
+validates them on your machine.
+
+**Frame math (860×732, RGB):**
+- Full capture frame: `860 × 732 × 3 ≈ 1.80 MB`
+- Half-size frame (Live View JPEG encode): `430 × 366 × 3 ≈ 0.47 MB`
+
+| Scenario | ClashGO (Go) RSS | ClashGO CPU¹ | + BlueStacks RSS² | Combined RSS (est.) |
+|----------|----------------:|-------------:|------------------:|--------------------:|
+| **Idle / UI only** (1 FPS capture) | ~60–90 MB | ~1–3% (1 core) | ~800 MB–1.2 GB | ~0.9–1.3 GB |
+| **Active battle @ 15 FPS** | ~90–140 MB | ~15–25% (1 core) | ~1.0–1.5 GB | ~1.1–1.7 GB |
+
+¹ CPU is single-core; the bot is largely single-threaded per capture frame
+(classify + template match + tap). Higher FPS = proportionally more CPU.
+At 15 FPS the per-frame vision work (~7–15 ms) consumes ~15–25% of one core.
+² BlueStacks footprint is driven by the emulator + Android guest, not the
+bot. It scales with emulator window size / DPI and the guest's own memory
+pressure, not with ClashGO's FPS.
+
+**Where the bot's RAM goes:**
+- Capture + working Mats (mat pool): ~2–4 MB retained (serial capture keeps
+  only 1–2 mats per size alive).
+- `ScaledTemplateCache` (6 classifier rules × several scales): ~1–3 MB.
+- Live View base64 frame buffer (`lastFrame`): a few hundred KB.
+- Wails/WebKit GUI harness: the bulk of the idle ~60–90 MB is the embedded
+  browser, not the Go bot logic.
+
+ClashGO itself is tiny; the dominant memory cost when running is almost
+always **BlueStacks**, not the bot.
+
 ### 🚢 Releasing a new version
 
 Updates are powered by GitHub Releases — no extra infrastructure.

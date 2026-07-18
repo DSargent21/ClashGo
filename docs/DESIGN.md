@@ -112,6 +112,26 @@ Capture Loop (200ms ticker)
               └── Interrupt states → Dismiss dialogs
 ```
 
+### Resource usage (estimates)
+
+Principled estimates from code analysis (frame sizing + mat pool + template
+cache + capture cadence). Assume Apple Silicon Mac + BlueStacks at
+860×732 / 160 DPI.
+
+- **Frame**: full capture `860×732×3 ≈ 1.80 MB`; half-size Live View frame
+  `430×366×3 ≈ 0.47 MB`.
+- **ClashGO (Go) RSS**: ~60–90 MB idle (1 FPS), ~90–140 MB in active battle
+  at 15 FPS. The idle bulk is the Wails/WebKit GUI harness, not the bot
+  logic (~2–4 MB mats + ~1–3 MB template cache + small Live View buffer).
+- **ClashGO CPU**: single-core; ~1–3% idle, ~15–25% at 15 FPS (per-frame
+  vision work ~7–15 ms scales ~linearly with FPS).
+- **+ BlueStacks**: ~800 MB–1.2 GB idle, ~1.0–1.5 GB in battle; driven by
+  the emulator + Android guest, largely independent of ClashGO's FPS.
+- **Combined**: ~0.9–1.3 GB idle, ~1.1–1.7 GB at 15 FPS.
+
+See [`PERFORMANCE.md`](PERFORMANCE.md#resource-usage-ram--cpu) for the full
+table and a verification recipe.
+
 ## Technology Stack
 - **ADB**: Persistent TCP transport to ADB server (no process spawning)
   - `exec:exec-out screencap` for raw RGBA captures (~120-150ms)
