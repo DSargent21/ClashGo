@@ -209,30 +209,22 @@ func (c *Classifier) buildRules() {
 			},
 		},
 		// StateChestReward is the post-attack event-reward chest screen.
-		// Requires MinPass=2 to avoid single-pixel false positives on
-		// dark-overlay modals (clan chat, gem dialog with dark backside).
-		// Priority 94 sits just below the standard obstruction modals
-		// (GemDialog=96, ObstacleDialog=95) so a chest wrapped in one of
-		// those still classifies correctly.
 		//
-		// Hex values are starting estimates — re-tune with
-		// `go run cmd/pick_chest_roi -recafter 5s` (press 'p' to print
-		// the actual pixel colors inside the chosen rect).
+		// Detection is TEMPLATE-ONLY: the hammer icon + "TAP TO OPEN"
+		// prompt vanish the moment the chest breaks, and never appear
+		// on a normal village screen.  Pixel-based checks were tried
+		// but the bottom-center dark band (the TAP TO OPEN shadow)
+		// appears in several other CoC overlays and the village
+		// itself, causing false positives.  Priority 94 sits just
+		// below the obstruction modals (GemDialog=96,
+		// ObstacleDialog=95).
 		{
 			State:    StateChestReward,
 			Priority: 94,
 			Weight:   94,
-			Desc:     "post-attack reward chest screen",
-			MinPass:  2,
-			Checks: []PixelCheck{
-				// Top event banner — purple/blue distinctive corner pixels.
-				{350, 40, 0x4B, 0x1E, 0x8A, 30},
-				{510, 40, 0x4B, 0x1E, 0x8A, 30},
-				// Bottom-center "TAP TO OPEN" dim shadow band.
-				{430, 680, 0x1A, 0x1F, 0x22, 35},
-				// Center chest glow (warm yellow/orange).
-				{430, 380, 0xFF, 0xDD, 0x44, 45},
-			},
+			Desc:     "post-attack reward chest screen (hammer template only)",
+			MinPass:  0,
+			Template: "hammer",
 		},
 		{
 			State:    StateSearchMap,

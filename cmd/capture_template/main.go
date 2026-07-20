@@ -58,7 +58,6 @@ import (
 
 	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/config"
-	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
@@ -74,12 +73,14 @@ func main() {
 		verbose  bool
 		drag     bool
 		timeout  time.Duration
+		source   string
 	)
 	flag.StringVar(&name, "name", "", "template name (e.g. text_wall, btn_upgrade_wall, btn_confirm_upgrade) — REQUIRED")
 	flag.StringVar(&device, "device", "", "override device id (else uses config)")
 	flag.Float64Var(&minConf, "min-conf", 0.85, "minimum MatchMultiScaleROI confidence for the verify pass to count as success")
 	flag.StringVar(&outDir, "out", "", "preview dir (default ./output/template_captures/<ts>)")
 	flag.BoolVar(&noBackup, "no-backup", false, "skip writing <name>.png.bak before overwriting")
+	flag.StringVar(&source, "source", "", "load this PNG instead of capturing live from ADB (offline crop — e.g. a previously saved captured_screen.png)")
 	flag.BoolVar(&verbose, "verbose", false, "print extra matching details")
 	flag.BoolVar(&drag, "drag", false, "use a browser-based drag-crop UI instead of a terminal prompt (requires a modern browser)")
 	flag.DurationVar(&timeout, "drag-timeout", 5*time.Minute, "drag-mode timeout — how long to wait for the user to save coords before giving up")
@@ -104,34 +105,37 @@ func main() {
 		logger = logger.Level(zerolog.DebugLevel)
 	}
 
-	// 1. Resolve device + connect.
-	cfgPath := paths.ResolveConfig("config.json")
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		logger.Warn().Err(err).Str("path", cfgPath).Msg("config load failed; using defaults")
-		cfg = config.DefaultConfig()
+	// 1. Resolve device + connect — SKIPPED in offline mode (-source).
+	var client *adb.Client
+	if source == "" {
+		cfgPath := paths.ResolveConfig("config.json")
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			logger.Warn().Err(err).Str("path", cfgPath).Msg("config load failed; using defaults")
+			cfg = config.DefaultConfig()
+		}
+		zl := adbLogAdapter{log: logger}
+		client = adb.NewClient(
+			adb.WithHost(cfg.Device.ADBHost),
+			adb.WithPort(cfg.Device.ADBPort),
+			adb.WithTimeout(30*time.Second),
+			adb.WithLogger(&zl),
+			adb.WithZoomKeys(cfg.Device.ZoomOutKey, cfg.Device.ZoomInKey),
+		)
+		if device != "" {
+			client.DeviceID = device
+		} else {
+			client.DeviceID = cfg.Device.DeviceID
+		}
+		if err := client.AutoDetectDevice(); err != nil {
+			logger.Warn().Err(err).Msg("AutoDetectDevice failed; using configured device id verbatim")
+		}
+		if err := client.EnsureConnected(); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: connect to %s: %v\n", client.DeviceID, err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ adb connected: %s\n", client.DeviceID)
 	}
-	zl := adbLogAdapter{log: logger}
-	client := adb.NewClient(
-		adb.WithHost(cfg.Device.ADBHost),
-		adb.WithPort(cfg.Device.ADBPort),
-		adb.WithTimeout(30*time.Second),
-		adb.WithLogger(&zl),
-		adb.WithZoomKeys(cfg.Device.ZoomOutKey, cfg.Device.ZoomInKey),
-	)
-	if device != "" {
-		client.DeviceID = device
-	} else {
-		client.DeviceID = cfg.Device.DeviceID
-	}
-	if err := client.AutoDetectDevice(); err != nil {
-		logger.Warn().Err(err).Msg("AutoDetectDevice failed; using configured device id verbatim")
-	}
-	if err := client.EnsureConnected(); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: connect to %s: %v\n", client.DeviceID, err)
-		os.Exit(1)
-	}
-	fmt.Printf("✓ adb connected: %s\n", client.DeviceID)
 
 	// 2. Set up the output dir for the preview screenshot.
 	if outDir == "" {
@@ -143,15 +147,28 @@ func main() {
 	}
 	fmt.Printf("✓ preview dir: %s\n", outDir)
 
-	// 3. Capture current screen.
-	screen, err := client.CaptureToMat()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: capture screen: %v\n", err)
-		_ = client.Close()
-		os.Exit(1)
+	// 3. Capture current screen (live) or load from -source (offline).
+	var screen gocv.Mat
+	if source != "" {
+		fmt.Printf("✓ offline mode: loading %s\n", source)
+		screen = gocv.IMRead(source, gocv.IMReadColor)
+		if screen.Empty() {
+			fmt.Fprintf(os.Stderr, "ERROR: read source PNG %s\n", source)
+			os.Exit(1)
+		}
+	} else {
+		s, err := client.CaptureToMat()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: capture screen: %v\n", err)
+			_ = client.Close()
+			os.Exit(1)
+		}
+		screen = s
 	}
 	defer screen.Close()
-	defer func() { _ = client.Close() }()
+	if source == "" {
+		defer func() { _ = client.Close() }()
+	}
 	w, h := screen.Cols(), screen.Rows()
 	fmt.Printf("✓ captured: %dx%d  (ref 860x732, scale %.2fx%.2f)\n",
 		w, h, float64(w)/860.0, float64(h)/732.0)
@@ -174,6 +191,7 @@ func main() {
 	// text in the browser UI; captured_main()'s local `name` is the
 	// only validated source of truth, so we pass it through.
 	var r *image.Rectangle
+	var err error
 	if drag {
 		r, err = dragForRect(previewPath, name, w, h, timeout)
 	} else {
@@ -208,7 +226,7 @@ func main() {
 	// "destructive backup race" fix — if the verify fails, the live
 	// template is preserved and the broken capture lands in
 	// `<name>.png.failed-<ts>` for inspection.
-	tmpPath := dstPath + ".tmp"
+	tmpPath := filepath.Join(tplDir, name+".tmp.png")
 	cropped := screen.Region(*r)
 	defer cropped.Close()
 	if cropped.Empty() {
@@ -221,25 +239,17 @@ func main() {
 	}
 	fmt.Printf("✓ wrote cropped png to %s (%dx%d) — pending verify\n", tmpPath, cropped.Cols(), cropped.Rows())
 
-	// 7. Verify by loading + matching against the source frame.
-	ts, err := game.NewTemplateStore(tplDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: NewTemplateStore(%s): %v\n", tplDir, err)
+	// 7. Verify by re-reading the just-written crop and matching it
+	//    against the source frame. We match the NEW crop (not the
+	//    on-disk store, which is absent on a first-time capture) so
+	//    the verify actually validates the crop we're about to save.
+	tpl := gocv.IMRead(tmpPath, gocv.IMReadColor)
+	if tpl.Empty() {
+		fmt.Fprintf(os.Stderr, "ERROR: cannot re-read cropped template from %s\n", tmpPath)
 		_ = moveAside(tmpPath, failedTemplatePath(tplDir, name))
 		os.Exit(1)
 	}
-	if err := ts.LoadTemplates(); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: LoadTemplates: %v\n", err)
-		_ = moveAside(tmpPath, failedTemplatePath(tplDir, name))
-		os.Exit(1)
-	}
-	defer ts.Close()
-	tpl, ok := ts.Get(name)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "ERROR: template %q did not register after save (the tmp file is now in %s)\n", name, tmpPath)
-		_ = moveAside(tmpPath, failedTemplatePath(tplDir, name))
-		os.Exit(1)
-	}
+	defer tpl.Close()
 	fullROI := image.Rect(0, 0, w, h)
 	matches, _ := vision.MatchMultiScaleROICached(screen, tpl, name, 0.3, 1.5, 60, 0.7, fullROI)
 	if len(matches) == 0 {
@@ -413,6 +423,8 @@ Required:
 
 Flags:
   -device=ID          override device id (else uses config.json)
+  -source=PATH        load this PNG instead of capturing live from ADB
+                       (offline crop of a previously saved frame)
   -min-conf=F         minimum MatchMultiScaleROI confidence to count as
                        success on the verify pass (default 0.85)
   -out=DIR            preview screenshot directory

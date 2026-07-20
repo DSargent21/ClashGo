@@ -36,11 +36,14 @@ package game
 import (
 	"encoding/json"
 	"fmt"
+	"image"
 	"math/rand"
 	"os"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/vision"
+	"gocv.io/x/gocv"
 )
 
 // ChestROISchema is the on-disk JSON shape. Coordinates are in the
@@ -393,12 +396,60 @@ func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
 //
 // Cost on success: 1 tap + 1 capture.
 // Cost on failure: 1 tap + 1 capture + error.
+// chestContinueTap bridges the post-chest overlay to MainVillage.
+// Some CoC event-reward flows render a "Continue" overlay after the
+// chest taps succeed.
+//
+// Detection order (event-agnostic first):
+//  1. If a `btn_continue` template is loaded (captured once via
+//     `go run cmd/capture_template -name=btn_continue`), match it in the
+//     bottom half of the screen and tap the matched point. This needs no
+//     manual rect and survives art swaps — the preferred path.
+//  2. Else fall back to the configured `continue_button.json` rect
+//     (assets/continue_button.json), tapped uniformly-random inside.
+//  3. If neither is available, assume this event has no Continue overlay
+//     and return nil (success) without tapping.
+//
+// The template match is retried once after a settle, because the chest
+// "open" animation can lag a frame behind the tap-scan loop's final
+// classify — the Continue button may not be rendered yet on the first
+// capture.
+//
+// continueRect is OPTIONAL: pass nil and this step is a no-op unless a
+// `btn_continue` template is present.
+//
+// Single logical attempt by design (same philosophy as
+// tryChestSkipFlow): a second Continue tap on a moving target misfires
+// into other UI. On verify failure we return an error so the
+// Navigator's chestCascadeCount escalation kicks in.
+//
+// Cost on success: 1 tap + 1 capture.
+// Cost on failure: 1 tap + 1 capture + error.
 func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
+	// 1. Preferred: template-matched Continue button.
+	if n.templates != nil {
+		if pt, conf, ok := n.matchContinueButton(); ok {
+			n.logger.Info().Float64("conf", conf).Msg("chest continue: template match — tapping Continue")
+			if err := n.client.Tap(pt.X, pt.Y); err != nil {
+				n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
+			}
+			time.Sleep(ChestAnimSettle)
+			return n.verifyAtMainVillage("chest continue")
+		}
+		n.logger.Debug().Msg("chest continue: no btn_continue template match; falling back to configured rect")
+	}
+
+	// 2. Fallback: configured rect.
 	if continueRect == nil {
-		// No Continue overlay configured for this bot's CoC event
-		// flow. Common case: the user's event doesn't have one.
+		// No template and no configured rect — assume no Continue overlay.
+		n.logger.Debug().Msg("chest continue: no template and no configured rect; assuming no Continue overlay")
 		return nil
 	}
+
+	// Wait for the Continue overlay to animate in (~1s after the chest
+	// opens). Tapping earlier hits a button that isn't rendered yet and
+	// the verify step then fails, escalating to the stuck-watchdog ladder.
+	time.Sleep(ChestAnimSettle)
 
 	rx, ry := randomPointInRect(*continueRect)
 	cx, cy := n.cal.ScaleRef(rx, ry)
@@ -424,6 +475,70 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 		return nil
 	}
 	return fmt.Errorf("chest continue: tapped Continue button but state is %s (expected MainVillage)", state)
+}
+
+// matchContinueButton looks for a `btn_continue` template in the bottom
+// half of the (normalized) screen. Returns the physical-screen point to
+// tap, the confidence, and whether a match cleared the threshold. Retries
+// once after ChestAnimSettle to absorb the chest-open animation lag.
+func (n *Navigator) matchContinueButton() (image.Point, float64, bool) {
+	if n.templates == nil {
+		return image.Point{}, 0, false
+	}
+	tpl, ok := n.templates.Get("btn_continue")
+	if !ok {
+		return image.Point{}, 0, false
+	}
+	// Search the bottom half (Continue buttons live low on the chest
+	// overlay); ref-width 860 so it spans the full normalized width.
+	region := image.Rect(0, 360, 860, 732)
+	if pt, conf, ok := n.matchButtonTemplate(tpl, "btn_continue", region, 0.6); ok {
+		return pt, conf, true
+	}
+	// Retry once — the button may not have rendered on the first frame.
+	time.Sleep(ChestAnimSettle)
+	return n.matchButtonTemplate(tpl, "btn_continue", region, 0.6)
+}
+
+// matchButtonTemplate normalizes the current capture, matches tpl inside
+// region (normalized coords), and returns the matched point scaled back
+// to physical screen pixels. Returns (_, _, false) on any failure so the
+// caller can fall back.
+func (n *Navigator) matchButtonTemplate(tpl gocv.Mat, name string, region image.Rectangle, minConf float32) (image.Point, float64, bool) {
+	norm, physScale, err := n.captureNormalized()
+	if err != nil {
+		return image.Point{}, 0, false
+	}
+	defer norm.Close()
+	pt, conf, err := vision.MatchTemplateRegion(norm, tpl, region, minConf)
+	if err != nil || conf < float64(minConf) {
+		return image.Point{}, 0, false
+	}
+	n.logger.Debug().
+		Str("template", name).
+		Float64("conf", conf).
+		Int("nx", pt.X).Int("ny", pt.Y).
+		Msg("button template matched")
+	return image.Pt(int(float64(pt.X)*physScale), int(float64(pt.Y)*physScale)), conf, true
+}
+
+// verifyAtMainVillage captures + classifies and returns nil iff the
+// classifier sees StateMainVillage. Shared by both Continue-tap paths so
+// the verify logic stays in exactly one place.
+func (n *Navigator) verifyAtMainVillage(who string) error {
+	mat, capErr := n.client.CaptureToMat()
+	if capErr != nil {
+		return fmt.Errorf("%s: verify capture failed: %w", who, capErr)
+	}
+	state, score := n.classify(mat)
+	if !mat.Empty() {
+		mat.Close()
+	}
+	if state == StateMainVillage {
+		n.logger.Info().Int("score", score).Msg(who + ": at MainVillage")
+		return nil
+	}
+	return fmt.Errorf("%s: expected MainVillage, got %s", who, state)
 }
 
 // hammerTaps returns the per-iteration tap count, defaulting to

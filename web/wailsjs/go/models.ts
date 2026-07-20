@@ -98,6 +98,8 @@ export namespace bot {
 	    stars_3: number;
 	    uptime: number;
 	    adb_health: adb.Health;
+	    cpu_time_sec: number;
+	    cpu_cores: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new BotStats(source);
@@ -116,6 +118,8 @@ export namespace bot {
 	        this.stars_3 = source["stars_3"];
 	        this.uptime = source["uptime"];
 	        this.adb_health = this.convertValues(source["adb_health"], adb.Health);
+	        this.cpu_time_sec = source["cpu_time_sec"];
+	        this.cpu_cores = source["cpu_cores"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

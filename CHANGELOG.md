@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Event-agnostic chest detection** — `StateChestReward` classifier rule
+  (`internal/game/classifier.go`) now keys on structural invariants
+  (bottom-center "TAP TO OPEN" dim band + warm center chest glow) instead
+  of art-specific pixels, so it survives the every-couple-months CoC event
+  art swaps. Optional `chest` template (`assets/templates/chest.png`)
+  adds confidence when present but never triggers detection alone.
+- **Template-driven Continue button** — `chestContinueTap`
+  (`internal/game/chestdismiss.go`) now auto-detects a `btn_continue`
+  template (`assets/templates/btn_continue.png`) and taps the matched
+  point, falling back to `assets/continue_button.json` only if no template
+  is loaded. Removes the need for a hand-measured Continue rect and copes
+  with art changes. See `docs/CHEST.md`.
+- **`docs/CHEST.md`** — capture + tuning workflow for chest/continue
+  templates and the detection rule.
+- **Classifier detection tests** — synthetic-frame guards that the chest
+  rule fires on a chest screen and does NOT false-positive on MainVillage.
+
+### Fixed
 - **Device-independent CPU metric** — `internal/bot/cputime.go` reads
   process CPU time via `getrusage(RUSAGE_SELF)` (user + system) and exposes
   `cpu_time_sec` (absolute, kernel-accurate, comparable across machines) plus

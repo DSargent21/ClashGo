@@ -517,16 +517,39 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 
 	state, _, _ := gc.ReadState()
 
+	// 3b. Attack-phase state without an active sequence is inconsistent:
+	// Battle/SearchMap/Loading should ONLY ever be observed while a
+	// sequence goroutine is running (executeAttackSequence sets
+	// seqRunning=true before entering search/deploy/battle). If we see
+	// one of these states with seqRunning==false, the sequence either
+	// died without resetting state or the classifier false-positived an
+	// attack screen — either way the sequence starter (which only fires
+	// from MainVillage/Unknown) will never launch from here, so the bot
+	// would otherwise sit idle until the 3-min Battle timeout and then
+	// loop forever restarting. Force-cycle on a short leash instead.
+	if state == game.StateBattle ||
+		state == game.StateSearchMap ||
+		state == game.StateLoading {
+		attackPhaseStuck := time.Since(b.lastAction)
+		const attackPhaseTimeout = 30 * time.Second
+		if attackPhaseStuck > attackPhaseTimeout {
+			b.logger.Warn().
+				Str("state", state.String()).
+				Time("last_action", b.lastAction).
+				Dur("stuck_time", attackPhaseStuck).
+				Dur("timeout", attackPhaseTimeout).
+				Msg("attack-phase state without active sequence, triggering emergency restart...")
+			b.restartGame()
+			b.lastSequenceStart = time.Now()
+		}
+		return
+	}
+
 	// 3. Activity-based watchdog for non-sequence flows. Any successful
 	// click / state transition / post-zoom resets lastAction via
 	// b.recordActivity(), so this only fires when the bot is genuinely stuck
 	// (no clicks landing, no state advance).
 	timeout := b.stuckTimeout
-	if state == game.StateBattle {
-		// Battle outside an active sequence is unusual; allow a longer
-		// window before force-cycling.
-		timeout = 3 * time.Minute
-	}
 
 	stuckTime := time.Since(b.lastAction)
 	if stuckTime > timeout {
@@ -563,6 +586,14 @@ func (b *Bot) restartGame() {
 	// Wait for game to launch and settle
 	b.client.JitteredSleep(15 * time.Second)
 	b.zoomedOut.Store(false) // Reset zoom state on restart
+
+	// Refresh the activity clock so the post-restart boot/calibration
+	// window is not immediately re-flagged as "stuck" by checkStuck.
+	// Without this, a restart that lands back on an attack-phase screen
+	// would re-trigger restartGame every ~20s in a tight infinite loop.
+	b.lastAction = time.Now()
+	b.lastNav = time.Now()
+	b.lastSequenceStart = time.Now()
 }
 
 func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, captureMs time.Duration) {
