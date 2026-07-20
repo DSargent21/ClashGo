@@ -27,13 +27,22 @@ func withFastChestAnimSettle(t *testing.T) {
 	origAnim := ChestAnimSettle
 	origSkip := ChestSkipConfirmSettle
 	origContinueTaps := chestContinueMaxTaps
+	origContinueAppear := chestContinueAppearTimeout
+	origContinuePoll := chestContinuePollInterval
+	origDebugDumps := chestDebugDumps
 	ChestAnimSettle = 1 * time.Millisecond
 	ChestSkipConfirmSettle = 1 * time.Millisecond
 	chestContinueMaxTaps = 1
+	chestContinueAppearTimeout = 1 * time.Millisecond
+	chestContinuePollInterval = 1 * time.Millisecond
+	chestDebugDumps = false
 	t.Cleanup(func() {
 		ChestAnimSettle = origAnim
 		ChestSkipConfirmSettle = origSkip
 		chestContinueMaxTaps = origContinueTaps
+		chestContinueAppearTimeout = origContinueAppear
+		chestContinuePollInterval = origContinuePoll
+		chestDebugDumps = origDebugDumps
 	})
 }
 
@@ -601,8 +610,8 @@ func TestChestDismiss_ContinueFails(t *testing.T) {
 	if got := len(dev.recorded); got != 2 {
 		t.Errorf("expected 2 taps (1 tap-scan + 1 continue), got %d", got)
 	}
-	// 3 captures: 1 tap-scan verify + 1 continue verify + 1 failure dump.
-	if got, want := dev.capIdx, 3; got != want {
+	// 2 captures: 1 tap-scan verify + 1 continue verify.
+	if got, want := dev.capIdx, 2; got != want {
 		t.Errorf("expected %d capture calls, got %d", want, got)
 	}
 }

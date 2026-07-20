@@ -101,6 +101,26 @@ const (
 // ChestAnimSettle — see comment on ChestSkipConfirmSettle.
 var ChestAnimSettle = 1200 * time.Millisecond
 
+// chestDebugDumps toggles the diagnostic PNG writes in
+// chestContinueTap (debug_chest_opened.png at entry,
+// debug_chest_continue_fail.png on final failure). On in
+// production so a stuck/mislocated Continue rect can be recaptured
+// from the exact frame; off in tests so capture counts stay stable.
+// TEST-MUTABLE (withFastChestAnimSettle sets it to false).
+var chestDebugDumps = true
+
+// chestContinueAppearTimeout bounds how long chestContinueTap polls
+// for the btn_continue template to render before falling back to
+// the configured rect (or assuming no overlay). The Continue
+// button lags the chest-open animation by ~1s, so a single
+// early check misses it; polling absorbs that. TEST-MUTABLE like
+// ChestAnimSettle (withFastChestAnimSettle sets it tiny).
+var chestContinueAppearTimeout = 4 * time.Second
+
+// chestContinuePollInterval is the gap between btn_continue
+// template probes while waiting for it to appear. TEST-MUTABLE.
+var chestContinuePollInterval = 250 * time.Millisecond
+
 // chestContinueMaxTaps bounds how many times we tap the Continue rect
 // (or template point) before giving up. The overlay can lag the
 // chest-open animation by ~1s, so the first tap can land a frame early
@@ -411,10 +431,24 @@ func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
 // continueRect is OPTIONAL: pass nil and this step is a no-op unless a
 // btn_continue template is present.
 func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
-	// 1. Preferred: template-matched Continue button.
+	// Dump the OPENED chest at entry so the real Continue button
+	// (which renders ~1s after the chest breaks and is NOT where the
+	// pre-open "TAP TO OPEN" band was) is visible for recapture.
+	if chestDebugDumps {
+		if m, err := n.client.CaptureToMat(); err == nil && !m.Empty() {
+			gocv.IMWrite(paths.ResolveConfig("debug_chest_opened.png"), m)
+			m.Close()
+		}
+	}
+
+	// 1. Preferred: wait for the Continue button (btn_continue
+	// template) to actually RENDER, then tap the matched point.
+	// The button lags the chest-open animation by ~1s, so we
+	// poll (up to chestContinueAppearTimeout) instead of a one-shot
+	// match — this is the "wait for it to appear" step.
 	if n.templates != nil {
-		if pt, conf, ok := n.matchContinueButton(); ok {
-			n.logger.Info().Float64("conf", conf).Msg("chest continue: template match — tapping Continue")
+		if pt, conf, ok := n.waitContinueButton(); ok {
+			n.logger.Info().Float64("conf", conf).Msg("chest continue: button appeared — tapping Continue")
 			if err := n.client.Tap(pt.X, pt.Y); err != nil {
 				n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
 			}
@@ -422,9 +456,9 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 			if n.verifyAtMainVillage("chest continue (template)") == nil {
 				return nil
 			}
-			n.logger.Warn().Msg("chest continue: template tap did not reach MainVillage; falling back to rect")
+			n.logger.Warn().Msg("chest continue: button tap did not reach MainVillage; falling back to rect")
 		} else {
-			n.logger.Debug().Msg("chest continue: no btn_continue template match; falling back to configured rect")
+			n.logger.Debug().Msg("chest continue: btn_continue never appeared; falling back to configured rect")
 		}
 	}
 
@@ -457,18 +491,24 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 
 	// All attempts exhausted — dump the screen so a wrong/missing
 	// Continue rect can be recaptured from this exact frame.
-	if m, err := n.client.CaptureToMat(); err == nil && !m.Empty() {
-		gocv.IMWrite(paths.ResolveConfig("debug_chest_continue_fail.png"), m)
-		m.Close()
+	if chestDebugDumps {
+		if m, err := n.client.CaptureToMat(); err == nil && !m.Empty() {
+			gocv.IMWrite(paths.ResolveConfig("debug_chest_continue_fail.png"), m)
+			m.Close()
+		}
 	}
 	return fmt.Errorf("chest continue: tapped Continue rect %d times without reaching MainVillage (see debug_chest_continue_fail.png)", chestContinueMaxTaps)
 }
 
-// matchContinueButton looks for a `btn_continue` template in the bottom
-// half of the (normalized) screen. Returns the physical-screen point to
-// tap, the confidence, and whether a match cleared the threshold. Retries
-// once after ChestAnimSettle to absorb the chest-open animation lag.
-func (n *Navigator) matchContinueButton() (image.Point, float64, bool) {
+// waitContinueButton polls for the `btn_continue` template until
+// it actually renders on the (normalized) screen, then returns the
+// physical point to tap. This is the "wait for it to appear"
+// step: the Continue button lags the chest-open animation by ~1s,
+// so a one-shot match misses it. Returns (_, _, false) on
+// timeout (caller falls back to the configured rect, or nil if
+// no rect). Polls the bottom half (Continue buttons live low on
+// the chest overlay); ref-width 860 spans the full normalized width.
+func (n *Navigator) waitContinueButton() (image.Point, float64, bool) {
 	if n.templates == nil {
 		return image.Point{}, 0, false
 	}
@@ -476,15 +516,15 @@ func (n *Navigator) matchContinueButton() (image.Point, float64, bool) {
 	if !ok {
 		return image.Point{}, 0, false
 	}
-	// Search the bottom half (Continue buttons live low on the chest
-	// overlay); ref-width 860 so it spans the full normalized width.
 	region := image.Rect(0, 360, 860, 732)
-	if pt, conf, ok := n.matchButtonTemplate(tpl, "btn_continue", region, 0.6); ok {
-		return pt, conf, true
+	deadline := time.Now().Add(chestContinueAppearTimeout)
+	for time.Now().Before(deadline) {
+		if pt, conf, ok := n.matchButtonTemplate(tpl, "btn_continue", region, 0.6); ok {
+			return pt, conf, true
+		}
+		time.Sleep(chestContinuePollInterval)
 	}
-	// Retry once — the button may not have rendered on the first frame.
-	time.Sleep(ChestAnimSettle)
-	return n.matchButtonTemplate(tpl, "btn_continue", region, 0.6)
+	return image.Point{}, 0, false
 }
 
 // matchButtonTemplate normalizes the current capture, matches tpl inside
