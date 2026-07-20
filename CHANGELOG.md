@@ -6,11 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - **Event-agnostic chest detection** — `StateChestReward` classifier rule
-  (`internal/game/classifier.go`) now keys on structural invariants
-  (bottom-center "TAP TO OPEN" dim band + warm center chest glow) instead
-  of art-specific pixels, so it survives the every-couple-months CoC event
-  art swaps. Optional `chest` template (`assets/templates/chest.png`)
-  adds confidence when present but never triggers detection alone.
+  (`internal/game/classifier.go`) now fires ONLY on the `hammer`
+  ("TAP TO OPEN") template match, so dark bottom pixels on a normal
+  village no longer false-trigger dismissal. Survives CoC event art swaps.
 - **Template-driven Continue button** — `chestContinueTap`
   (`internal/game/chestdismiss.go`) now auto-detects a `btn_continue`
   template (`assets/templates/btn_continue.png`) and taps the matched
@@ -23,6 +21,14 @@ All notable changes to this project will be documented in this file.
   rule fires on a chest screen and does NOT false-positive on MainVillage.
 
 ### Fixed
+- **Chest Continue tap timing** — `chestContinueTap`
+  (`internal/game/chestdismiss.go`) now retries the Continue tap
+  (up to `chestContinueMaxTaps`, default 3) with a settle between
+  attempts, because the overlay can lag the chest-open animation by ~1s
+  and a single early tap classifies as a transitional `Unknown` instead
+  of `MainVillage`. On final failure it dumps
+  `debug_chest_continue_fail.png` so a mislocated
+  `continue_button.json` rect can be recaptured from that exact frame.
 - **Device-independent CPU metric** — `internal/bot/cputime.go` reads
   process CPU time via `getrusage(RUSAGE_SELF)` (user + system) and exposes
   `cpu_time_sec` (absolute, kernel-accurate, comparable across machines) plus

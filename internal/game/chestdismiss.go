@@ -101,6 +101,14 @@ const (
 // ChestAnimSettle — see comment on ChestSkipConfirmSettle.
 var ChestAnimSettle = 1200 * time.Millisecond
 
+// chestContinueMaxTaps bounds how many times we tap the Continue rect
+// (or template point) before giving up. The overlay can lag the
+// chest-open animation by ~1s, so the first tap can land a frame early
+// and classify as a transitional Unknown instead of MainVillage; retrying
+// with a settle between attempts absorbs that. TEST-MUTABLE like
+// ChestAnimSettle (withFastChestAnimSettle sets it to 1).
+var chestContinueMaxTaps = 3
+
 // ChestSkipConfirmSettle is the settle window between Skip → Confirm
 // taps (and after Confirm Yes → verify-capture). 800ms is enough for
 // CoC to animate the confirm dialog in on most runs.
@@ -381,50 +389,27 @@ func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
 	return fmt.Errorf("chest: Skip+Confirm did not dismiss (verify still StateChestReward)")
 }
 
-// chestContinueTap bridges the post-chest overlay to MainVillage.
-// Some CoC event-reward flows render a "Continue" overlay after the
-// chest taps succeed; we tap it once (uniformly-random inside the
-// configured rect) and verify the classifier sees StateMainVillage.
-//
-// continueRect is OPTIONAL: pass nil and this step is a no-op. The
-// caller decides based on whether assets/continue_button.json exists.
-//
-// Single-attempt by design (same philosophy as tryChestSkipFlow): a
-// second Continue tap on a moving target misfires into other UI. If
-// the tap doesn't land us on MainVillage we return an error so the
-// Navigator's chestCascadeCount escalation kicks in.
-//
-// Cost on success: 1 tap + 1 capture.
-// Cost on failure: 1 tap + 1 capture + error.
-// chestContinueTap bridges the post-chest overlay to MainVillage.
-// Some CoC event-reward flows render a "Continue" overlay after the
-// chest taps succeed.
+// chestContinueTap bridges the post-chest overlay back to MainVillage.
 //
 // Detection order (event-agnostic first):
 //  1. If a `btn_continue` template is loaded (captured once via
 //     `go run cmd/capture_template -name=btn_continue`), match it in the
-//     bottom half of the screen and tap the matched point. This needs no
-//     manual rect and survives art swaps — the preferred path.
+//     bottom half of the screen and tap the matched point. No manual rect
+//     needed and survives art swaps — the preferred path.
 //  2. Else fall back to the configured `continue_button.json` rect
 //     (assets/continue_button.json), tapped uniformly-random inside.
 //  3. If neither is available, assume this event has no Continue overlay
 //     and return nil (success) without tapping.
 //
-// The template match is retried once after a settle, because the chest
-// "open" animation can lag a frame behind the tap-scan loop's final
-// classify — the Continue button may not be rendered yet on the first
-// capture.
+// The Continue overlay can lag the chest-open animation by ~1s, so the
+// first tap can land before the button is rendered and classify as a
+// transitional Unknown instead of MainVillage. The rect path therefore
+// retries up to chestContinueMaxTaps times (each with a settle), and on
+// final failure dumps debug_chest_continue_fail.png so a wrong/missing
+// rect can be recaptured from that exact frame.
 //
 // continueRect is OPTIONAL: pass nil and this step is a no-op unless a
-// `btn_continue` template is present.
-//
-// Single logical attempt by design (same philosophy as
-// tryChestSkipFlow): a second Continue tap on a moving target misfires
-// into other UI. On verify failure we return an error so the
-// Navigator's chestCascadeCount escalation kicks in.
-//
-// Cost on success: 1 tap + 1 capture.
-// Cost on failure: 1 tap + 1 capture + error.
+// btn_continue template is present.
 func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 	// 1. Preferred: template-matched Continue button.
 	if n.templates != nil {
@@ -434,9 +419,13 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 				n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
 			}
 			time.Sleep(ChestAnimSettle)
-			return n.verifyAtMainVillage("chest continue")
+			if n.verifyAtMainVillage("chest continue (template)") == nil {
+				return nil
+			}
+			n.logger.Warn().Msg("chest continue: template tap did not reach MainVillage; falling back to rect")
+		} else {
+			n.logger.Debug().Msg("chest continue: no btn_continue template match; falling back to configured rect")
 		}
-		n.logger.Debug().Msg("chest continue: no btn_continue template match; falling back to configured rect")
 	}
 
 	// 2. Fallback: configured rect.
@@ -446,35 +435,33 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 		return nil
 	}
 
-	// Wait for the Continue overlay to animate in (~1s after the chest
-	// opens). Tapping earlier hits a button that isn't rendered yet and
-	// the verify step then fails, escalating to the stuck-watchdog ladder.
-	time.Sleep(ChestAnimSettle)
-
-	rx, ry := randomPointInRect(*continueRect)
-	cx, cy := n.cal.ScaleRef(rx, ry)
-	if err := n.client.TapRandomized(cx, cy); err != nil {
-		n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
+	// Retried because the Continue overlay can lag the chest-open
+	// animation by ~1s; the first tap can land before the button is
+	// rendered and classify as a transitional Unknown instead of
+	// MainVillage. Each attempt waits for the overlay to animate in
+	// before tapping and verifies afterwards.
+	for attempt := 0; attempt < chestContinueMaxTaps; attempt++ {
+		time.Sleep(ChestAnimSettle)
+		rx, ry := randomPointInRect(*continueRect)
+		cx, cy := n.cal.ScaleRef(rx, ry)
+		if err := n.client.TapRandomized(cx, cy); err != nil {
+			n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
+		}
+		time.Sleep(ChestAnimSettle)
+		if n.verifyAtMainVillage("chest continue") == nil {
+			return nil
+		}
+		n.logger.Warn().Int("attempt", attempt+1).Int("max", chestContinueMaxTaps).
+			Msg("chest continue: not at MainVillage yet; retrying")
 	}
 
-	time.Sleep(ChestAnimSettle)
-
-	mat, capErr := n.client.CaptureToMat()
-	if capErr != nil {
-		return fmt.Errorf("chest continue: verify capture failed: %w", capErr)
+	// All attempts exhausted — dump the screen so a wrong/missing
+	// Continue rect can be recaptured from this exact frame.
+	if m, err := n.client.CaptureToMat(); err == nil && !m.Empty() {
+		gocv.IMWrite(paths.ResolveConfig("debug_chest_continue_fail.png"), m)
+		m.Close()
 	}
-	state, score := n.classify(mat)
-	if !mat.Empty() {
-		mat.Close()
-	}
-
-	if state == StateMainVillage {
-		n.logger.Info().
-			Int("score", score).
-			Msg("chest continue: tapped Continue button, now at MainVillage")
-		return nil
-	}
-	return fmt.Errorf("chest continue: tapped Continue button but state is %s (expected MainVillage)", state)
+	return fmt.Errorf("chest continue: tapped Continue rect %d times without reaching MainVillage (see debug_chest_continue_fail.png)", chestContinueMaxTaps)
 }
 
 // matchContinueButton looks for a `btn_continue` template in the bottom
