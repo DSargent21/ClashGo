@@ -68,6 +68,10 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// GetState returns the most recent state event. The returned event is a
+// LIVE reference to the stored message (a protobuf, which must never be
+// copied): treat it as read-only, and do not retain it across calls — a
+// newer event replaces it at any time.
 func (c *Client) GetState() *bus.GameStateEvent {
 	if c == nil {
 		return nil
