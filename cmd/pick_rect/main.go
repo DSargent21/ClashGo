@@ -211,7 +211,7 @@ func main() {
 		log.Fatalf("write %s: %v", *outPath, err)
 	}
 
-	fmt.Printf("✓ %s (phys) → %s (ref)\n", box, refRect)
+	fmt.Printf("✓ %s (phys) → %+v (ref)\n", box, refRect)
 	fmt.Printf("✓ wrote %s\n", *outPath)
 	fmt.Println("Restart the consumer (or wait for next bot-startup) to pick up the new geometry.")
 }

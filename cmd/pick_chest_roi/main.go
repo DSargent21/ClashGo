@@ -213,7 +213,7 @@ func main() {
 			log.Fatalf("primary drag: %v", err)
 		}
 		saved.TapROI = boxToRef(*box, scaleX, scaleY)
-		fmt.Printf("✓ primary: %s (phys) → %s (ref)\n", box, saved.TapROI)
+		fmt.Printf("✓ primary: %s (phys) → %+v (ref)\n", box, saved.TapROI)
 		printPixelsPng(pngPath, *box)
 
 		// 2. optional tap_roi_alt.
@@ -224,7 +224,7 @@ func main() {
 				fmt.Printf("  primary rect already saved; re-run with -also-alt to retry.\n")
 			} else {
 				saved.TapROIAlt = boxToRef(*box2, scaleX, scaleY)
-				fmt.Printf("✓ alt: %s (phys) → %s (ref)\n", box2, saved.TapROIAlt)
+				fmt.Printf("✓ alt: %s (phys) → %+v (ref)\n", box2, saved.TapROIAlt)
 				printPixelsPng(pngPath, *box2)
 			}
 		}
@@ -237,7 +237,7 @@ func main() {
 				fmt.Printf("⚠ skip drag skipped: %v\n", err)
 			} else {
 				saved.SkipButton = boxToRef(*boxSkip, scaleX, scaleY)
-				fmt.Printf("✓ skip button: %s (phys) → %s (ref)\n", boxSkip, saved.SkipButton)
+				fmt.Printf("✓ skip button: %s (phys) → %+v (ref)\n", boxSkip, saved.SkipButton)
 				printPixelsPng(pngPath, *boxSkip)
 				fmt.Println()
 				fmt.Println(">>> NEXT STEP <<<")
@@ -256,7 +256,7 @@ func main() {
 			fmt.Printf("  existing chest_dismiss_roi.json preserved; re-run to retry.\n")
 		} else {
 			saved.ConfirmYesButton = boxToRef(*boxConfirm, scaleX, scaleY)
-			fmt.Printf("✓ confirm yes: %s (phys) → %s (ref)\n", boxConfirm, saved.ConfirmYesButton)
+			fmt.Printf("✓ confirm yes: %s (phys) → %+v (ref)\n", boxConfirm, saved.ConfirmYesButton)
 			printPixelsPng(pngPath, *boxConfirm)
 		}
 	}

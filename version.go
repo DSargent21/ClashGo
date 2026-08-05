@@ -8,7 +8,7 @@ package main
 // the Wails build (//go:build !cli) AND the CLI build (//go:build cli) —
 // putting them in cli.go would otherwise hide them from the GUI.
 var (
-	version = "0.1.0-beta"
+	version = "0.2.0-beta"
 	commit  = "none"
 	date    = "unknown"
 )

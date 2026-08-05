@@ -38,7 +38,11 @@ func NewBotClient(natsURL, deviceID string, opts ...Option) (*Client, error) {
 	}
 	c := &Client{eventBus: e, deviceID: deviceID}
 	sub, err := e.SubscribeState(func(ev *bus.GameStateEvent) {
-		c.latest.Store(*ev)
+		// Store the pointer, not a value copy: GameStateEvent is a
+		// protobuf message (protoimpl.MessageState embeds a sync.Mutex),
+		// so copying it into the atomic.Value is both illegal (go vet
+		// copylocks) and a waste.
+		c.latest.Store(ev)
 	})
 	if err != nil {
 		_ = e.Close()
@@ -72,8 +76,8 @@ func (c *Client) GetState() *bus.GameStateEvent {
 	if v == nil {
 		return nil
 	}
-	ev, _ := v.(bus.GameStateEvent)
-	return &ev
+	ev, _ := v.(*bus.GameStateEvent)
+	return ev
 }
 
 func (c *Client) WaitForState(target bus.GameState, timeout time.Duration) error {

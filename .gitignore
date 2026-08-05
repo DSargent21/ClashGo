@@ -135,3 +135,4 @@ adb_last_known.json
 /boot_debug
 /device_probe
 /capture_template
+/analyze_template
