@@ -50,7 +50,13 @@ test_template
 build/pinpoint_helper
 build/test_wall_steps
 build/calibrate_stall
-build/darwin/
+# build/darwin/ is wails-generated (Info.plist etc.) EXCEPT the
+# versioned packaging resources below, which `make release` needs:
+#   install_update.sh     — in-place update helper bundled into the .app
+#   dmg-resources/        — License.txt + README.txt shown on the DMG
+build/darwin/*
+!build/darwin/install_update.sh
+!build/darwin/dmg-resources/
 adb_mock_v2.go
 full_mock_adb.go
 
