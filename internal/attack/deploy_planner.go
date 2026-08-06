@@ -1,7 +1,6 @@
 package attack
 
 import (
-	"image"
 	"strings"
 	"time"
 
@@ -24,7 +23,7 @@ type UnitPlan struct {
 	IsHero    bool
 	IsSiege   bool
 	IsAbility bool
-	Priority  int // 0=spell, 1=regular, 2=ability
+	Priority  int
 	Retry     RetryPolicy
 }
 
@@ -87,7 +86,6 @@ func (dp *DeployPlanner) planPhase(phase strategy.Phase) PhasePlan {
 		Edge:  dp.targetEdge,
 	}
 
-	// Sort units: Spells first, then regular, then abilities
 	var spells []strategy.Unit
 	var regular []strategy.Unit
 	var abilities []strategy.Unit
@@ -105,7 +103,6 @@ func (dp *DeployPlanner) planPhase(phase strategy.Phase) PhasePlan {
 		}
 	}
 
-	// Build unit plans in order: spells → regular → abilities
 	allUnits := append(spells, regular...)
 	allUnits = append(allUnits, abilities...)
 
@@ -133,7 +130,6 @@ func (dp *DeployPlanner) planUnit(unit strategy.Unit, phase strategy.Phase) Unit
 		Retry:     dp.defaultRetry,
 	}
 
-	// Set priority
 	if plan.IsSpell {
 		plan.Priority = 0
 	} else if plan.IsAbility {
@@ -142,7 +138,6 @@ func (dp *DeployPlanner) planUnit(unit strategy.Unit, phase strategy.Phase) Unit
 		plan.Priority = 1
 	}
 
-	// Find slot for this unit
 	slot := dp.slotManager.GetSlot(unitName)
 	if slot == nil {
 		dp.logger.Warn().Str("unit", unit.Name).Msg("unit not found in bar")
@@ -179,17 +174,6 @@ func ResolveHeroTargets(plan PhasePlan) []UnitPlan {
 		}
 	}
 	return heroes
-}
-
-// ResolveAbilityTargets returns ability units from a phase plan.
-func ResolveAbilityTargets(plan PhasePlan) []UnitPlan {
-	var abilities []UnitPlan
-	for _, up := range plan.UnitPlans {
-		if up.IsAbility {
-			abilities = append(abilities, up)
-		}
-	}
-	return abilities
 }
 
 // ResolveSpellTargets returns spell units from a phase plan.
@@ -230,51 +214,4 @@ func ResolveSiegeTargets(plan PhasePlan) []UnitPlan {
 		}
 	}
 	return sieges
-}
-
-// ScaleEdgeForPhase scales an edge to current screen dimensions.
-func ScaleEdgeForPhase(edge ManualEdge, pCfg PrecisionConfig, w, h int) ManualEdge {
-	return ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
-}
-
-// GetDeploymentEdge returns the edge for a given unit.
-func GetDeploymentEdge(unit UnitPlan, targetEdge string, pCfg PrecisionConfig, w, h int) (image.Point, image.Point) {
-	// Heroes: outer edge point
-	if unit.IsHero && !strings.Contains(strings.ToLower(unit.Unit.Name), "duke") {
-		edge, ok := pCfg.Edges[targetEdge]
-		if ok {
-			scaled := ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
-			return scaled.P1, scaled.P1
-		}
-	}
-
-	// Dragon Duke: adjacent edge
-	if strings.Contains(strings.ToLower(unit.Unit.Name), "duke") {
-		adjacentEdges := map[string][]string{
-			"TopLeft":     {"TopRight", "BottomLeft"},
-			"TopRight":    {"TopLeft", "BottomRight"},
-			"BottomLeft":  {"TopLeft", "BottomRight"},
-			"BottomRight": {"TopRight", "BottomLeft"},
-		}
-		deploymentEdge := targetEdge
-		if adj, ok := adjacentEdges[targetEdge]; ok && len(adj) > 0 {
-			deploymentEdge = adj[0] // Use first adjacent edge
-		}
-		edge, ok := pCfg.Edges[deploymentEdge]
-		if ok {
-			scaled := ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
-			return scaled.P1, scaled.P2
-		}
-	}
-
-	// Default: target edge line
-	edge, ok := pCfg.Edges[targetEdge]
-	if ok {
-		scaled := ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
-		return scaled.P1, scaled.P2
-	}
-
-	// Fallback: center
-	center := image.Pt(w/2, h/2)
-	return center, center
 }

@@ -7,7 +7,6 @@ interface SidebarProps {
   setTab: (tab: TabType) => void;
   expanded: boolean;
   setExpanded: (expanded: boolean) => void;
-  statusMsg: string;
   running: boolean;
   onStart: () => void;
   onStop: () => void;
@@ -18,7 +17,6 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
   setTab,
   expanded,
   setExpanded,
-  statusMsg,
   running,
   onStart,
   onStop

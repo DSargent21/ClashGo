@@ -158,9 +158,8 @@ type Service struct {
 
 	progress atomic.Int32 // 0..100 — read without lock, written from download goroutine
 
-	etagMu   sync.RWMutex
-	etag     string
-	manifest *Manifest // last successful manifest, reused by Download()
+	etagMu sync.RWMutex
+	etag   string
 
 	downloadSpec downloadSpec
 

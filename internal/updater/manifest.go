@@ -1,7 +1,6 @@
 package updater
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -131,18 +130,9 @@ func hasPrefix(s, p string) bool {
 }
 
 func hasSuffix(s, suf string) bool {
-	// hasSuffix with empty suf always returned true because
-	// s[len(s):] == "" for any non-negative length. Skip that case
-	// so picker callers can use "" as a sentinel.
+
 	if suf == "" {
 		return false
 	}
 	return len(s) >= len(suf) && s[len(s)-len(suf):] == suf
-}
-
-// MustSerializeManifest is exposed for the Makefile invocation (via a
-// tiny CLI added later). For now it's used in tests.
-func MustSerializeManifest(m Manifest) []byte {
-	b, _ := json.MarshalIndent(m, "", "  ")
-	return b
 }

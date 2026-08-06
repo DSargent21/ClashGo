@@ -521,47 +521,6 @@ type StateClassifier interface {
 
 var _ StateClassifier = (*Classifier)(nil)
 
-func ClassifyStateFast(screen gocv.Mat, cal *Calibration, r []StateRule) GameState {
-	if screen.Empty() {
-		return StateUnknown
-	}
-
-	best := StateUnknown
-	bestScore := 0
-
-	for _, rule := range r {
-		passed := 0
-		for _, chk := range rule.Checks {
-			sx, sy := cal.ScaleRef(chk.X, chk.Y)
-			if sx < 0 || sy < 0 || sx >= screen.Cols() || sy >= screen.Rows() {
-				continue
-			}
-
-			b := screen.GetUCharAt(sy, sx*3)
-			g := screen.GetUCharAt(sy, sx*3+1)
-			r := screen.GetUCharAt(sy, sx*3+2)
-
-			dr := absDiff(int(r), int(chk.R))
-			dg := absDiff(int(g), int(chk.G))
-			db := absDiff(int(b), int(chk.B))
-
-			if math.Sqrt(float64(dr*dr+dg*dg+db*db)) <= float64(chk.Tolerance) {
-				passed++
-			}
-		}
-
-		if passed >= rule.MinPass {
-			score := passed*100 + rule.Weight
-			if score > bestScore {
-				bestScore = score
-				best = rule.State
-			}
-		}
-	}
-
-	return best
-}
-
 type ClassifierResult struct {
 	State      GameState
 	Score      int

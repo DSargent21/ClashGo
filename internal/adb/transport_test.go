@@ -34,7 +34,7 @@ func TestTransportCapture(t *testing.T) {
 	}
 	defer transport.Close()
 
-	data, err := transport.ExecRaw("exec:exec-out screencap")
+	data, err := transport.Exec("exec:exec-out screencap")
 	if err != nil {
 		t.Fatalf("screencap: %v", err)
 	}
@@ -176,7 +176,7 @@ func BenchmarkTransportScreencap(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		data, err := transport.ExecRaw("exec:exec-out screencap")
+		data, err := transport.Exec("exec:exec-out screencap")
 		if err != nil {
 			b.Fatalf("screencap: %v", err)
 		}
@@ -240,7 +240,7 @@ func BenchmarkPersistentVsProcessSpawn(b *testing.B) {
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, err := transport.ExecRaw("exec:exec-out screencap")
+			_, err := transport.Exec("exec:exec-out screencap")
 			if err != nil {
 				b.Fatalf("capture: %v", err)
 			}

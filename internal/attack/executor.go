@@ -35,9 +35,7 @@ func (t *TapExecutor) CaptureFresh() (gocv.Mat, error) {
 
 // TapSlot selects a slot with jitter for human-like behavior.
 func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) {
-	// Grand Warden flight-mode toggle sits at the bottom of his icon on the
-	// troop bar. Nudge the tap upward so the PORTRAIT (selection/cursor) is
-	// hit, NOT the chip (which would silently flip his ground<->air mode).
+
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
 		ptY -= int(25.0 * t.cal.ScaleY)
@@ -51,24 +49,16 @@ func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) {
 	t.client.TapFast(jPt.X, jPt.Y, 2.0)
 }
 
-// TapSlotAt taps a specific coordinate with jitter.
-func (t *TapExecutor) TapSlotAt(x, y, jitterPx int) {
-	jPt := t.addJitter(image.Pt(x, y), jitterPx)
-	t.client.TapFast(jPt.X, jPt.Y, 2.0)
-}
-
 // TapDeployLine distributes taps along a line from p1 to p2.
 func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int) {
 	points := t.calculateLinePoints(p1, p2, count)
 
-	// Randomize direction 50% for human variability
 	if rand.Float64() < 0.5 {
 		for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
 			points[i], points[j] = points[j], points[i]
 		}
 	}
 
-	// Deploy in batches of 3
 	for i := 0; i < len(points); {
 		rem := len(points) - i
 		if rem >= 3 {
@@ -165,9 +155,7 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 
 // TapHeroAbility taps a hero slot for ability activation.
 func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
-	// Same warden-portrait-vs-mode-chip offset as TapSlot: tap the upper
-	// portion of the icon so the ABILITY button registers, not the small
-	// ground<->air toggle below it.
+
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
 		ptY -= int(25.0 * t.cal.ScaleY)
@@ -178,41 +166,6 @@ func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
 		Str("unit", slot.UnitName).
 		Msg("tapping hero ability")
 	t.client.TapFast(slot.X, ptY, 4.0)
-}
-
-// TapBulkAbilities activates abilities for multiple heroes with delays.
-func (t *TapExecutor) TapBulkAbilities(slots []*TrackedSlot, delayMs int) {
-	if len(slots) == 0 {
-		return
-	}
-	t.logger.Info().Int("count", len(slots)).Msg("bulk activating hero abilities")
-	// Short settle so heroes have a chance to spawn on the map before the
-	// first ability fires; full deploy-time wait is in hero_manager.go.
-	time.Sleep(120 * time.Millisecond)
-
-	for _, slot := range slots {
-		t.TapHeroAbility(slot)
-		time.Sleep(time.Duration(delayMs) * time.Millisecond)
-	}
-}
-
-// WaitForSlotEmpty polls until a slot is empty or timeout.
-func (t *TapExecutor) WaitForSlotEmpty(slot *TrackedSlot, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		screen, err := t.CaptureFresh()
-		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		empty := isSlotEmptyStatic(screen, slot.X, slot.Y, t.cal.PhysicalW, t.cal.PhysicalH)
-		screen.Close()
-		if empty {
-			return true
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return false
 }
 
 // WaitForSettle waits for deployment to settle.

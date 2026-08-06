@@ -7,14 +7,13 @@ detects this overlay and dismisses it automatically.
 ## How it works
 
 1. **Detection** — the classifier (`StateChestReward`,
-   `internal/game/classifier.go`) watches for two structural invariants that
-   stay constant across events:
-   - a dark "TAP TO OPEN" shadow band along the bottom-center, and
-   - a warm (yellow/orange) glow at screen center where the lit chest sits.
-   It does **not** depend on the chest's exact paint job, so it keeps working
-   when CoC reskins the event every couple of months.
-    - Optional `assets/templates/hammer.png` (the tap-to-open hammer icon)
-      adds confidence when present but can never trigger the state on its own.
+   `internal/game/classifier.go`) fires **only** when the `hammer`
+   ("TAP TO OPEN") template matches. It is template-only by design: the
+   hammer icon + prompt vanish the moment the chest breaks and never appear
+   on a normal village screen, so no pixel rule can false-trigger dismissal.
+   The hammer icon is small, stable UI chrome, so the rule survives CoC
+   event art swaps. Without `assets/templates/hammer.png` loaded,
+   `StateChestReward` never fires.
 2. **Break the chest** — `DismissChestReward`
    (`internal/game/chestdismiss.go`) taps the chest box (configurable hammer
    count) until the classifier no longer sees `StateChestReward`.
@@ -45,12 +44,17 @@ go run cmd/capture_template -name=btn_continue -drag
 #    drag a tight rect around the Continue button.
 ```
 
-To enable the faster Skip → Confirm path (fewer taps), capture the Skip and
-Confirm-Yes rects:
+To enable the faster Skip → Confirm path (fewer taps), pick the Skip and
+Confirm-Yes rects with the calibration picker (`tools/picker.py`). Each run
+captures the live screen and merges its keys into the output JSON, so run
+them as two separate sessions with the manual navigation in between:
 
 ```sh
-go run cmd/pick_chest_roi -also-buttons          # skip_button
-go run cmd/pick_chest_roi -confirm-only          # confirm_yes_button
+# 1. On the chest screen (Skip is visible):
+python3 tools/picker.py -o assets/chest_dismiss_roi.json --rect skip_button
+
+# 2. Manually tap Skip so the Confirm dialog renders, then pick it:
+python3 tools/picker.py -o assets/chest_dismiss_roi.json --rect confirm_yes_button
 ```
 
 `assets/chest_dismiss_roi.json` already ships with `tap_roi`, `tap_roi_alt`,
@@ -59,8 +63,10 @@ particular event chest needs more hits to break.
 
 ## Tuning
 
-- Chest still not detected? Run `go run cmd/debug_state` on a live chest
-  screen and check the printed per-rule scores; the dark-band / glow pixels
-  in `classifier.go` can be loosened (raise each `PixelCheck.Tolerance`).
+- Chest still not detected? Check the bot's logs: a captured chest frame
+  that classifies as `Unknown` (instead of `StateChestReward`) means the
+  `hammer` template isn't matching — recapture it (event art changed). If
+  the template matches but dismissal misbehaves, adjust the tap zone in
+  `assets/chest_dismiss_roi.json`.
 - Continue misses? Recapture `btn_continue` (event art changed) or set
   `continue_button.json` to the button's rect.

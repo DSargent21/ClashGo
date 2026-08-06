@@ -8,17 +8,16 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
 - Uses BlueStacks Air via ADB (already connected and working)
 - Professional, super fast, efficient code approach
 - GUI: design is secondary, can be worked on later
-- Keep existing CSV attack strategy format
+- Strategy format: YAML + per-unit formula coordinates
 - Follow Go best practices throughout
 - Go 1.22 installed and confirmed working
 
 ## Status
 
 ### Done
-- [x] Project initialized: `coc-bot/` Go module (go 1.22, gocv, zerolog, go-sqlite3)
-- [x] `internal/geo/geo.go` — Point, Rect, Diamond geometry types
-- [x] `internal/vision/vision.go` — Template matching, multi-scale matching, PixelSearch, MultiPixelSearch, FindRedArea, IsInsideDiamond
-- [x] `pkg/strategy/parser.go` — CSV attack strategy parser
+- [x] Project initialized: `coc-bot/` Go module (go 1.22, gocv, zerolog)
+- [x] `internal/vision/vision.go` — Template matching (multi-scale, cached), PixelSearch, mat pool
+- [x] `pkg/strategy/parser.go` + `yaml_parser.go` — YAML strategy parser
 - [x] **Persistent ADB Transport** (`internal/adb/transport.go` + `internal/adb/client.go` + `internal/adb/types.go`)
   - Direct TCP connection to ADB server (port 5037) — no process spawning per command
   - Single persistent connection multiplexing all commands
@@ -28,11 +27,10 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
 - [x] **Game State Machine** (`internal/game/`)
   - `types.go` — GameState enum, TransitionAction, Clickable, Rectangle, Config structs
   - `context.go` — GameContext with RWMutex, state management, screen capture buffering
-  - `state_graph.go` — Dijkstra shortest path + JSON persistence
+  - `state_graph.go` — Dijkstra shortest path
   - `classifier.go` — Pixel-based state detection (13+ states)
   - `calibration.go` — Resolution-independent scaling
   - `navigator.go` — State-to-state navigation + interrupt handling
-  - `explorer.go` — Auto-mapping of game states
   - `recognizer.go` — ScreenHash, blur detection, contour-based element detection
   - `templates.go` — Template store with multi-scale matching
 - [x] **Training System** (`internal/training/train.go`)
@@ -41,7 +39,7 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
   - Resource reading (gold, elixir, dark elixir)
   - WaitForFullArmy with polling
 - [x] **Attack System** (`internal/attack/attack.go`)
-  - CSV strategy loading and parsing
+  - YAML strategy loading and parsing
   - Deploy order builder (troops grouped by slot)
   - Troop selection, drop execution, spell casting
   - Queen/Warden/CC activation
@@ -66,8 +64,10 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
 
 ### In Progress
 - [ ] Search system (base filtering, weak base detection)
-- [ ] SQLite stats (migrate AttackStats schema)
-- [ ] Wails GUI
+
+### Shipped since this plan was written
+- [x] Wails GUI — React dashboard (0.2.0)
+- [x] Attack stats + history — JSON-backed (`attack_history.json`), no SQLite
 
 ### Next Priority
 1. **Search system** — Trophy/TH filtering, weak base detection, next-base button
@@ -98,7 +98,6 @@ Client (public API: CaptureToMat, Tap, Swipe, Shell)
         ├── connect() → TCP dial → CNXN handshake
         ├── setTransport() → host:transport:<device>
         ├── exec(service) → length-prefixed packet → OKAY/FAIL
-        ├── execRaw(service) → binary response
         └── reconnect() on failure
 ```
 
@@ -142,48 +141,55 @@ table and a verification recipe.
   - `shell:input tap/swipe/text/keyevent` for interaction
   - Auto-reconnect on transport loss with retry
 - **Vision**: gocv (OpenCV 4.x) for template matching + red line detection
-- **OCR**: Tesseract 5 via CGO (for resource reading, army count OCR) — planned
+- **OCR**: none — resource/loot reading is template + pixel based
 - **Config**: Typed JSON structs (custom unmarshal, no external dep)
-- **GUI**: Wails v2 (planned)
+- **GUI**: Wails v2 + React (shipped)
 - **Concurrency**: Goroutines + channels + atomic
 - **State Machine**: Explicit GameState enum with 2-frame confirmation
-- **Database**: mattn/go-sqlite3 (planned)
+- **Database**: none — stats + attack history are JSON files
 - **Logging**: rs/zerolog (structured, low overhead)
 
 ## Project Structure
 ```
-coc-bot/
+ClashGO/
 ├── go.mod / go.sum
-├── main.go                          # CLI entry, signal handling, bot startup
+├── main.go / cli.go / app.go        # Wails entry, CLI (build tag: cli), IPC + stats
 ├── internal/
-│   ├── adb/
-│   │   ├── client.go               # Public ADB API (CaptureToMat, Tap, Swipe...)
-│   │   ├── transport.go            # Persistent TCP transport to ADB server
-│   │   ├── types.go                # Logger interface, Option, Health
-│   │   └── transport_test.go       # Tests + benchmarks (skipped, real device)
-│   ├── bot/bot.go                  # Bot orchestrator: capture loop + action dispatch
-│   ├── game/                        # Game state machine
-│   │   ├── types.go               # GameState, TransitionAction, Clickable, Config
-│   │   ├── context.go             # GameContext (shared state hub, RWMutex)
-│   │   ├── state_graph.go         # Dijkstra graph, JSON persistence
-│   │   ├── classifier.go          # Pixel-based state detection (13+ states)
-│   │   ├── calibration.go         # Resolution scaling
-│   │   ├── navigator.go           # State navigation + interrupt handling
-│   │   ├── explorer.go            # Auto state mapping
-│   │   ├── recognizer.go          # ScreenHash, blur, contours
-│   │   ├── templates.go           # Template matching store
-│   │   └── doc.go                 # Package documentation
-│   ├── training/train.go          # Army camp reading, training queue, resource OCR
-│   ├── attack/attack.go            # Strategy execution, red area, drop algorithms
-│   ├── search/                     # Search system (TODO)
-│   ├── config/config.go           # Typed JSON config, all settings
-│   └── stats/                      # SQLite stats (TODO)
+│   ├── adb/                         # Persistent ADB transport, gestures, emulator bring-up
+│   │   ├── client.go / transport.go / types.go / pinch.go / bootprobe.go / emulator_mac.go
+│   │   └── *_test.go                # Tests (device-backed ones skip without a device)
+│   ├── attack/                      # Strategy execution: planner, executor, red line, spells
+│   │   ├── orchestrator.go          # Full-attack orchestration (DeployDynamicV2)
+│   │   ├── deploy_planner.go / deploy_line.go / spell_deployer.go / executor.go
+│   │   ├── redline.go / slot_manager.go / troop_counter.go / hero_manager.go / sweep.go
+│   │   ├── verifier.go / rotation_state.go / live_count.go / ...
+│   │   └── *_test.go
+│   ├── bot/                         # Capture loop, boot orchestration, wall upgrades, CPU metric
+│   │   ├── bot.go / bootorchestrator.go / bootprofile.go / boot_report.go / recovery.go
+│   │   ├── wall_upgrade.go / asyncwriter.go / diagnostics.go / cputime.go
+│   │   └── *_test.go
+│   ├── game/                        # State machine: detection + navigation
+│   │   ├── types.go / context.go / state_graph.go / classifier.go
+│   │   ├── calibration.go           # Physical→reference (860×732) scaling
+│   │   ├── navigator.go / chestdismiss.go / loot.go / recognizer.go / templates.go
+│   │   └── *_test.go
+│   ├── training/                    # Army-camp reading + training queue
+│   ├── config/                      # Typed JSON config
+│   ├── paths/                       # Asset-path resolution
+│   ├── logger/                      # zerolog wiring
+│   ├── updater/                     # GitHub Releases in-app updater
+│   └── vision/                      # gocv template matching + mat pool
 ├── pkg/
-│   └── strategy/parser.go          # CSV attack strategy parser
-└── assets/
-    ├── strategies/default.csv      # BARCH attack strategy
-    ├── templates/                  # Template images for matching
-    └── screenshots/                # Debug capture output
+│   ├── strategy/                    # YAML strategy parser
+│   └── formula/                     # Per-unit deploy formula (design_attack output)
+├── assets/
+│   ├── strategies/                  # YAML strategies + formula JSON
+│   ├── templates/                   # Template images for matching
+│   └── *.json                       # Picked ROIs (wall upgrade, chest, battle loot)
+├── cmd/                             # Helpers: attack_record, capture_template, design_attack,
+│                                    #          release_manifest, test_wall_upgrade
+├── web/                             # Wails React GUI
+└── tools/                           # picker.py + calibration scripts
 ```
 
 ## Relevant AutoIt Source Files (reference)

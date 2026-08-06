@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Feed from './components/Feed';
@@ -26,7 +26,7 @@ import {
   SkipCurrentVersion,
   ClearSkippedVersion,
 } from '../wailsjs/go/main/App';
-import { bot, main } from '../wailsjs/go/models';
+import { bot } from '../wailsjs/go/models';
 import { TabType, UpdateStatus, DEFAULT_UPDATE_STATUS } from './types';
 import UpdateBanner from './components/UpdateBanner';
 import './App.css';
@@ -398,7 +398,6 @@ function App() {
         setTab={setTab}
         expanded={sidebarExpanded}
         setExpanded={setSidebarExpanded}
-        statusMsg={isRunning ? "Running" : "Idle"}
         running={isRunning}
         onStart={handleStart}
         onStop={handleStop}

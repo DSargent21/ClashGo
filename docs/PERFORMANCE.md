@@ -139,6 +139,11 @@ bypassed the `ScaledTemplateCache` and re-allocated inside the loop.
 
 ### 5. World snapshot flush cadence lowered to 1 Hz
 
+> **Update (dead-code cleanup):** the `internal/world` snapshot writer this
+> entry refers to was later deleted as dead code — it had no production
+> consumers. This entry is historical; the savings below no longer apply
+> (the writer itself is gone).
+
 The world snapshot writer was flushing to disk 4×/sec; production
 consumers (`jq` observers, the React stats poll at 0.5 Hz, replay
 tooling) don't need 4 Hz.
@@ -287,7 +292,8 @@ Compare the post-audit profile to the pre-audit one. If the audit
 landed as predicted, you should see fewer top-frame CPU consumers in:
 - Encode/Decode Mat operations in `internal/vision/vision.go`
 - `runtime.EventsEmit` callers (captureLoop, WailsLogWriter)
-- `os.WriteFile` / `os.Rename` in `internal/world/world.go`
+- `os.WriteFile` / `os.Rename` in the world snapshot writer (removed in the
+  dead-code cleanup — it was dead code; this frame is no longer present)
 
 If you don't want to carry the pprof patch in-repo, drop a sibling
 `internal/pprof` package under `DEBUG=1` that the bot's `Start()` opts
@@ -312,7 +318,7 @@ bot-uptime + a battle.
 | `app.go` | `cachedHistory` field + RWMutex, `GetAttackHistory` rewrite, `ensureHistoryLoadedLocked`, `refreshHistory`, `ResetStats` cache null, `StopBot` detached teardown, `b.OnFrame` removal, `WailsLogWriter` `bot_log` removal | The IPC + disk + teardown hotspots all live here. |
 | `internal/bot/bot.go` | New `Cancel()` method | Decouples the synchronous "stop what you're doing" from the heavier `Stop()` teardown. |
 | `internal/game/classifier.go` | `MatchMultiScale` → `MatchMultiScaleROICached(rule.Template, ...)` | Kills 180 Mat alloc/free/sec inside the classifier hot loop. |
-| `internal/world/world.go` | `MinWriteInterval: 250ms → 1s` | 4× fewer fsync/rename churns from the snapshot writer. |
+| `internal/world/world.go` | `MinWriteInterval: 250ms → 1s` | 4× fewer fsync/rename churns from the snapshot writer. **Later deleted in the dead-code cleanup — the writer had no production consumers.** |
 | `web/src/App.tsx` | Removed screenshot state + `screenInterval`; removed unused `GetLiveScreenshot` import | Tab-gate the screenshot poll so it only mounts on Live View. |
 | `web/src/components/Feed.tsx` | Owns its own screenshot state + 1 Hz poll with `cancelled` flag + `inflightRef` + `clearInterval` cleanup | Localizes the IPC payload to the only consumer. |
 | `web/src/components/Dashboard.tsx` | Dropped `onClearLogs` prop | Dead prop. |

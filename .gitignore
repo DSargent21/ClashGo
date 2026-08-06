@@ -36,12 +36,8 @@ coc-bot
 coc-bot-test
 main
 roidiag
-run_attack
-test_live_end
-verify_loot
 clashgo
 clashgo_cli
-debug_attack
 inspect_taps
 pick_coords
 bot_cli
@@ -89,9 +85,7 @@ logs/
 
 # Images: NEVER push decorative/screenshot raster images to GitHub.
 # Carve-outs (these are functional code inputs, not docs/screenshots):
-#   assets/templates/**/*.png       — gocv template matcher loads at runtime
-#   assets/grab/de_region.png        — dev-only screenshot tool input (cmd/grab_one)
-#   assets/grab/full_screen.png      — dev-only screenshot tool input (cmd/find_anchors, cmd/capture_digits, cmd/grab_one)
+#   assets/templates/**/*.png          — gocv template matcher loads at runtime
 #   internal/game/testdata/screen_ocr.png     — Go test fixture (loot_test.go)
 #   internal/game/testdata/screen_victory.png — Go test fixture (loot_test.go)
 #
@@ -105,8 +99,6 @@ logs/
 **/*.bmp
 **/*.tiff
 !**/assets/templates/**/*.png
-!assets/grab/de_region.png
-!assets/grab/full_screen.png
 !internal/game/testdata/screen_ocr.png
 !internal/game/testdata/screen_victory.png
 !web/src/assets/images/clashgo-logo.png
@@ -137,8 +129,4 @@ adb_last_known.json
 
 # One-off root build outputs (have source in cmd/<name>/; can be re-derived).
 # Patterns are root-anchored so the cmd/<name>/ source directories are NOT ignored.
-/adb_probe
-/boot_debug
-/device_probe
 /capture_template
-/analyze_template

@@ -9,11 +9,11 @@ import (
 
 // VerifyConfig holds verification thresholds.
 type VerifyConfig struct {
-	EmptyThreshold   float64       // 0.08 - ratio below which slot is empty
-	AbilityThreshold float64       // 0.4 - ratio below which is ability icon
-	MaxRetryAttempts int           // 3
-	RetryDelay       time.Duration // 500ms
-	SettleWait       time.Duration // 2s
+	EmptyThreshold   float64
+	AbilityThreshold float64
+	MaxRetryAttempts int
+	RetryDelay       time.Duration
+	SettleWait       time.Duration
 }
 
 // DefaultVerifyConfig returns default verification config.
@@ -35,7 +35,7 @@ type Verifier struct {
 	targetEdge   string
 	w, h         int
 	config       VerifyConfig
-	troopCounter *TroopCounter // optional; enables live-OCR count + reconcile
+	troopCounter *TroopCounter
 	logger       zerolog.Logger
 }
 
@@ -75,21 +75,17 @@ func (v *Verifier) VerifyAll() int {
 	remainingCount := 0
 
 	for attempt := 1; attempt <= v.config.MaxRetryAttempts; attempt++ {
-		// First-attempt settle: only the first attempt needs an extra 300ms
-		// post-deploy-sync window. Subsequent attempts are gated by the
-		// retryDeploy()'s own cap-with-emit-check, which already sees a
-		// fresh "empty=false → retry" path. Sized to ~3x ADB capture round-trip.
+
 		if attempt == 1 {
 			v.executor.WaitForSettle(300 * time.Millisecond)
 		}
-		// Capture fresh screen
+
 		screen, err := v.executor.CaptureFresh()
 		if err != nil {
 			v.logger.Warn().Err(err).Msg("failed to capture verification screen")
 			break
 		}
 
-		// Check each slot
 		remainingSlots := v.checkRemainingSlots(screen)
 		screen.Close()
 
@@ -104,7 +100,6 @@ func (v *Verifier) VerifyAll() int {
 			Int("remaining", remainingCount).
 			Msg("detected undeployed units, retrying")
 
-		// Redeploy remaining slots
 		for _, slot := range remainingSlots {
 			v.retryDeploy(slot)
 		}
@@ -118,21 +113,18 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 	var remaining []*TrackedSlot
 
 	for _, slot := range v.slotManager.GetAllSlots() {
-		// Skip already deployed or failed
+
 		if slot.State == SlotDeployed || slot.State == SlotFailed {
 			continue
 		}
 
-		// Get activity ratio
 		ratio := GetSlotActivityRatioStatic(screen, slot.X, slot.Y, v.w)
 
-		// Empty slot
 		if ratio < v.config.EmptyThreshold {
 			slot.IsEmpty = true
 			continue
 		}
 
-		// Ability icon or UI artifact
 		if ratio < v.config.AbilityThreshold {
 			v.logger.Debug().
 				Int("x", slot.X).
@@ -142,7 +134,6 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 			continue
 		}
 
-		// Real content still present
 		if slot.Category == "Troop" || slot.Category == "Spell" || slot.Category == "CC" || slot.Category == "Event" {
 			remaining = append(remaining, slot)
 		}
@@ -189,31 +180,22 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 		}
 		count := live
 		if count <= 0 {
-			// OCR failed and slot visually non-empty — fall back to a
-			// safe minimum (typical balloons/EDs) so the slot can
-			// actually drain. The reconcile after the batch catches
-			// over-firing.
+
 			count = 8
 		} else if count >= 6 {
-			count++ // safety pad (single-digit OCR under-reads)
+			count++
 		}
 
-		// Select slot
 		v.executor.TapSlot(slot, 4)
 		v.executor.HumanSleep(150, 30)
 
-		// Fire exactly `count` taps distributed along the edge line.
-		// Steps must be ≥ 2 before using `i / (steps-1)` to avoid a
-		// divide-by-zero producing NaN coords (which would batch-tap
-		// at pixel (0,0) the first time a single-troop slot is
-		// retried). For count < 3 we cluster all taps at single point.
 		for i := 0; i < count; i += 3 {
 			batchSize := 3
 			if i+3 > count {
 				batchSize = count - i
 			}
 			if count < 3 {
-				// Single/dual troop cluster: fire as one TapTriple.
+
 				tx, ty := intLerp(p1, p2, 0)
 				if batchSize == 3 {
 					v.executor.client.TapTriple(tx, ty, 15.0, tx+5, ty+3, 15.0, tx-3, ty+6, 15.0)
@@ -234,7 +216,6 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 			v.executor.client.TapTriple(tx1, ty1, 15.0, tx2, ty2, 15.0, tx3, ty3, 15.0)
 		}
 
-		// ─── Reconcile after batch ─────────────────────────────────
 		v.executor.HumanSleep(150, 30)
 		liveAfter, emptyAfter := v.verifierLiveCount(slot)
 		if liveAfter <= 0 && emptyAfter {
@@ -249,8 +230,6 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 		}
 	}
 
-	// Reconcile budget exhausted. Mark failed so the operator can spot
-	// the persistent under-deployment in the deploy health output.
 	v.logger.Warn().
 		Int("x", slot.X).
 		Str("unit", slot.UnitName).
@@ -270,16 +249,4 @@ func (v *Verifier) verifierLiveCount(slot *TrackedSlot) (int, bool) {
 		v.slotManager.GetBarY(),
 		v.w, v.h,
 	)
-}
-
-// CheckSlotEmpty checks if a slot is empty using the verifier's config.
-func (v *Verifier) CheckSlotEmpty(slot *TrackedSlot) bool {
-	screen, err := v.executor.CaptureFresh()
-	if err != nil {
-		return false
-	}
-	defer screen.Close()
-
-	ratio := GetSlotActivityRatioStatic(screen, slot.X, slot.Y, v.w)
-	return ratio < v.config.EmptyThreshold
 }

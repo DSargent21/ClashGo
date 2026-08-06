@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Massive dead-code cleanup** — removed ~16.5k lines of unreachable code
+  and pruned the repo tree:
+  - **Deleted the NATS event-bus subsystem** (`internal/bus`,
+    `internal/agent`, `internal/geo`, `internal/world`,
+    `game/enricher.go` + `game/explorer.go`, `docker-compose.yml`) — zero
+    production references; NATS deps dropped from `go.mod`/`go.sum`.
+  - **Removed ~35 verified-dead functions** across `attack`, `bot`, `game`,
+    `vision`, `logger`, `adb`, `training`, `updater`, `strategy` — incl. the
+    NDJSON log mirror, `ParseCSV`, `ClassifyStateFast`, `SpellLine`,
+    `isUnitSelected`, `hasColorSignature`, `WaitForSlotEmpty`, the legacy
+    `SlotManager` helpers, the validator `Planner` engine
+    (`internal/attack/plan.go` + its test), `game.Calibrator`, and the
+    `adb.WithDeviceID` option.
+  - **Deleted 48 unreferenced `cmd/` diagnostic tools** — kept the five wired
+    into Makefile/scripts (`attack_record`, `capture_template`,
+    `design_attack`, `release_manifest`, `test_wall_upgrade`).
+  - **Dropped dead struct fields** — `app.echo`, `transport.seq`,
+    `bot.lastFrameTime`, `bootorchestrator.mu`, `recovery.onApply`,
+    `updater.manifest`, `troop_counter.calibrated/scaleX/scaleY`.
+  - **Consolidated duplicated logic** — `app.go` stats merge extracted into a
+    `mergeStats` helper; `Transport.ExecRaw` merged into `Exec`; the
+    `version.go` build-date + Makefile ldflag removed.
+  - **Frontend** — fixed 4 unused-variable TS errors (`App.tsx`, `main.tsx`,
+    `Sidebar.tsx`).
+  - **Docs + tree** — README / DESIGN / PERFORMANCE / CHEST refreshed for the
+    new layout; orphaned `assets/grab/` screenshots and stale `.gitignore`
+    entries removed.
+
 ## [0.2.0-beta] - 2026-08-05
 
 ### Added

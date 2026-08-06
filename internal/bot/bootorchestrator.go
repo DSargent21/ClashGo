@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -166,8 +165,6 @@ type BootOrchestrator struct {
 	policy *RecoveryPolicy
 	report *BootReport
 	logger zerolog.Logger
-
-	mu sync.Mutex
 }
 
 // NewBootOrchestrator wires the orchestrator. The client is the

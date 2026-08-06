@@ -30,7 +30,6 @@ type App struct {
 	botCtx    context.Context
 	cancel    context.CancelFunc
 	mu        sync.Mutex
-	echo      *echo.Echo
 	lastStats bot.BotStats
 	logBuffer []string
 
@@ -165,21 +164,7 @@ func (a *App) saveStats() {
 	a.mu.Lock()
 	stats := a.lastStats
 	if a.bot != nil {
-		current := a.bot.Stats()
-		stats = bot.BotStats{
-			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
-			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
-			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
-			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
-			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
-			Stars0:           a.lastStats.Stars0 + current.Stars0,
-			Stars1:           a.lastStats.Stars1 + current.Stars1,
-			Stars2:           a.lastStats.Stars2 + current.Stars2,
-			Stars3:           a.lastStats.Stars3 + current.Stars3,
-			Uptime:           a.lastStats.Uptime + current.Uptime,
-			CPUTimeSec:       current.CPUTimeSec,
-			CPUCores:         current.CPUCores,
-		}
+		stats = mergeStats(a.lastStats, a.bot.Stats())
 	}
 	a.mu.Unlock()
 
@@ -191,6 +176,28 @@ func (a *App) saveStats() {
 
 	if err := bot.AsyncWriteFile(paths.ResolveConfig("stats.json"), bytes, 0644); err != nil {
 		log.Error().Err(err).Msg("failed to write stats.json")
+	}
+}
+
+// mergeStats accumulates the live bot's session counters into acc.
+// Bot counters are zeroed on every NewBot, so persisted/returned totals
+// are acc + current. AdbHealth and CPU metrics are live values and are
+// always taken from current.
+func mergeStats(acc, current bot.BotStats) bot.BotStats {
+	return bot.BotStats{
+		AttacksCompleted: acc.AttacksCompleted + current.AttacksCompleted,
+		SearchSkips:      acc.SearchSkips + current.SearchSkips,
+		TotalGold:        acc.TotalGold + current.TotalGold,
+		TotalElixir:      acc.TotalElixir + current.TotalElixir,
+		TotalDE:          acc.TotalDE + current.TotalDE,
+		Stars0:           acc.Stars0 + current.Stars0,
+		Stars1:           acc.Stars1 + current.Stars1,
+		Stars2:           acc.Stars2 + current.Stars2,
+		Stars3:           acc.Stars3 + current.Stars3,
+		Uptime:           acc.Uptime + current.Uptime,
+		AdbHealth:        current.AdbHealth,
+		CPUTimeSec:       current.CPUTimeSec,
+		CPUCores:         current.CPUCores,
 	}
 }
 
@@ -382,21 +389,7 @@ func (a *App) StopBot() BotStatus {
 	// Capture and accumulate final stats before stopping. All counters
 	// are atomic.Int* loads, so this is O(1) and non-blocking.
 	current := a.bot.Stats()
-	a.lastStats = bot.BotStats{
-		AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
-		SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
-		TotalGold:        a.lastStats.TotalGold + current.TotalGold,
-		TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
-		TotalDE:          a.lastStats.TotalDE + current.TotalDE,
-		Stars0:           a.lastStats.Stars0 + current.Stars0,
-		Stars1:           a.lastStats.Stars1 + current.Stars1,
-		Stars2:           a.lastStats.Stars2 + current.Stars2,
-		Stars3:           a.lastStats.Stars3 + current.Stars3,
-		Uptime:           a.lastStats.Uptime + current.Uptime,
-		AdbHealth:        current.AdbHealth,
-		CPUTimeSec:       current.CPUTimeSec,
-		CPUCores:         current.CPUCores,
-	}
+	a.lastStats = mergeStats(a.lastStats, current)
 
 	// Snapshot the bot pointer + synchronously cancel its context so
 	// the captureLoop and any in-flight executeAttackSequence see the
@@ -460,22 +453,7 @@ func (a *App) GetStats() bot.BotStats {
 
 	res := a.lastStats
 	if a.bot != nil {
-		current := a.bot.Stats()
-		res = bot.BotStats{
-			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
-			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
-			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
-			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
-			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
-			Stars0:           a.lastStats.Stars0 + current.Stars0,
-			Stars1:           a.lastStats.Stars1 + current.Stars1,
-			Stars2:           a.lastStats.Stars2 + current.Stars2,
-			Stars3:           a.lastStats.Stars3 + current.Stars3,
-			Uptime:           a.lastStats.Uptime + current.Uptime,
-			AdbHealth:        current.AdbHealth,
-			CPUTimeSec:       current.CPUTimeSec,
-			CPUCores:         current.CPUCores,
-		}
+		res = mergeStats(a.lastStats, a.bot.Stats())
 	}
 	return res
 }

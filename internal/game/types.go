@@ -5,10 +5,10 @@
 // The central type is GameContext, which holds the current state and is safe
 // for concurrent read access by all subsystems (training, attack, search).
 //
-// Auto-calibration:
-//   - Call calibrator := game.NewCalibrator(client) on startup
-//   - Call cal := calibrator.Calibrate() to detect screen dimensions
-//   - Pass cal to NewClassifier and NewNavigator
+// Calibration:
+//   - A *Calibration carries the physical→reference scaling factors,
+//     built from the live screen size (see internal/bot/bot.go).
+//   - Pass it to NewClassifier and NewNavigator.
 //
 // Detection loop:
 //
@@ -133,7 +133,7 @@ type Clickable struct {
 	Confidence float64
 }
 
-// Rectangle mirrors geo.Rect but uses int for screen coordinates.
+// Rectangle is an int-coordinate screen region.
 type Rectangle struct {
 	X1, Y1, X2, Y2 int
 }
@@ -246,27 +246,6 @@ type StateRule struct {
 	Weight   int    // score boost when matched
 	Priority int    // higher = checked first
 	Desc     string
-}
-
-// ExplorerConfig holds parameters for the auto-explorer.
-type ExplorerConfig struct {
-	MaxDepth      int
-	SettleTime    time.Duration
-	MinDiffPixels int
-	ClickJitter   int
-	BackTimeout   time.Duration
-	MaxRetries    int
-}
-
-func DefaultExplorerConfig() ExplorerConfig {
-	return ExplorerConfig{
-		MaxDepth:      3,
-		SettleTime:    1500 * time.Millisecond,
-		MinDiffPixels: 50,
-		ClickJitter:   5,
-		BackTimeout:   3 * time.Second,
-		MaxRetries:    3,
-	}
 }
 
 // ClassifierConfig holds detection parameters.

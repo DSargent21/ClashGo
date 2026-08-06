@@ -9,6 +9,7 @@ package main
 // putting them in cli.go would otherwise hide them from the GUI.
 var (
 	version = "0.2.0-beta"
-	commit  = "none"
-	date    = "unknown"
+	// commit is read only by cli.go (//go:build cli); staticcheck flags it
+	// as unused in the GUI build — that is a build-tag false positive.
+	commit = "none"
 )

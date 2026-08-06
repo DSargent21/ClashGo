@@ -20,15 +20,13 @@ VERSION := $(shell grep '"productVersion":' wails.json | cut -d '"' -f 4)
 endif
 VERSION_TAG := v$(VERSION)
 GIT_COMMIT  := $(shell git rev-parse HEAD 2>/dev/null || echo "none")
-BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 RELEASE_ZIP := ClashGO-v$(VERSION)-macOS.zip
 
 # ldflags injected into both the CLI binary and the Wails GUI binary.
 # Variables must match the package-level var names in version.go
 # (main.version / main.commit / main.date).
 LDFLAGS := -X main.version=$(VERSION) \
-           -X main.commit=$(GIT_COMMIT) \
-           -X main.date=$(BUILD_DATE)
+           -X main.commit=$(GIT_COMMIT)
 
 .PHONY: all build build-cli build-gui clean release manifest
 

@@ -51,11 +51,11 @@ const (
 // emits one per phase. Latency at the field level is the per-step
 // duration; cumulative timing is recomputed by Summary().
 type BootStep struct {
-	Name      string        `json:"name"`             // e.g. "adb.connect", "bluestacks.ensure", "boot.probe"
-	StartedAt time.Time     `json:"started_at"`       // RFC3339Nano
-	Duration  time.Duration `json:"duration_ns"`      // wall-clock duration of this step
-	Result    BootResult    `json:"result"`           // ok | timeout | error | skipped
-	Detail    string        `json:"detail,omitempty"` // human-readable context (error string, signal name, etc.)
+	Name      string        `json:"name"`
+	StartedAt time.Time     `json:"started_at"`
+	Duration  time.Duration `json:"duration_ns"`
+	Result    BootResult    `json:"result"`
+	Detail    string        `json:"detail,omitempty"`
 }
 
 // BootReport is the full per-attempt record. It is safe for concurrent
@@ -73,7 +73,7 @@ type BootReport struct {
 	startedAt         time.Time
 	completedAt       time.Time
 	duration          time.Duration
-	outcome           string // "ok" | "failed"
+	outcome           string
 	finalError        string
 	suggestedAction   string
 	deviceID          string
@@ -96,7 +96,7 @@ type BootReportView struct {
 	StartedAt         time.Time         `json:"started_at"`
 	CompletedAt       time.Time         `json:"completed_at,omitempty"`
 	Duration          time.Duration     `json:"duration_ns"`
-	Outcome           string            `json:"outcome"` // "ok" | "failed"
+	Outcome           string            `json:"outcome"`
 	FinalError        string            `json:"final_error,omitempty"`
 	SuggestedAction   string            `json:"suggested_action,omitempty"`
 	DeviceID          string            `json:"device_id,omitempty"`
@@ -275,22 +275,6 @@ func (r *BootReport) SaveJSON(path string) error {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
 	return os.WriteFile(path, blob, 0o644)
-}
-
-// LoadBootReportJSON parses a previously-saved BootReport from disk
-// into a BootReportView. The view is what callers actually want —
-// they don't need a mutex-protected writer for reading.
-// Returns os.ErrNotExist on a missing file (not an error condition).
-func LoadBootReportJSON(path string) (BootReportView, error) {
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		return BootReportView{}, err
-	}
-	var v BootReportView
-	if err := json.Unmarshal(blob, &v); err != nil {
-		return BootReportView{}, fmt.Errorf("parse boot report: %w", err)
-	}
-	return v, nil
 }
 
 // StepSummary is a small printable summary for the React side / log

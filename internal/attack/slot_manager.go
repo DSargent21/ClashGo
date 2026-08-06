@@ -18,11 +18,11 @@ import (
 type SlotState int
 
 const (
-	SlotDetected   SlotState = iota // Found on bar
-	SlotIdentified                  // Unit name resolved
-	SlotAttempted                   // Tap attempted
-	SlotDeployed                    // Confirmed empty
-	SlotFailed                      // Retries exhausted
+	SlotDetected SlotState = iota
+	SlotIdentified
+	SlotAttempted
+	SlotDeployed
+	SlotFailed
 )
 
 func (s SlotState) String() string {
@@ -44,20 +44,20 @@ func (s SlotState) String() string {
 
 // TrackedSlot extends TroopSlot with state tracking.
 type TrackedSlot struct {
-	TroopSlot            // Embedded: X, Y, Category
+	TroopSlot
 	State      SlotState `json:"state"`
 	UnitName   string    `json:"unit_name"`
 	Confidence float64   `json:"confidence"`
 	Attempts   int       `json:"attempts"`
 	LastTapAt  time.Time `json:"last_tap_at"`
-	IsEmpty    bool      `json:"is_empty"` // Last known emptiness
+	IsEmpty    bool      `json:"is_empty"`
 }
 
 // SlotManager handles slot detection, classification, identity resolution, and state tracking.
 type SlotManager struct {
 	slots     []*TrackedSlot
-	unitIndex map[string]*TrackedSlot // unitName (lower) → slot
-	xIndex    map[int]*TrackedSlot    // x coord → slot
+	unitIndex map[string]*TrackedSlot
+	xIndex    map[int]*TrackedSlot
 	w         int
 	h         int
 	slotY     int
@@ -83,7 +83,6 @@ func NewSlotManager(
 		logger:    logger.With().Str("component", "slot_manager").Logger(),
 	}
 
-	// Resolve slotY
 	sm.slotY = mBarY + int(38.0*float64(h)/float64(pCfg.Height))
 	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
@@ -99,21 +98,17 @@ func NewSlotManager(
 		}
 	}
 
-	// Step 1: Detect active slots
 	activeXs := sm.detectActiveSlots(screen)
 	if len(activeXs) == 0 {
 		sm.logger.Warn().Msg("no active slots detected")
 		return sm
 	}
 
-	// Step 2: Classify slots via template matching
 	barROI := image.Rect(0, mBarY, w, h)
 	sm.classifySlots(screen, activeXs, templates, barROI)
 
-	// Step 3: Fill gaps with manual labels (backward compat)
 	sm.applyManualLabelsFallback()
 
-	// Step 4: Build indices
 	for _, slot := range sm.slots {
 		sm.xIndex[slot.X] = slot
 		if slot.UnitName != "" {
@@ -127,7 +122,7 @@ func NewSlotManager(
 
 // detectActiveSlots finds all non-empty X positions on the troop bar.
 func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
-	// Try manual calibration first
+
 	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotXs []int `json:"slot_xs"`
@@ -145,9 +140,8 @@ func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
 		}
 	}
 
-	// Fallback: grid detection
 	sm.logger.Info().Msg("manual calibration missing, falling back to grid detection")
-	scaleX := float64(sm.w) / 860.0 // Reference width
+	scaleX := float64(sm.w) / 860.0
 	step := int(75.0 * scaleX)
 	startX := int(40.0 * scaleX)
 	var activeXs []int
@@ -161,7 +155,7 @@ func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
 
 // classifySlots runs template matching to identify units and assign categories.
 func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates map[string]gocv.Mat, barROI image.Rectangle) {
-	// Create initial slots
+
 	for _, x := range activeXs {
 		sm.slots = append(sm.slots, &TrackedSlot{
 			TroopSlot: TroopSlot{X: x, Y: sm.slotY, Category: "Troop"},
@@ -169,7 +163,6 @@ func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates 
 		})
 	}
 
-	// Run template matching for all templates
 	type templateResult struct {
 		name  string
 		match vision.Match
@@ -187,16 +180,8 @@ func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates 
 		}
 	}
 
-	// Sort by confidence DESC so the highest-confidence match assigns first.
-	// Combined with the strict-greater check below, this guarantees that
-	// a low-confidence 2nd hit (e.g. Minion Prince conf 0.55) cannot
-	// overwrite a higher-confidence 1st hit (Ice Spell conf 0.89) on the
-	// same slot. Previously the iteration order of Go's templates map was
-	// non-deterministic, so the last-write-wins bug surfaced as random slot
-	// identity mis-assignment per run.
 	sort.Slice(results, func(i, j int) bool { return results[i].match.Confidence > results[j].match.Confidence })
 
-	// Resolve identities: match templates to slots
 	for _, res := range results {
 		cleanName := strings.ReplaceAll(res.name, "_", " ")
 		bestSlot := sm.findClosestSlot(res.match.Point.X, 0.04)
@@ -204,9 +189,6 @@ func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates 
 			continue
 		}
 
-		// Only overwrite if the slot is empty OR this template is strictly
-		// more confident. Equality falls back to first-write-wins, which
-		// is now deterministic because results is sorted DESC above.
 		if bestSlot.UnitName != "" && bestSlot.Confidence >= res.match.Confidence {
 			sm.logger.Debug().
 				Int("x", bestSlot.X).
@@ -222,7 +204,6 @@ func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates 
 		bestSlot.Confidence = res.match.Confidence
 		bestSlot.State = SlotIdentified
 
-		// Reclassify based on matched name
 		if isHeroStatic(cleanName) {
 			bestSlot.Category = "Hero"
 		} else if isSiegeStatic(cleanName) {
@@ -240,13 +221,12 @@ func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates 
 			Msg("identified unit via template match")
 	}
 
-	// Classify remaining slots using positional heuristics
 	sm.applyPositionalClassification(activeXs)
 }
 
 // applyPositionalClassification uses hero/spell anchors to classify unidentified slots.
 func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
-	// Find hero and spell anchors
+
 	firstHeroX := 9999
 	lastHeroX := -1
 	firstSpellX := 9999
@@ -270,7 +250,6 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 		}
 	}
 
-	// Fallback anchors if not found
 	if firstHeroX == 9999 {
 		idx := len(activeXs) / 2
 		if idx < len(activeXs) {
@@ -287,15 +266,13 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 	spellMargin := int(30.0 * scaleX)
 
 	for _, slot := range sm.slots {
-		// Skip already identified slots
+
 		if slot.UnitName != "" {
 			continue
 		}
 
-		// Check if matched as siege via template
 		isSiege := slot.Category == "Siege"
 
-		// Check "last before hero" heuristic
 		if !isSiege && firstHeroX != 9999 && slot.X < firstHeroX {
 			isLastBeforeHero := true
 			for _, otherSlot := range sm.slots {
@@ -309,7 +286,6 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 			}
 		}
 
-		// Apply category based on position
 		if slot.X >= firstSpellX-spellMargin {
 			slot.Category = "Spell"
 		} else if slot.X >= firstHeroX-heroMargin && slot.X <= lastHeroX+heroMargin {
@@ -319,7 +295,6 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 		}
 	}
 
-	// Classify last slot as CC if far right
 	if len(sm.slots) > 0 {
 		lastSlot := sm.slots[len(sm.slots)-1]
 		if lastSlot.Category == "Spell" && lastSlot.X > sm.w-int(100.0*float64(sm.w)/860.0) {
@@ -402,11 +377,6 @@ func (sm *SlotManager) GetSlot(unitName string) *TrackedSlot {
 	return sm.unitIndex[strings.ToLower(unitName)]
 }
 
-// GetSlotByX returns the tracked slot at a given X coordinate.
-func (sm *SlotManager) GetSlotByX(x int) *TrackedSlot {
-	return sm.xIndex[x]
-}
-
 // GetAllSlots returns all tracked slots.
 func (sm *SlotManager) GetAllSlots() []*TrackedSlot {
 	return sm.slots
@@ -429,17 +399,6 @@ func (sm *SlotManager) GetUndeployedSlots() []*TrackedSlot {
 	var result []*TrackedSlot
 	for _, slot := range sm.slots {
 		if slot.State != SlotDeployed && slot.State != SlotFailed {
-			result = append(result, slot)
-		}
-	}
-	return result
-}
-
-// GetSlotsByCategory returns slots filtered by category.
-func (sm *SlotManager) GetSlotsByCategory(category string) []*TrackedSlot {
-	var result []*TrackedSlot
-	for _, slot := range sm.slots {
-		if slot.Category == category {
 			result = append(result, slot)
 		}
 	}
@@ -497,51 +456,6 @@ func (sm *SlotManager) MarkFailed(unitName string) {
 		return
 	}
 	slot.State = SlotFailed
-}
-
-// IsDeployed returns true if the slot is confirmed deployed.
-func (sm *SlotManager) IsDeployed(unitName string) bool {
-	slot := sm.GetSlot(unitName)
-	if slot == nil {
-		return false
-	}
-	return slot.State == SlotDeployed
-}
-
-// GetDeploymentCount returns number of deployed slots.
-func (sm *SlotManager) GetDeploymentCount() int {
-	count := 0
-	for _, slot := range sm.slots {
-		if slot.State == SlotDeployed {
-			count++
-		}
-	}
-	return count
-}
-
-// GetActiveCount returns number of non-empty slots (detected but not deployed).
-func (sm *SlotManager) GetActiveCount() int {
-	count := 0
-	for _, slot := range sm.slots {
-		if !slot.IsEmpty && slot.State != SlotDeployed && slot.State != SlotFailed {
-			count++
-		}
-	}
-	return count
-}
-
-// RefreshSlotState checks if a slot is now empty after deployment attempt.
-func (sm *SlotManager) RefreshSlotState(screen gocv.Mat, unitName string) bool {
-	slot := sm.GetSlot(unitName)
-	if slot == nil {
-		return true
-	}
-	empty := isSlotEmptyStatic(screen, slot.X, slot.Y, sm.w, sm.h)
-	slot.IsEmpty = empty
-	if empty && slot.State == SlotAttempted {
-		slot.State = SlotDeployed
-	}
-	return empty
 }
 
 // --- Static helper functions (no Executor dependency) ---

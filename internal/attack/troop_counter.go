@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/vision"
@@ -18,21 +17,17 @@ import (
 // Uses template matching on digit_0..digit_9 templates to read the count.
 type TroopCounter struct {
 	digitTemplates [10]gocv.Mat
-	// scaledDigitCache holds per-(w,h) pre-scaled digit templates so
-	// matchDigit does not re-Resize all 10 templates for every digit.
+
 	scaledDigitCache map[string][10]gocv.Mat
-	calibrated       bool
-	scaleX           float64
-	scaleY           float64
 	logger           zerolog.Logger
 }
 
 // TroopCount represents a detected troop count for a slot.
 type TroopCount struct {
-	X          int     // Slot X coordinate
-	Count      int     // Detected count (0 = unknown)
-	Confidence float64 // Average confidence of digit matches
-	Digits     []int   // Individual digits detected
+	X          int
+	Count      int
+	Confidence float64
+	Digits     []int
 }
 
 // NewTroopCounter creates a new troop counter with digit templates.
@@ -49,7 +44,7 @@ func NewTroopCounter(refW, refH int, logger zerolog.Logger) *TroopCounter {
 func (tc *TroopCounter) loadDigitTemplates() {
 	digitDir := paths.Resolve("templates/digits")
 	if _, err := os.Stat(digitDir); os.IsNotExist(err) {
-		// Try alternative location
+
 		digitDir = paths.Resolve("templates")
 	}
 
@@ -63,11 +58,9 @@ func (tc *TroopCounter) loadDigitTemplates() {
 			continue
 		}
 
-		// Pre-process: threshold to binary
 		bin := gocv.NewMat()
 		gocv.Threshold(mat, &bin, 128, 255, gocv.ThresholdBinary)
 
-		// Tight bounding box
 		rect := tightBoundingBox(bin)
 		if !rect.Empty() {
 			tight := bin.Region(rect)
@@ -82,25 +75,6 @@ func (tc *TroopCounter) loadDigitTemplates() {
 	}
 
 	tc.logger.Info().Int("loaded", loaded).Msg("digit templates loaded")
-}
-
-// Close releases all OpenCV buffers held by the counter (digit templates and
-// any cached scaled copies). Safe to call multiple times.
-func (tc *TroopCounter) Close() {
-	for i := range tc.digitTemplates {
-		if !tc.digitTemplates[i].Empty() {
-			tc.digitTemplates[i].Close()
-			tc.digitTemplates[i] = gocv.Mat{}
-		}
-	}
-	for key, set := range tc.scaledDigitCache {
-		for i := range set {
-			if !set[i].Empty() {
-				set[i].Close()
-			}
-		}
-		delete(tc.scaledDigitCache, key)
-	}
 }
 
 // DetectCounts detects troop counts for all slots on the bar.
@@ -129,22 +103,15 @@ func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int,
 		Count: 0,
 	}
 
-	// Define ROI for digit detection above the card
-	// From screenshot: numbers like "x60" appear just above the card image
-	// Cards are at Y=682 (slotY), numbers appear at approximately Y=630-650
 	cardWidth := int(60.0 * scaleX)
 	digitHeight := int(18.0 * scaleY)
 	digitWidth := int(12.0 * scaleX)
 
-	// ROI: centered above the card, where the "xN" text appears
-	// The number is typically centered horizontally on the card
-	// and positioned just above the card image (between barY and slotY)
-	roiX1 := slotX - cardWidth/2 + int(5.0*scaleX) // Slight inset from card edge
-	roiY1 := barY - int(5.0*scaleY)                // Just above bar line
+	roiX1 := slotX - cardWidth/2 + int(5.0*scaleX)
+	roiY1 := barY - int(5.0*scaleY)
 	roiX2 := slotX + cardWidth/2 - int(5.0*scaleX)
-	roiY2 := slotY - int(25.0*scaleY) // Above the card icon
+	roiY2 := slotY - int(25.0*scaleY)
 
-	// Clamp to screen bounds
 	if roiX1 < 0 {
 		roiX1 = 0
 	}
@@ -165,7 +132,6 @@ func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int,
 	roi := screen.Region(image.Rect(roiX1, roiY1, roiX2, roiY2))
 	defer roi.Close()
 
-	// Convert to grayscale
 	gray := gocv.NewMat()
 	defer gray.Close()
 	if roi.Channels() == 3 {
@@ -174,19 +140,15 @@ func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int,
 		roi.CopyTo(&gray)
 	}
 
-	// Threshold to get white digits on dark background
-	// The numbers are white/light colored text
 	bin := gocv.NewMat()
 	defer bin.Close()
 	gocv.Threshold(gray, &bin, 160, 255, gocv.ThresholdBinary)
 
-	// Find digit bounding boxes
 	digits := tc.extractDigits(bin, digitWidth, digitHeight)
 	if len(digits) == 0 {
 		return result
 	}
 
-	// Match each digit
 	var detectedDigits []int
 	var totalConf float64
 	for _, d := range digits {
@@ -202,7 +164,6 @@ func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int,
 		return result
 	}
 
-	// Combine digits into number
 	count := 0
 	for _, d := range detectedDigits {
 		count = count*10 + d
@@ -223,7 +184,7 @@ func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int,
 
 // extractDigits extracts individual digit regions from a binary image.
 func (tc *TroopCounter) extractDigits(bin gocv.Mat, digitWidth, digitHeight int) []gocv.Mat {
-	// Find connected components (white blobs)
+
 	contours := gocv.FindContours(bin, gocv.RetrievalExternal, gocv.ChainApproxSimple)
 	defer contours.Close()
 
@@ -236,7 +197,6 @@ func (tc *TroopCounter) extractDigits(bin gocv.Mat, digitWidth, digitHeight int)
 		w := rect.Dx()
 		h := rect.Dy()
 
-		// Filter by size: digits are typically small and roughly square
 		if w < digitWidth/3 || w > digitWidth*3 {
 			continue
 		}
@@ -244,7 +204,6 @@ func (tc *TroopCounter) extractDigits(bin gocv.Mat, digitWidth, digitHeight int)
 			continue
 		}
 
-		// Filter by aspect ratio
 		aspect := float64(w) / float64(h)
 		if aspect < 0.2 || aspect > 2.0 {
 			continue
@@ -253,10 +212,8 @@ func (tc *TroopCounter) extractDigits(bin gocv.Mat, digitWidth, digitHeight int)
 		rects = append(rects, rect)
 	}
 
-	// Sort left to right (digits are read left to right)
 	sortRectsLeftToRight(rects)
 
-	// Extract each digit region
 	for _, rect := range rects {
 		sub := bin.Region(rect)
 		digits = append(digits, sub.Clone())
@@ -310,7 +267,6 @@ func (tc *TroopCounter) matchDigit(digitImg gocv.Mat) (int, float64) {
 		}
 	}
 
-	// Fallback: narrow vertical blob is likely '1'
 	if bestDigit == -1 || maxConf < 0.55 {
 		if bw >= 1 && bw <= 8 && bh >= 10 {
 			fill := float64(gocv.CountNonZero(digitImg)) / float64(bw*bh)
@@ -412,9 +368,4 @@ func (tc *TroopCounter) DetectCount(screen gocv.Mat, slot *TrackedSlot, barY int
 	scaleY := float64(screen.Rows()) / 732.0
 	res := tc.detectSlotCount(screen, slot.X, slot.Y, barY, scaleX, scaleY)
 	return res.Count
-}
-
-// troopNameClean cleans a troop name for matching.
-func troopNameClean(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
 }

@@ -87,7 +87,6 @@ func main() {
 		_ = os.RemoveAll(outDir)
 	}
 
-	// 1. Load config (default if file missing).
 	cfgPath := paths.ResolveConfig("config.json")
 	usedDefault := false
 	cfg, err := config.Load(cfgPath)
@@ -97,7 +96,6 @@ func main() {
 		usedDefault = true
 	}
 
-	// 2. Build adb.Client + connect + autodetect.
 	zl := adbLogAdapter{log: logger}
 	client := adb.NewClient(
 		adb.WithHost(cfg.Device.ADBHost),
@@ -129,7 +127,6 @@ func main() {
 		return
 	}
 
-	// 4. Calibrate + load templates.
 	w, h, err := client.ScreenSize()
 	if err != nil {
 		fmt.Printf("\n❌ ScreenSize: %v\n", err)
@@ -155,7 +152,6 @@ func main() {
 	}
 	fmt.Printf("   Templates loaded: %d total (need: %v)\n", ts.Count(), requiredTemplates)
 
-	// 5. Set up output directory.
 	if outDir == "" {
 		outDir = filepath.Join("output", "wall_upgrade_tests", time.Now().Format("20060102_150405"))
 	}
@@ -165,7 +161,6 @@ func main() {
 	}
 	fmt.Printf("   Output dir: %s\n", outDir)
 
-	// 6. Dry-run if requested: capture screen + match required templates.
 	if mode == "dry-run" || mode == "run" {
 		runDryRun(client, ts, cal, logger, outDir)
 	}
@@ -174,7 +169,6 @@ func main() {
 		return
 	}
 
-	// 7. Prompt for confirmation before live run.
 	if !autoYes {
 		fmt.Printf("\n⚠️  About to invoke the LIVE wall-upgrade loop against %s.\n", client.DeviceID)
 		fmt.Printf("    Make sure the game is on MainVillage (zoom out, then town hall visible).\n")
@@ -189,27 +183,18 @@ func main() {
 		}
 	}
 
-	// 8. Wire up the OnStep instrumentation hook.
 	phaseLogPath := filepath.Join(outDir, "phase_log.jsonl")
 	phaseLogF, _ := os.OpenFile(phaseLogPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	defer phaseLogF.Close()
 
 	instr := newInstrumentation(outDir, phaseLogF, client, cal, ts, logger)
 
-	// Classify is intentionally left nil — the diagnostic tool's
-	// attackButtonClassifier uses btn_attack + orange-color heuristics
-	// whose current band is too narrow against the actual Attack!
-	// button colour, returning StateUnknown even when the screen IS
-	// MainVillage. With Classify wired, waitForMainVillage runs the
-	// classifier loop for the full 30s timeout before breaking with
-	// no taps fired. Leaving Classify nil hits the existing fast
-	// path in waitForMainVillage: returns true after the first
-	// successful capture. The user has already verified the screen
-	// themselves, so the loop should drive the menu immediately.
-	// To re-enable the safety check, tighten the orange-check band
-	// in isOrangeSpot (and/or add a top-bar loot-counter check) so
-	// it produces a stable StateMainVillage, then wire Classify
-	// back to attackButtonClassifier.
+	// Classify is intentionally left nil: the diagnostic tool has no
+	// game-state classifier, so waitForMainVillage takes its fast path
+	// (returns true after the first successful capture) instead of
+	// polling a classifier for the full timeout. The user has already
+	// verified the screen themselves, so the loop drives the menu
+	// immediately.
 	hooks := &bot.WallUpgradeHooks{
 		Logger:    logger,
 		Client:    client,
@@ -220,13 +205,11 @@ func main() {
 		OnStep:    instr.onStep,
 	}
 
-	// 9. Run.
 	fmt.Println("\n🎬 Starting wall upgrade loop…")
 	startTime := time.Now()
 	bot.RunWallUpgradeLoop(hooks)
 	elapsed := time.Since(startTime)
 
-	// 10. Persist summary.
 	summary := map[string]any{
 		"mode":             mode,
 		"device":           client.DeviceID,
@@ -307,8 +290,6 @@ func (i *instrumentation) onStep(name string, data map[string]any) {
 	rawPath := filepath.Join(i.outDir, stepNum+"_"+name+".png")
 	annoPath := filepath.Join(i.outDir, stepNum+"_"+name+"_overlay.png")
 
-	// Honour payload contract: the screen Mat (if present) is a clone
-	// owned by us — we close it after writing.
 	hookScreen, haveScreen := data["screen"].(gocv.Mat)
 	if haveScreen && !hookScreen.Empty() {
 		gocv.IMWrite(rawPath, hookScreen)
@@ -319,14 +300,13 @@ func (i *instrumentation) onStep(name string, data map[string]any) {
 		}
 		hookScreen.Close()
 	} else if i.client.IsConnected() {
-		// Fall back to a fresh capture if the payload didn't carry one.
+
 		if fresh, err := i.client.CaptureToMat(); err == nil && !fresh.Empty() {
 			gocv.IMWrite(rawPath, fresh)
 			fresh.Close()
 		}
 	}
 
-	// JSONL log entry — strip non-JSON-able values (gocv.Mat etc.).
 	rec := map[string]any{
 		"step":     name,
 		"index":    i.count,
@@ -399,7 +379,6 @@ func annotateOverlay(src gocv.Mat, matches []vision.Match) gocv.Mat {
 func runPreflight(client *adb.Client, logger zerolog.Logger, cfg *config.BotConfig) bool {
 	ok := true
 
-	// 1. adb reachable.
 	if err := client.AutoDetectDevice(); err != nil {
 		fmt.Printf("   ✗ adb device detection: %v\n", err)
 		ok = false
@@ -413,7 +392,6 @@ func runPreflight(client *adb.Client, logger zerolog.Logger, cfg *config.BotConf
 		}
 	}
 
-	// 2. Screen size sane.
 	if w, h, err := client.ScreenSize(); err != nil {
 		fmt.Printf("   ✗ screen size: %v\n", err)
 		ok = false
@@ -429,7 +407,6 @@ func runPreflight(client *adb.Client, logger zerolog.Logger, cfg *config.BotConf
 		}
 	}
 
-	// 3. Templates: load and verify the required ones.
 	ts, err := game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
 		fmt.Printf("   ✗ template store: %v\n", err)
@@ -456,7 +433,6 @@ func runPreflight(client *adb.Client, logger zerolog.Logger, cfg *config.BotConf
 		ok = false
 	}
 
-	// 4. builder_menu_roi.json optional but recommended.
 	roiPath := paths.Resolve("builder_menu_roi.json")
 	if data, err := os.ReadFile(roiPath); err == nil {
 		var roi struct {
@@ -475,14 +451,10 @@ func runPreflight(client *adb.Client, logger zerolog.Logger, cfg *config.BotConf
 		fmt.Printf("   ℹ builder menu ROI config absent (default ROI applies — fine)\n")
 	}
 
-	// 5. ADB recent capture health (best-effort; AvgCaptureMs is the running
-	// avg of captured-screencap latency from any prior CaptureToMat calls
-	// since the client opened — 0 on a fresh connection, that's expected).
 	if hint := client.Health(); hint.AvgCaptureMs > 0 {
 		fmt.Printf("   ✓ recent avg capture: %.1fms (consecutive_fails=%d)\n", hint.AvgCaptureMs, hint.ConsecutiveFails)
 	}
 
-	// 6. Config: Upgrade.UpgradeWalls flag.
 	if cfg.Upgrade.UpgradeWalls {
 		fmt.Printf("   ✓ cfg.upgrade.upgrade_walls = true\n")
 	} else {
@@ -541,67 +513,6 @@ func statusSymbol(ok bool) string {
 		return "✓"
 	}
 	return "✗"
-}
-
-// attackButtonClassifier is a lightweight MainVillage guess keyed off
-// btn_attack template presence + the orange pinpoint color check. It is
-// NOT a real game-state classifier — the only state we need to be sure
-// of before the wall loop runs is MainVillage. If it returns the wrong
-// state the loop will just retry or fail-fast. The name is deliberately
-// longer/descriptive so JSONL phase logs don't mislead.
-func attackButtonClassifier(client *adb.Client, cal *game.Calibration, ts *game.TemplateStore, logger zerolog.Logger) func(gocv.Mat) (game.GameState, int) {
-	return func(screen gocv.Mat) (game.GameState, int) {
-		if tpl, ok := ts.Get("btn_attack"); ok {
-			roi := image.Rect(0, int(500*cal.ScaleY), int(300*cal.ScaleX), screen.Rows())
-			matches, err := vision.MatchMultiScaleROICached(screen, tpl, "btn_attack", 0.3, 1.5, 5, 0.5, roi)
-			if err == nil && len(matches) > 0 {
-				// Bonus: confirm the attack button's signature orange.
-				if isOrangeSpot(screen, matches[0].Point.X, matches[0].Point.Y) {
-					return game.StateMainVillage, int(matches[0].Confidence * 100)
-				}
-				// Template matched but color is wrong (false positive).
-				return game.StateUnknown, 0
-			}
-		}
-		return game.StateUnknown, 0
-	}
-}
-
-// isOrangeSpot is the same broad-range orange check Bot.isOrange uses
-// against the Attack button. Implemented inline so the diagnostic tool
-// has no dependency on the Bot struct.
-func isOrangeSpot(screen gocv.Mat, x, y int) bool {
-	if x < 0 || y < 0 || x+10 >= screen.Cols() || y+10 >= screen.Rows() {
-		return false
-	}
-	region := image.Rect(x-10, y-10, x+11, y+11)
-	region.Min.X = maxInt(region.Min.X, 0)
-	region.Min.Y = maxInt(region.Min.Y, 0)
-	region.Max.X = minInt(region.Max.X, screen.Cols())
-	region.Max.Y = minInt(region.Max.Y, screen.Rows())
-	sub := screen.Region(region)
-	defer sub.Close()
-
-	// CoC attack-button orange: BGR ~ (0, 175, 255). Broad band for safety.
-	lower := gocv.NewScalar(0, 100, 150, 0)
-	upper := gocv.NewScalar(150, 255, 255, 0)
-	mask := gocv.NewMat()
-	defer mask.Close()
-	gocv.InRangeWithScalar(sub, lower, upper, &mask)
-	return gocv.CountNonZero(mask) > 20
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // dismissHelper mirrors Bot.dismissSelection — taps a neutral
