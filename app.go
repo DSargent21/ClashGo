@@ -37,9 +37,12 @@ type App struct {
 	// so React's 2 s poll for GetAttackHistory doesn't hit the
 	// filesystem on every tick. Refreshed lazily on first call
 	// (cold start) and eagerly on each bot.statsUpdate callback
-	// (end of every attack — bounded to ~once per attack, well
-	// below the 0.5 Hz React poll). RWMutex because read dominates
-	// on the hot IPC path.
+	// (end of every attack — bounded to ~once per attack, plus the
+	// per-search-skip refresh, both far below the 0.5 Hz React
+	// poll). RWMutex because read dominates on the hot IPC path.
+	// Every eager refresh is a FORCED disk re-read (see
+	// refreshHistory) — a warm cache must never be treated as
+	// authoritative, or the latest attack would never surface.
 	cachedHistory   []bot.AttackReport
 	cachedHistoryMu sync.RWMutex
 
@@ -535,12 +538,22 @@ func (a *App) ensureHistoryLoadedLocked() {
 // is bounded by attack frequency (~one refresh every few minutes of
 // normal play) — well below the 0.5 Hz React poll.
 //
+// This MUST force a disk re-read on every call. The naive approach
+// (just calling ensureHistoryLoadedLocked) no-ops once cachedHistory
+// is warm — and the cache is warmed by React's very first
+// GetAttackHistory poll at app launch. That froze the UI on the
+// launch-time snapshot forever: loot totals kept climbing (they're
+// read live from atomics in GetStats) while the latest attack never
+// appeared in history. Nulling the cache first routes through the
+// shared parse path so read+parse logic stays in one place.
+//
 // Holds cachedHistoryMu through the disk read so concurrent React
 // polls wait on the writer rather than racing the assign. The
 // per-attack write-lock window is ~50 ms (read+parse) which is
 // imperceptible at 0.5 Hz polling.
 func (a *App) refreshHistory() {
 	a.cachedHistoryMu.Lock()
+	a.cachedHistory = nil
 	a.ensureHistoryLoadedLocked()
 	a.cachedHistoryMu.Unlock()
 }

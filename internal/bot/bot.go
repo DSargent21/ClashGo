@@ -875,10 +875,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 					b.stars3.Add(1)
 				}
 
-				if b.OnStatsUpdate != nil {
-					b.OnStatsUpdate()
-				}
-
 				b.logger.Info().
 					Int("stars", res.Stars).
 					Int("gold", res.Loot.Gold).
@@ -978,6 +974,17 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	b.historyCache = history
 	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
 		_ = AsyncWriteFile(paths.ResolveConfig("attack_history.json"), histBytes, 0644)
+	}
+
+	// Notify the UI AFTER the report is in historyCache and
+	// attack_history.json is flushed to disk. Firing this earlier
+	// (right after ReadBattleResult) raced the App's refreshHistory
+	// cache re-read with the report write, so the UI stayed a full
+	// attack behind even though the loot totals (live atomics) moved
+	// instantly. AsyncWriteFile blocks until the worker flushes, so
+	// by the time we get here the file on disk contains this report.
+	if b.OnStatsUpdate != nil {
+		b.OnStatsUpdate()
 	}
 
 	deployStatus := "SUCCESS (100% Deployed)"
