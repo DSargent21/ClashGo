@@ -28,6 +28,13 @@ RELEASE_ZIP := ClashGO-v$(VERSION)-macOS.zip
 LDFLAGS := -X main.version=$(VERSION) \
            -X main.commit=$(GIT_COMMIT)
 
+# min_supported in latest.json: the lowest version that can update in
+# place. For stable releases that's the version being shipped; for a
+# prerelease (e.g. 0.3.0-beta) it's the previous minor (0.2.0) so users
+# of the last stable/beta still get the update banner. Override with
+# MIN_SUPPORTED= on the command line when the default is wrong.
+MIN_SUPPORTED ?= $(shell echo "$(VERSION)" | awk -F'[.-]' '{ if (NF > 3) { m = $$2 - 1; if (m < 0) m = 0; print $$1 "." m ".0" } else { print $$1 "." $$2 ".0" } }')
+
 .PHONY: all build build-cli build-gui clean release manifest
 
 all: build-cli build-gui
@@ -126,7 +133,7 @@ manifest:
 	@./build/bin/release_manifest \
 		-version $(VERSION) \
 		-zip $(BUILD_DIR)/$(RELEASE_ZIP) \
-		-min-supported $(shell echo "$(VERSION)" | sed -E 's/-.*//; s/^([0-9]+\.[0-9]+)\.[0-9]+.*/\1.0/') \
+		-min-supported $(MIN_SUPPORTED) \
 		-out $(BUILD_DIR)/latest.json \
 		-repo Ducky705/ClashGO \
 		-os darwin
