@@ -65,12 +65,15 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
               onClick={() => setTab(item.id)}
               title={expanded ? undefined : item.label}
               aria-label={item.label}
-              className={`w-full flex items-center h-11 rounded-xl transition-all duration-150 relative group/btn ${
+              className={`w-full flex items-center h-11 rounded-xl transition-all duration-150 active:scale-[0.97] relative group/btn ${
                 tab === item.id
                   ? 'bg-zinc-950 dark:bg-zinc-800 text-white dark:text-zinc-200 shadow-premium dark:shadow-none'
                   : 'text-zinc-500 dark:text-zinc-500 hover:bg-zinc-100/80 dark:hover:bg-zinc-800/40 hover:text-zinc-900 dark:hover:text-zinc-200'
               }`}
             >
+              {tab === item.id && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.6)]" />
+              )}
               <div className="w-11 h-11 flex-shrink-0 flex items-center justify-center">
                 <span className={`material-symbols-outlined text-[20px] transition-transform duration-150 ${tab === item.id ? 'scale-110' : 'group-hover/btn:scale-110'}`}>
                   {item.icon}
@@ -83,7 +86,22 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
           ))}
         </nav>
 
-        <div className="mt-auto">
+        <div className="mt-auto space-y-3">
+          {/* Bot status footer — a persistent pulse even when the
+              sidebar is collapsed, so the running state is visible
+              at a glance from the icon rail. */}
+          <div className="flex items-center gap-3 h-9 px-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-100/50 dark:border-zinc-800/50 overflow-hidden">
+            <span className="relative flex w-2 h-2 shrink-0">
+              <span className={`w-2 h-2 rounded-full ${running ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-300 dark:bg-zinc-700'}`}></span>
+              {running && <span className="absolute inset-0 w-2 h-2 rounded-full bg-emerald-500 animate-ping opacity-20"></span>}
+            </span>
+            <span className={`text-[10px] font-black uppercase tracking-[0.2em] whitespace-nowrap overflow-hidden transition-[opacity,width] duration-200 ease-out ${
+              expanded ? 'opacity-100 w-auto' : 'opacity-0 w-0'
+            } ${running ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400 dark:text-zinc-600'}`}>
+              {running ? 'Bot Running' : 'Bot Idle'}
+            </span>
+          </div>
+
           <button
             onClick={running ? onStop : onStart}
             title={expanded ? undefined : (running ? 'Stop bot' : 'Start bot')}

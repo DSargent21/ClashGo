@@ -16,14 +16,14 @@ import (
 // Example:
 //
 //	{
-//	  "version": "0.2.0-beta",
+//	  "version": "0.3.0",
 //	  "release_date": "2026-07-08T12:00:00Z",
 //	  "notes": "Bug fixes + new auto-attack presets.",
 //	  "min_supported": "0.1.0",
 //	  "platforms": {
 //	    "darwin": {
-//	      "asset_name": "ClashGO-v0.2.0-beta-macOS.zip",
-//	      "asset_url": "https://github.com/.../ClashGO-v0.2.0-beta-macOS.zip",
+//	      "asset_name": "ClashGO-v0.3.0-macOS.zip",
+//	      "asset_url": "https://github.com/.../ClashGO-v0.3.0-macOS.zip",
 //	      "size": 12345678,
 //	      "sha256": "abc123..."
 //	    }

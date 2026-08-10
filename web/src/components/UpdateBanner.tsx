@@ -418,18 +418,6 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
         </div>
       )}
 
-      <style>{`
-        @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
-        @keyframes scale-in {
-          from { opacity: 0; transform: scale(0.94) translateY(8px) }
-          to   { opacity: 1; transform: scale(1) translateY(0) }
-        }
-        /* Use kebab-case class names so we don't collide with React's
-           reserved 'data-' / kebab collision surface; the strings below
-           are referenced by animate-{name} utilities above. */
-        .animate-fadeIn { animation: fade-in 200ms ease-out }
-        .animate-scaleIn { animation: scale-in 180ms cubic-bezier(0.34, 1.56, 0.64, 1) }
-      `}</style>
     </>
   );
 };
@@ -524,7 +512,6 @@ const ReadyBody: React.FC<{
       to apply now. The helper script will swap the running bundle
       and relaunch. ClashGO will exit briefly during the swap.
     </p>
-    <style>{`@keyframes shimmer { from { transform: translateX(-100%) } to { transform: translateX(300%) } }`}</style>
   </div>
 );
 
@@ -575,9 +562,10 @@ const RestartSplash: React.FC<{ status: UpdateStatus }> = ({ status }) => (
           <span className="font-mono font-bold text-emerald-400">v{status.latest_version}</span>
           . The new build will appear in your dock in a moment.
         </p>
-      </div>        <div className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.4em]">
-          don&rsquo;t quit this window
-        </div>
+      </div>
+      <div className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.4em]">
+        don&rsquo;t quit this window
+      </div>
     </div>
   </div>
 );

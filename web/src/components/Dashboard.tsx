@@ -6,7 +6,6 @@ interface DashboardProps {
   stats: BotStats;
   history: AttackReport[];
   logs: string[];
-  terminalEndRef: React.RefObject<HTMLDivElement>;
 }
 
 const getTerminalAutoScroll = (): boolean => {
@@ -40,13 +39,14 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   stats,
   history,
   logs,
-  terminalEndRef,
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [terminalAutoScroll, setTerminalAutoScroll] = React.useState(getTerminalAutoScroll);
   const [terminalHovered, setTerminalHovered] = React.useState(false);
   const [logFilter, setLogFilter] = React.useState('');
   const [severityFilter, setSeverityFilter] = React.useState<LogSeverity | 'all'>('all');
+  const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null);
+  const copiedTimerRef = React.useRef<number | null>(null);
   const uptimeHours = stats.uptime / (1e9 * 3600);
 
   React.useEffect(() => {
@@ -56,6 +56,11 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       console.warn('Failed to save terminalAutoScroll preference:', e);
     }
   }, [terminalAutoScroll]);
+
+  // Unmount-only cleanup for the copy-feedback timer.
+  React.useEffect(() => () => {
+    if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+  }, []);
 
   // Parse once per log update — the raw strings are stable between
   // polls, so memoizing on `logs` keeps re-renders cheap.
@@ -76,6 +81,40 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       return true;
     });
   }, [parsedLogs, logFilter, severityFilter]);
+
+  // ANSI-free export: rebuild each line from the parsed structure so
+  // the copied log never carries zerolog escape codes.
+  const exportText = React.useMemo(() =>
+    parsedLogs
+      .map((l) => `${l.timestamp ? l.timestamp + ' | ' : ''}${l.level.toUpperCase()} | ${l.message}`)
+      .join('\n'),
+  [parsedLogs]);
+
+  const copyLine = (idx: number, text: string) => {
+    void copyText(text);
+    setCopiedIdx(idx);
+    if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = window.setTimeout(() => setCopiedIdx(null), 1200);
+  };
+
+  // Wrap every (case-insensitive) occurrence of the filter text in
+  // <mark> so matches pop out while the message keeps its color.
+  const highlightMatch = (message: string): React.ReactNode => {
+    const needle = logFilter.trim().toLowerCase();
+    if (!needle) return message;
+    const lower = message.toLowerCase();
+    const parts: React.ReactNode[] = [];
+    let last = 0;
+    let i = lower.indexOf(needle);
+    while (i !== -1) {
+      parts.push(message.slice(last, i));
+      parts.push(<mark key={i}>{message.slice(i, i + needle.length)}</mark>);
+      last = i + needle.length;
+      i = lower.indexOf(needle, last);
+    }
+    parts.push(message.slice(last));
+    return parts;
+  };
 
   React.useEffect(() => {
     if (!terminalAutoScroll || terminalHovered) return;
@@ -137,7 +176,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
 
       {/* Attack Log Table */}
       <div className="bg-white dark:bg-zinc-900 rounded-[2.5rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none overflow-hidden transition-all duration-500">
-        <div className="px-10 py-5 border-b border-zinc-50 dark:border-zinc-800/50 flex justify-between items-center bg-zinc-50/30 dark:bg-zinc-800/20">
+        <div className="px-6 py-5 border-b border-zinc-50 dark:border-zinc-800/50 flex justify-between items-center bg-zinc-50/30 dark:bg-zinc-800/20">
           <div>
             <h3 className="text-xl font-bold text-zinc-950 dark:text-white tracking-tight">Attack History</h3>
             <p className="text-sm text-zinc-500 dark:text-zinc-500 font-medium">Recent combat deployments and results.</p>
@@ -147,21 +186,21 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr>
-                <th className="px-10 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10">Loot Collected</th>
-                <th className="px-10 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10 text-center">Stars</th>
-                <th className="px-10 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10 text-right">Timestamp</th>
+                <th className="px-6 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10">Loot Collected</th>
+                <th className="px-6 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10 text-center">Stars</th>
+                <th className="px-6 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10 text-right">Timestamp</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-50 dark:divide-zinc-800/50">
               {history.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="px-10 py-24 text-center text-zinc-400 dark:text-zinc-700 text-[11px] font-black uppercase tracking-[0.3em] italic">No data available // Waiting for activity</td>
+                  <td colSpan={3} className="px-6 py-24 text-center text-zinc-400 dark:text-zinc-700 text-[11px] font-black uppercase tracking-[0.3em] italic">No data available // Waiting for activity</td>
                 </tr>
               ) : (
                 history.slice(0, 5).map((rep, i) => (
                   <tr key={i} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/40 transition-colors group">
-                    <td className="px-10 py-4">
-                      <div className="flex gap-6">
+                    <td className="px-6 py-4">
+                      <div className="flex gap-5">
                         <div className="flex flex-col">
                           <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
                             <span className="material-symbols-outlined text-amber-500 text-base">monetization_on</span>
@@ -197,7 +236,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                         </div>
                       </div>
                     </td>
-                    <td className="px-10 py-4">
+                    <td className="px-6 py-4">
                        <div className="flex justify-center gap-1.5">
                         {[...Array(3)].map((_, sIdx) => (
                           <span
@@ -210,7 +249,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                         ))}
                       </div>
                     </td>
-                    <td className="px-10 py-4 text-right text-xs font-black text-zinc-500 dark:text-zinc-500 tabular-nums uppercase tracking-widest">
+                    <td className="px-6 py-4 text-right text-xs font-black text-zinc-500 dark:text-zinc-500 tabular-nums uppercase tracking-widest">
                       {new Date(rep.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                     </td>
                   </tr>
@@ -229,7 +268,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           { label: 'Total Revenue', value: `${((stats.total_gold + stats.total_elixir) / 1e6).toFixed(1)}M`, icon: 'trending_up' },
           { label: 'System Uptime', value: formatUptime(stats.uptime), icon: 'timer' }
         ].map((item, idx) => (
-          <div key={idx} className="bg-white dark:bg-zinc-900 p-5 rounded-[2rem] border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-6 shadow-premium dark:shadow-none transition-all duration-500 hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
+          <div key={idx} className="group bg-white dark:bg-zinc-900 p-5 rounded-[2rem] border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-6 shadow-premium dark:shadow-none transition-all duration-500 hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
              <div className="w-14 h-14 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm transition-transform group-hover:scale-110">
                 <span className="material-symbols-outlined text-zinc-500 dark:text-zinc-500 text-2xl">{item.icon}</span>
              </div>
@@ -273,8 +312,9 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
               Auto
             </button>
             <button
-              onClick={() => void copyText(logs.join('\n'))}
-              className="h-9 px-5 rounded-xl bg-zinc-100 dark:bg-zinc-900/50 text-[10px] font-black text-zinc-500 hover:text-zinc-700 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-all uppercase tracking-[0.2em] border border-zinc-200 dark:border-zinc-800/50"
+              onClick={() => void copyText(exportText)}
+              className="h-9 px-5 rounded-xl bg-zinc-100 dark:bg-zinc-900/50 text-[10px] font-black text-zinc-500 hover:text-zinc-700 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-all uppercase tracking-[0.2em] border border-zinc-200 dark:border-zinc-800/50 active:scale-95"
+              title="Copy the full console to the clipboard (ANSI-free)"
             >
               Export Logs
             </button>
@@ -302,6 +342,9 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
               </button>
             )}
           </div>
+          <div className="flex items-center gap-2 text-[10px] font-black text-zinc-400 dark:text-zinc-600 uppercase tracking-widest tabular-nums whitespace-nowrap" aria-live="polite">
+            {filteredLogs.length}<span className="text-zinc-300 dark:text-zinc-700">/</span>{parsedLogs.length} lines
+          </div>
           <div className="flex items-center gap-1.5 flex-wrap">
             {severityChips.map((chip) => {
               const count = chip.id === 'all' ? parsedLogs.length : severityCounts[chip.id];
@@ -310,6 +353,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                 <button
                   key={chip.id}
                   onClick={() => setSeverityFilter(chip.id)}
+                  aria-pressed={isActive}
                   className={`h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-widest border transition-all flex items-center gap-1.5 ${
                     isActive
                       ? chip.active
@@ -327,6 +371,8 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
 
         <div
           ref={containerRef}
+          role="log"
+          aria-label="System console — live bot output"
           onMouseEnter={() => setTerminalHovered(true)}
           onMouseLeave={() => setTerminalHovered(false)}
           className="p-5 h-80 terminal-scroll overflow-y-auto font-mono text-[13px] leading-relaxed text-zinc-600 dark:text-zinc-400 selection:bg-emerald-500/20"
@@ -361,20 +407,25 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                       'text-zinc-600 dark:text-zinc-300'
                     }`}
                   >
-                    {line.message}
+                    {highlightMatch(line.message)}
                   </span>
                   <button
-                    onClick={() => void copyText(line.message)}
-                    className="opacity-0 group-hover/log:opacity-100 text-zinc-400 dark:text-zinc-600 hover:text-zinc-700 dark:hover:text-white transition-all p-0.5 -mr-1"
+                    onClick={() => copyLine(i, line.message)}
+                    className={`opacity-0 group-hover/log:opacity-100 transition-all p-0.5 -mr-1 ${
+                      copiedIdx === i
+                        ? 'text-emerald-500 opacity-100'
+                        : 'text-zinc-400 dark:text-zinc-600 hover:text-zinc-700 dark:hover:text-white'
+                    }`}
                     title="Copy line"
                     aria-label="Copy log line"
                   >
-                    <span className="material-symbols-outlined text-sm">content_copy</span>
+                    <span className="material-symbols-outlined text-sm">
+                      {copiedIdx === i ? 'check' : 'content_copy'}
+                    </span>
                   </button>
                 </div>
               ))
             )}
-            <div ref={terminalEndRef} />
           </div>
         </div>
       </section>

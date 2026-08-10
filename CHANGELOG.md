@@ -2,9 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-08-10
 
 ### Added
+- **Autonomous-run resilience hardening** (all live-verified on BlueStacks Air):
+  - **Emulator-death recovery ladder** — when screen capture dies mid-session
+    the bot now escalates transport reconnect → adb-server reset →
+    BlueStacks relaunch → boot re-orchestration instead of force-stopping
+    the game against a dead transport and spinning forever
+    (`recoverEmulator` in `internal/bot/bot.go`).
+  - **Panic containment** — recover guards around the capture frame loop and
+    the attack-sequence goroutine, so one bad frame or missing asset can no
+    longer kill the whole process.
+  - **Nil-template fallback** — the template store degrades to an empty
+    (non-nil) store when assets can't be resolved, so loot/battle OCR keeps
+    running instead of panicking mid-attack (`internal/game/templates.go`).
+  - **Process keepalive** — `tools/run_bot_keepalive.sh` respawns the CLI
+    bot ~10s after ANY exit (panic, OOM, kill) and pins
+    `CLASHGO_ASSETS_DIR` so templates/strategies resolve even under launchd
+    (whose default cwd is `/`).
+- **Web UI overhaul** — polished dashboard console (severity chips,
+  text filter, copy, match highlighting, pause-on-hover auto-scroll),
+  config view with live range validation + `role=switch` toggles + keyboard
+  accessible combobox, two-step armed reset confirm, ADB status pill with
+  semantic colors, analytics donut, dark-mode toggle, and an a11y pass
+  (`role=log`, focus-visible rings, `prefers-reduced-motion`).
 - **Human-gesture input layer** (autonomous-hardening iteration 1):
   - `adb.SwipeBezier` — low-level `sendevent` quadratic-bezier swipe with
     ease-in-out velocity (accelerate → coast → decelerate) and a random
@@ -101,6 +123,16 @@ All notable changes to this project will be documented in this file.
     entries removed.
 
 ### Fixed
+- **BlueStacks Air cold boot burned 90s then failed** — `waitForVMProcess`
+  waited for `qemu-system`/`hd-adb` process names that never appear on
+  BlueStacks Air for Apple Silicon (the VM runs in-process), so every cold
+  boot hit the full wait and logged a spurious "VM did not start" failure.
+  An open adb port (5555+) now counts as a VM-up signal — the same signal
+  the ADB-connect wait already uses (`internal/adb/emulator_mac.go`).
+- **Nil-pointer panic on missing templates** — `NewLootRecognizer` panicked
+  on a nil template store when assets didn't resolve (e.g. running from a
+  launchd cwd of `/`), killing the bot at attack entry. The store now
+  falls back to an empty store and the attack goroutine is panic-guarded.
 - **Attack History lagged the loot totals** — the history entry was only
   appended after Return Home + wall upgrades (which can take minutes), so
   the dashboard showed fresh gold/elixir totals long before the new attack
@@ -112,10 +144,12 @@ All notable changes to this project will be documented in this file.
   25600): the digit lost its right edge and its template-match score fell
   below the 0.5 floor. Narrow columns now get relaxed padding
   (`internal/game/loot.go`) and the bonus ROI's right edge was widened
-  (`assets/battle_loot_rois.json`). Regression-tested against a real live
-  capture (`internal/game/testdata/screen_victory_live.png`,
-  `TestLootVictory/screen_victory_live`), with digit-level verification
-  available via `cmd/result_probe -debug`.
+  (`assets/battle_loot_rois.json`). Regression-tested via
+  `TestLootVictory/screen_victory` on the tracked fixture
+  (`internal/game/testdata/screen_victory.png`); the former
+  `screen_victory_live.png` fixture was removed for privacy (it was a live
+  capture containing real player names and was gitignored, so it silently
+  skipped on fresh clones anyway).
 - **Endless force-stop/relaunch loop on the post-boot collect splash** —
   the "ТАР!" tap-to-continue screen was misclassified as `StateBattle`, so
   the stuck-watchdog force-stopped the game and every relaunch re-showed

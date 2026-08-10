@@ -207,8 +207,15 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	var templates *game.TemplateStore
 	templates, err = game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
-		log.Warn().Err(err).Msg("template store init failed, continuing without templates")
-		templates = nil
+		// NEVER leave templates nil: every consumer (classifier,
+		// navigator, loot recognizer, attack executor) dereferences it
+		// without a nil check, and the first such dereference panics
+		// (observed live: SIGSEGV in LootRecognizer.prepareDigitTemplates
+		// killing the bot the moment it entered an attack). The empty
+		// store degrades every lookup to "not found" so the bot keeps
+		// running on its color/pinpoint heuristics.
+		log.Warn().Err(err).Msg("template store init failed; continuing WITHOUT templates (color/pinpoint fallbacks only)")
+		templates = game.NewEmptyTemplateStore()
 	}
 
 	if templates != nil {
@@ -405,8 +412,24 @@ func (b *Bot) captureLoop() {
 			}
 			return
 		case f := <-frames:
-			b.checkStuck(gc)
-			b.processFrame(gc, f.mat, f.err, f.dur)
+			// Panic guard: one bad frame (degenerate mat, classifier
+			// edge case, cgo hiccup) must never kill the whole bot
+			// process — an unattended farm would stay dead until a
+			// human notices. Recover, release the frame, and keep
+			// the loop alive; the stuck-watchdog handles the rest.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						b.logger.Error().Interface("panic", r).Msg("recovered panic in frame processing; continuing capture loop")
+						if !f.mat.Empty() {
+							f.mat.Close()
+						}
+						b.recordActivity()
+					}
+				}()
+				b.checkStuck(gc)
+				b.processFrame(gc, f.mat, f.err, f.dur)
+			}()
 		}
 	}
 }
@@ -428,8 +451,8 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 		b.logger.Error().
 			Int("consecutive_fails", gc.ReadHealth().ConsecutiveFails).
 			Str("state", gc.State.String()).
-			Msg("capture pipeline appears dead, triggering emergency restart...")
-		b.restartGame()
+			Msg("capture pipeline appears dead, beginning device recovery ladder...")
+		b.recoverEmulator()
 		b.lastSequenceStart = time.Now()
 		return
 	}
@@ -528,6 +551,69 @@ func (b *Bot) restartGame() {
 	b.lastAction = time.Now()
 	b.lastNav = time.Now()
 	b.lastSequenceStart = time.Now()
+}
+
+// recoverEmulator is the mid-run escalation for a dead capture
+// pipeline. restartGame only force-stops CoC — when the EMULATOR
+// itself is gone (BlueStacks crashed, adb-server wedged, transport
+// socket stale) that just fails silently and the bot spins at high
+// CPU against a dead device forever. recoverEmulator walks a
+// cheap→destructive ladder, re-probing liveness (wm size) after
+// each step, and only relaunches BlueStacks as a last resort:
+//
+//	1. screen-size probe     — device alive? just restart the game
+//	2. transport Reconnect   — stale socket after a BlueStacks blip
+//	3. ResetAdbServer        — stale adb-server registration
+//	   (note: drops ALL adb connections on this host — logged)
+//	4. EnsureBlueStacksMac   — emulator really gone; relaunch at the
+//	   configured resolution, then poll up to 2 min for adb
+func (b *Bot) recoverEmulator() {
+	b.logger.Warn().Msg("capture pipeline dead; beginning device recovery ladder")
+
+	deviceOK := func() bool {
+		_, _, err := b.client.ScreenSize()
+		return err == nil
+	}
+
+	if deviceOK() {
+		b.logger.Info().Msg("device still responsive; restarting game only")
+		b.restartGame()
+		return
+	}
+
+	b.logger.Warn().Msg("device unresponsive to wm size; reconnecting ADB transport")
+	if err := b.client.Reconnect(); err != nil {
+		b.logger.Warn().Err(err).Msg("transport reconnect failed")
+	}
+	if deviceOK() {
+		b.restartGame()
+		return
+	}
+
+	b.logger.Warn().Msg("device still unreachable; resetting adb server (drops ALL adb connections on this host)")
+	if err := b.client.ResetAdbServer(); err != nil {
+		b.logger.Warn().Err(err).Msg("adb server reset failed")
+	}
+	time.Sleep(2 * time.Second)
+	_ = b.client.Reconnect()
+	if deviceOK() {
+		b.restartGame()
+		return
+	}
+
+	b.logger.Error().Msg("device unreachable after transport + adb-server recovery; relaunching BlueStacks")
+	if err := b.client.EnsureBlueStacksMac(b.cfg.Device.Width, b.cfg.Device.Height, b.cfg.Device.DPI); err != nil {
+		b.logger.Error().Err(err).Msg("BlueStacks relaunch failed; will retry on next stuck check")
+	}
+	// Give the freshly-relaunched emulator up to 2 minutes to expose
+	// its adb daemon (cold VM boot can take 45-70s on this hardware).
+	for i := 0; i < 60; i++ {
+		if deviceOK() {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	b.restartGame()
 }
 
 func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, captureMs time.Duration) {
@@ -792,6 +878,18 @@ func (b *Bot) templateMatch(screen gocv.Mat, name string, threshold float32) boo
 }
 
 func (b *Bot) executeAttackSequence(gc *game.GameContext) {
+	// Panic guard for the long-running attack goroutine (spawned from
+	// processFrame outside the frame-loop recover). A panic anywhere in
+	// the deploy/search/battle-parse pipeline must release seqRunning
+	// (via the pre-existing defer below, which LIFO-runs first) and log
+	// instead of killing the whole bot process. The stuck-watchdog then
+	// decides the next move.
+	defer func() {
+		if r := recover(); r != nil {
+			b.logger.Error().Interface("panic", r).Msg("recovered panic in attack sequence; abandoning sequence and continuing")
+			b.recordActivity()
+		}
+	}()
 	if !b.seqRunning.CompareAndSwap(false, true) {
 		return
 	}

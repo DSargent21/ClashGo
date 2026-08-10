@@ -25,6 +25,13 @@ interface ConfigViewProps {
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
+// Range bounds for the numeric fields. Out-of-range values get a red
+// ring + aria-invalid so the user sees the problem before saving.
+const THRESHOLD_MAX = 10_000_000;
+const STALL_MAX = 600;
+const invalid = (v: number, max: number): boolean =>
+  !Number.isFinite(v) || v < 0 || v > max;
+
 const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   goldThreshold, setGoldThreshold,
   elixirThreshold, setElixirThreshold,
@@ -115,6 +122,15 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           ? 'Failed'
           : 'Save Settings';
 
+  const thresholdItems = [
+    { label: 'Min Gold', value: goldThreshold, setter: setGoldThreshold, icon: 'monetization_on', color: 'text-amber-500', bg: 'bg-amber-500/10' },
+    { label: 'Min Elixir', value: elixirThreshold, setter: setElixirThreshold, icon: 'water_drop', color: 'text-fuchsia-500', bg: 'bg-fuchsia-500/10' },
+    { label: 'Min Dark Elixir', value: deThreshold, setter: setDeThreshold, icon: 'water_drop', color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800' },
+  ];
+
+  const stallInvalid = invalid(stallTimer, STALL_MAX);
+  const anyInvalid = stallInvalid || thresholdItems.some((t) => invalid(t.value, THRESHOLD_MAX));
+
   return (
     <div className="max-w-4xl mx-auto">
 
@@ -126,44 +142,83 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               <h3 className="text-2xl font-bold text-zinc-950 dark:text-white mb-2 tracking-tight">Search Settings</h3>
               <p className="text-sm text-zinc-500 dark:text-zinc-500 font-medium">Minimum loot requirements for engagement.</p>
             </div>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {[
-              { label: 'Min Gold', value: goldThreshold, setter: setGoldThreshold, icon: 'monetization_on', color: 'text-amber-500', bg: 'bg-amber-500/10' },
-              { label: 'Min Elixir', value: elixirThreshold, setter: setElixirThreshold, icon: 'water_drop', color: 'text-fuchsia-500', bg: 'bg-fuchsia-500/10' },
-              { label: 'Min Dark Elixir', value: deThreshold, setter: setDeThreshold, icon: 'water_drop', color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800' }
-            ].map((item, idx) => (
-              <div key={idx} className="space-y-4">
-                <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
-                  <div className={`w-8 h-8 rounded-xl ${item.bg} flex items-center justify-center border border-zinc-100/10`}>
-                    <span className={`material-symbols-outlined text-base ${item.color}`}>{item.icon}</span>
-                  </div>
-                  {item.label}
-                </label>
-                <div className="relative group">
-                  <input 
-                    type="number" 
-                    value={item.value} 
-                    onChange={e => item.setter(parseInt(e.target.value) || 0)}
-                    disabled={!searchEnabled}
-                    className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white focus:outline-none focus:ring-4 focus:ring-zinc-950/5 dark:focus:ring-white/5 focus:border-zinc-300 dark:focus:border-zinc-700 transition-all tabular-nums ${!searchEnabled ? 'opacity-30 cursor-not-allowed' : 'group-hover:bg-white dark:group-hover:bg-zinc-950/60'}`}
-                  />
-                </div>
+            {!searchEnabled && (
+              <div className="px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[10px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-[0.2em] whitespace-nowrap">
+                Disabled
               </div>
-            ))}
+            )}
+          </div>
 
-            
-            <div className="space-y-4">
-              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
-                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-500 dark:text-zinc-500 border border-zinc-100/10">
-                  <span className="material-symbols-outlined text-base">precision_manufacturing</span>
+          {/* Thresholds — three across on md+ */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {thresholdItems.map((item, idx) => {
+              const itemInvalid = invalid(item.value, THRESHOLD_MAX);
+              return (
+                <div key={idx} className="space-y-4">
+                  <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
+                    <div className={`w-8 h-8 rounded-xl ${item.bg} flex items-center justify-center border border-zinc-100/10`}>
+                      <span className={`material-symbols-outlined text-base ${item.color}`}>{item.icon}</span>
+                    </div>
+                    {item.label}
+                  </label>
+                  <div className="relative group">
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={THRESHOLD_MAX}
+                      value={item.value}
+                      onChange={e => item.setter(parseInt(e.target.value) || 0)}
+                      disabled={!searchEnabled}
+                      aria-invalid={itemInvalid}
+                      className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white focus:outline-none focus:ring-4 transition-all tabular-nums ${
+                        itemInvalid
+                          ? 'border-rose-400/60 focus:border-rose-500 focus:ring-rose-500/10'
+                          : 'border-zinc-100 dark:border-zinc-800 focus:ring-zinc-950/5 dark:focus:ring-white/5 focus:border-zinc-300 dark:focus:border-zinc-700'
+                      } ${!searchEnabled ? 'opacity-30 cursor-not-allowed' : 'group-hover:bg-white dark:group-hover:bg-zinc-950/60'}`}
+                    />
+                  </div>
+                  {itemInvalid && (
+                    <p className="px-1 text-[10px] font-bold text-rose-500 uppercase tracking-widest" role="alert">
+                      Max {THRESHOLD_MAX.toLocaleString()}
+                    </p>
+                  )}
                 </div>
-                Attack Strategy
-              </label>
+              );
+            })}
+          </div>
+
+          {/* Strategy + stall timer — two across on md+ */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between px-1">
+                <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em]">
+                  <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-500 dark:text-zinc-500 border border-zinc-100/10">
+                    <span className="material-symbols-outlined text-base">precision_manufacturing</span>
+                  </div>
+                  Attack Strategy
+                </label>
+                <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-600 uppercase tracking-widest tabular-nums">
+                  {strategies.length} available
+                </span>
+              </div>
               <div className="relative" ref={dropdownRef}>
-                <div 
+                <div
+                  role="combobox"
+                  aria-expanded={isOpen}
+                  aria-haspopup="listbox"
+                  aria-disabled={!searchEnabled}
+                  tabIndex={searchEnabled ? 0 : -1}
                   onClick={() => searchEnabled && setIsOpen(!isOpen)}
+                  onKeyDown={(e) => {
+                    if (!searchEnabled) return;
+                    if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setIsOpen(true);
+                    } else if (e.key === 'Escape') {
+                      setIsOpen(false);
+                    }
+                  }}
                   className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white cursor-pointer flex justify-between items-center transition-all ${isOpen ? 'ring-4 ring-zinc-950/5 dark:ring-white/5 border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900' : 'hover:bg-white dark:hover:bg-zinc-900'} ${!searchEnabled ? 'opacity-30 cursor-not-allowed' : ''}`}
                 >
                   <span className="truncate">
@@ -175,12 +230,14 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 </div>
 
                 {isOpen && searchEnabled && (
-                  <div className="dropdown-pop absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 max-h-72 overflow-y-auto">
+                  <div role="listbox" className="dropdown-pop absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 max-h-72 overflow-y-auto">
                     {strategies.map((s, idx) => {
                       const isActive = selectedStrategy.endsWith(s);
                       return (
-                        <div 
+                        <div
                           key={idx}
+                          role="option"
+                          aria-selected={isActive}
                           onClick={() => { setSelectedStrategy(s); setIsOpen(false); }}
                           className={`px-6 py-3 text-sm font-bold cursor-pointer transition-colors ${isActive ? 'bg-zinc-50 dark:bg-zinc-800 text-zinc-950 dark:text-white' : 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 hover:text-zinc-950 dark:hover:text-white'}`}
                         >
@@ -201,45 +258,76 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 Stall Timer (Seconds)
               </label>
               <div className="relative group">
-                <input 
-                  type="number" 
-                  value={stallTimer} 
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={STALL_MAX}
+                  value={stallTimer}
                   onChange={e => setStallTimer(parseInt(e.target.value) || 0)}
-                  className="w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white focus:outline-none focus:ring-4 focus:ring-zinc-950/5 dark:focus:ring-white/5 focus:border-zinc-300 dark:focus:border-zinc-700 transition-all tabular-nums group-hover:bg-white dark:group-hover:bg-zinc-950/60"
+                  aria-invalid={stallInvalid}
                   placeholder="0 to disable"
+                  className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white focus:outline-none focus:ring-4 transition-all tabular-nums ${
+                    stallInvalid
+                      ? 'border-rose-400/60 focus:border-rose-500 focus:ring-rose-500/10'
+                      : 'border-zinc-100 dark:border-zinc-800 focus:ring-zinc-950/5 dark:focus:ring-white/5 focus:border-zinc-300 dark:focus:border-zinc-700'
+                  } group-hover:bg-white dark:group-hover:bg-zinc-950/60`}
                 />
               </div>
+              {stallInvalid && (
+                <p className="px-1 text-[10px] font-bold text-rose-500 uppercase tracking-widest" role="alert">
+                  Max {STALL_MAX}s
+                </p>
+              )}
             </div>
           </div>
         </div>
 
         {/* Operational Toggles */}
         <div className="bg-white dark:bg-zinc-900 p-8 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none space-y-8 transition-all duration-500">
-          <div className="flex items-center justify-between group cursor-pointer" onClick={() => setSearchEnabled(!searchEnabled)}>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={searchEnabled}
+            onClick={() => setSearchEnabled(!searchEnabled)}
+            className="w-full flex items-center justify-between group cursor-pointer text-left"
+          >
             <div className="max-w-[80%]">
               <span className="block text-lg font-bold text-zinc-950 dark:text-white mb-1 tracking-tight">Enable Search</span>
               <span className="block text-sm text-zinc-500 dark:text-zinc-500 font-medium">Automatically skip bases that don't meet loot requirements.</span>
             </div>
-            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${searchEnabled ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
-               <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${searchEnabled ? 'left-8 bg-white dark:bg-zinc-400' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
+            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative shrink-0 ${searchEnabled ? 'bg-emerald-500/80' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
+               <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${searchEnabled ? 'left-8 bg-white' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
             </div>
-          </div>
+          </button>
 
           <div className="h-px bg-zinc-50 dark:bg-zinc-800/50 w-full"></div>
 
-          <div className="flex items-center justify-between group cursor-pointer" onClick={() => setUpgradeWalls(!upgradeWalls)}>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={upgradeWalls}
+            onClick={() => setUpgradeWalls(!upgradeWalls)}
+            className="w-full flex items-center justify-between group cursor-pointer text-left"
+          >
             <div className="max-w-[80%]">
               <span className="block text-lg font-bold text-zinc-950 dark:text-white mb-1 tracking-tight">Upgrade Walls</span>
               <span className="block text-sm text-zinc-500 dark:text-zinc-500 font-medium">Automatically use spare gold to upgrade walls.</span>
             </div>
-            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${upgradeWalls ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
-               <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${upgradeWalls ? 'left-8 bg-white dark:bg-zinc-400' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
+            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative shrink-0 ${upgradeWalls ? 'bg-emerald-500/80' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
+               <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${upgradeWalls ? 'left-8 bg-white' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
             </div>
-          </div>
+          </button>
         </div>
 
 
         <div className="flex flex-col items-end gap-3 pt-4">
+          {anyInvalid && (
+            <div className="px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] font-bold text-amber-600 dark:text-amber-400 tracking-wider" role="alert">
+              <span className="material-symbols-outlined text-sm align-middle mr-1">warning</span>
+              Some values are out of range — fix them before saving.
+            </div>
+          )}
           {lastSaveError && saveStatus === 'error' && (
             <div
               role="status"
@@ -253,11 +341,11 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           )}
           <button
             type="submit"
-            disabled={saveStatus === 'saving'}
+            disabled={saveStatus === 'saving' || anyInvalid}
             aria-label={`${saveButtonLabel} — saves your config to the bot`}
             data-testid="config-save-btn"
             data-save-state={saveStatus}
-            className={`h-16 px-12 font-black text-xs uppercase tracking-[0.3em] rounded-3xl transition-all duration-300 active:scale-[0.98] flex items-center gap-4 border border-transparent dark:border-white/10 shadow-lg ${saveButtonClasses}`}
+            className={`group h-16 px-12 font-black text-xs uppercase tracking-[0.3em] rounded-3xl transition-all duration-300 active:scale-[0.98] flex items-center gap-4 border border-transparent dark:border-white/10 shadow-lg disabled:opacity-40 disabled:cursor-not-allowed ${saveButtonClasses}`}
           >
             {saveButtonLabel}
             <span className={`material-symbols-outlined text-lg transition-transform ${saveStatus === 'saving' ? 'animate-spin' : saveStatus === 'idle' ? 'group-hover:translate-x-1' : ''}`}>

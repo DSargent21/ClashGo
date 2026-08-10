@@ -378,12 +378,25 @@ func (c *Client) writeResolutionDefaultsIfPlistExists(width, height, dpi int) {
 // this function is called — a substring match for "BlueStacks"
 // would false-positive instantly. We only trust qemu-system-aarch64
 // (VM process) and hd-adb (BlueStacks' bundled adb daemon).
+//
+// IMPORTANT (BlueStacks Air on Apple Silicon): the Android VM runs
+// IN-PROCESS — neither qemu-system nor hd-adb ever appears as a
+// separate process, but the main BlueStacks binary listens on the
+// instance's adb port (5555+) as soon as the VM host is up. Relying
+// on process names alone burns the full budget and emits a scary
+// failure on every cold boot of these builds. An open candidate adb
+// port is therefore treated as an equally valid VM-up signal (it is
+// exactly the signal waitForBlueStacksADB already keys off).
 func (c *Client) waitForVMProcess(ctx context.Context, timeout time.Duration) error {
-	c.log.Info("waiting for BlueStacks VM subsystem (qemu-system-aarch64 / hd-adb)...")
+	c.log.Info("waiting for BlueStacks VM subsystem (qemu-system-aarch64 / hd-adb / adb port)...")
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if sig := c.firstVMSignal(); sig != "" {
 			c.log.Info(fmt.Sprintf("VM subsystem signal detected: %q", sig))
+			return nil
+		}
+		if len(c.tcpScanListens(candidateBlueStacksAdbPorts, 200*time.Millisecond)) > 0 {
+			c.log.Info("VM subsystem signal detected: adb port listening")
 			return nil
 		}
 		select {
@@ -392,7 +405,7 @@ func (c *Client) waitForVMProcess(ctx context.Context, timeout time.Duration) er
 		case <-time.After(1 * time.Second):
 		}
 	}
-	return errors.New("timeout waiting for BlueStacks VM subsystem (qemu-system-aarch64 / hd-adb never appeared)")
+	return errors.New("timeout waiting for BlueStacks VM subsystem (qemu-system-aarch64 / hd-adb / adb port never appeared)")
 }
 
 // firstVMSignal returns the first vmProcessSignals entry currently

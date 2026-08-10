@@ -241,10 +241,11 @@ func TestLootAccuracyExact(t *testing.T) {
 }
 
 // victoryTestCase captures the ground truth for an end-of-battle screen.
-// Values for screen_victory_live.png were verified against Apple Vision
-// OCR of the raw frame (see docs in cmd/result_probe): it is a REAL
-// capture from the bot where the old bonus-column padding clipped the
-// trailing zero and read bonus gold as 25600 instead of 256000.
+// screen_victory.png is the tracked regression fixture for victory-screen
+// parsing, including the league-bonus column (which previously clipped a
+// trailing zero on a live capture). The former screen_victory_live.png
+// fixture was a live capture containing real player names and was removed
+// for privacy; screen_victory.png keeps victory-screen coverage.
 type victoryTestCase struct {
 	name      string
 	imgPath   string
@@ -260,13 +261,6 @@ var victoryTestCases = []victoryTestCase{
 		wantStars: 2,
 		loot:      Resources{Gold: 1985245, Elixir: 1985977, DarkElixir: 21600},
 		bonus:     Resources{Gold: 312400, Elixir: 312400, DarkElixir: 2310},
-	},
-	{
-		name:      "screen_victory_live",
-		imgPath:   "testdata/screen_victory_live.png",
-		wantStars: 1,
-		loot:      Resources{Gold: 680857, Elixir: 1092954, DarkElixir: 8266},
-		bonus:     Resources{Gold: 256000, Elixir: 256000, DarkElixir: 1920},
 	},
 }
 

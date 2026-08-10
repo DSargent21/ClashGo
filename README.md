@@ -17,6 +17,12 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
   splash chain ("ТАР!" tap-to-continue → castle logo → news splash)
   instead of force-restarting in a loop, so unattended runs survive game
   relaunches.
+- **Unattended-run resilience**: if the emulator dies mid-session the bot
+  escalates through transport reconnect → adb-server reset → BlueStacks
+  relaunch instead of spinning; a bad frame or missing asset can't crash
+  the process (panic guards + nil-template fallback); and
+  `tools/run_bot_keepalive.sh` respawns the bot ~10s after any exit so it
+  keeps farming unattended.
 - **Text-based observability**: `./tools/observe.sh` captures the emulator
   screen, classifies it with the bot's real vision layer, and OCRs the
   on-screen text — a terminal-only "eye view" for debugging without a
@@ -77,11 +83,11 @@ always **BlueStacks**, not the bot.
 
 Updates are powered by GitHub Releases — no extra infrastructure.
 
-1. Bump `productVersion` in `wails.json` (e.g. `0.2.0-beta`).
-2. `make release VERSION=0.2.0-beta` — produces the zip, the DMG,
+1. Bump `productVersion` in `wails.json` (e.g. `0.3.0`).
+2. `make release VERSION=0.3.0` — produces the zip, the DMG,
    and `latest.json`.
-3. Publish a GitHub release tagged `v0.2.0-beta`, and attach:
-   - `ClashGO-v0.2.0-beta-macOS.zip`
+3. Publish a GitHub release tagged `v0.3.0`, and attach:
+   - `ClashGO-v0.3.0-macOS.zip`
    - `latest.json`
 4. Existing users get a banner within 6h (or on next launch).
 

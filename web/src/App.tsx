@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Analytics from './components/Analytics';
@@ -139,8 +139,6 @@ function App() {
   const [searchEnabled, setSearchEnabled] = useState(true);
   const [upgradeWalls, setUpgradeWalls] = useState(false);
   const [stallTimer, setStallTimer] = useState(30);
-
-  const terminalEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const init = async () => {
@@ -345,7 +343,6 @@ function App() {
     stats,
     history,
     logs,
-    terminalEndRef,
   }), [stats, history, logs]);
 
   // ADB connection state — drives the header status pill. Labels stop
@@ -437,10 +434,18 @@ function App() {
               )}
               <div className="bg-white dark:bg-zinc-900 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md" title={`ADB server port ${adbPort} — ${adbStateLabel}`}>
                 <div className="relative">
-                  <div className={`w-2.5 h-2.5 rounded-full ${adbState === 'connected' ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></div>
+                  <div className={`w-2.5 h-2.5 rounded-full ${
+                    adbState === 'connected' ? 'bg-emerald-500'
+                    : adbState === 'disconnected' ? 'bg-rose-500 animate-pulse'
+                    : 'bg-amber-500 animate-pulse'
+                  }`}></div>
                   {adbState === 'connected' && <div className="absolute inset-0 w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping opacity-20"></div>}
                 </div>
-                <span className="text-[11px] font-black uppercase tracking-widest text-zinc-500 dark:text-zinc-400">ADB: {adbPort} · {adbStateLabel}</span>
+                <span className={`text-[11px] font-black uppercase tracking-widest ${
+                  adbState === 'connected' ? 'text-zinc-500 dark:text-zinc-400'
+                  : adbState === 'disconnected' ? 'text-rose-500'
+                  : 'text-amber-600 dark:text-amber-400'
+                }`}>ADB: {adbPort} · {adbStateLabel}</span>
               </div>
             </div>
           </header>
