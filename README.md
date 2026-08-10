@@ -83,11 +83,11 @@ always **BlueStacks**, not the bot.
 
 Updates are powered by GitHub Releases — no extra infrastructure.
 
-1. Bump `productVersion` in `wails.json` (e.g. `0.3.0`).
-2. `make release VERSION=0.3.0` — produces the zip, the DMG,
+1. Bump `productVersion` in `wails.json` (e.g. `0.3.0-beta`).
+2. `make release VERSION=0.3.0-beta` — produces the zip, the DMG,
    and `latest.json`.
-3. Publish a GitHub release tagged `v0.3.0`, and attach:
-   - `ClashGO-v0.3.0-macOS.zip`
+3. Publish a GitHub release tagged `v0.3.0-beta`, and attach:
+   - `ClashGO-v0.3.0-beta-macOS.zip`
    - `latest.json`
 4. Existing users get a banner within 6h (or on next launch).
 

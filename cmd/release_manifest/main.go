@@ -5,8 +5,8 @@
 // Usage:
 //
 //	go run ./cmd/release_manifest \
-//	    -version 0.3.0 \
-//	    -zip build/bin/ClashGO-v0.3.0-macOS.zip \
+//	    -version 0.3.0-beta \
+//	    -zip build/bin/ClashGO-v0.3.0-beta-macOS.zip \
 //	    -min-supported 0.1.0 \
 //	    -notes-file /dev/stdin \
 //	    -out build/bin/latest.json \
