@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.0] - 2026-08-10
+## [0.3.0-beta] - 2026-08-10
 
 ### Added
 - **Autonomous-run resilience hardening** (all live-verified on BlueStacks Air):
