@@ -127,6 +127,25 @@ else
   warn "no install_update.sh found at build/darwin/ — skipping"
 fi
 
+# Stage 2.5 — re-sign after injecting assets.
+# Wails ad-hoc signs the bundle during `wails build`; copying assets +
+# the install helper into Contents/Resources afterwards invalidates the
+# sealed resources (codesign --verify then fails with "a sealed resource
+# is missing or invalid", which Gatekeeper treats as a damaged app).
+# Re-sign ad-hoc so the shipped bundle passes codesign --verify --deep
+# --strict. Without a Developer ID this can't silence Gatekeeper's
+# "unidentified developer" dialog, but an INVALID signature is worse:
+# some macOS versions refuse to launch the app at all.
+log "re-signing bundle (ad-hoc) after asset injection"
+if ! codesign --force --deep -s - "$APP_STAGED" 2>/dev/null; then
+  warn "codesign --force --deep -s - failed — shipped bundle signature may be invalid"
+fi
+if ! codesign --verify --deep --strict "$APP_STAGED" 2>/dev/null; then
+  warn "codesign --verify failed after re-sign — continuing, but the app may be flagged"
+else
+  log "bundle signature verified"
+fi
+
 # Stage 3 — symlink Applications on the volume so drag-target works.
 log "creating /Applications symlink"
 ln -sf /Applications "$WORK/Applications"
