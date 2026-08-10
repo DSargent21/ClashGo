@@ -60,7 +60,17 @@ func (aw *AsyncWriter) worker() {
 				return
 			}
 			pending = append(pending, req)
-			if len(pending) >= 10 {
+			// Flush immediately whenever a caller is BLOCKED waiting on
+			// this request's done channel (Write() → `return <-done`).
+			// Previously the worker only flushed on the 5s ticker or a
+			// full 10-item batch, so a single synchronous write (e.g.
+			// saveStats during app shutdown) could stall its caller for
+			// up to 5 seconds — observed as the app window freezing for
+			// ~2s after clicking close before it finally exited.
+			// Fire-and-forget requests (done == nil) still batch and
+			// ride the ticker, so high-frequency best-effort writes keep
+			// their coalescing.
+			if req.done != nil || len(pending) >= 10 {
 				flush()
 			}
 		case <-ticker.C:
@@ -70,18 +80,28 @@ func (aw *AsyncWriter) worker() {
 }
 
 func (aw *AsyncWriter) Write(path string, data []byte, perms os.FileMode) error {
+	// Hold mu across the closed-check AND the channel send. The worker
+	// never takes mu, so this can't deadlock, and it closes the race
+	// where a concurrent Close() closed the channel between the check
+	// and the send — which would panic with "send on closed channel"
+	// and kill the whole app process (a close-click crash waiting to
+	// happen). If the worker ever drained the buffer and Close() is
+	// blocked on wg.Wait(), it still can't deadlock: Close's wg.Wait
+	// runs only after it releases mu, which Write releases the moment
+	// the send lands.
 	aw.mu.Lock()
 	if aw.closed {
 		aw.mu.Unlock()
 		return os.WriteFile(path, data, perms)
 	}
-	aw.mu.Unlock()
 
 	done := make(chan error, 1)
 	select {
 	case aw.requests <- writeRequest{path: path, data: data, perms: perms, done: done}:
+		aw.mu.Unlock()
 		return <-done
 	default:
+		aw.mu.Unlock()
 		return os.WriteFile(path, data, perms)
 	}
 }

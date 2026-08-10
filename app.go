@@ -126,9 +126,34 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	// Stop the updater's background poller so it can't fire an HTTP
+	// check mid-teardown.
 	if a.updaterBgStop != nil {
 		a.updaterBgStop()
 	}
+
+	// Cancel a running bot (or an in-flight boot) synchronously so it
+	// stops issuing taps/captures the instant the user closes the
+	// window — the captureLoop and any attack sequence observe the
+	// cancelled context on their next check (sub-millisecond). We do
+	// NOT run the heavier bot.Stop() teardown (ADB client close, async-
+	// writer drain, file flush) here: it is detached from the process
+	// exit path on purpose, and blocking the close on it would reintro-
+	// duce exactly the freeze this fix removes. The OS reclaims those
+	// handles when the process exits.
+	a.mu.Lock()
+	if a.cancel != nil {
+		a.cancel()
+	}
+	if a.bot != nil {
+		a.bot.Cancel()
+	}
+	a.mu.Unlock()
+
+	// Persist final stats. saveStats writes through the async writer;
+	// with the worker now flushing synchronously-blocked requests
+	// immediately (see AsyncWriter.worker), this returns in ~1ms
+	// instead of stalling the close for up to the 5s ticker.
 	a.saveStats()
 }
 
@@ -653,8 +678,6 @@ func (a *App) refreshHistory() {
 	a.ensureHistoryLoadedLocked()
 	a.cachedHistoryMu.Unlock()
 }
-
-
 
 // SaveConfig updates config.json settings
 func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool, stall int) error {
