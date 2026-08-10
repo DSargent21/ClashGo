@@ -45,12 +45,13 @@ func (s SlotState) String() string {
 // TrackedSlot extends TroopSlot with state tracking.
 type TrackedSlot struct {
 	TroopSlot
-	State      SlotState `json:"state"`
-	UnitName   string    `json:"unit_name"`
-	Confidence float64   `json:"confidence"`
-	Attempts   int       `json:"attempts"`
-	LastTapAt  time.Time `json:"last_tap_at"`
-	IsEmpty    bool      `json:"is_empty"`
+	State           SlotState `json:"state"`
+	UnitName        string    `json:"unit_name"`
+	Confidence      float64   `json:"confidence"`
+	Attempts        int       `json:"attempts"`
+	LastTapAt       time.Time `json:"last_tap_at"`
+	IsEmpty         bool      `json:"is_empty"`
+	FallbackLabeled bool      `json:"fallback_labeled"` // name came from stale manual_labels.json, not a template match
 }
 
 // SlotManager handles slot detection, classification, identity resolution, and state tracking.
@@ -337,6 +338,12 @@ func (sm *SlotManager) applyManualLabelsFallback() {
 		slot.UnitName = cleanName
 		slot.Confidence = 1.0
 		slot.State = SlotIdentified
+		// Mark as fallback-labeled so the sweep treats it as a probable
+		// event/bonus troop rather than trusting the stale label. The
+		// user's manual_labels.json reflects an old army; a slot that
+		// template matching couldn't identify is more likely a seasonal
+		// bonus card than whatever the label claims.
+		slot.FallbackLabeled = true
 
 		if isHeroStatic(cleanName) {
 			slot.Category = "Hero"
@@ -413,7 +420,12 @@ func (sm *SlotManager) GetUndeployedSlots() []*TrackedSlot {
 //   - include empty-UnitName slots (an unlabelled troop card is still a
 //     card the user wants placed),
 //   - include every Troop/Spell/CC slot whose name is not a strategy unit
-//     (covers seasonal names that never appear in the YAML).
+//     (covers seasonal names that never appear in the YAML),
+//   - include fallback-labeled slots REGARDLESS of category/name — the
+//     label comes from manual_labels.json (an old army) and can be a
+//     hero name ("archer queen") that collides with a strategy unit.
+//     If template matching couldn't ID the card, it's probably a bonus
+//     troop, so don't let a stale hero label hide it.
 //
 // Slots already Deployed/Failed are skipped so the sweep doesn't re-fire
 // slots the strategy phase already drained. Siege is included because a
@@ -429,6 +441,12 @@ func (sm *SlotManager) GetEventTroops(strategyUnitNames []string) []*TrackedSlot
 	var result []*TrackedSlot
 	for _, slot := range sm.slots {
 		if slot.State == SlotDeployed || slot.State == SlotFailed {
+			continue
+		}
+		if slot.FallbackLabeled {
+			// Stale label — treat as event troop regardless of what the
+			// label claims (hero/spell/siege all possible).
+			result = append(result, slot)
 			continue
 		}
 		if slot.Category != "Troop" && slot.Category != "Spell" && slot.Category != "CC" && slot.Category != "Siege" {
@@ -468,9 +486,30 @@ func (sm *SlotManager) MarkDeployed(unitName string) {
 	slot.IsEmpty = true
 }
 
+// MarkSlotDeployed marks a specific slot as successfully deployed. Used
+// for fallback-labeled/event slots where the UnitName may collide with a
+// template-matched slot (e.g. a bonus troop stale-labeled "archer queen"
+// shares a name with the real hero), so name-based lookup is unsafe.
+func (sm *SlotManager) MarkSlotDeployed(slot *TrackedSlot) {
+	if slot == nil {
+		return
+	}
+	slot.State = SlotDeployed
+	slot.IsEmpty = true
+}
+
 // MarkFailed marks a slot as failed after exhausting retries.
 func (sm *SlotManager) MarkFailed(unitName string) {
 	slot := sm.GetSlot(unitName)
+	if slot == nil {
+		return
+	}
+	slot.State = SlotFailed
+}
+
+// MarkSlotFailed marks a specific slot as failed. Pointer-based variant
+// for fallback-labeled/event slots whose UnitName may collide.
+func (sm *SlotManager) MarkSlotFailed(slot *TrackedSlot) {
 	if slot == nil {
 		return
 	}

@@ -81,6 +81,16 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 		if slot.Category == "Siege" {
 			continue
 		}
+		// Skip fallback-labeled slots here — the label is stale (old
+		// manual_labels.json army) and can masquerade as a hero ("archer
+		// queen") that template matching couldn't confirm. Routing it
+		// through the hero path fails and marks it Failed, which then
+		// hides the real bonus troop from the event pass below. The
+		// event pass (GetEventTroops) treats fallback-labeled slots as
+		// event troops and deploys them along the line.
+		if slot.FallbackLabeled {
+			continue
+		}
 
 		// Capture FRESH screen for each slot check (critical fix)
 		freshScreen, err := sw.executor.CaptureFresh()
@@ -156,7 +166,7 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 
 				if empty {
 					slot.IsEmpty = true
-					sw.slotManager.MarkDeployed(slot.UnitName)
+					sw.slotManager.MarkSlotDeployed(slot)
 					placed = true
 					break
 				}
@@ -181,7 +191,7 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 
 				success := sw.deploySlot(slot, count, true)
 				if success {
-					sw.slotManager.MarkDeployed(slot.UnitName)
+					sw.slotManager.MarkSlotDeployed(slot)
 					deployedCount++
 					placed = true
 					break
@@ -192,7 +202,7 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 				time.Sleep(100 * time.Millisecond)
 			}
 			if !placed {
-				sw.slotManager.MarkFailed(slot.UnitName)
+				sw.slotManager.MarkSlotFailed(slot)
 				sw.logger.Warn().
 					Int("x", slot.X).
 					Str("unit", slot.UnitName).
@@ -272,7 +282,11 @@ func (sw *Sweeper) eventFormulaEntry(slot *TrackedSlot) (formula.UnitEntry, bool
 // visual empty check. Any troops still on the bar trigger a top-up
 // re-fire on the same line, guaranteeing the slot ends empty.
 func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) bool {
-	if slot.Category == "Hero" {
+	// Hero path only for slots template-matched as a real hero (or a
+	// strategy-declared hero). Fallback-labeled "heroes" are bonus
+	// troops wearing a stale manual label — they must be dumped along
+	// the line like a troop, not single-tapped like a hero.
+	if slot.Category == "Hero" && !slot.FallbackLabeled {
 		return sw.deployHeroSlotOnce(slot)
 	}
 
