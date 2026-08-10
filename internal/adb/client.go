@@ -334,6 +334,15 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 	start := time.Now()
 
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		// Fail fast after Close(): a bot that was just stopped must
+		// NOT silently reconnect the transport here, or the lingering
+		// attack goroutine would keep capturing (and tapping) for the
+		// remainder of its sequence. "client closed" is the signal
+		// every caller already treats as fatal.
+		return emptyMat(), errors.New("client closed")
+	}
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
 			c.mu.Unlock()
@@ -481,6 +490,11 @@ func (c *Client) markPipeBroken() {
 }
 
 func (c *Client) tapLocked(x, y int) error {
+	if c.closed {
+		// See CaptureToMat: after a Stop the transport must not be
+		// silently reconnected, or the stopped bot keeps tapping.
+		return errors.New("client closed")
+	}
 	if c.transport == nil {
 		if err := c.connectTransport(); err != nil {
 			return err

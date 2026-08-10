@@ -251,13 +251,13 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                       ? `${status.latest_version} is here`
                       : stateLabel(status.state)}
                   </h2>
-                  <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-1.5 font-bold tabular-nums flex items-center gap-2">
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-500 mt-1.5 font-bold tabular-nums flex items-center gap-2">
                     <span className="text-zinc-400 dark:text-zinc-600 uppercase tracking-widest text-[10px]">Current</span>
                     <span className="font-mono">v{appVersion}</span>
                     {status.min_supported && (
                       <>
-                        <span className="text-zinc-300 dark:text-zinc-700">•</span>
-                        <span className="text-[10px] uppercase tracking-widest text-zinc-300 dark:text-zinc-700">
+                        <span className="text-zinc-400 dark:text-zinc-700">•</span>
+                        <span className="text-[10px] uppercase tracking-widest text-zinc-400 dark:text-zinc-700">
                           min v{status.min_supported}
                         </span>
                       </>
@@ -361,7 +361,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                 <button
                   onClick={() => doCheck()}
                   disabled={busy !== null || status.state === 'checking'}
-                  className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors flex items-center gap-1.5 disabled:opacity-30"
+                  className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors flex items-center gap-1.5 disabled:opacity-30"
                 >
                   <span
                     className={`material-symbols-outlined text-[14px] ${
@@ -376,7 +376,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                   <button
                     onClick={() => doSkip()}
                     disabled={busy !== null || !status.available}
-                    className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors disabled:opacity-30"
+                    className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors disabled:opacity-30"
                   >
                     Skip version
                   </button>
@@ -386,7 +386,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                       setOpen(false);
                       onDismiss();
                     }}
-                    className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
+                    className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
                   >
                     Later
                   </button>
@@ -397,7 +397,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                 <button
                   onClick={() => doClearSkip()}
                   disabled={busy !== null}
-                  className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors mt-1 text-center w-full"
+                  className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors mt-1 text-center w-full"
                 >
                   Resume notifications for v{status.skip_version}
                 </button>
@@ -406,7 +406,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
               {/* Status chip: surfaces WHICH action is in-flight so a slow
                   user with multiple clicks sees what's happening. */}
               {busy !== null && (
-                <div className="flex items-center gap-2 text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] pt-1">
+                <div className="flex items-center gap-2 text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] pt-1">
                   <span className="material-symbols-outlined text-[14px] animate-spin">
                     progress_activity
                   </span>
@@ -467,7 +467,7 @@ const DownloadBody: React.FC<{
       {status.expected_size > 0 ? (
         <>
           {' '}
-          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400 dark:text-zinc-500 tabular-nums">
+          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 dark:text-zinc-500 tabular-nums">
             ({formatBytes(status.expected_size)})
           </span>
         </>
@@ -484,7 +484,7 @@ const DownloadBody: React.FC<{
         style={{ transform: `translateX(${progressPct * 3}%)` }}
       />
     </div>
-    <div className="flex items-center justify-between text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-widest tabular-nums">
+    <div className="flex items-center justify-between text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-widest tabular-nums">
       <span>{progressPct}% downloaded</span>
       <span className="flex items-center gap-1.5">
         <span className="material-symbols-outlined text-[12px]">verified_user</span>
@@ -515,7 +515,7 @@ const ReadyBody: React.FC<{
       </span>
     </div>
     {status.download_path && (
-      <div className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 break-all px-1">
+      <div className="text-[10px] font-mono text-zinc-500 dark:text-zinc-500 break-all px-1">
         {status.download_path}
       </div>
     )}

@@ -57,7 +57,7 @@ export interface BotConfig {
   };
 }
 
-export type TabType = 'dashboard' | 'feed' | 'analytics' | 'config' | 'settings';
+export type TabType = 'dashboard' | 'analytics' | 'config' | 'settings';
 
 // UpdateStatus mirrors internal/updater.Status (Go side).
 // Casing follows Wails JSON convention (snake_case). Keep field names

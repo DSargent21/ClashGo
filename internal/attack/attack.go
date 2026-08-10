@@ -1,6 +1,7 @@
 package attack
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -1520,7 +1521,21 @@ func (e *Executor) ReturnHome() error {
 	return nil
 }
 
+// WaitForBattleEnd is the context-free variant of
+// WaitForBattleEndCtx. Kept as the stable entry point for callers
+// (CLI, tests) that don't need cancellation.
 func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
+	return e.WaitForBattleEndCtx(context.Background(), timeout)
+}
+
+// WaitForBattleEndCtx polls until the battle-end overlay appears,
+// the stall timer fires, the deadline passes, or ctx is cancelled.
+// The ctx select is what lets a bot Stop interrupt a battle wait
+// immediately — without it, stopping the bot mid-battle left the
+// attack goroutine polling for the full timeout (up to 4 minutes)
+// and, because CaptureToMat reconnects a closed transport, it kept
+// issuing taps the whole time.
+func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
@@ -1557,6 +1572,9 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 
 	for {
 		select {
+		case <-ctx.Done():
+			e.logger.Info().Msg("battle end wait cancelled (bot stopping)")
+			return false
 		case <-ticker.C:
 			screen, err := e.client.CaptureToMat()
 			if err != nil {

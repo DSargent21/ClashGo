@@ -124,7 +124,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           <div className="flex justify-between items-start">
             <div>
               <h3 className="text-2xl font-bold text-zinc-950 dark:text-white mb-2 tracking-tight">Search Settings</h3>
-              <p className="text-sm text-zinc-400 dark:text-zinc-500 font-medium">Minimum loot requirements for engagement.</p>
+              <p className="text-sm text-zinc-500 dark:text-zinc-500 font-medium">Minimum loot requirements for engagement.</p>
             </div>
           </div>
           
@@ -135,7 +135,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               { label: 'Min Dark Elixir', value: deThreshold, setter: setDeThreshold, icon: 'water_drop', color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800' }
             ].map((item, idx) => (
               <div key={idx} className="space-y-4">
-                <label className="flex items-center gap-3 text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
+                <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
                   <div className={`w-8 h-8 rounded-xl ${item.bg} flex items-center justify-center border border-zinc-100/10`}>
                     <span className={`material-symbols-outlined text-base ${item.color}`}>{item.icon}</span>
                   </div>
@@ -155,8 +155,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
 
             
             <div className="space-y-4">
-              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
-                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-400 dark:text-zinc-500 border border-zinc-100/10">
+              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
+                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-500 dark:text-zinc-500 border border-zinc-100/10">
                   <span className="material-symbols-outlined text-base">precision_manufacturing</span>
                 </div>
                 Attack Strategy
@@ -169,13 +169,13 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   <span className="truncate">
                     {selectedStrategy ? selectedStrategy.split('/').pop()?.replace('.yaml', '').replace('.csv', '') : 'Standard Protocol'}
                   </span>
-                  <span className={`material-symbols-outlined text-zinc-400 transition-transform duration-500 ${isOpen ? 'rotate-180 text-zinc-950 dark:text-white' : ''}`}>
+                  <span className={`material-symbols-outlined text-zinc-500 transition-transform duration-500 ${isOpen ? 'rotate-180 text-zinc-950 dark:text-white' : ''}`}>
                     expand_more
                   </span>
                 </div>
 
                 {isOpen && searchEnabled && (
-                  <div className="dropdown-pop absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 overflow-hidden">
+                  <div className="dropdown-pop absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 max-h-72 overflow-y-auto">
                     {strategies.map((s, idx) => {
                       const isActive = selectedStrategy.endsWith(s);
                       return (
@@ -194,8 +194,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
             </div>
 
             <div className="space-y-4">
-              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
-                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-400 dark:text-zinc-500 border border-zinc-100/10">
+              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] px-1">
+                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-500 dark:text-zinc-500 border border-zinc-100/10">
                   <span className="material-symbols-outlined text-base">timer</span>
                 </div>
                 Stall Timer (Seconds)
@@ -218,9 +218,9 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           <div className="flex items-center justify-between group cursor-pointer" onClick={() => setSearchEnabled(!searchEnabled)}>
             <div className="max-w-[80%]">
               <span className="block text-lg font-bold text-zinc-950 dark:text-white mb-1 tracking-tight">Enable Search</span>
-              <span className="block text-sm text-zinc-400 dark:text-zinc-500 font-medium">Automatically skip bases that don't meet loot requirements.</span>
+              <span className="block text-sm text-zinc-500 dark:text-zinc-500 font-medium">Automatically skip bases that don't meet loot requirements.</span>
             </div>
-            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${searchEnabled ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-100 dark:bg-zinc-800'}`}>
+            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${searchEnabled ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
                <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${searchEnabled ? 'left-8 bg-white dark:bg-zinc-400' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
             </div>
           </div>
@@ -230,9 +230,9 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           <div className="flex items-center justify-between group cursor-pointer" onClick={() => setUpgradeWalls(!upgradeWalls)}>
             <div className="max-w-[80%]">
               <span className="block text-lg font-bold text-zinc-950 dark:text-white mb-1 tracking-tight">Upgrade Walls</span>
-              <span className="block text-sm text-zinc-400 dark:text-zinc-500 font-medium">Automatically use spare gold to upgrade walls.</span>
+              <span className="block text-sm text-zinc-500 dark:text-zinc-500 font-medium">Automatically use spare gold to upgrade walls.</span>
             </div>
-            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${upgradeWalls ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-100 dark:bg-zinc-800'}`}>
+            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative ${upgradeWalls ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
                <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${upgradeWalls ? 'left-8 bg-white dark:bg-zinc-400' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
             </div>
           </div>

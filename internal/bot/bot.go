@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -59,28 +58,40 @@ type Bot struct {
 	seqRunning  atomic.Bool
 	zoomedOut   atomic.Bool
 
-	chestDismissInFlight atomic.Bool
+	chestDismissInFlight  atomic.Bool
 	splashDismissInFlight atomic.Bool
-	startedAt            time.Time
-	lastAction           time.Time
-	lastSequenceStart    time.Time
-	lastNav              time.Time
-	lastCapture          time.Time
-	lastIdlePan          time.Time
-	stuckTimeout         time.Duration
-	cpuSampler           *cpuSampler
-
-	lastFrame atomic.Value // Stores the latest base64 encoded frame
+	startedAt             time.Time
+	lastAction            time.Time
+	lastSequenceStart     time.Time
+	lastNav               time.Time
+	lastCapture           time.Time
+	lastIdlePan           time.Time
+	stuckTimeout          time.Duration
+	cpuSampler            *cpuSampler
 
 	dukePicksFile *os.File
 
 	historyCache []AttackReport
 
-	OnFrame       func(string)
 	OnStatsUpdate func()
 }
 
+// NewBot builds a fully-booted Bot using a background context (no
+// external cancellation). CLI and tests use this; the Wails app uses
+// NewBotWithContext so a Stop click can abort a boot in progress.
 func NewBot(cfg *config.BotConfig) (*Bot, error) {
+	return NewBotWithContext(context.Background(), cfg)
+}
+
+// NewBotWithContext boots the bot under the caller's context. The
+// context is threaded through the boot orchestrator AND becomes the
+// parent of the bot's runtime context, so cancelling it (the app's
+// Stop click) aborts an in-progress boot and stops a running bot.
+//
+// On any error the freshly-constructed adb.Client is closed — a
+// failed boot must not leak a half-open transport (visible as a
+// lingering localhost:5555 ghost that breaks the next Start).
+func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, err error) {
 	zl := &adbLogAdapter{log: log.Logger}
 
 	client := adb.NewClient(
@@ -96,6 +107,14 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	)
 	client.DeviceID = cfg.Device.DeviceID
 
+	// If any step below fails before the client is handed to the Bot,
+	// release the transport so a subsequent StartBot starts clean.
+	defer func() {
+		if err != nil && b == nil {
+			_ = client.Close()
+		}
+	}()
+
 	log.Info().Msg("initializing bot startup sequence...")
 
 	bootCfg := NewBootConfigFromBotConfig(cfg)
@@ -103,7 +122,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		bootCfg = bootCfg.WithDevFastFail()
 	}
 	orchestrator := NewBootOrchestrator(bootCfg, client, log.Logger)
-	bctx, err := orchestrator.Boot(context.Background())
+	bctx, err := orchestrator.Boot(bootCtx)
 	if err != nil {
 
 		wrapped := fmt.Errorf("%s: %w", orchestrator.Report().Summary(), err)
@@ -198,9 +217,12 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	}
 
 	recognizer := game.NewRecognizer()
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive the bot's runtime context from the caller's context so a
+	// Stop that cancels the boot also tears down a successfully-booted
+	// bot without waiting for the App-level bot.Cancel() to be called.
+	ctx, cancel := context.WithCancel(bootCtx)
 
-	b := &Bot{
+	b = &Bot{
 		client:            client,
 		cal:               cal,
 		graph:             graph,
@@ -231,8 +253,6 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		}
 		attackExec.OnDukePick = writePick
 	}
-
-	b.lastFrame.Store("")
 
 	if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
 		var seeded []AttackReport
@@ -363,24 +383,6 @@ func (b *Bot) captureLoop() {
 				screen.Close()
 				b.logger.Debug().Err(err).Msg("empty/degenerate capture dropped")
 				continue
-			}
-
-			if b.OnFrame != nil {
-				small := vision.GetMat(screen.Rows()/2, screen.Cols()/2, screen.Type())
-				gocv.Resize(screen, &small, image.Point{}, 0.5, 0.5, gocv.InterpolationLinear)
-
-				go func(m gocv.Mat) {
-					defer vision.PutMat(m)
-					buf, err := gocv.IMEncodeWithParams(".jpg", m, []int{gocv.IMWriteJpegQuality, 60})
-					if err != nil {
-						b.logger.Debug().Err(err).Msg("frame encode failed, dropped")
-						return
-					}
-					defer buf.Close()
-					encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
-					b.lastFrame.Store(encoded)
-					b.OnFrame(encoded)
-				}(small)
 			}
 
 			select {
@@ -821,6 +823,17 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	searchStart := time.Now()
 	for {
+		// Stop check: a user Stop must abort the search loop even
+		// though CaptureToMat below would silently reconnect a closed
+		// transport and keep searching forever.
+		select {
+		case <-b.ctx.Done():
+			b.logger.Info().Msg("search loop cancelled by stop, abandoning attack sequence")
+			lootRec.Close()
+			return
+		default:
+		}
+
 		if time.Since(searchStart) > 5*time.Minute {
 			b.logger.Error().Msg("searching/skipping bases took too long (stuck in clouds?), restarting game...")
 			b.restartGame()
@@ -932,7 +945,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var bonusGold, bonusElixir, bonusDE int = 0, 0, 0
 	var parsedResults bool = false
 
-	if b.attackExec.WaitForBattleEnd(4 * time.Minute) {
+	if b.attackExec.WaitForBattleEndCtx(b.ctx, 4*time.Minute) {
 
 		// WaitForBattleEnd returns the moment the result overlay's Return
 		// Home button is detected, but the overlay is still animating in:
@@ -1028,55 +1041,27 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		} else {
 			b.logger.Error().Msg("battle result OCR failed after retries; recording unparsed attack")
 		}
+	} else if b.ctx.Err() != nil {
+		// The bot was stopped mid-battle. Exit cleanly — no forced
+		// restart (the ADB client is already being torn down by the
+		// detached Stop, and restartGame would just log a stream of
+		// transport errors against a closed client).
+		b.logger.Info().Msg("battle ended by user stop, abandoning sequence")
+		return
 	} else {
 		b.logger.Error().Msg("battle end timeout (stuck in battle?), restarting game...")
 		b.restartGame()
 		return
 	}
 
-	returnedHome := false
-	if err := b.attackExec.ReturnHome(); err == nil {
-		returnedHome = true
-	} else {
-		b.logger.Warn().Err(err).Msg("ReturnHome failed, attempting template fallback")
-		for i := 0; i < 3; i++ {
-			if b.findAndClick("btn_return_home", "Return Home", 1) {
-				returnedHome = true
-				break
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}
-
-	if !returnedHome {
-		b.logger.Error().Msg("failed to return home after battle, restarting game...")
-		b.restartGame()
-		return
-	}
-
-	sideX := int(537 * b.cal.ScaleX)
-	sideY := int(693 * b.cal.ScaleY)
-	b.logger.Info().Msg("Tapping side area to dismiss potential post-attack popups...")
-	_ = b.client.Tap(sideX, sideY)
-	time.Sleep(1000 * time.Millisecond)
-
-	if b.cfg.Upgrade.UpgradeWalls {
-		b.UpgradeWalls(gc)
-	}
-
+	// Record the attack in history IMMEDIATELY after the result is
+	// parsed, so the Attack History row appears in the UI at the same
+	// moment the loot totals tick up. Previously this block ran after
+	// ReturnHome + wall upgrades (which can take minutes), so the
+	// dashboard showed fresh gold/elixir totals for minutes before the
+	// history row appeared — and the entry was dropped entirely if
+	// ReturnHome failed.
 	b.attackCount.Add(1)
-
-	if int(b.attackCount.Load()) >= b.cfg.Attack.MaxAttackPerSession {
-		b.logger.Info().
-			Int32("attacks", b.attackCount.Load()).
-			Int("cap", b.cfg.Attack.MaxAttackPerSession).
-			Msg("attack cap reached, scheduling graceful shutdown...")
-		go func() {
-
-			time.Sleep(2 * time.Second)
-			b.cancel()
-		}()
-	}
 
 	depErrStr := ""
 	if deployErr != nil {
@@ -1129,6 +1114,51 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// by the time we get here the file on disk contains this report.
 	if b.OnStatsUpdate != nil {
 		b.OnStatsUpdate()
+	}
+
+	returnedHome := false
+	if err := b.attackExec.ReturnHome(); err == nil {
+		returnedHome = true
+	} else {
+		b.logger.Warn().Err(err).Msg("ReturnHome failed, attempting template fallback")
+		for i := 0; i < 3; i++ {
+			if b.findAndClick("btn_return_home", "Return Home", 1) {
+				returnedHome = true
+				break
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	if !returnedHome {
+		b.logger.Error().Msg("failed to return home after battle, restarting game...")
+		b.restartGame()
+		return
+	}
+
+	sideX := int(537 * b.cal.ScaleX)
+	sideY := int(693 * b.cal.ScaleY)
+	b.logger.Info().Msg("Tapping side area to dismiss potential post-attack popups...")
+	_ = b.client.Tap(sideX, sideY)
+	time.Sleep(1000 * time.Millisecond)
+
+	if b.cfg.Upgrade.UpgradeWalls {
+		b.UpgradeWalls(gc)
+	}
+
+	// Cap check stays after wall upgrades so the graceful shutdown (2s
+	// grace then cancel) never interrupts an in-progress wall loop; the
+	// count itself was already incremented when the report was recorded.
+	if int(b.attackCount.Load()) >= b.cfg.Attack.MaxAttackPerSession {
+		b.logger.Info().
+			Int32("attacks", b.attackCount.Load()).
+			Int("cap", b.cfg.Attack.MaxAttackPerSession).
+			Msg("attack cap reached, scheduling graceful shutdown...")
+		go func() {
+
+			time.Sleep(2 * time.Second)
+			b.cancel()
+		}()
 	}
 
 	deployStatus := "SUCCESS (100% Deployed)"
@@ -1413,7 +1443,7 @@ func resultPanelHash(screen gocv.Mat, cal *game.Calibration) uint64 {
 	}
 
 	var h uint64 = 14695981039346656037 // FNV-1a offset basis
-	stride := 4 // sample every 4th pixel — plenty for frame-diff detection
+	stride := 4                         // sample every 4th pixel — plenty for frame-diff detection
 	for y := y0; y < y1; y += stride {
 		for x := x0; x < x1; x += stride {
 			b := uint64(screen.GetUCharAt(y, x*3))
@@ -1649,18 +1679,6 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 		b.navigator.SetDisableChestDismissal(cfg.Device.DisableChestDismissal)
 	}
 	b.logger.Info().Msg("bot configuration updated in real-time")
-}
-
-func (b *Bot) GetClient() *adb.Client {
-	return b.client
-}
-
-func (b *Bot) GetLastFrame() string {
-	val := b.lastFrame.Load()
-	if val == nil {
-		return ""
-	}
-	return val.(string)
 }
 
 func (b *Bot) Stats() BotStats {

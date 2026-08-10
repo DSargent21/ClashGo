@@ -101,6 +101,21 @@ All notable changes to this project will be documented in this file.
     entries removed.
 
 ### Fixed
+- **Attack History lagged the loot totals** — the history entry was only
+  appended after Return Home + wall upgrades (which can take minutes), so
+  the dashboard showed fresh gold/elixir totals long before the new attack
+  row appeared — and the entry was lost entirely if Return Home failed.
+  `executeAttackSequence` now records the report and fires the UI refresh
+  at battle-result parse time (`internal/bot/bot.go`).
+- **League Bonus gold misread by a factor of 10** — the bonus column's
+  right padding clipped the trailing digit (bonus gold "+256 000" read as
+  25600): the digit lost its right edge and its template-match score fell
+  below the 0.5 floor. Narrow columns now get relaxed padding
+  (`internal/game/loot.go`) and the bonus ROI's right edge was widened
+  (`assets/battle_loot_rois.json`). Regression-tested against a real live
+  capture (`internal/game/testdata/screen_victory_live.png`,
+  `TestLootVictory/screen_victory_live`), with digit-level verification
+  available via `cmd/result_probe -debug`.
 - **Endless force-stop/relaunch loop on the post-boot collect splash** —
   the "ТАР!" tap-to-continue screen was misclassified as `StateBattle`, so
   the stuck-watchdog force-stopped the game and every relaunch re-showed

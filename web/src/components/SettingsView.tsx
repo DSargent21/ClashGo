@@ -23,10 +23,10 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
       <div className="flex justify-between items-center mb-12">
         <div>
           <h3 className="text-2xl font-bold text-zinc-950 dark:text-white mb-2 tracking-tight">System Settings</h3>
-          <p className="text-sm text-zinc-400 dark:text-zinc-500 font-medium">Core application and connection status.</p>
+          <p className="text-sm text-zinc-500 dark:text-zinc-500 font-medium">Core application and connection status.</p>
         </div>
         <div className="w-14 h-14 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm transition-colors">
-          <span className="material-symbols-outlined text-zinc-400 dark:text-zinc-500 text-2xl">memory</span>
+          <span className="material-symbols-outlined text-zinc-500 dark:text-zinc-500 text-2xl">memory</span>
         </div>
       </div>
 
@@ -38,12 +38,12 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         >
           <div className="flex items-center gap-5">
             <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 group-hover:scale-105 transition-all duration-300 shadow-sm">
-              <span className="material-symbols-outlined text-xl text-zinc-400 dark:text-zinc-500">
+              <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">
                 {darkMode ? 'dark_mode' : 'light_mode'}
               </span>
             </div>
             <div className="flex flex-col">
-              <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">App Theme</span>
+              <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">App Theme</span>
               <span className="text-sm font-bold text-zinc-950 dark:text-white">{darkMode ? 'Dark' : 'Light'}</span>
             </div>
           </div>
@@ -68,10 +68,10 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
           <div key={i} className="flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group">
             <div className="flex items-center gap-5">
               <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-zinc-100 dark:border-zinc-800 group-hover:scale-105 transition-all duration-300 shadow-sm">
-                <span className="material-symbols-outlined text-xl text-zinc-400 dark:text-zinc-500">{item.icon}</span>
+                <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">{item.icon}</span>
               </div>
               <div className="flex flex-col">
-                <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">{item.label}</span>
+                <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">{item.label}</span>
                 <span className={`text-sm font-bold tracking-tight ${item.status === 'error' ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-950 dark:text-white'}`}>{item.value}</span>
               </div>
             </div>
@@ -93,10 +93,10 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         >
           <div className="flex items-center gap-5">
             <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-zinc-100 dark:border-zinc-800 group-hover:scale-105 transition-all duration-300 shadow-sm">
-              <span className="material-symbols-outlined text-xl text-zinc-400 dark:text-zinc-500">system_update</span>
+              <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">system_update</span>
             </div>
             <div className="flex flex-col">
-              <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">
+              <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">
                 App Version
               </span>
               <span className="text-sm font-bold tracking-tight text-zinc-950 dark:text-white tabular-nums">
@@ -113,7 +113,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
             {updateStatus.skip_version && (
               <button
                 onClick={(e) => { e.stopPropagation(); onClearSkip(); }}
-                className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
+                className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
                 title={`Resume notifications for v${updateStatus.skip_version}`}
               >
                 Resume notifications
@@ -135,11 +135,11 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                  <span className="material-symbols-outlined text-xl text-rose-500 dark:text-rose-400" style={{ fontVariationSettings: "'FILL' 1" }}>delete_forever</span>
                </div>
                <div className="flex flex-col text-left">
-                 <span className="text-[10px] font-black text-rose-400 dark:text-rose-500 uppercase tracking-[0.2em] mb-0.5">Danger Zone</span>
+                 <span className="text-[10px] font-black text-rose-600 dark:text-rose-500 uppercase tracking-[0.2em] mb-0.5">Danger Zone</span>
                  <span className="text-sm font-bold text-rose-600 dark:text-rose-400">Reset All Statistics</span>
                </div>
              </div>
-             <span className="material-symbols-outlined text-rose-300 dark:text-rose-800 group-hover:translate-x-1 transition-transform">chevron_right</span>
+             <span className="material-symbols-outlined text-rose-400 dark:text-rose-800 group-hover:translate-x-1 transition-transform">chevron_right</span>
            </button>
         </div>
       </div>

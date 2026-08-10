@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
-import Feed from './components/Feed';
 import Analytics from './components/Analytics';
 import ConfigView from './components/ConfigView';
 import SettingsView from './components/SettingsView';
@@ -122,15 +121,6 @@ function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [history, setHistory] = useState<bot.AttackReport[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  // NOTE: screenshot state lives in the Feed component now. The
-  // previous App-level interval fired unconditionally — even when
-  // the user was on Dashboard/Settings/Analytics where no image
-  // consumes it — pushing a 50–150 KB base64 JPEG across the
-  // WailsIPC bridge every 1 s. Moving the poll into Feed's own
-  // useEffect makes the interval mount only when `<Feed/>` is
-  // rendered (i.e. only when tab === 'feed'), so the IPC payload
-  // and the setInterval are both eliminated for users on every
-  // other tab.
   const [adbPort, setAdbPort] = useState(5555);
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
   const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarExpanded);
@@ -210,31 +200,42 @@ function App() {
     const interval = setInterval(fetchData, 2000);
 
     // The 1 Hz screenshot poll used to live here. It moved into
-    // <Feed/>'s own useEffect (see web/src/components/Feed.tsx) so
-    // it only runs when the Live View tab is mounted, instead of
-    // burning the WailsIPC bridge every second regardless of tab.
-
-    // Subscribe to Wails-pushed events. `safeEventsOn` wraps the runtime
-    // bridge so a missing `window.runtime` (e.g. `npm run dev` opened in
-    // Chrome directly, or a WkWebView whose bridge hasn't injected yet)
-    // doesn't throw out of this synchronous useEffect body — that throw
-    // propagates and unmounts the React tree, which under
-    // `WebviewIsTransparent: true` presents as the dark-zinc window frame.
-    const unsub = safeEventsOn("state-change", (data: any) => {
-      console.log("State changed:", data);
-    });
+    // <Feed/>'s own useEffect so it only runs when the Live View tab
+    // is mounted, instead of burning the WailsIPC bridge every second
+    // regardless of tab. The Live View tab has been removed entirely
+    // (see the 'feed' tab deletion in Sidebar.tsx / types.ts).
 
     // Subscribe to updater_status events pushed every 2s from Go.
+    // `safeEventsOn` wraps the runtime bridge so a missing
+    // `window.runtime` (e.g. `npm run dev` opened in Chrome directly,
+    // or a WkWebView whose bridge hasn't injected yet) doesn't throw
+    // out of this synchronous useEffect body — that throw propagates
+    // and unmounts the React tree, which under `WebviewIsTransparent:
+    // true` presents as the dark-zinc window frame.
     const unsubUpdater = safeEventsOn("updater_status", (data: UpdateStatus) => {
       if (data && typeof data === 'object') {
         setUpdateStatus(data);
       }
     });
 
+    // StartBot returns running=true immediately while the boot runs in
+    // the background (BlueStacks launch + ADB connect can take minutes
+    // on a cold start). When the boot fails, Go emits bot_error /
+    // bot_init_failed — without listening, the sidebar stays on
+    // "STOP BOT" forever and Stop becomes a confusing no-op (there's
+    // no bot to stop). Flip the button back to START on either event.
+    const unsubBotError = safeEventsOn("bot_error", () => {
+      setIsRunning(false);
+    });
+    const unsubBotInitFailed = safeEventsOn("bot_init_failed", () => {
+      setIsRunning(false);
+    });
+
     return () => {
       clearInterval(interval);
-      unsub();
       unsubUpdater();
+      unsubBotError();
+      unsubBotInitFailed();
     };
   }, []);
 
@@ -415,7 +416,7 @@ function App() {
                   <span className={`w-1.5 h-1.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-300 dark:bg-zinc-800'}`}></span>
                   <span className="w-1.5 h-1.5 bg-zinc-300 dark:bg-zinc-800 rounded-full"></span>
                 </div>
-                <h2 className="text-[11px] text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.4em] font-black">ClashGO System</h2>
+                <h2 className="text-[11px] text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.4em] font-black">ClashGO System</h2>
               </div>
               <h1 className="font-headline text-5xl font-bold tracking-tight capitalize text-zinc-950 dark:text-white">{tab}</h1>
             </div>
@@ -445,7 +446,6 @@ function App() {
           </header>
 
           {tab === 'dashboard' && <Dashboard {...dashboardProps} />}
-          {tab === 'feed' && <Feed stats={stats} />}
           {tab === 'analytics' && <Analytics stats={stats} />}
           {tab === 'config' && <ConfigView {...configProps} />}
           {tab === 'settings' && (

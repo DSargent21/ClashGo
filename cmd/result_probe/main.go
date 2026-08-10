@@ -20,9 +20,14 @@ import (
 
 func main() {
 	imgPath := flag.String("img", paths.ResolveConfig("last_battle_result.png"), "screenshot to analyze")
+	debug := flag.Bool("debug", false, "enable digit-level OCR logging (per-row detected digits + read rects)")
 	flag.Parse()
 
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).Level(zerolog.InfoLevel)
+	lvl := zerolog.InfoLevel
+	if *debug {
+		lvl = zerolog.DebugLevel
+	}
+	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).Level(lvl)
 
 	img := gocv.IMRead(*imgPath, gocv.IMReadColor)
 	if img.Empty() {
@@ -128,6 +133,7 @@ func main() {
 	// Run the actual recognizer for comparison.
 	lr := game.NewLootRecognizer(cal, ts, logger)
 	defer lr.Close()
+	lr.Debug = *debug
 	res, err := lr.ReadBattleResult(img)
 	if err != nil {
 		fmt.Printf("\nReadBattleResult error: %v\n", err)

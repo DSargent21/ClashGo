@@ -152,7 +152,11 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	var result BattleResult
 
 	battleSearch := image.Rect(311, 313, 501, 428) // Battle Loot column
-	bonusSearch := image.Rect(571, 366, 674, 452)  // League Bonus column
+	// Bonus column right edge widened past the last digit (observed end
+	// ~671) with room for the relaxed narrow-column padding; the themed
+	// decorations further right are saturated and rejected by the color
+	// filter. See captureBattleColumn for the clipping story.
+	bonusSearch := image.Rect(571, 366, 682, 452) // League Bonus column
 
 	if data, err := os.ReadFile(paths.Resolve("battle_loot_rois.json")); err == nil {
 		var custom struct {
@@ -237,8 +241,16 @@ func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, colRef image.Rect
 	// Inward padding so the row never touches the icon column edge.
 	padL := int(8 * scaleX)
 	padR := int(4 * scaleX)
-	if sx2-sx1 < padL+padR+int(20*scaleX) {
-		padL, padR = 4, 2 // Narrow column (bonus); relax padding proportionally.
+	// Narrow columns (the League Bonus column is ~103 ref px wide) have
+	// digits that run almost to the column's right edge, so full padding
+	// clips the final digit. Observed live: bonus gold "+256 000" read as
+	// 25600 — the trailing zero lost its right edge and its template-match
+	// score fell just below the 0.5 floor while the identical elixir row
+	// (same clipping, one pixel of luck) passed. Relax to 4/2 so the last
+	// digit is never clipped; the saturated panel decorations to the right
+	// are rejected by the per-blob color filter.
+	if sx2-sx1 < padL+padR+int(20*scaleX) || sx2-sx1 < int(130*scaleX) {
+		padL, padR = 4, 2
 	}
 
 	colHeight := sy2 - sy1
@@ -286,12 +298,18 @@ func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, colRef image.Rect
 					}
 					x2 := min(absX+int(220*scaleX), rows[i].Max.X)
 					rect := image.Rect(x1, absY-int(5*scaleY), x2, absY+tpl.Rows()+int(5*scaleY))
+					if lr.Debug {
+						lr.logger.Debug().Str("tpl", name).Float32("conf", maxConf).Int("absX", absX).Int("absY", absY).Int("x1", rect.Min.X).Int("x2", rect.Max.X).Msg("battle column icon-anchored read")
+					}
 					values[i] = lr.readRow(screen, rect)
 					continue
 				}
 			}
 		}
 		// Static fallback: the row rectangle derived from the column ROI.
+		if lr.Debug {
+			lr.logger.Debug().Str("tpl", name).Str("rect", rows[i].String()).Msg("battle column static fallback read")
+		}
 		values[i] = lr.readRow(screen, rows[i])
 	}
 
