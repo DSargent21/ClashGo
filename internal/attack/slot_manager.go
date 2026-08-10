@@ -406,6 +406,20 @@ func (sm *SlotManager) GetUndeployedSlots() []*TrackedSlot {
 }
 
 // GetEventTroops returns slots with unit names not in the given strategy unit list.
+//
+// "Event" here means any Troop/Spell/CC slot that the strategy did NOT
+// declare. Bonus/seasonal event troops change names every season and may
+// template-match to nothing (empty UnitName), so we deliberately:
+//   - include empty-UnitName slots (an unlabelled troop card is still a
+//     card the user wants placed),
+//   - include every Troop/Spell/CC slot whose name is not a strategy unit
+//     (covers seasonal names that never appear in the YAML).
+//
+// Slots already Deployed/Failed are skipped so the sweep doesn't re-fire
+// slots the strategy phase already drained. Siege is included because a
+// non-strategy siege slot (e.g. a seasonal bonus troop that got
+// fallback-labeled "siege machine") is still a card the user wants
+// placed; the strategy's OWN siege is excluded by its declared name.
 func (sm *SlotManager) GetEventTroops(strategyUnitNames []string) []*TrackedSlot {
 	strategySet := make(map[string]bool)
 	for _, name := range strategyUnitNames {
@@ -414,12 +428,17 @@ func (sm *SlotManager) GetEventTroops(strategyUnitNames []string) []*TrackedSlot
 
 	var result []*TrackedSlot
 	for _, slot := range sm.slots {
-		if slot.UnitName == "" {
+		if slot.State == SlotDeployed || slot.State == SlotFailed {
 			continue
 		}
-		if !strategySet[strings.ToLower(slot.UnitName)] && slot.State != SlotDeployed && slot.State != SlotFailed {
-			result = append(result, slot)
+		if slot.Category != "Troop" && slot.Category != "Spell" && slot.Category != "CC" && slot.Category != "Siege" {
+			continue
 		}
+		name := strings.ToLower(strings.TrimSpace(slot.UnitName))
+		if name != "" && strategySet[name] {
+			continue
+		}
+		result = append(result, slot)
 	}
 	return result
 }

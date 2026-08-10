@@ -14,9 +14,10 @@ import (
 
 // TapExecutor handles all tap operations, screen capture, and timing.
 type TapExecutor struct {
-	client *adb.Client
-	cal    *game.Calibration
-	logger zerolog.Logger
+	client      *adb.Client
+	cal         *game.Calibration
+	logger      zerolog.Logger
+	lineForward bool
 }
 
 // NewTapExecutor creates a new tap executor.
@@ -50,10 +51,13 @@ func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) {
 }
 
 // TapDeployLine distributes taps along a line from p1 to p2.
+// Direction alternates per call (boustrophedon): down the line, then
+// back up the next call, so consecutive passes never restart at the top.
 func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int) {
 	points := t.calculateLinePoints(p1, p2, count)
 
-	if rand.Float64() < 0.5 {
+	t.lineForward = !t.lineForward
+	if !t.lineForward {
 		for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
 			points[i], points[j] = points[j], points[i]
 		}

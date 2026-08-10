@@ -31,7 +31,15 @@ type DynamicStrategy struct {
 	Description           string  `yaml:"description"`
 	TargetEdge            string  `yaml:"target_edge"`
 	Phases                []Phase `yaml:"phases"`
-	AutoDeployEventTroops bool    `yaml:"auto_deploy_eventTroops"` // Auto-deploy event troops not in strategy
+	AutoDeployEventTroops *bool   `yaml:"auto_deploy_eventTroops"` // Auto-deploy event troops not in strategy. nil = enabled (default).
+}
+
+// EventTroopsAutoDeployEnabled reports whether the strategy wants the
+// end-of-attack event-troop dump. Defaults to TRUE when the YAML key is
+// absent so every army auto-dumps bonus/seasonal troops on the bar;
+// set `auto_deploy_eventTroops: false` to opt out.
+func (s *DynamicStrategy) EventTroopsAutoDeployEnabled() bool {
+	return s.AutoDeployEventTroops == nil || *s.AutoDeployEventTroops
 }
 
 func ParseYAML(path string) (*DynamicStrategy, error) {

@@ -430,7 +430,7 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// DeployHeroes / DeployTroops already do. Without this the bot
 	// silently dropped event troops on the dynamically-detected
 	// red-zone line, ignoring the user's pin entirely.
-	sweeper := NewSweeper(tapExec, slotMgr, pCfg, deployLine, w, h, formulaPtr, troopCounter, e.logger)
+	sweeper := NewSweeper(tapExec, slotMgr, pCfg, deployLine, w, h, formulaPtr, troopCounter, s.EventTroopsAutoDeployEnabled(), e.logger)
 	sweeper.Sweep(strategyNames, countMap)
 
 	// 11. Verify

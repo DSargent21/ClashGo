@@ -18,6 +18,8 @@ type Sweeper struct {
 	deployLine   DeployLine
 	formula      *formula.Formula
 	troopCounter *TroopCounter // optional; enables live-OCR count + reconcile
+	autoEvent    bool          // deploy bonus/event troops not in strategy (default on)
+	lineForward  bool          // boustrophedon direction toggle for fireTapsBatched
 	w, h         int
 	logger       zerolog.Logger
 }
@@ -32,6 +34,8 @@ type Sweeper struct {
 // reconcile loop until the slot is truly empty (live count 0 AND
 // visual-empty). This is the belt-and-braces fix for the
 // "balloons/EDs sometimes don't all get placed" user-reported bug.
+// autoEvent gates the event-troop dump; true (the default) places ALL
+// bonus/seasonal troops that the strategy didn't declare.
 func NewSweeper(
 	executor *TapExecutor,
 	slotManager *SlotManager,
@@ -40,6 +44,7 @@ func NewSweeper(
 	w, h int,
 	f *formula.Formula,
 	troopCounter *TroopCounter,
+	autoEvent bool,
 	logger zerolog.Logger,
 ) *Sweeper {
 	return &Sweeper{
@@ -49,6 +54,7 @@ func NewSweeper(
 		deployLine:   deployLine,
 		formula:      f,
 		troopCounter: troopCounter,
+		autoEvent:    autoEvent,
 		w:            w,
 		h:            h,
 		logger:       logger.With().Str("component", "sweeper").Logger(),
@@ -122,50 +128,77 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 		time.Sleep(60 * time.Millisecond)
 	}
 
-	// Also sweep event troops not in strategy
-	eventTroops := sw.slotManager.GetEventTroops(strategyUnitNames)
-	for _, slot := range eventTroops {
-		// Capture FRESH screen for each slot check
-		freshScreen, err := sw.executor.CaptureFresh()
-		if err != nil {
-			sw.logger.Warn().Err(err).Msg("failed to capture fresh screen for sweep")
-			continue
-		}
+	// Also sweep event troops not in strategy. The user asked for ALL
+	// bonus/seasonal troops on the bar to be placed down until none
+	// remain — a single deploySlot call is NOT enough because its
+	// reconcile budget can be exhausted while the slot still holds
+	// troops (live OCR returning 0 on a visually-full slot is the
+	// classic case). So we LOOP: fresh-check, deploy, re-check, until
+	// the slot is truly empty or a generous round budget is spent.
+	// Gated on autoEvent (strategy `auto_deploy_eventTroops`, default
+	// enabled) so armies that WANT the dump get it without listing the
+	// seasonal unit in the YAML, while `false` opts out.
+	if sw.autoEvent {
+		eventTroops := sw.slotManager.GetEventTroops(strategyUnitNames)
+		for _, slot := range eventTroops {
+			const maxRounds = 6
+			placed := false
+			for round := 0; round < maxRounds; round++ {
+				// Capture FRESH screen for each check
+				freshScreen, err := sw.executor.CaptureFresh()
+				if err != nil {
+					sw.logger.Warn().Err(err).Msg("failed to capture fresh screen for sweep")
+					break
+				}
 
-		empty := isSlotEmptyStatic(freshScreen, slot.X, slot.Y, sw.w, sw.h)
-		freshScreen.Close()
+				empty := isSlotEmptyStatic(freshScreen, slot.X, slot.Y, sw.w, sw.h)
+				freshScreen.Close()
 
-		if empty {
-			slot.IsEmpty = true
-			continue
-		}
+				if empty {
+					slot.IsEmpty = true
+					sw.slotManager.MarkDeployed(slot.UnitName)
+					placed = true
+					break
+				}
 
-		// Default the event troop count to 1 if detection gave nothing
-		// AND the formula gave no count. The previous 60 default re-tapped
-		// empty slots 20 times AFTER the slot emptied — the "retapping
-		// empty spaces" bug the user reported on the live attack.
-		count := troopCounts[slot.X]
-		if entry, ok := sw.eventFormulaEntry(slot); ok && entry.Count > 0 {
-			count = entry.Count
-		}
-		if count <= 0 {
-			count = 1
-		}
+				// Default the event troop count to 1 if detection gave
+				// nothing AND the formula gave no count; live OCR at deploy
+				// time will raise it if the card actually holds more.
+				count := troopCounts[slot.X]
+				if entry, ok := sw.eventFormulaEntry(slot); ok && entry.Count > 0 {
+					count = entry.Count
+				}
+				if count <= 0 {
+					count = 1
+				}
 
-		sw.logger.Info().
-			Int("x", slot.X).
-			Str("unit", slot.UnitName).
-			Int("count", count).
-			Msg("found event troop during sweep")
+				sw.logger.Info().
+					Int("x", slot.X).
+					Str("unit", slot.UnitName).
+					Int("count", count).
+					Int("round", round+1).
+					Msg("found event troop during sweep")
 
-		success := sw.deploySlot(slot, count, true)
-		if success {
-			sw.slotManager.MarkDeployed(slot.UnitName)
-			deployedCount++
-		} else {
-			sw.slotManager.MarkFailed(slot.UnitName)
+				success := sw.deploySlot(slot, count, true)
+				if success {
+					sw.slotManager.MarkDeployed(slot.UnitName)
+					deployedCount++
+					placed = true
+					break
+				}
+				// deploySlot exhausted its internal reconcile budget but the
+				// slot is still non-empty on the previous capture. Loop and
+				// re-check from a fresh screen instead of giving up.
+				time.Sleep(100 * time.Millisecond)
+			}
+			if !placed {
+				sw.slotManager.MarkFailed(slot.UnitName)
+				sw.logger.Warn().
+					Int("x", slot.X).
+					Str("unit", slot.UnitName).
+					Msg("event troop sweep: slot still non-empty after max rounds")
+			}
 		}
-		time.Sleep(60 * time.Millisecond)
 	}
 
 	sw.logger.Info().Int("deployed", deployedCount).Msg("sweep complete")
@@ -247,7 +280,11 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 	// here with an undeployed siege slot, do NOT fire taps — they're
 	// guaranteed wasted because DeploySiege already attempted (and
 	// either succeeded silently or already threw a bad harvest).
-	if slot.Category == "Siege" {
+	// Exception: event troops. A seasonal/bonus card that got
+	// fallback-labeled "siege machine" is NOT owned by DeploySiege —
+	// the strategy never declared it, so nobody tried to deploy it.
+	// isEventTroop=true means we must place it like a normal card.
+	if slot.Category == "Siege" && !isEventTroop {
 		sw.logger.Warn().
 			Int("x", slot.X).
 			Str("unit", slot.UnitName).
@@ -288,8 +325,17 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 		count = 1
 	}
 
-	maxAttempts := 3
+	// 8 rounds: each round makes progress even when OCR is down (fallback
+	// taps), so a visually-full slot that OCR keeps misreading still gets
+	// drained instead of being abandoned at the old 3-round budget.
+	// Each round fires ONLY the remaining count (count is updated from the
+	// live read), so a 50-unit slot fires 51→37→16→3 instead of re-firing
+	// the full 51 on every attempt (the old 260-tap waste).
+	maxAttempts := 8
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if count <= 0 {
+			count = 3
+		}
 		// Select slot
 		sw.executor.TapSlot(slot, 4)
 		// 150ms matches the orchestrator + hero-slot settle floor.
@@ -312,8 +358,11 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 		// Deploy the correct number of troops. fireTapsBatched bails
 		// early ONLY when BOTH live OCR AND visual empty agree, so we
 		// don't false-positive on a transient frame mid-burst while
-		// still saving taps when the slot genuinely emptied.
-		bailedEarly := sw.fireTapsBatched(slot, p1, p2, count)
+		// still saving taps when the slot genuinely emptied. Event
+		// troops (and any slot >= 12 units) skip the per-batch screencap
+		// — large dumps need speed, and the reconcile below re-checks
+		// the slot anyway.
+		bailedEarly := sw.fireTapsBatched(slot, p1, p2, count, isEventTroop || count >= 12, isEventTroop)
 		if bailedEarly {
 			slot.IsEmpty = true
 			sw.logger.Info().
@@ -336,24 +385,26 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 				Msg("sweep reconciled slot empty; deploy complete")
 			return true
 		}
+		// Next round fires exactly what's left. visualAfter=true with
+		// live OCR=0 (or vice versa) still means "not done" — keep the
+		// remaining as the fire target so we converge.
 		if liveAfter > 0 {
-			// Slot still has troops on the bar. Re-select and fire a
-			// top-up batch on the same line so the next reconcile sees
-			// the depleted state.
-			sw.executor.TapSlot(slot, 4)
-			sw.executor.HumanSleep(150, 30)
-			sw.fireTapsBatched(slot, p1, p2, liveAfter)
-			sw.logger.Info().
-				Str("unit", slot.UnitName).
-				Int("attempt", attempt+1).
-				Int("remaining_read", liveAfter).
-				Int("topup_fired", liveAfter).
-				Msg("sweep reconcile: fired top-up taps")
-			continue
+			count = padCount(liveAfter)
+		} else {
+			// visual non-empty but live OCR returned 0 — could be a
+			// queued CC troop, a transient frame, OR (critically) OCR
+			// that just keeps failing. Fire a small fallback batch so
+			// progress is always made; the next attempt re-checks from
+			// a fresh screen.
+			count = 3
 		}
-		// visual non-empty but live OCR returned 0 — could be a queued
-		// CC troop or a transient frame. Wait and let the next attempt
-		// try again.
+		sw.logger.Info().
+			Str("unit", slot.UnitName).
+			Int("attempt", attempt+1).
+			Int("remaining_read", liveAfter).
+			Int("next_fire", count).
+			Bool("visual_nonempty", !visualAfter).
+			Msg("sweep reconcile: slot still non-empty; re-firing remaining")
 		time.Sleep(200 * time.Millisecond)
 	}
 
@@ -369,9 +420,18 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 // early when BOTH the live OCR count reads 0 AND the visual empty
 // check agrees — so we never tap past the real count, but we ALSO
 // never false-positive on a transient empty frame mid-burst.
+// fast skips the per-batch screencap for event troops and large slots
+// (they can hold 50+ units and the caller's reconcile loop re-checks).
+// humanPace applies the slower human-like cadence; it is enabled for
+// event troops so bonus dumps read as rapid human spamming instead of
+// a machine.
 // Returns true when the function bailed early because the slot became
 // genuinely empty mid-pass.
-func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count int) bool {
+func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count int, fast, humanPace bool) bool {
+	sw.lineForward = !sw.lineForward
+	if !sw.lineForward {
+		p1, p2 = p2, p1
+	}
 	for i := 0; i < count; i += 3 {
 		batchSize := 3
 		if i+3 > count {
@@ -390,13 +450,23 @@ func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count 
 		} else {
 			sw.executor.client.TapTriple(tx, ty, 12.0, tx, ty, 12.0, tx, ty, 12.0)
 		}
-		sw.executor.HumanSleep(50, 15)
+
+		// Fast path still needs a human cadence — 50ms between batches is
+		// robotic and detectable. Slow it to ~160-210ms with variance so
+		// bonus-troop dumps read as rapid human spamming, not a machine.
+		// The non-fast path keeps its tighter 50ms floor (the reconcile
+		// screencap already paces it naturally).
+		if humanPace {
+			sw.executor.HumanSleep(160, 50)
+		} else {
+			sw.executor.HumanSleep(50, 15)
+		}
 
 		// Smart mid-batch bail. Only exit early when BOTH conditions
 		// agree the slot is currently empty: a transient empty frame
 		// in the troop bar (very common mid-burst) won't satisfy both,
 		// so we keep firing. Cost: one ~150ms screencap per 3-tap batch.
-		if i+batchSize < count {
+		if !fast && i+batchSize < count {
 			live, visualEmpty := captureSlotLiveCount(
 				sw.executor, sw.troopCounter, slot,
 				sw.slotManager.GetBarY(), sw.w, sw.h,
@@ -453,13 +523,10 @@ func (sw *Sweeper) resolveSweepLine(slot *TrackedSlot, isEventTroop bool) (image
 		}
 	}
 	if isEventTroop {
-		// Event troop without formula entry: don't even *try* to
-		// sweep with the red-zone line for non-hero categories — the
-		// previous behavior scattered event troops along the player's
-		// chosen side which the user explicitly didn't want. The
-		// orchestrator pass moved the responsibility to the formula
-		// author's "I want my event troops here" pin.
-		return image.Point{}, image.Point{}, !isEventTroop
+		// Event troop without a formula pin: fall through to the deploy
+		// line below so the card still gets placed. Earlier behavior
+		// refused to sweep non-pinned event troops, leaving them on the
+		// bar — but the user wants ALL bonus troops placed.
 	}
 	if len(sw.deployLine.Points) < 2 {
 		return image.Point{}, image.Point{}, false
