@@ -685,8 +685,14 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 }
 
 // GetStrategies lists available strategy files
+//
+// Returns a non-nil empty slice when no strategies exist. A nil slice
+// would marshal to JSON `null`, and the React side does
+// `strategies.length` in ConfigView — null used to crash the Config
+// page in the packaged app (where the assets dir initially resolved
+// to an empty /assets).
 func (a *App) GetStrategies() []string {
-	var files []string
+	files := []string{}
 	matches, err := filepath.Glob(paths.Resolve("strategies/*.yaml"))
 	if err == nil {
 		for _, m := range matches {

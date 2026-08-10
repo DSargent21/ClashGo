@@ -157,7 +157,11 @@ function App() {
         setSelectedStrategy(conf.attack.strategy_file);
         setStallTimer(conf.attack.stall_timer_seconds);
         setIsRunning(running);
-        setStrategiesList(strats);
+        // Never let a null from the Go side reach the Config page — a
+        // nil slice marshals to JSON null, and ConfigView dereferences
+        // `strategies.length`. `?? []` keeps the UI resilient even if a
+        // future binding regresses to null.
+        setStrategiesList(strats ?? []);
         setAdbPort(conf.device.adb_port);
       } catch (err) {
         console.error('Init failed:', err);

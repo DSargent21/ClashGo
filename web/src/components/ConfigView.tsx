@@ -199,7 +199,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   Attack Strategy
                 </label>
                 <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-600 uppercase tracking-widest tabular-nums">
-                  {strategies.length} available
+                  {(strategies ?? []).length} available
                 </span>
               </div>
               <div className="relative" ref={dropdownRef}>
@@ -231,8 +231,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
 
                 {isOpen && searchEnabled && (
                   <div role="listbox" className="dropdown-pop absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 max-h-72 overflow-y-auto">
-                    {strategies.map((s, idx) => {
-                      const isActive = selectedStrategy.endsWith(s);
+                    {(strategies ?? []).map((s, idx) => {
+                      const isActive = !!selectedStrategy && selectedStrategy.endsWith(s);
                       return (
                         <div
                           key={idx}
