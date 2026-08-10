@@ -597,11 +597,31 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	return err3
 }
 
-// TapHuman performs a tap with Gaussian-distributed randomness and a small natural delay.
+// TapHuman performs a tap with Gaussian-distributed randomness and a
+// natural human reaction delay. Roughly 1 in 5 taps is emitted as a
+// short press-and-release (input swipe at the same point, 60-130ms)
+// instead of an instant tap — real fingers hold for a few frames, they
+// never read as an instantaneous down/up pair. `Hold` uses the same
+// same-point-swipe technique for long presses, so the trick is already
+// proven on BlueStacks.
 func (c *Client) TapHuman(x, y int, stdDev float64) error {
-	// Small hesitation before tapping (50-150ms)
-	c.HumanSleep(100, 25)
+	// Human reaction latency before committing to the tap: Gaussian
+	// with base 250ms / σ=70ms. The bulk of the mass sits in the
+	// 180-320ms band and the tail reaches ~460ms — the natural
+	// 180-550ms human reaction range. Only decision-point taps flow
+	// through here (dialog dismissals, chest / gem / obstacle taps);
+	// hot deploy loops use TapFast / TapAsync precisely so they can
+	// stay fast and organic.
+	c.HumanSleep(250, 70)
 
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	if r.Float64() < 0.2 {
+		// Gaussian-spread the target, then hold 60-130ms.
+		ax := x + int(r.NormFloat64()*stdDev)
+		ay := y + int(r.NormFloat64()*stdDev)
+		holdMs := 60 + r.Intn(71)
+		return c.Swipe(ax, ay, ax, ay, holdMs)
+	}
 	return c.TapFast(x, y, stdDev)
 }
 

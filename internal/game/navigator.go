@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"math/rand"
 	"sort"
 	"time"
 
@@ -126,7 +127,11 @@ func (n *Navigator) executeStep(edge *StateTransition) bool {
 	case ActionBack:
 		return n.client.Back() == nil
 	case ActionSwipe:
-		return n.client.Swipe(edge.X, edge.Y, edge.X2, edge.Y2, 300) == nil
+		// Camera pans ride a bezier arc with ease-in-out velocity so the
+		// map movement reads as a human drag, not a straight-line machine
+		// flick. SwipeBezier degrades to the linear path on devices that
+		// can't inject raw sendevent streams, so navigation never breaks.
+		return n.client.SwipeBezier(edge.X, edge.Y, edge.X2, edge.Y2, 300) == nil
 	case ActionHold:
 		return n.client.Hold(edge.X, edge.Y, 500) == nil
 	case ActionNone:
@@ -241,6 +246,47 @@ func (n *Navigator) dismissGemDialog() {
 func (n *Navigator) dismissShieldInfo() {
 	n.client.TapRandomized(175, 30)
 	time.Sleep(300 * time.Millisecond)
+}
+
+// IdlePan performs a small, randomized camera pan and back — the kind of
+// micro-movement a real player's hand makes while waiting on their
+// village. Each leg rides a bezier arc (SwipeBezier) with a human
+// micro-pause at the far end, and the return leg draws a fresh random
+// arc so the two legs never mirror each other geometrically.
+//
+// Only call while confirmed on the main village: the pan touches no
+// buttons and the camera returns to its origin, so classification is
+// unaffected afterward. Callers should throttle it (e.g. every ~20s)
+// so it never overlaps an active attack sequence.
+func (n *Navigator) IdlePan() {
+	w, h := n.cal.PhysicalW, n.cal.PhysicalH
+	if w <= 0 || h <= 0 {
+		return
+	}
+	cx, cy := w/2, h/2
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// Pan distance: 15-30% of screen width, mostly horizontal with an
+	// occasional small vertical nudge for organic drift.
+	dx := int(float64(w) * (0.15 + r.Float64()*0.15))
+	if r.Float64() < 0.5 {
+		dx = -dx
+	}
+	dy := int(float64(h) * r.Float64() * 0.04)
+	if r.Float64() < 0.5 {
+		dy = -dy
+	}
+
+	panMs := 280 + r.Intn(120) // 280-400ms per leg
+	x1, y1 := cx-dx/2, cy-dy/2
+	x2, y2 := cx+dx/2, cy+dy/2
+
+	// Out: deliberate drag away.
+	_ = n.client.SwipeBezier(x1, y1, x2, y2, panMs)
+	// Micro-pause at the far end — eyes on the base, thumb hovering.
+	time.Sleep(time.Duration(180+r.Intn(121)) * time.Millisecond)
+	// Back: along a fresh randomized arc.
+	_ = n.client.SwipeBezier(x2, y2, x1, y1, panMs)
 }
 
 func (n *Navigator) TapAt(x, y int) error {

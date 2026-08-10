@@ -1306,6 +1306,14 @@ func dismissInterruptionsFor(h *WallUpgradeHooks) {
 		_ = h.Client.Tap(ox, oy)
 	case game.StateChatOpen:
 		_ = h.Client.Back()
+	case game.StateTapToContinue:
+		// Post-boot "ТАР!" collect splash — tap the prompt text.
+		px, py := h.Cal.ScaleRef(450, 195)
+		_ = h.Client.Tap(px, py)
+	case game.StateNewsSplash:
+		// Post-boot news splash — tap the green Continue button.
+		px, py := h.Cal.ScaleRef(403, 535)
+		_ = h.Client.Tap(px, py)
 	}
 }
 

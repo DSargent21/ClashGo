@@ -4,6 +4,73 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Human-gesture input layer** (autonomous-hardening iteration 1):
+  - `adb.SwipeBezier` — low-level `sendevent` quadratic-bezier swipe with
+    ease-in-out velocity (accelerate → coast → decelerate) and a random
+    10-20% perpendicular arc so every drag reads as a real finger; wired
+    into the navigator's village camera pans; degrades to the linear path
+    on devices that can't inject raw input. Unit-tested
+    (`internal/adb/bezier_test.go`).
+  - `TapHuman` now emits ~1-in-5 taps as a 60-130ms press-and-release
+    instead of an instant down/up pair, and hesitates with a Gaussian
+    reaction delay (base 250ms / σ 70ms — mass in the 180-320ms human
+    band, tail ~460ms) before committing. Hot deploy loops (`TapFast` /
+    `TapAsync`) are untouched and stay fast.
+  - `Navigator.IdlePan` — randomized bezier camera pan + micro-pause +
+    mirrored return for idle base-wandering; throttled (~18s) in the
+    bot's idle-in-village path and deliberately NOT `recordActivity`, so
+    the stuck-watchdog still fires on genuinely stuck idles. Unit-tested
+    (`internal/game/navigator_test.go`).
+  - `cmd/swipe_probe` — standalone live-gesture verification harness
+    (`launcher` / `game` / `idlepan` modes) for Phase-1 style isolated
+    emulator action checks.
+- **Logging** — `logs/autonomous_loop.log` records each hardening-loop
+  iteration's audit findings, live-verification results, and regression
+  status.
+- **Post-boot splash auto-handling — the bot can now boot unattended.**
+  After every relaunch, Clash of Clans shows a short splash chain (the
+  "ТАР!" tap-to-continue / collect screen → the CoC castle logo, which
+  sits static 1-3 min while the session connects → an optional news /
+  announcement splash with a Continue button) before the village loads.
+  Previously the classifier misread the collect splash's orange artwork
+  as `StateBattle` (1/9 pixels), the stuck-watchdog force-stopped the
+  game, and every relaunch re-showed the splash — an endless
+  force-stop/relaunch loop with zero attacks. Now:
+  - 3 new states — `StateTapToContinue`, `StateNewsSplash`, `StateLogo`
+    (`internal/game/types.go`) with classifier rules
+    (`internal/game/classifier.go`) verified at 0 distance on live
+    captures and 0 false-positives on the village.
+  - Auto-dismiss in `processFrame` (`internal/bot/bot.go`) — taps the
+    "ТАР!" prompt text (ref 450,195) and the news Continue button (ref
+    403,535), each through a single in-flight goroutine guarded by the
+    atomic `splashDismissInFlight` flag. Deliberately does NOT
+    `recordActivity` so a genuinely-stuck splash variant still trips the
+    stuck-watchdog.
+  - Boot-grace in `checkStuck` — splash states get a 5-minute window
+    (the logo has no progress indicator) instead of the generic 35s
+    timeout that caused mid-boot force-restarts.
+  - Mirrored dismissal cases in `internal/bot/wall_upgrade.go`.
+  - Live-verified: restart loop eliminated (1 startup restart vs 15+),
+    splash auto-dismissals, and full attacks completing with correct
+    result parsing.
+- **Text-based observability tooling — the bot's "eye view" for a
+  terminal-only session.**
+  - `cmd/screendump` — captures the live screen (or reads a saved PNG),
+    runs the bot's real classifier with per-rule pixel evidence, renders
+    a color-mapped ASCII layout, probes key button pixels, and
+    optionally OCRs on-screen text. `-watch` loops every 3s.
+  - `tools/observe.sh` — one-shot bundle: capture + classify + color map
+    + OCR, artifacts saved to `obs/<timestamp>/` with an `obs/latest`
+    symlink for convenience.
+  - `tools/ocr.swift` — on-device Apple Vision OCR (no tesseract / no
+    network); prints `x,y,w,h | text` per recognized region in
+    screenshot pixel space.
+  - `cmd/classify_probe` / `cmd/result_probe` / `cmd/swipe_probe` —
+    standalone diagnostics for classifier state, battle-result OCR
+    parsing, and human-gesture verification respectively.
+  - See `docs/OBSERVABILITY.md` for the full workflow.
+
 ### Changed
 - **Massive dead-code cleanup** — removed ~16.5k lines of unreachable code
   and pruned the repo tree:
@@ -32,6 +99,15 @@ All notable changes to this project will be documented in this file.
   - **Docs + tree** — README / DESIGN / PERFORMANCE / CHEST refreshed for the
     new layout; orphaned `assets/grab/` screenshots and stale `.gitignore`
     entries removed.
+
+### Fixed
+- **Endless force-stop/relaunch loop on the post-boot collect splash** —
+  the "ТАР!" tap-to-continue screen was misclassified as `StateBattle`, so
+  the stuck-watchdog force-stopped the game and every relaunch re-showed
+  the splash. Root cause, the mapped boot-splash chain, and the fix are
+  documented in the Added entry above and in `docs/OBSERVABILITY.md`.
+  Verified live: restart count dropped from 15+ to 1, and the bot
+  completed multiple attacks with correct result parsing.
 
 ## [0.2.0-beta] - 2026-08-05
 

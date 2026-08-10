@@ -60,11 +60,13 @@ type Bot struct {
 	zoomedOut   atomic.Bool
 
 	chestDismissInFlight atomic.Bool
+	splashDismissInFlight atomic.Bool
 	startedAt            time.Time
 	lastAction           time.Time
 	lastSequenceStart    time.Time
 	lastNav              time.Time
 	lastCapture          time.Time
+	lastIdlePan          time.Time
 	stuckTimeout         time.Duration
 	cpuSampler           *cpuSampler
 
@@ -213,6 +215,7 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		startedAt:         startedWall,
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
+		lastIdlePan:       time.Now(),
 		stuckTimeout:      35 * time.Second,
 		cpuSampler:        newCPUSampler(),
 		dukePicksFile:     dukePicksFile,
@@ -442,6 +445,29 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 
 	state, _, _ := gc.ReadState()
 
+	// Post-boot splash states (ТАР! collect splash, castle logo, news)
+	// legitimately sit static for 1-3 minutes while the game connects — the
+	// castle logo has no progress indicator at all. The generic stuck timeout
+	// below (35s) would force-restart mid-boot, which previously caused an
+	// endless force-stop/relaunch loop on the collect splash. Give the whole
+	// boot-splash chain a generous window; the dismiss taps in processFrame
+	// advance through it.
+	if state == game.StateLogo || state == game.StateTapToContinue || state == game.StateNewsSplash {
+		bootStuck := time.Since(b.lastAction)
+		const bootSplashTimeout = 5 * time.Minute
+		if bootStuck > bootSplashTimeout {
+			b.logger.Warn().
+				Str("state", state.String()).
+				Time("last_action", b.lastAction).
+				Dur("stuck_time", bootStuck).
+				Dur("timeout", bootSplashTimeout).
+				Msg("boot splash stuck too long, triggering emergency restart...")
+			b.restartGame()
+			b.lastSequenceStart = time.Now()
+		}
+		return
+	}
+
 	if state == game.StateBattle ||
 		state == game.StateSearchMap ||
 		state == game.StateLoading {
@@ -584,6 +610,48 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
+	// Post-boot splash screens. The game shows a short chain after every
+	// relaunch: the "ТАР!" tap-to-continue / collect splash, then the CoC
+	// castle logo (which sits static 1-3 min while the session connects),
+	// then an optional news/announcement splash with a Continue button
+	// before the village appears. The bot must tap each prompt to advance;
+	// previously these read as Battle/Unknown and the stuck-watchdog
+	// force-restarted the game in an endless loop.
+	if state == game.StateTapToContinue || state == game.StateNewsSplash {
+		if b.splashDismissInFlight.CompareAndSwap(false, true) {
+			b.logger.Info().Str("state", state.String()).Msg("boot splash detected; dispatching dismiss tap")
+			go func(st game.GameState) {
+				defer b.splashDismissInFlight.Store(false)
+				time.Sleep(1200 * time.Millisecond)
+
+				var x, y int
+				switch st {
+				case game.StateTapToContinue:
+					// Tap the "ТАР!" prompt text (ref 450,195). Verified live:
+					// this dismisses the collect splash into the game.
+					x, y = b.cal.ScaleRef(450, 195)
+				case game.StateNewsSplash:
+					// Tap the green Continue button (ref 403,535).
+					x, y = b.cal.ScaleRef(403, 535)
+				}
+				if err := b.client.TapRandomized(x, y); err != nil {
+					b.logger.Warn().Err(err).Msg("boot splash dismiss tap failed; will retry on next detection")
+					return
+				}
+				// Deliberately NO recordActivity here: the adb tap reports
+				// success even when the splash did not actually dismiss, so
+				// recording activity would keep resetting lastAction and
+				// the stuck-watchdog (including the boot-splash grace in
+				// checkStuck) could never fire on a genuinely stuck splash
+				// variant. The real progress signal is the resulting state
+				// transition out of the splash, which processFrame records
+				// via its own state-change activity call.
+				b.logger.Info().Str("state", st.String()).Msg("boot splash dismissed")
+			}(state)
+		}
+		return
+	}
+
 	if b.seqRunning.Load() {
 		return
 	}
@@ -600,6 +668,30 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		b.lastSequenceStart = time.Now()
 		go b.executeAttackSequence(gc)
 		return
+	}
+
+	// Idle humanization: while confirmed on the main village with no
+	// attack button in sight (army still training / waiting), drift the
+	// camera the way a waiting player would. Throttled so the wander
+	// never overlaps an attack sequence, and deliberately NOT
+	// recordActivity — a genuinely stuck bot must still trip the
+	// stuck-watchdog and cycle the game.
+	//
+	// Dispatched in a goroutine (mirroring the chest-dismiss pattern)
+	// so the ~3s sendevent gesture can't freeze the capture loop's UI
+	// frame stream; the seqRunning re-check keeps it from colliding
+	// with a freshly-started attack sequence. The pan swipes the map
+	// center, never the fixed HUD chrome, so a mid-pan capture still
+	// sees the attack button.
+	if gc.State == game.StateMainVillage && time.Since(b.lastIdlePan) > 18*time.Second {
+		b.lastIdlePan = time.Now()
+		b.logger.Debug().Msg("idle in village, wandering camera")
+		go func() {
+			if b.seqRunning.Load() {
+				return
+			}
+			b.navigator.IdlePan()
+		}()
 	}
 
 	if gc.State == game.StateArmyCamp && time.Since(b.lastNav) > 3*time.Second {
@@ -815,7 +907,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			orangePt, err := vision.PixelSearch(screen, searchROI, 252, 186, 54, 50)
 			if err == nil {
 				b.logger.Info().Msg("clicking Next via orange color fallback")
-				b.client.Tap(orangePt.X, orangePt.Y)
+				b.client.TapRandomized(orangePt.X, orangePt.Y)
 				b.recordActivity()
 			} else {
 
@@ -823,7 +915,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 					"message": "forcing skip via hardcoded coordinates",
 				})
 				nextX, nextY := b.cal.ScaleRef(796, 565)
-				b.client.Tap(nextX, nextY)
+				b.client.TapRandomized(nextX, nextY)
 				b.recordActivity()
 			}
 		}
@@ -842,47 +934,99 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	if b.attackExec.WaitForBattleEnd(4 * time.Minute) {
 
-		resultScreen, err := b.client.CaptureToMat()
-		if err == nil {
+		// WaitForBattleEnd returns the moment the result overlay's Return
+		// Home button is detected, but the overlay is still animating in:
+		// the star counter lights up one-by-one and the loot numbers count
+		// up over ~1.5-2s. Capturing right then freezes the animation at
+		// frame 0, and the OCR reads it as 0 stars / 0 loot (observed live:
+		// a 50%-destruction battle parsed as 0 stars / 0 loot, while the
+		// SAME screenshot parsed minutes later as 1 star / 444k gold).
+		//
+		// Settle first, then parse. If the read comes back all-zero we
+		// cannot assume the animation is still running — a genuine 0%
+		// destruction loss reads exactly the same. The discriminator is
+		// frame stability: once two captures ~1s apart are pixel-identical
+		// in the result panel, the count-up finished and the (possibly
+		// zero) value is the true result. Every attempt overwrites
+		// last_battle_result.png with the freshest frame so the saved
+		// artifact matches the final parse.
+		b.client.JitteredSleep(1800 * time.Millisecond)
+
+		var parsedResult game.BattleResult
+		parsedOK := false
+		prevHash := uint64(0)
+		for attempt := 0; attempt < 3 && !parsedOK; attempt++ {
+			resultScreen, err := b.client.CaptureToMat()
+			if err != nil {
+				b.logger.Warn().Err(err).Msg("battle result capture failed; retrying")
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
 			gocv.IMWrite(paths.ResolveConfig("last_battle_result.png"), resultScreen)
 			b.logger.Info().Msg("saved battle result screenshot to last_battle_result.png")
 
 			lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
-			res, err := lootRec.ReadBattleResult(resultScreen)
-			if err == nil {
-				battleStars = res.Stars
-				battleGold = res.Loot.Gold
-				battleElixir = res.Loot.Elixir
-				battleDE = res.Loot.DarkElixir
-				bonusGold = res.Bonus.Gold
-				bonusElixir = res.Bonus.Elixir
-				bonusDE = res.Bonus.DarkElixir
-				parsedResults = true
-
-				b.totalGold.Add(int64(res.Loot.Gold + res.Bonus.Gold))
-				b.totalElixir.Add(int64(res.Loot.Elixir + res.Bonus.Elixir))
-				b.totalDE.Add(int64(res.Loot.DarkElixir + res.Bonus.DarkElixir))
-				b.totalStars.Add(int32(res.Stars))
-
-				switch res.Stars {
-				case 0:
-					b.stars0.Add(1)
-				case 1:
-					b.stars1.Add(1)
-				case 2:
-					b.stars2.Add(1)
-				case 3:
-					b.stars3.Add(1)
-				}
-
-				b.logger.Info().
-					Int("stars", res.Stars).
-					Int("gold", res.Loot.Gold).
-					Int("bonus_gold", res.Bonus.Gold).
-					Msg("battle result processed")
-			}
+			res, rerr := lootRec.ReadBattleResult(resultScreen)
+			hash := resultPanelHash(resultScreen, b.cal)
 			resultScreen.Close()
 			lootRec.Close()
+
+			if rerr != nil {
+				b.logger.Warn().Err(rerr).Msg("battle result parse error; retrying")
+				time.Sleep(800 * time.Millisecond)
+				continue
+			}
+
+			settled := hash != 0 && hash == prevHash
+			if res.Stars > 0 || res.Loot.Gold > 0 || res.Loot.Elixir > 0 || res.Loot.DarkElixir > 0 || settled {
+				parsedResult = res
+				parsedOK = true
+				if settled {
+					b.logger.Debug().Msg("battle result accepted: result panel stable across captures")
+				} else {
+					b.logger.Debug().Msg("battle result accepted (non-empty read)")
+				}
+				break
+			}
+
+			prevHash = hash
+			b.logger.Warn().Int("attempt", attempt).Msg("battle result read empty and panel still changing; overlay animating, retrying...")
+			time.Sleep(1000 * time.Millisecond)
+		}
+
+		if parsedOK {
+			battleStars = parsedResult.Stars
+			battleGold = parsedResult.Loot.Gold
+			battleElixir = parsedResult.Loot.Elixir
+			battleDE = parsedResult.Loot.DarkElixir
+			bonusGold = parsedResult.Bonus.Gold
+			bonusElixir = parsedResult.Bonus.Elixir
+			bonusDE = parsedResult.Bonus.DarkElixir
+			parsedResults = true
+
+			b.totalGold.Add(int64(parsedResult.Loot.Gold + parsedResult.Bonus.Gold))
+			b.totalElixir.Add(int64(parsedResult.Loot.Elixir + parsedResult.Bonus.Elixir))
+			b.totalDE.Add(int64(parsedResult.Loot.DarkElixir + parsedResult.Bonus.DarkElixir))
+			b.totalStars.Add(int32(parsedResult.Stars))
+
+			switch parsedResult.Stars {
+			case 0:
+				b.stars0.Add(1)
+			case 1:
+				b.stars1.Add(1)
+			case 2:
+				b.stars2.Add(1)
+			case 3:
+				b.stars3.Add(1)
+			}
+
+			b.logger.Info().
+				Int("stars", parsedResult.Stars).
+				Int("gold", parsedResult.Loot.Gold).
+				Int("bonus_gold", parsedResult.Bonus.Gold).
+				Msg("battle result processed")
+		} else {
+			b.logger.Error().Msg("battle result OCR failed after retries; recording unparsed attack")
 		}
 	} else {
 		b.logger.Error().Msg("battle end timeout (stuck in battle?), restarting game...")
@@ -1134,7 +1278,10 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	if pp, ok := villagePinpoints[templateName]; ok {
 		px, py := b.cal.ScaleRef(pp.X, pp.Y)
 		b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
-		if err := b.client.Tap(px, py); err == nil {
+		// TapRandomized = Gaussian jitter + the 180-450ms human reaction
+		// delay, so the bot visibly hesitates before committing to each
+		// decision tap the way a player would.
+		if err := b.client.TapRandomized(px, py); err == nil {
 			time.Sleep(1000 * time.Millisecond)
 			b.recordActivity()
 			return true
@@ -1175,7 +1322,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			if b.isGreen(screen, altX, altY) {
 				screen.Close()
 				b.logger.Info().Str("step", stepName).Msg("secondary pinpoint match (upper battle), clicking...")
-				if err := b.client.Tap(altX, altY); err == nil {
+				if err := b.client.TapRandomized(altX, altY); err == nil {
 					b.recordActivity()
 					return true
 				}
@@ -1214,7 +1361,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			gocv.IMWrite(paths.ResolveConfig(fmt.Sprintf("diag_fallback_%s.png", templateName)), screen)
 		}
 
-		if err := b.client.Tap(px, py); err != nil {
+		if err := b.client.TapRandomized(px, py); err != nil {
 			b.logger.Error().Err(err).Msg("tap failed")
 			return false
 		}
@@ -1226,7 +1373,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	if pp, ok := villagePinpoints[templateName]; ok {
 		px, py := b.cal.ScaleRef(pp.X, pp.Y)
 		b.logger.Warn().Str("step", pp.Name).Msg("pinpoint color check and template match failed; executing blind tap fallback")
-		if err := b.client.Tap(px, py); err == nil {
+		if err := b.client.TapRandomized(px, py); err == nil {
 			b.recordActivity()
 			return true
 		}
@@ -1234,6 +1381,49 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 
 	b.logger.Error().Str("step", stepName).Int("retries", maxRetries).Msg("failed after retries")
 	return false
+}
+
+// resultPanelHash returns a cheap content hash of the end-of-battle
+// result panel region (star row + battle-loot and bonus columns). Two
+// captures with an equal nonzero hash mean the panel has finished
+// rendering — used to distinguish a still-counting-up overlay from a
+// genuine 0-star/0-loot result.
+func resultPanelHash(screen gocv.Mat, cal *game.Calibration) uint64 {
+	// Reference (860x732) region covering the stars and both loot
+	// columns; generous bounds tolerate small theme shifts.
+	ref := image.Rect(300, 180, 690, 470)
+	x0 := int(float64(ref.Min.X) * cal.ScaleX)
+	y0 := int(float64(ref.Min.Y) * cal.ScaleY)
+	x1 := int(float64(ref.Max.X) * cal.ScaleX)
+	y1 := int(float64(ref.Max.Y) * cal.ScaleY)
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	if x1 > screen.Cols() {
+		x1 = screen.Cols()
+	}
+	if y1 > screen.Rows() {
+		y1 = screen.Rows()
+	}
+	if x1-x0 < 2 || y1-y0 < 2 {
+		return 0
+	}
+
+	var h uint64 = 14695981039346656037 // FNV-1a offset basis
+	stride := 4 // sample every 4th pixel — plenty for frame-diff detection
+	for y := y0; y < y1; y += stride {
+		for x := x0; x < x1; x += stride {
+			b := uint64(screen.GetUCharAt(y, x*3))
+			g := uint64(screen.GetUCharAt(y, x*3+1))
+			r := uint64(screen.GetUCharAt(y, x*3+2))
+			h ^= (r << 16) | (g << 8) | b
+			h *= 1099511628211
+		}
+	}
+	return h
 }
 
 func (b *Bot) isGreen(screen gocv.Mat, x, y int) bool {
@@ -1300,6 +1490,14 @@ func (b *Bot) dismissInterruptions() {
 		b.client.TapRandomized(ox, oy)
 	case game.StateChatOpen:
 		b.client.Back()
+	case game.StateTapToContinue:
+		// Post-boot "ТАР!" collect splash — tap the prompt text.
+		px, py := b.cal.ScaleRef(450, 195)
+		b.client.TapRandomized(px, py)
+	case game.StateNewsSplash:
+		// Post-boot news splash — tap the green Continue button.
+		px, py := b.cal.ScaleRef(403, 535)
+		b.client.TapRandomized(px, py)
 	}
 }
 

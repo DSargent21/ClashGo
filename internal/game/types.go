@@ -54,6 +54,9 @@ const (
 	StateWelcomeBack
 	StateArmySelection
 	StateChestReward
+	StateTapToContinue
+	StateNewsSplash
+	StateLogo
 )
 
 var stateNames = map[GameState]string{
@@ -75,6 +78,9 @@ var stateNames = map[GameState]string{
 	StateWelcomeBack:    "WelcomeBack",
 	StateArmySelection:  "ArmySelection",
 	StateChestReward:    "ChestReward",
+	StateTapToContinue:  "TapToContinue",
+	StateNewsSplash:     "NewsSplash",
+	StateLogo:           "Logo",
 }
 
 func (s GameState) String() string {
@@ -211,6 +217,7 @@ type Device interface {
 	Tap(x, y int) error
 	TapRandomized(x, y int) error
 	Swipe(x1, y1, x2, y2 int, ms int) error
+	SwipeBezier(x1, y1, x2, y2, ms int) error
 	Pinch(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error
 	PinchZoom(zoomOut bool) error
 	ZoomOut() error

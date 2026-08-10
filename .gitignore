@@ -72,6 +72,8 @@ debug_attacks/
 debug_out_run1/
 debug_out/
 output/
+# tools/observe.sh artifacts (per-run captures + latest symlink)
+obs/
 
 # Diagnostic & Log files (per-attack artifacts)
 diag_*.json

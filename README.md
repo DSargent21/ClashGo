@@ -13,8 +13,16 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
 - **Lightweight**: Just a single binary, with a recent perf audit cutting battle-state CPU ~10–20% and transient RSS ~10–20 MB. See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the per-change breakdown and how to verify on your machine.
 - **Customizable strategies**: Drop a YAML strategy + matching `formula.json` (per-unit deploy coords) into `assets/strategies/` and the bot deploys each unit where you want. See `assets/strategies/auto_edrag_rush.yaml` + `assets/strategies/auto_edrag_rush_formula.json` for an end-to-end example (Balloon + EDrag + Rage + Ice).
 - **Per-corner formula workflow**: `target_edge: "Random"` (the default in `auto_edrag_rush.yaml`) picks a random corner per attack. `cmd/design_attack -live -corner BR|BL|TR|TL` authors the per-corner deploy coords; per-corner overrides in `formula.corner_overrides[<CORNER>]` are used as-authored (the mirror is only a fallback). See [`docs/formula-authoring.md`](docs/formula-authoring.md) for the full walkthrough.
+- **Self-healing boot sequence**: the bot auto-dismisses the post-boot
+  splash chain ("ТАР!" tap-to-continue → castle logo → news splash)
+  instead of force-restarting in a loop, so unattended runs survive game
+  relaunches.
+- **Text-based observability**: `./tools/observe.sh` captures the emulator
+  screen, classifies it with the bot's real vision layer, and OCRs the
+  on-screen text — a terminal-only "eye view" for debugging without a
+  GUI. See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
 - **Replayable attacks**: `make attack-record` records a deploy you perform on the emulator; `make attack-replay` re-fires that JSON on the device with classification + extras. Useful for sharing working attacks without re-engineering.
-- **In-app updater**: New releases ship through GitHub Releases. Once a version is published, ClashGO's UI shows a banner; clicking it downloads + verifies (SHA256), then opens Finder so you can drag-replace. No new servers, no manual checks. Skip / later are honored.
+  - In-app updater: New releases ship through GitHub Releases. Once a version is published, ClashGO's UI shows a banner; clicking it downloads + verifies (SHA256), then opens Finder so you can drag-replace. No new servers, no manual checks. Skip / later are honored.
 
 ### 🛠️ How to use
 1. **Emulator**: Set your emulator (like BlueStacks) to **860x732** resolution and **160 DPI**.

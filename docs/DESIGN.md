@@ -28,7 +28,8 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
   - `types.go` — GameState enum, TransitionAction, Clickable, Rectangle, Config structs
   - `context.go` — GameContext with RWMutex, state management, screen capture buffering
   - `state_graph.go` — Dijkstra shortest path
-  - `classifier.go` — Pixel-based state detection (13+ states)
+  - `classifier.go` — Pixel-based state detection (21 states incl. the
+    post-boot splash chain: TapToContinue / Logo / NewsSplash)
   - `calibration.go` — Resolution-independent scaling
   - `navigator.go` — State-to-state navigation + interrupt handling
   - `recognizer.go` — ScreenHash, blur detection, contour-based element detection
@@ -108,6 +109,7 @@ Capture Loop (200ms ticker)
         └── State change event → Check actions:
               ├── MainVillage + !ArmyFull → Training flow
               ├── MainVillage + ArmyFull → Attack flow
+              ├── Splash states (TapToContinue / NewsSplash) → Auto-dismiss tap
               └── Interrupt states → Dismiss dialogs
 ```
 
@@ -141,7 +143,10 @@ table and a verification recipe.
   - `shell:input tap/swipe/text/keyevent` for interaction
   - Auto-reconnect on transport loss with retry
 - **Vision**: gocv (OpenCV 4.x) for template matching + red line detection
-- **OCR**: none — resource/loot reading is template + pixel based
+- **OCR**: none in the runtime — resource/loot reading is template + pixel
+  based. A diagnostic-only Apple Vision OCR helper (`tools/ocr.swift`)
+  exists for the text-based observability tooling; see
+  [`OBSERVABILITY.md`](OBSERVABILITY.md).
 - **Config**: Typed JSON structs (custom unmarshal, no external dep)
 - **GUI**: Wails v2 + React (shipped)
 - **Concurrency**: Goroutines + channels + atomic
@@ -187,9 +192,10 @@ ClashGO/
 │   ├── templates/                   # Template images for matching
 │   └── *.json                       # Picked ROIs (wall upgrade, chest, battle loot)
 ├── cmd/                             # Helpers: attack_record, capture_template, design_attack,
-│                                    #          release_manifest, test_wall_upgrade
+│                                    #          release_manifest, test_wall_upgrade, screendump,
+│                                    #          classify_probe, result_probe, swipe_probe
 ├── web/                             # Wails React GUI
-└── tools/                           # picker.py + calibration scripts
+└── tools/                           # picker.py + calibration scripts + observe.sh/ocr.swift
 ```
 
 ## Relevant AutoIt Source Files (reference)
