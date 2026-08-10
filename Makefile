@@ -131,7 +131,40 @@ manifest:
 		-repo Ducky705/ClashGO \
 		-os darwin
 
-package: build-gui
+# stage-app injects the read-only assets (templates, strategies) and the
+# in-app update helper into the built .app bundle itself, then re-signs
+# (ad-hoc). This is required BEFORE both packaging paths so every
+# artifact the user can install — the DMG and the zip — ships with a
+# working assets dir and a valid bundle signature:
+#
+#   - Without this, build-zip would zip the raw wails .app, whose
+#     Contents/Resources holds only the icon. Installed from the zip,
+#     GetAssetsDir() would resolve to an empty dir: the Config page's
+#     strategy list would be empty and the bot's OCR templates would
+#     silently fail to load.
+#   - build_dmg.sh does its own injection into a staged copy for
+#     standalone use, but the zip path never saw it.
+#
+# wails ad-hoc signs the bundle during `wails build`; touching
+# Contents/Resources afterwards invalidates the sealed resources, so we
+# re-sign here (codesign --verify --deep --strict must pass on the
+# shipped app — see tools/build_dmg.sh Stage 2.5 for the full rationale).
+.PHONY: stage-app
+stage-app: build-gui
+	@echo "Staging assets + install helper into $(BUILD_DIR)/ClashGO.app..."
+	@mkdir -p $(BUILD_DIR)/ClashGO.app/Contents/Resources/assets
+	@if [ -d assets ]; then cp -R assets/. $(BUILD_DIR)/ClashGO.app/Contents/Resources/assets/; fi
+	@if [ -f build/darwin/install_update.sh ]; then cp build/darwin/install_update.sh $(BUILD_DIR)/ClashGO.app/Contents/Resources/install_update.sh && chmod +x $(BUILD_DIR)/ClashGO.app/Contents/Resources/install_update.sh; fi
+	@codesign --force --deep -s - $(BUILD_DIR)/ClashGO.app >/dev/null 2>&1 && echo "  re-signed (ad-hoc)" || echo "  WARNING: codesign failed"
+	@codesign --verify --deep --strict $(BUILD_DIR)/ClashGO.app >/dev/null 2>&1 && echo "  bundle signature verified" || echo "  WARNING: signature verify failed"
+
+# package depends on stage-app (not build-gui directly) so a `make
+# release` run never rebuilds the app between staging and DMG assembly —
+# a fresh `wails build` would wipe the staged Contents/Resources/assets
+# and the zip (built afterwards) would silently ship without them. make
+# dedupes the stage-app prerequisite within one invocation, so `release`
+# still only builds the GUI once.
+package: stage-app
 	@echo "Packaging DMG via tools/build_dmg.sh..."
 	@bash tools/build_dmg.sh $(BUILD_DIR)/ClashGO.app $(BUILD_DIR)/ClashGO.dmg "ClashGO Installer"
 
@@ -139,7 +172,7 @@ package: build-gui
 # caller. Callers (CI / `make release`) still trigger `package` to keep
 # the legacy make-graph intact.
 
-release: build-cli package build-zip manifest
+release: build-cli stage-app package build-zip manifest
 	@echo "Release v$(VERSION) emitted:"
 	@echo "  - $(BUILD_DIR)/ClashGO-v$(VERSION)-macOS.zip"
 	@echo "  - $(BUILD_DIR)/ClashGO.dmg"

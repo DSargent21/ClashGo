@@ -94,6 +94,26 @@ func GetAssetsDir() string {
 	if override := os.Getenv("CLASHGO_ASSETS_DIR"); override != "" {
 		return override
 	}
+
+	// macOS bundle layout: <bundle>/Contents/Resources/assets. Finder-
+	// launched .app processes run with cwd=/ (or the user's home), so
+	// the package-init walk-up in init() finds no in-tree assets dir
+	// and the packaged app would otherwise resolve assets to /assets
+	// — an empty dir that silently breaks strategy listing (the Config
+	// page) and template loading (bot OCR). Same layout probe the
+	// config-dir resolver already uses via isPackagedApp.
+	if runtime.GOOS == "darwin" {
+		if execPath, err := os.Executable(); err == nil {
+			macosDir := filepath.Dir(execPath)
+			if filepath.Base(macosDir) == "MacOS" {
+				res := filepath.Join(filepath.Dir(macosDir), "Resources", "assets")
+				if info, err := os.Stat(res); err == nil && info.IsDir() {
+					return res
+				}
+			}
+		}
+	}
+
 	abs, err := filepath.Abs(assetsDir)
 	if err != nil {
 		return assetsDir
