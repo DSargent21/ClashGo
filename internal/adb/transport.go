@@ -23,7 +23,6 @@ type Transport struct {
 	conn   net.Conn
 	mu     sync.Mutex
 	closed atomic.Bool
-	seq    uint32
 }
 
 func NewTransport(deviceID, host string, port int, timeout time.Duration) (*Transport, error) {
@@ -222,10 +221,6 @@ func (t *Transport) Exec(service string) ([]byte, error) {
 	return t.execService(service)
 }
 
-func (t *Transport) ExecRaw(service string) ([]byte, error) {
-	return t.execService(service)
-}
-
 func (t *Transport) CaptureScreenPooled() (*[]byte, int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -279,7 +274,7 @@ func ReturnBuffer(bufPtr *[]byte) {
 }
 
 func (t *Transport) CaptureScreen() ([]byte, error) {
-	return t.ExecRaw("exec:/system/bin/screencap")
+	return t.Exec("exec:/system/bin/screencap")
 }
 
 func (t *Transport) Tap(x, y int) error {

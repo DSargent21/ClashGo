@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -58,43 +57,41 @@ type Bot struct {
 	stars3      atomic.Int32
 	seqRunning  atomic.Bool
 	zoomedOut   atomic.Bool
-	// chestDismissInFlight guards against dispatching overlapping
-	// DismissChestReward goroutines when the chest screen persists
-	// across multiple capture frames. The dismiss loop itself has a
-	// 25s wall-clock cap (ChestWallClockLimit) so the worst case is
-	// bounded; without this guard every capture frame that still
-	// sees StateChestReward would spawn a new goroutine and pile
-	// up competing CaptureToMat calls.
-	chestDismissInFlight atomic.Bool
-	startedAt            time.Time
-	lastAction           time.Time
-	lastSequenceStart    time.Time
-	lastNav              time.Time
-	lastCapture          time.Time
-	stuckTimeout         time.Duration
-	cpuSampler           *cpuSampler
 
-	lastFrame     atomic.Value // Stores the latest base64 encoded frame
-	lastFrameTime time.Time
+	chestDismissInFlight  atomic.Bool
+	splashDismissInFlight atomic.Bool
+	startedAt             time.Time
+	lastAction            time.Time
+	lastSequenceStart     time.Time
+	lastNav               time.Time
+	lastCapture           time.Time
+	lastIdlePan           time.Time
+	stuckTimeout          time.Duration
+	cpuSampler            *cpuSampler
 
-	// dukePicksFile records every Dragon Duke random pick across all
-	// live attacks. Opened once at NewBot time and written from the
-	// attackExec.OnDukePick callback (legacy path) via the orchestrator
-	// bridge that funnels HeroManager.resolveHeroTarget picks through
-	// OnDukePick as well. One NDJSON line per pick; jq-friendly.
 	dukePicksFile *os.File
 
-	// historyCache is the in-memory source of truth for the persisted
-	// attack history. It is seeded from disk at startup and updated on
-	// every recorded attack so a transient read error cannot wipe prior
-	// runs.
 	historyCache []AttackReport
 
-	OnFrame       func(string)
 	OnStatsUpdate func()
 }
 
+// NewBot builds a fully-booted Bot using a background context (no
+// external cancellation). CLI and tests use this; the Wails app uses
+// NewBotWithContext so a Stop click can abort a boot in progress.
 func NewBot(cfg *config.BotConfig) (*Bot, error) {
+	return NewBotWithContext(context.Background(), cfg)
+}
+
+// NewBotWithContext boots the bot under the caller's context. The
+// context is threaded through the boot orchestrator AND becomes the
+// parent of the bot's runtime context, so cancelling it (the app's
+// Stop click) aborts an in-progress boot and stops a running bot.
+//
+// On any error the freshly-constructed adb.Client is closed — a
+// failed boot must not leak a half-open transport (visible as a
+// lingering localhost:5555 ghost that breaks the next Start).
+func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, err error) {
 	zl := &adbLogAdapter{log: log.Logger}
 
 	client := adb.NewClient(
@@ -110,28 +107,24 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	)
 	client.DeviceID = cfg.Device.DeviceID
 
+	// If any step below fails before the client is handed to the Bot,
+	// release the transport so a subsequent StartBot starts clean.
+	defer func() {
+		if err != nil && b == nil {
+			_ = client.Close()
+		}
+	}()
+
 	log.Info().Msg("initializing bot startup sequence...")
 
-	// Construct the boot orchestrator. The orchestrator owns the
-	// connect → BlueStacks ensure → multi-signal boot probe →
-	// screen-size flow with layered recovery (RetryTransport →
-	// SoftReset → RelaunchGame → RestartBlueStacks) and emits a
-	// structured BootReport that the app surfaces to the UI.
-	//
-	// Dev mode (env CLASHGO_DEV_FAST_FAIL=1, or detected by the
-	// app startup path) shrinks the timeouts so a coding error in
-	// wails dev cycles in 25s instead of 180s+. In production the
-	// defaults are used as-is.
 	bootCfg := NewBootConfigFromBotConfig(cfg)
 	if devFastFail() {
 		bootCfg = bootCfg.WithDevFastFail()
 	}
 	orchestrator := NewBootOrchestrator(bootCfg, client, log.Logger)
-	bctx, err := orchestrator.Boot(context.Background())
+	bctx, err := orchestrator.Boot(bootCtx)
 	if err != nil {
-		// Wrap with the summary so the call site in app.go gets a
-		// human-readable line in the log, while err itself stays
-		// the structured cause for programmatic use.
+
 		wrapped := fmt.Errorf("%s: %w", orchestrator.Report().Summary(), err)
 		log.Error().Err(wrapped).
 			Str("suggested_action", orchestrator.Report().Snapshot().SuggestedAction).
@@ -147,10 +140,6 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		Dur("boot_duration", bctx.BootDuration).
 		Msg("boot complete; calibrating...")
 
-	// Build calibration directly from the orchestrator's verified
-	// screen size. Calibrate() used to be the source of truth for
-	// dimensions; now it's a re-verification helper that the
-	// bot only calls periodically (e.g. on a stuck-watchdog tick).
 	w, h := bctx.ScreenW, bctx.ScreenH
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("boot returned invalid screen size %dx%d; cannot calibrate", w, h)
@@ -165,10 +154,6 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		Verified:   true,
 	}
 
-	// Optional game restart. The orchestrator deliberately did NOT
-	// launch the game — that's a Bot concern, not a boot concern.
-	// We keep the existing semantics: if RestartOnStartup is true,
-	// force-stop + start the game, then sleep the settle window.
 	packageName := cfg.Device.PackageName
 	if packageName == "" {
 		packageName = "com.supercell.clashofclans"
@@ -190,9 +175,6 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		log.Info().Msg("skipping game restart on startup (restart_on_startup=false)")
 	}
 
-	// Persist a successful-boot sample so the BootProfile can
-	// tighten its recommended timeout over time. Best-effort: a
-	// write failure is logged at debug and ignored.
 	if profile, perr := LoadBootProfile(paths.ResolveConfig("boot_profile.json")); perr == nil {
 		profile.AddSample(BootProfileSample{
 			StartedAt: bctx.Report.StartedAt,
@@ -207,14 +189,8 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	graph := game.NewStateGraph()
 	graph.AddNode(game.StateMainVillage)
 
-	// Open the Duke-pick NDJSON writer BEFORE constructing the
-	// attackExec so the callback closure captures the file handle.
 	startedWall := time.Now()
-	// Route Duke-pick NDJSON through paths.ResolveConfig so the write
-	// never lands in the project root — wails dev's filesystem watcher
-	// sees writes inside the project tree as a build trigger and
-	// kills the active bot session. (See internal/paths/paths.go for
-	// the full rationale.)
+
 	dukePicksDir := paths.ResolveConfig("output/duke_picks")
 	if err := os.MkdirAll(dukePicksDir, 0o755); err != nil {
 		log.Warn().Err(err).Str("dir", dukePicksDir).Msg("failed to create duke_picks dir")
@@ -231,8 +207,15 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	var templates *game.TemplateStore
 	templates, err = game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
-		log.Warn().Err(err).Msg("template store init failed, continuing without templates")
-		templates = nil
+		// NEVER leave templates nil: every consumer (classifier,
+		// navigator, loot recognizer, attack executor) dereferences it
+		// without a nil check, and the first such dereference panics
+		// (observed live: SIGSEGV in LootRecognizer.prepareDigitTemplates
+		// killing the bot the moment it entered an attack). The empty
+		// store degrades every lookup to "not found" so the bot keeps
+		// running on its color/pinpoint heuristics.
+		log.Warn().Err(err).Msg("template store init failed; continuing WITHOUT templates (color/pinpoint fallbacks only)")
+		templates = game.NewEmptyTemplateStore()
 	}
 
 	if templates != nil {
@@ -241,9 +224,12 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 	}
 
 	recognizer := game.NewRecognizer()
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derive the bot's runtime context from the caller's context so a
+	// Stop that cancels the boot also tears down a successfully-booted
+	// bot without waiting for the App-level bot.Cancel() to be called.
+	ctx, cancel := context.WithCancel(bootCtx)
 
-	b := &Bot{
+	b = &Bot{
 		client:            client,
 		cal:               cal,
 		graph:             graph,
@@ -258,14 +244,12 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		startedAt:         startedWall,
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
+		lastIdlePan:       time.Now(),
 		stuckTimeout:      35 * time.Second,
 		cpuSampler:        newCPUSampler(),
 		dukePicksFile:     dukePicksFile,
 	}
 
-	// Wire the OnDukePick observer so every Duke random pick (legacy
-	// adjacent-corner OR new chosen-edge fallback) gets append-recorded
-	// to the per-session NDJSON. No-op if the file failed to open.
 	if dukePicksFile != nil {
 		writePick := func(target, chosen string) {
 			line := fmt.Sprintf(`{"timestamp":%q,"target_edge":%q,"chosen_edge":%q}`+"\n",
@@ -277,10 +261,6 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		attackExec.OnDukePick = writePick
 	}
 
-	b.lastFrame.Store("")
-
-	// Seed the in-memory history cache from disk so a later read error
-	// during recordAttack cannot clobber prior runs.
 	if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
 		var seeded []AttackReport
 		if jsonErr := json.Unmarshal(histData, &seeded); jsonErr == nil {
@@ -299,15 +279,11 @@ func NewBot(cfg *config.BotConfig) (*Bot, error) {
 		return b.classifier.ClassifyState(mat)
 	}
 
-	// Update dependents with the final classifier/classify function
 	b.navigator = game.NewNavigator(client, cal, graph, b.classify, b.logger)
 	if b.templates != nil {
 		b.navigator.SetTemplates(b.templates)
 	}
-	// Honor the runtime kill-switch for the chest recovery flow. When
-	// disable_chest_dismissal=true the navigator returns nil from
-	// DismissChestReward immediately, deferring chest screens to the
-	// bot's stuck-watchdog / restartGame ladder.
+
 	b.navigator.SetDisableChestDismissal(b.cfg.Device.DisableChestDismissal)
 
 	b.attackExec.SetClassifier(b.classify)
@@ -332,7 +308,6 @@ func (b *Bot) Start() error {
 			Msg("connected")
 	}
 
-	// Initial focus click to ensure emulator/window is active
 	focusX, focusY := b.cal.ScaleRef(842, 345)
 	b.logger.Info().Int("x", focusX).Int("y", focusY).Msg("performing initial focus click")
 	b.client.Tap(focusX, focusY)
@@ -374,15 +349,14 @@ func (b *Bot) captureLoop() {
 	}
 	frames := make(chan frame, 1)
 
-	// Adaptive FPS based on game state
 	getCaptureInterval := func() time.Duration {
 		switch gc.State {
 		case game.StateBattle, game.StateSearchMap, game.StateLoading:
-			return 100 * time.Millisecond // 10 FPS for active gameplay
+			return 100 * time.Millisecond
 		case game.StateMainVillage, game.StateArmySelection, game.StateArmyCamp:
-			return 300 * time.Millisecond // ~3 FPS for UI navigation
+			return 300 * time.Millisecond
 		default:
-			return 1000 * time.Millisecond // 1 FPS for unknown/idle states
+			return 1000 * time.Millisecond
 		}
 	}
 
@@ -412,39 +386,10 @@ func (b *Bot) captureLoop() {
 			lastCapture = time.Now()
 			b.lastCapture = lastCapture
 
-			// A degenerate capture (empty / zero-size / error) must be
-			// dropped entirely — never classify or forward it. Feeding a
-			// zero-size Mat into gocv.MatchTemplate (via the classifier
-			// or template-match paths) is a hard cgo segfault that kills
-			// the whole process, so the bot silently "never starts".
-			// Note: a failed CaptureToMat now returns a SAFE gocv.NewMat()
-			// (empty=true, cols=0) rather than the nil-backed gocv.Mat{}
-			// literal, so .Empty()/.Cols() are safe to call here.
 			if err != nil || screen.Empty() || screen.Cols() < 2 || screen.Rows() < 2 {
 				screen.Close()
 				b.logger.Debug().Err(err).Msg("empty/degenerate capture dropped")
 				continue
-			}
-
-			if b.OnFrame != nil {
-				small := vision.GetMat(screen.Rows()/2, screen.Cols()/2, screen.Type())
-				gocv.Resize(screen, &small, image.Point{}, 0.5, 0.5, gocv.InterpolationLinear)
-
-				// small (the pooled mat) is always returned via defer so a
-				// failed encode cannot leak it. buf is likewise closed on
-				// every path.
-				go func(m gocv.Mat) {
-					defer vision.PutMat(m)
-					buf, err := gocv.IMEncodeWithParams(".jpg", m, []int{gocv.IMWriteJpegQuality, 60})
-					if err != nil {
-						b.logger.Debug().Err(err).Msg("frame encode failed, dropped")
-						return
-					}
-					defer buf.Close()
-					encoded := base64.StdEncoding.EncodeToString(buf.GetBytes())
-					b.lastFrame.Store(encoded)
-					b.OnFrame(encoded)
-				}(small)
 			}
 
 			select {
@@ -467,8 +412,24 @@ func (b *Bot) captureLoop() {
 			}
 			return
 		case f := <-frames:
-			b.checkStuck(gc)
-			b.processFrame(gc, f.mat, f.err, f.dur)
+			// Panic guard: one bad frame (degenerate mat, classifier
+			// edge case, cgo hiccup) must never kill the whole bot
+			// process — an unattended farm would stay dead until a
+			// human notices. Recover, release the frame, and keep
+			// the loop alive; the stuck-watchdog handles the rest.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						b.logger.Error().Interface("panic", r).Msg("recovered panic in frame processing; continuing capture loop")
+						if !f.mat.Empty() {
+							f.mat.Close()
+						}
+						b.recordActivity()
+					}
+				}()
+				b.checkStuck(gc)
+				b.processFrame(gc, f.mat, f.err, f.dur)
+			}()
 		}
 	}
 }
@@ -485,25 +446,17 @@ func (b *Bot) recordActivity() {
 // one place doing nothing for too long, we cycle the game to recover from
 // hangs / dialogs / out-of-game screens without requiring user intervention.
 func (b *Bot) checkStuck(gc *game.GameContext) {
-	// 1. Capture pipeline watchdog: catches dead ADB / emulator before the
-	// slower time-based watchdogs below can fire (and ensures restarts reset
-	// the zoom state, which trusts that captures are returning frames).
+
 	if gc.ReadHealth().ConsecutiveFails >= 10 {
 		b.logger.Error().
 			Int("consecutive_fails", gc.ReadHealth().ConsecutiveFails).
 			Str("state", gc.State.String()).
-			Msg("capture pipeline appears dead, triggering emergency restart...")
-		b.restartGame()
+			Msg("capture pipeline appears dead, beginning device recovery ladder...")
+		b.recoverEmulator()
 		b.lastSequenceStart = time.Now()
 		return
 	}
 
-	// 2. Per-attack absolute ceiling: a single attack cycle (clicks → search →
-	// deploy → battle end → return home) is bounded by lastSequenceStart.
-	// WaitForBattleEnd alone can take ~4 min, so we keep a generous 15-min
-	// window here. The activity-based watchdog below is bypassed for the
-	// duration of a sequence because long inner phases (deploy) intentionally
-	// have quiet stretches where no recordActivity() tick fires.
 	if b.seqRunning.Load() {
 		if time.Since(b.lastSequenceStart) > 15*time.Minute {
 			b.logger.Warn().
@@ -517,16 +470,29 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 
 	state, _, _ := gc.ReadState()
 
-	// 3b. Attack-phase state without an active sequence is inconsistent:
-	// Battle/SearchMap/Loading should ONLY ever be observed while a
-	// sequence goroutine is running (executeAttackSequence sets
-	// seqRunning=true before entering search/deploy/battle). If we see
-	// one of these states with seqRunning==false, the sequence either
-	// died without resetting state or the classifier false-positived an
-	// attack screen — either way the sequence starter (which only fires
-	// from MainVillage/Unknown) will never launch from here, so the bot
-	// would otherwise sit idle until the 3-min Battle timeout and then
-	// loop forever restarting. Force-cycle on a short leash instead.
+	// Post-boot splash states (ТАР! collect splash, castle logo, news)
+	// legitimately sit static for 1-3 minutes while the game connects — the
+	// castle logo has no progress indicator at all. The generic stuck timeout
+	// below (35s) would force-restart mid-boot, which previously caused an
+	// endless force-stop/relaunch loop on the collect splash. Give the whole
+	// boot-splash chain a generous window; the dismiss taps in processFrame
+	// advance through it.
+	if state == game.StateLogo || state == game.StateTapToContinue || state == game.StateNewsSplash {
+		bootStuck := time.Since(b.lastAction)
+		const bootSplashTimeout = 5 * time.Minute
+		if bootStuck > bootSplashTimeout {
+			b.logger.Warn().
+				Str("state", state.String()).
+				Time("last_action", b.lastAction).
+				Dur("stuck_time", bootStuck).
+				Dur("timeout", bootSplashTimeout).
+				Msg("boot splash stuck too long, triggering emergency restart...")
+			b.restartGame()
+			b.lastSequenceStart = time.Now()
+		}
+		return
+	}
+
 	if state == game.StateBattle ||
 		state == game.StateSearchMap ||
 		state == game.StateLoading {
@@ -545,10 +511,6 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 		return
 	}
 
-	// 3. Activity-based watchdog for non-sequence flows. Any successful
-	// click / state transition / post-zoom resets lastAction via
-	// b.recordActivity(), so this only fires when the bot is genuinely stuck
-	// (no clicks landing, no state advance).
 	timeout := b.stuckTimeout
 
 	stuckTime := time.Since(b.lastAction)
@@ -583,17 +545,75 @@ func (b *Bot) restartGame() {
 		b.logger.Error().Err(err).Msg("failed to start app")
 	}
 
-	// Wait for game to launch and settle
 	b.client.JitteredSleep(15 * time.Second)
-	b.zoomedOut.Store(false) // Reset zoom state on restart
+	b.zoomedOut.Store(false)
 
-	// Refresh the activity clock so the post-restart boot/calibration
-	// window is not immediately re-flagged as "stuck" by checkStuck.
-	// Without this, a restart that lands back on an attack-phase screen
-	// would re-trigger restartGame every ~20s in a tight infinite loop.
 	b.lastAction = time.Now()
 	b.lastNav = time.Now()
 	b.lastSequenceStart = time.Now()
+}
+
+// recoverEmulator is the mid-run escalation for a dead capture
+// pipeline. restartGame only force-stops CoC — when the EMULATOR
+// itself is gone (BlueStacks crashed, adb-server wedged, transport
+// socket stale) that just fails silently and the bot spins at high
+// CPU against a dead device forever. recoverEmulator walks a
+// cheap→destructive ladder, re-probing liveness (wm size) after
+// each step, and only relaunches BlueStacks as a last resort:
+//
+//	1. screen-size probe     — device alive? just restart the game
+//	2. transport Reconnect   — stale socket after a BlueStacks blip
+//	3. ResetAdbServer        — stale adb-server registration
+//	   (note: drops ALL adb connections on this host — logged)
+//	4. EnsureBlueStacksMac   — emulator really gone; relaunch at the
+//	   configured resolution, then poll up to 2 min for adb
+func (b *Bot) recoverEmulator() {
+	b.logger.Warn().Msg("capture pipeline dead; beginning device recovery ladder")
+
+	deviceOK := func() bool {
+		_, _, err := b.client.ScreenSize()
+		return err == nil
+	}
+
+	if deviceOK() {
+		b.logger.Info().Msg("device still responsive; restarting game only")
+		b.restartGame()
+		return
+	}
+
+	b.logger.Warn().Msg("device unresponsive to wm size; reconnecting ADB transport")
+	if err := b.client.Reconnect(); err != nil {
+		b.logger.Warn().Err(err).Msg("transport reconnect failed")
+	}
+	if deviceOK() {
+		b.restartGame()
+		return
+	}
+
+	b.logger.Warn().Msg("device still unreachable; resetting adb server (drops ALL adb connections on this host)")
+	if err := b.client.ResetAdbServer(); err != nil {
+		b.logger.Warn().Err(err).Msg("adb server reset failed")
+	}
+	time.Sleep(2 * time.Second)
+	_ = b.client.Reconnect()
+	if deviceOK() {
+		b.restartGame()
+		return
+	}
+
+	b.logger.Error().Msg("device unreachable after transport + adb-server recovery; relaunching BlueStacks")
+	if err := b.client.EnsureBlueStacksMac(b.cfg.Device.Width, b.cfg.Device.Height, b.cfg.Device.DPI); err != nil {
+		b.logger.Error().Err(err).Msg("BlueStacks relaunch failed; will retry on next stuck check")
+	}
+	// Give the freshly-relaunched emulator up to 2 minutes to expose
+	// its adb daemon (cold VM boot can take 45-70s on this hardware).
+	for i := 0; i < 60; i++ {
+		if deviceOK() {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	b.restartGame()
 }
 
 func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, captureMs time.Duration) {
@@ -610,13 +630,10 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 
 	state, score := b.classify(screen)
 
-	// UpdateScreen takes ownership and will handle closing previous mat
 	gc.UpdateScreen(screen, captureMs)
 
-	// Professional Zoom Out: Mandatory first action upon entering any village state.
-	// We MUST zoom out before starting ANY sequence or clicking ANY buttons.
 	if !b.zoomedOut.Load() {
-		// Include pinpoint attack button check in village detection to avoid race with sequence starter
+
 		pinX, pinY := b.cal.ScaleRef(60, 695)
 		isVillage := state == game.StateMainVillage ||
 			state == game.StateArmyCamp ||
@@ -629,16 +646,14 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 				b.logger.Info().Msg("village detected, performing MANDATORY initial zoom out...")
 				b.navigator.ZoomOut()
 				b.recordActivity()
-				// Wait for zoom animation to settle (Clash has long momentum)
+
 				time.Sleep(1800 * time.Millisecond)
-				// Return here so the next loop iteration captures a fresh screen AFTER zoom
+
 				return
 			}
 		}
 	}
 
-	// Update lastAction only on meaningful state transitions. Unknown / Loading
-	// are excluded so a transient flicker doesn't reset the stuck timer.
 	if state != gc.State && state != game.StateUnknown && state != game.StateLoading {
 		b.recordActivity()
 	}
@@ -658,23 +673,9 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			Msg("state detected")
 	}
 
-	// Chest dismissal hook: fires the moment the classifier sees a
-	// confirmed StateChestReward. We dispatch a goroutine (matching
-	// the existing pattern for attack / return-home flows) so the
-	// capture loop stays responsive while the dismiss taps + verifies.
-	//
-	// chestDismissInFlight prevents re-entry — if the chest screen
-	// persists across multiple frames, only one dismiss attempt runs
-	// at a time. The dismiss itself is bounded by ChestWallClockLimit
-	// (25s) and the kill-switch (DisableChestDismissal) short-circuits
-	// the call to a nil return when the operator has turned the
-	// recovery off. Worst-case runaway is caught by the global
-	// stuck-watchdog (35s of no recordActivity → restartGame).
 	if state == game.StateChestReward {
 		if b.cfg.Device.DisableChestDismissal {
-			// Honor the runtime kill-switch at the dispatch site too,
-			// so we don't churn through no-op dismiss attempts every
-			// frame. The bot's stuck-watchdog takes over instead.
+
 			b.logger.Debug().Msg("chest detected but dismissal disabled by config; deferring to stuck-watchdog")
 			return
 		}
@@ -697,12 +698,52 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
+	// Post-boot splash screens. The game shows a short chain after every
+	// relaunch: the "ТАР!" tap-to-continue / collect splash, then the CoC
+	// castle logo (which sits static 1-3 min while the session connects),
+	// then an optional news/announcement splash with a Continue button
+	// before the village appears. The bot must tap each prompt to advance;
+	// previously these read as Battle/Unknown and the stuck-watchdog
+	// force-restarted the game in an endless loop.
+	if state == game.StateTapToContinue || state == game.StateNewsSplash {
+		if b.splashDismissInFlight.CompareAndSwap(false, true) {
+			b.logger.Info().Str("state", state.String()).Msg("boot splash detected; dispatching dismiss tap")
+			go func(st game.GameState) {
+				defer b.splashDismissInFlight.Store(false)
+				time.Sleep(1200 * time.Millisecond)
+
+				var x, y int
+				switch st {
+				case game.StateTapToContinue:
+					// Tap the "ТАР!" prompt text (ref 450,195). Verified live:
+					// this dismisses the collect splash into the game.
+					x, y = b.cal.ScaleRef(450, 195)
+				case game.StateNewsSplash:
+					// Tap the green Continue button (ref 403,535).
+					x, y = b.cal.ScaleRef(403, 535)
+				}
+				if err := b.client.TapRandomized(x, y); err != nil {
+					b.logger.Warn().Err(err).Msg("boot splash dismiss tap failed; will retry on next detection")
+					return
+				}
+				// Deliberately NO recordActivity here: the adb tap reports
+				// success even when the splash did not actually dismiss, so
+				// recording activity would keep resetting lastAction and
+				// the stuck-watchdog (including the boot-splash grace in
+				// checkStuck) could never fire on a genuinely stuck splash
+				// variant. The real progress signal is the resulting state
+				// transition out of the splash, which processFrame records
+				// via its own state-change activity call.
+				b.logger.Info().Str("state", st.String()).Msg("boot splash dismissed")
+			}(state)
+		}
+		return
+	}
+
 	if b.seqRunning.Load() {
 		return
 	}
 
-	// Stuck State Recovery: if we are in a terminal state but no sequence is running,
-	// it means we finished an attack but failed to return home, or a manual action left us here.
 	if gc.State == game.StateBattleEnd || gc.State == game.StateReturnHome {
 		b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
 		go b.attackExec.ReturnHome()
@@ -710,8 +751,6 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
-	// Primary detection: try to find the attack button via template matching
-	// Only start attack if we are reasonably sure we're in the Main Village
 	if b.zoomedOut.Load() && (gc.State == game.StateMainVillage || gc.State == game.StateUnknown) && b.findAttackButton(screen, 0.45) {
 		b.logger.Info().Msg("attack button detected, starting sequence")
 		b.lastSequenceStart = time.Now()
@@ -719,7 +758,30 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
-	// Classifier-based fallback: only with cooldown to prevent spamming
+	// Idle humanization: while confirmed on the main village with no
+	// attack button in sight (army still training / waiting), drift the
+	// camera the way a waiting player would. Throttled so the wander
+	// never overlaps an attack sequence, and deliberately NOT
+	// recordActivity — a genuinely stuck bot must still trip the
+	// stuck-watchdog and cycle the game.
+	//
+	// Dispatched in a goroutine (mirroring the chest-dismiss pattern)
+	// so the ~3s sendevent gesture can't freeze the capture loop's UI
+	// frame stream; the seqRunning re-check keeps it from colliding
+	// with a freshly-started attack sequence. The pan swipes the map
+	// center, never the fixed HUD chrome, so a mid-pan capture still
+	// sees the attack button.
+	if gc.State == game.StateMainVillage && time.Since(b.lastIdlePan) > 18*time.Second {
+		b.lastIdlePan = time.Now()
+		b.logger.Debug().Msg("idle in village, wandering camera")
+		go func() {
+			if b.seqRunning.Load() {
+				return
+			}
+			b.navigator.IdlePan()
+		}()
+	}
+
 	if gc.State == game.StateArmyCamp && time.Since(b.lastNav) > 3*time.Second {
 		b.lastNav = time.Now()
 		b.logger.Info().Msg("in ArmyCamp, returning to main village...")
@@ -774,11 +836,10 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 }
 
 func (b *Bot) isOrange(screen gocv.Mat, x, y int) bool {
-	// Broad Attack button orange range (BGR)
-	// CoC orange: R=255, G=175, B=0
+
 	return b.colorCheck(screen, x, y,
-		gocv.NewScalar(0, 100, 150, 0),   // Lower Orange
-		gocv.NewScalar(150, 255, 255, 0), // Upper Orange
+		gocv.NewScalar(0, 100, 150, 0),
+		gocv.NewScalar(150, 255, 255, 0),
 		20)
 }
 
@@ -790,13 +851,13 @@ func (b *Bot) buttonROI(templateName string) image.Rectangle {
 	case "btn_attack":
 		return image.Rect(0, 500, 300, 732)
 	case "btn_find_match":
-		return image.Rect(50, 400, 400, 600) // left-middle
+		return image.Rect(50, 400, 400, 600)
 	case "btn_battle":
-		return image.Rect(300, 150, 860, 732) // Expanded to catch battle button next to army slots
+		return image.Rect(300, 150, 860, 732)
 	case "btn_army_arrow":
-		return image.Rect(350, 100, 700, 300) // top-center
+		return image.Rect(350, 100, 700, 300)
 	case "btn_army_1":
-		return image.Rect(400, 150, 650, 350) // Tight ROI around army 1 spot
+		return image.Rect(400, 150, 650, 350)
 	case "btn_next":
 		return image.Rect(600, 450, 860, 732)
 	default:
@@ -817,16 +878,23 @@ func (b *Bot) templateMatch(screen gocv.Mat, name string, threshold float32) boo
 }
 
 func (b *Bot) executeAttackSequence(gc *game.GameContext) {
+	// Panic guard for the long-running attack goroutine (spawned from
+	// processFrame outside the frame-loop recover). A panic anywhere in
+	// the deploy/search/battle-parse pipeline must release seqRunning
+	// (via the pre-existing defer below, which LIFO-runs first) and log
+	// instead of killing the whole bot process. The stuck-watchdog then
+	// decides the next move.
+	defer func() {
+		if r := recover(); r != nil {
+			b.logger.Error().Interface("panic", r).Msg("recovered panic in attack sequence; abandoning sequence and continuing")
+			b.recordActivity()
+		}
+	}()
 	if !b.seqRunning.CompareAndSwap(false, true) {
 		return
 	}
 	defer b.seqRunning.Store(false)
 
-	// Open a persistent adb shell pipe for the lifetime of this attack
-	// cycle. The pipe amortizes per-tap `app_process` JVM spin-up cost
-	// (~150-300ms/tap -> ~1-5ms/tap) and provides a fast auto-reconnect /
-	// legacy-fallback path if the pipe breaks. `defer` guarantees cleanup
-	// even if the sequence is interrupted by restartGame / panic / timeout.
 	if b.cfg.Debug.UseShellPipe {
 		b.client.EnablePersistentShell(b.cfg.Debug.ShellPipeSyncFlush)
 		defer b.client.ClosePersistentShell()
@@ -853,6 +921,17 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	searchStart := time.Now()
 	for {
+		// Stop check: a user Stop must abort the search loop even
+		// though CaptureToMat below would silently reconnect a closed
+		// transport and keep searching forever.
+		select {
+		case <-b.ctx.Done():
+			b.logger.Info().Msg("search loop cancelled by stop, abandoning attack sequence")
+			lootRec.Close()
+			return
+		default:
+		}
+
 		if time.Since(searchStart) > 5*time.Minute {
 			b.logger.Error().Msg("searching/skipping bases took too long (stuck in clouds?), restarting game...")
 			b.restartGame()
@@ -860,7 +939,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			return
 		}
 
-		// High-Speed Loop: reduced sleep for faster cycling
 		time.Sleep(500 * time.Millisecond)
 
 		screen, err := b.client.CaptureToMat()
@@ -876,7 +954,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				continue
 			}
 			b.logger.Info().Str("state", state.String()).Msg("searching area (wait)...")
-			// Unexpected state, check interruptions but keep moving
+
 			b.dismissInterruptions()
 			screen.Close()
 			continue
@@ -931,31 +1009,28 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			b.OnStatsUpdate()
 		}
 
-		screen.Close() // Close before findAndClick which does its own capture
+		screen.Close()
 
-		// Professional High-Speed Click: Use pinpoint with fallback
 		if !b.findAndClick("btn_next", "Next Match", 2) {
 			b.logger.Warn().Msg("template match failed, forcing skip via color/pinpoint")
 
-			// Try color-based fallback before hardcoded coordinates
 			searchROI := image.Rect(b.cal.PhysicalW/2, b.cal.PhysicalH/2, b.cal.PhysicalW, b.cal.PhysicalH)
 			orangePt, err := vision.PixelSearch(screen, searchROI, 252, 186, 54, 50)
 			if err == nil {
 				b.logger.Info().Msg("clicking Next via orange color fallback")
-				b.client.Tap(orangePt.X, orangePt.Y)
+				b.client.TapRandomized(orangePt.X, orangePt.Y)
 				b.recordActivity()
 			} else {
-				// Final hardcoded fallback
+
 				b.DumpDiagnostics("next_button_not_found", screen, map[string]interface{}{
 					"message": "forcing skip via hardcoded coordinates",
 				})
 				nextX, nextY := b.cal.ScaleRef(796, 565)
-				b.client.Tap(nextX, nextY)
+				b.client.TapRandomized(nextX, nextY)
 				b.recordActivity()
 			}
 		}
 
-		// Wait briefly for the "Clouds" to appear (transition start)
 		time.Sleep(600 * time.Millisecond)
 	}
 
@@ -968,107 +1043,123 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var bonusGold, bonusElixir, bonusDE int = 0, 0, 0
 	var parsedResults bool = false
 
-	if b.attackExec.WaitForBattleEnd(4 * time.Minute) {
-		// Capture screen to read results
-		resultScreen, err := b.client.CaptureToMat()
-		if err == nil {
+	if b.attackExec.WaitForBattleEndCtx(b.ctx, 4*time.Minute) {
+
+		// WaitForBattleEnd returns the moment the result overlay's Return
+		// Home button is detected, but the overlay is still animating in:
+		// the star counter lights up one-by-one and the loot numbers count
+		// up over ~1.5-2s. Capturing right then freezes the animation at
+		// frame 0, and the OCR reads it as 0 stars / 0 loot (observed live:
+		// a 50%-destruction battle parsed as 0 stars / 0 loot, while the
+		// SAME screenshot parsed minutes later as 1 star / 444k gold).
+		//
+		// Settle first, then parse. If the read comes back all-zero we
+		// cannot assume the animation is still running — a genuine 0%
+		// destruction loss reads exactly the same. The discriminator is
+		// frame stability: once two captures ~1s apart are pixel-identical
+		// in the result panel, the count-up finished and the (possibly
+		// zero) value is the true result. Every attempt overwrites
+		// last_battle_result.png with the freshest frame so the saved
+		// artifact matches the final parse.
+		b.client.JitteredSleep(1800 * time.Millisecond)
+
+		var parsedResult game.BattleResult
+		parsedOK := false
+		prevHash := uint64(0)
+		for attempt := 0; attempt < 3 && !parsedOK; attempt++ {
+			resultScreen, err := b.client.CaptureToMat()
+			if err != nil {
+				b.logger.Warn().Err(err).Msg("battle result capture failed; retrying")
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
 			gocv.IMWrite(paths.ResolveConfig("last_battle_result.png"), resultScreen)
 			b.logger.Info().Msg("saved battle result screenshot to last_battle_result.png")
 
 			lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
-			res, err := lootRec.ReadBattleResult(resultScreen)
-			if err == nil {
-				battleStars = res.Stars
-				battleGold = res.Loot.Gold
-				battleElixir = res.Loot.Elixir
-				battleDE = res.Loot.DarkElixir
-				bonusGold = res.Bonus.Gold
-				bonusElixir = res.Bonus.Elixir
-				bonusDE = res.Bonus.DarkElixir
-				parsedResults = true
-
-				b.totalGold.Add(int64(res.Loot.Gold + res.Bonus.Gold))
-				b.totalElixir.Add(int64(res.Loot.Elixir + res.Bonus.Elixir))
-				b.totalDE.Add(int64(res.Loot.DarkElixir + res.Bonus.DarkElixir))
-				b.totalStars.Add(int32(res.Stars))
-
-				// Track specific star result
-				switch res.Stars {
-				case 0:
-					b.stars0.Add(1)
-				case 1:
-					b.stars1.Add(1)
-				case 2:
-					b.stars2.Add(1)
-				case 3:
-					b.stars3.Add(1)
-				}
-
-				if b.OnStatsUpdate != nil {
-					b.OnStatsUpdate()
-				}
-
-				b.logger.Info().
-					Int("stars", res.Stars).
-					Int("gold", res.Loot.Gold).
-					Int("bonus_gold", res.Bonus.Gold).
-					Msg("battle result processed")
-			}
+			res, rerr := lootRec.ReadBattleResult(resultScreen)
+			hash := resultPanelHash(resultScreen, b.cal)
 			resultScreen.Close()
 			lootRec.Close()
+
+			if rerr != nil {
+				b.logger.Warn().Err(rerr).Msg("battle result parse error; retrying")
+				time.Sleep(800 * time.Millisecond)
+				continue
+			}
+
+			settled := hash != 0 && hash == prevHash
+			if res.Stars > 0 || res.Loot.Gold > 0 || res.Loot.Elixir > 0 || res.Loot.DarkElixir > 0 || settled {
+				parsedResult = res
+				parsedOK = true
+				if settled {
+					b.logger.Debug().Msg("battle result accepted: result panel stable across captures")
+				} else {
+					b.logger.Debug().Msg("battle result accepted (non-empty read)")
+				}
+				break
+			}
+
+			prevHash = hash
+			b.logger.Warn().Int("attempt", attempt).Msg("battle result read empty and panel still changing; overlay animating, retrying...")
+			time.Sleep(1000 * time.Millisecond)
 		}
+
+		if parsedOK {
+			battleStars = parsedResult.Stars
+			battleGold = parsedResult.Loot.Gold
+			battleElixir = parsedResult.Loot.Elixir
+			battleDE = parsedResult.Loot.DarkElixir
+			bonusGold = parsedResult.Bonus.Gold
+			bonusElixir = parsedResult.Bonus.Elixir
+			bonusDE = parsedResult.Bonus.DarkElixir
+			parsedResults = true
+
+			b.totalGold.Add(int64(parsedResult.Loot.Gold + parsedResult.Bonus.Gold))
+			b.totalElixir.Add(int64(parsedResult.Loot.Elixir + parsedResult.Bonus.Elixir))
+			b.totalDE.Add(int64(parsedResult.Loot.DarkElixir + parsedResult.Bonus.DarkElixir))
+			b.totalStars.Add(int32(parsedResult.Stars))
+
+			switch parsedResult.Stars {
+			case 0:
+				b.stars0.Add(1)
+			case 1:
+				b.stars1.Add(1)
+			case 2:
+				b.stars2.Add(1)
+			case 3:
+				b.stars3.Add(1)
+			}
+
+			b.logger.Info().
+				Int("stars", parsedResult.Stars).
+				Int("gold", parsedResult.Loot.Gold).
+				Int("bonus_gold", parsedResult.Bonus.Gold).
+				Msg("battle result processed")
+		} else {
+			b.logger.Error().Msg("battle result OCR failed after retries; recording unparsed attack")
+		}
+	} else if b.ctx.Err() != nil {
+		// The bot was stopped mid-battle. Exit cleanly — no forced
+		// restart (the ADB client is already being torn down by the
+		// detached Stop, and restartGame would just log a stream of
+		// transport errors against a closed client).
+		b.logger.Info().Msg("battle ended by user stop, abandoning sequence")
+		return
 	} else {
 		b.logger.Error().Msg("battle end timeout (stuck in battle?), restarting game...")
 		b.restartGame()
 		return
 	}
 
-	returnedHome := false
-	if err := b.attackExec.ReturnHome(); err == nil {
-		returnedHome = true
-	} else {
-		b.logger.Warn().Err(err).Msg("ReturnHome failed, attempting template fallback")
-		for i := 0; i < 3; i++ {
-			if b.findAndClick("btn_return_home", "Return Home", 1) {
-				returnedHome = true
-				break
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}
-
-	if !returnedHome {
-		b.logger.Error().Msg("failed to return home after battle, restarting game...")
-		b.restartGame()
-		return
-	}
-
-	// Dismiss potential popup menus by tapping a neutral side area (Ref: 537, 693)
-	sideX := int(537 * b.cal.ScaleX)
-	sideY := int(693 * b.cal.ScaleY)
-	b.logger.Info().Msg("Tapping side area to dismiss potential post-attack popups...")
-	_ = b.client.Tap(sideX, sideY)
-	time.Sleep(1000 * time.Millisecond)
-
-	if b.cfg.Upgrade.UpgradeWalls {
-		b.UpgradeWalls(gc)
-	}
-
+	// Record the attack in history IMMEDIATELY after the result is
+	// parsed, so the Attack History row appears in the UI at the same
+	// moment the loot totals tick up. Previously this block ran after
+	// ReturnHome + wall upgrades (which can take minutes), so the
+	// dashboard showed fresh gold/elixir totals for minutes before the
+	// history row appeared — and the entry was dropped entirely if
+	// ReturnHome failed.
 	b.attackCount.Add(1)
-
-	// If we've reached the configured attack cap (e.g. --once), shut the bot
-	// down gracefully instead of silently idling in the capture loop.
-	if int(b.attackCount.Load()) >= b.cfg.Attack.MaxAttackPerSession {
-		b.logger.Info().
-			Int32("attacks", b.attackCount.Load()).
-			Int("cap", b.cfg.Attack.MaxAttackPerSession).
-			Msg("attack cap reached, scheduling graceful shutdown...")
-		go func() {
-			// Tiny delay so the summary flushes and any post-attack writes finish.
-			time.Sleep(2 * time.Second)
-			b.cancel()
-		}()
-	}
 
 	depErrStr := ""
 	if deployErr != nil {
@@ -1097,9 +1188,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		_ = AsyncWriteFile(paths.ResolveConfig("last_attack_report.json"), repBytes, 0644)
 	}
 
-	// Update persistent history file. Prefer the in-memory cache so a
-	// transient read error cannot silently wipe prior attacks; only fall
-	// back to a fresh read of the on-disk file if the cache is empty.
 	history := b.historyCache
 	if history == nil {
 		if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
@@ -1113,6 +1201,62 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	b.historyCache = history
 	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
 		_ = AsyncWriteFile(paths.ResolveConfig("attack_history.json"), histBytes, 0644)
+	}
+
+	// Notify the UI AFTER the report is in historyCache and
+	// attack_history.json is flushed to disk. Firing this earlier
+	// (right after ReadBattleResult) raced the App's refreshHistory
+	// cache re-read with the report write, so the UI stayed a full
+	// attack behind even though the loot totals (live atomics) moved
+	// instantly. AsyncWriteFile blocks until the worker flushes, so
+	// by the time we get here the file on disk contains this report.
+	if b.OnStatsUpdate != nil {
+		b.OnStatsUpdate()
+	}
+
+	returnedHome := false
+	if err := b.attackExec.ReturnHome(); err == nil {
+		returnedHome = true
+	} else {
+		b.logger.Warn().Err(err).Msg("ReturnHome failed, attempting template fallback")
+		for i := 0; i < 3; i++ {
+			if b.findAndClick("btn_return_home", "Return Home", 1) {
+				returnedHome = true
+				break
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	if !returnedHome {
+		b.logger.Error().Msg("failed to return home after battle, restarting game...")
+		b.restartGame()
+		return
+	}
+
+	sideX := int(537 * b.cal.ScaleX)
+	sideY := int(693 * b.cal.ScaleY)
+	b.logger.Info().Msg("Tapping side area to dismiss potential post-attack popups...")
+	_ = b.client.Tap(sideX, sideY)
+	time.Sleep(1000 * time.Millisecond)
+
+	if b.cfg.Upgrade.UpgradeWalls {
+		b.UpgradeWalls(gc)
+	}
+
+	// Cap check stays after wall upgrades so the graceful shutdown (2s
+	// grace then cancel) never interrupts an in-progress wall loop; the
+	// count itself was already incremented when the report was recorded.
+	if int(b.attackCount.Load()) >= b.cfg.Attack.MaxAttackPerSession {
+		b.logger.Info().
+			Int32("attacks", b.attackCount.Load()).
+			Int("cap", b.cfg.Attack.MaxAttackPerSession).
+			Msg("attack cap reached, scheduling graceful shutdown...")
+		go func() {
+
+			time.Sleep(2 * time.Second)
+			b.cancel()
+		}()
 	}
 
 	deployStatus := "SUCCESS (100% Deployed)"
@@ -1139,7 +1283,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	fmt.Println("=========================================")
 	fmt.Println()
 
-	// Professional Session Summary
 	b.logger.Info().
 		Int32("attacks", b.attackCount.Load()).
 		Str("stars", fmt.Sprintf("3⭐:%d | 2⭐:%d | 1⭐:%d | 0⭐:%d", b.stars3.Load(), b.stars2.Load(), b.stars1.Load(), b.stars0.Load())).
@@ -1147,12 +1290,11 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		Dur("uptime", time.Since(b.startedAt)).
 		Msg("=== SESSION SUMMARY ===")
 
-	// Reset zoom state so we zoom out again after returning home
 	b.zoomedOut.Store(false)
 }
 
 func (b *Bot) clickSequence() bool {
-	// Step 1: Click the orange Attack button (retry up to 3 times)
+
 	attackClicked := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if b.findAndClick("btn_attack", "Attack", 1) {
@@ -1169,9 +1311,8 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	b.client.JitteredSleep(500 * time.Millisecond) // menu slide-in (tightened)
+	b.client.JitteredSleep(500 * time.Millisecond)
 
-	// Step 2: Click the yellow Find Match button (retry up to 3 times)
 	findMatchClicked := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if b.findAndClick("btn_find_match", "Find Match", 1) {
@@ -1188,9 +1329,8 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	b.client.JitteredSleep(500 * time.Millisecond) // search screen (tightened)
+	b.client.JitteredSleep(500 * time.Millisecond)
 
-	// Step 3: Click the white army arrow to expand army selection (retry up to 3 times)
 	armyArrowClicked := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if b.findAndClick("btn_army_arrow", "Army Arrow", 1) {
@@ -1207,9 +1347,8 @@ func (b *Bot) clickSequence() bool {
 		}
 		return false
 	}
-	b.client.JitteredSleep(500 * time.Millisecond) // army expansion (tightened)
+	b.client.JitteredSleep(500 * time.Millisecond)
 
-	// Step 4: Click army composition 1 (retry up to 3 times)
 	army1Clicked := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if b.findAndClick("btn_army_1", "Army 1", 1) {
@@ -1227,7 +1366,6 @@ func (b *Bot) clickSequence() bool {
 	}
 	b.client.JitteredSleep(500 * time.Millisecond)
 
-	// Step 5: Click the green Battle button (retry up to 3 times)
 	battleClicked := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if b.findAndClick("btn_battle", "Battle", 1) {
@@ -1241,45 +1379,8 @@ func (b *Bot) clickSequence() bool {
 		return false
 	}
 
-	// Wait for the actual battle to start
 	b.logger.Info().Msg("waiting for battle state (searching)...")
 	return b.waitForBattleState(60 * time.Second)
-}
-
-func (b *Bot) waitForButton(templateName string, timeout time.Duration) bool {
-	tpl, ok := b.templates.Get(templateName)
-	if !ok {
-		b.logger.Error().Str("template", templateName).Msg("template not loaded")
-		return false
-	}
-
-	// Define specialized ROIs for known buttons
-	roi := b.buttonROI(templateName)
-
-	physROI := image.Rect(
-		int(float64(roi.Min.X)*b.cal.ScaleX),
-		int(float64(roi.Min.Y)*b.cal.ScaleY),
-		int(float64(roi.Max.X)*b.cal.ScaleX),
-		int(float64(roi.Max.Y)*b.cal.ScaleY),
-	)
-
-	b.logger.Debug().Str("template", templateName).Msg("waiting for button")
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		screen, err := b.client.CaptureToMat()
-		if err != nil {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		matches, _ := vision.MatchMultiScaleROICached(screen, tpl, templateName, 0.2, 1.8, 5, 0.5, physROI)
-		screen.Close()
-		if len(matches) > 0 {
-			return true
-		}
-		b.dismissInterruptions()
-		time.Sleep(200 * time.Millisecond)
-	}
-	return false
 }
 
 // Pinpoint defines a precise location on the reference screen (860x732)
@@ -1301,25 +1402,26 @@ var villagePinpoints = map[string]Pinpoint{
 }
 
 func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
-	// Step 1: Pinpoint Match (Fast Path - Trust Coordinates)
+
 	if pp, ok := villagePinpoints[templateName]; ok {
 		px, py := b.cal.ScaleRef(pp.X, pp.Y)
 		b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
-		if err := b.client.Tap(px, py); err == nil {
-			time.Sleep(1000 * time.Millisecond) // Wait for UI transition
-			b.recordActivity()                  // successful click = real progress
+		// TapRandomized = Gaussian jitter + the 180-450ms human reaction
+		// delay, so the bot visibly hesitates before committing to each
+		// decision tap the way a player would.
+		if err := b.client.TapRandomized(px, py); err == nil {
+			time.Sleep(1000 * time.Millisecond)
+			b.recordActivity()
 			return true
 		}
 	}
 
-	// Step 2: Fallback Path: Template Matching (Robust but slower)
 	tpl, ok := b.templates.Get(templateName)
 	if !ok {
 		b.logger.Error().Str("template", templateName).Msg("template not loaded")
 		return false
 	}
 
-	// Define specialized ROIs for known buttons
 	roi := b.buttonROI(templateName)
 
 	physROI := image.Rect(
@@ -1343,21 +1445,19 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			continue
 		}
 
-		// Tier 1.5 Fallback: Try a secondary pinpoint for Battle button if it's next to Army 1
 		if templateName == "btn_battle" && retry == 0 {
-			altX, altY := b.cal.ScaleRef(525, 247) // Higher Y coordinate, same X as Slot 1 Battle
+			altX, altY := b.cal.ScaleRef(525, 247)
 			if b.isGreen(screen, altX, altY) {
 				screen.Close()
 				b.logger.Info().Str("step", stepName).Msg("secondary pinpoint match (upper battle), clicking...")
-				if err := b.client.Tap(altX, altY); err == nil {
+				if err := b.client.TapRandomized(altX, altY); err == nil {
 					b.recordActivity()
 					return true
 				}
-				screen, _ = b.client.CaptureToMat() // Re-capture if tap failed somehow
+				screen, _ = b.client.CaptureToMat()
 			}
 		}
 
-		// Use specialized ROI for matching (Optimized: 5 steps)
 		matches, err := vision.MatchMultiScaleROICached(screen, tpl, templateName, 0.2, 2.0, 5, 0.45, physROI)
 		screen.Close()
 
@@ -1389,21 +1489,20 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			gocv.IMWrite(paths.ResolveConfig(fmt.Sprintf("diag_fallback_%s.png", templateName)), screen)
 		}
 
-		if err := b.client.Tap(px, py); err != nil {
+		if err := b.client.TapRandomized(px, py); err != nil {
 			b.logger.Error().Err(err).Msg("tap failed")
 			return false
 		}
-		b.recordActivity() // successful template-based click = real progress
+		b.recordActivity()
 
 		return true
 	}
 
-	// Tier 3 Fallback: Blind tap calibrated pinpoint coordinates
 	if pp, ok := villagePinpoints[templateName]; ok {
 		px, py := b.cal.ScaleRef(pp.X, pp.Y)
 		b.logger.Warn().Str("step", pp.Name).Msg("pinpoint color check and template match failed; executing blind tap fallback")
-		if err := b.client.Tap(px, py); err == nil {
-			b.recordActivity() // successful blind tap = real progress
+		if err := b.client.TapRandomized(px, py); err == nil {
+			b.recordActivity()
 			return true
 		}
 	}
@@ -1412,31 +1511,53 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	return false
 }
 
-func (b *Bot) isWhite(screen gocv.Mat, x, y int) bool {
-	return b.colorCheck(screen, x, y,
-		gocv.NewScalar(220, 220, 220, 0), // Lower White
-		gocv.NewScalar(255, 255, 255, 0), // Upper White
-		10)
-}
+// resultPanelHash returns a cheap content hash of the end-of-battle
+// result panel region (star row + battle-loot and bonus columns). Two
+// captures with an equal nonzero hash mean the panel has finished
+// rendering — used to distinguish a still-counting-up overlay from a
+// genuine 0-star/0-loot result.
+func resultPanelHash(screen gocv.Mat, cal *game.Calibration) uint64 {
+	// Reference (860x732) region covering the stars and both loot
+	// columns; generous bounds tolerate small theme shifts.
+	ref := image.Rect(300, 180, 690, 470)
+	x0 := int(float64(ref.Min.X) * cal.ScaleX)
+	y0 := int(float64(ref.Min.Y) * cal.ScaleY)
+	x1 := int(float64(ref.Max.X) * cal.ScaleX)
+	y1 := int(float64(ref.Max.Y) * cal.ScaleY)
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	if x1 > screen.Cols() {
+		x1 = screen.Cols()
+	}
+	if y1 > screen.Rows() {
+		y1 = screen.Rows()
+	}
+	if x1-x0 < 2 || y1-y0 < 2 {
+		return 0
+	}
 
-func (b *Bot) isSilver(screen gocv.Mat, x, y int) bool {
-	return b.colorCheck(screen, x, y,
-		gocv.NewScalar(170, 170, 170, 0), // Lower Silver
-		gocv.NewScalar(235, 235, 235, 0), // Upper Silver
-		10)
-}
-
-func (b *Bot) isYellow(screen gocv.Mat, x, y int) bool {
-	return b.colorCheck(screen, x, y,
-		gocv.NewScalar(0, 180, 200, 0),   // Lower Yellow (BGR)
-		gocv.NewScalar(100, 255, 255, 0), // Upper Yellow
-		15)
+	var h uint64 = 14695981039346656037 // FNV-1a offset basis
+	stride := 4                         // sample every 4th pixel — plenty for frame-diff detection
+	for y := y0; y < y1; y += stride {
+		for x := x0; x < x1; x += stride {
+			b := uint64(screen.GetUCharAt(y, x*3))
+			g := uint64(screen.GetUCharAt(y, x*3+1))
+			r := uint64(screen.GetUCharAt(y, x*3+2))
+			h ^= (r << 16) | (g << 8) | b
+			h *= 1099511628211
+		}
+	}
+	return h
 }
 
 func (b *Bot) isGreen(screen gocv.Mat, x, y int) bool {
 	return b.colorCheck(screen, x, y,
-		gocv.NewScalar(0, 150, 0, 0),     // Lower Green
-		gocv.NewScalar(120, 255, 120, 0), // Upper Green
+		gocv.NewScalar(0, 150, 0, 0),
+		gocv.NewScalar(120, 255, 120, 0),
 		15)
 }
 
@@ -1492,11 +1613,19 @@ func (b *Bot) dismissInterruptions() {
 	case game.StateGemDialog, game.StateShieldInfo:
 		b.client.TapRandomized(175, 30)
 	case game.StateWelcomeBack:
-		// Okay button center-ish tap
+
 		ox, oy := b.cal.ScaleRef(430, 520)
 		b.client.TapRandomized(ox, oy)
 	case game.StateChatOpen:
 		b.client.Back()
+	case game.StateTapToContinue:
+		// Post-boot "ТАР!" collect splash — tap the prompt text.
+		px, py := b.cal.ScaleRef(450, 195)
+		b.client.TapRandomized(px, py)
+	case game.StateNewsSplash:
+		// Post-boot news splash — tap the green Continue button.
+		px, py := b.cal.ScaleRef(403, 535)
+		b.client.TapRandomized(px, py)
 	}
 }
 
@@ -1558,7 +1687,6 @@ func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
 		Int("phases", len(strat.Phases)).
 		Msg("executing dynamic attack plan")
 
-	// Wait for clouds/battle transition to settle and troop bar to become responsive
 	time.Sleep(600 * time.Millisecond)
 
 	remaining, err := b.attackExec.DeployDynamicV2(strat, screen, b.cfg.Attack.StrategyFile)
@@ -1604,12 +1732,6 @@ func (b *Bot) QuickDeploy() error {
 		Int("h", screen.Rows()).
 		Msg("starting deploy from current screen")
 
-	// Hard gate on StateBattle: deployTroops assumes a Battle-state screen
-	// with a visible troop bar and a deployable base. Running it against
-	// home / army-menu / battle-end / clouds could mis-fire taps on buttons
-	// mistaken for slot positions. Surface a clear actionable error so the
-	// user can wait for the clouds to clear or finish navigating to the
-	// attack screen before re-running.
 	if state != game.StateBattle {
 		b.logger.Error().
 			Str("state", state.String()).
@@ -1619,7 +1741,7 @@ func (b *Bot) QuickDeploy() error {
 
 	remaining, deployErr := b.deployTroops(screen)
 	if deployErr != nil {
-		// Surface partial-success so callers know how far it got.
+
 		b.logger.Error().Err(deployErr).Int("undeployed", remaining).Msg("deploy failed")
 		return fmt.Errorf("deployTroops: %w (undeployed=%d)", deployErr, remaining)
 	}
@@ -1650,25 +1772,11 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 	if b.trainer != nil {
 		b.trainer.UpdateConfig(&cfg.Training)
 	}
-	// Propagate the chest-dismissal kill-switch so toggling
-	// `disable_chest_dismissal` in the settings UI takes effect
-	// immediately, not just on next bot restart.
+
 	if b.navigator != nil {
 		b.navigator.SetDisableChestDismissal(cfg.Device.DisableChestDismissal)
 	}
 	b.logger.Info().Msg("bot configuration updated in real-time")
-}
-
-func (b *Bot) GetClient() *adb.Client {
-	return b.client
-}
-
-func (b *Bot) GetLastFrame() string {
-	val := b.lastFrame.Load()
-	if val == nil {
-		return ""
-	}
-	return val.(string)
 }
 
 func (b *Bot) Stats() BotStats {
@@ -1701,12 +1809,10 @@ type BotStats struct {
 	Stars3           int32         `json:"stars_3"`
 	Uptime           time.Duration `json:"uptime"`
 	AdbHealth        adb.Health    `json:"adb_health"`
-	// CPUTimeSec is the absolute CPU time consumed since process start
-	// (device-independent, unlike "% CPU").
+
 	CPUTimeSec float64 `json:"cpu_time_sec"`
-	// CPUCores is CPU usage as a fraction of one core over the last sample
-	// window (1.0 == one full core busy).
-	CPUCores   float64 `json:"cpu_cores"`
+
+	CPUCores float64 `json:"cpu_cores"`
 }
 
 type AttackReport struct {

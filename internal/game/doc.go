@@ -5,11 +5,13 @@
 //
 // The package implements a three-phase system:
 //
-//	Phase 1: Calibrator
+//	Phase 1: Calibration
 //
-// Call NewCalibrator(client).Calibrate() on startup to detect the BlueStacks
-// screen resolution and compute scaling factors for all pixel coordinates.
-// This makes the entire package resolution-independent.
+// A *Calibration carries the physical→reference scaling factors for the
+// connected device (built from the live screen size; see internal/bot/bot.go).
+// All pixel coordinates in this package live in the 860×732 reference frame
+// and are scaled at runtime via (*Calibration).ScaleRef, making the package
+// resolution-independent.
 //
 //	Phase 2: Classifier
 //
@@ -17,12 +19,10 @@
 // the current GameState with a confidence score. It uses pixel-based detection
 // for speed (O(n) where n = number of rules, typically < 20) with no disk I/O.
 //
-//	Phase 3: Navigator / Explorer
+//	Phase 3: Navigator
 //
 // Navigator.Navigate(ctx, target) plans and executes the shortest path between
-// any two states using Dijkstra's algorithm on the StateGraph. Explorer.Explore()
-// auto-discovers all game states by clicking every interactive element and building
-// a complete state transition map.
+// any two states using Dijkstra's algorithm on the StateGraph.
 //
 // # GameContext
 //
@@ -31,7 +31,7 @@
 //
 // Quick Start
 //
-//	cal, _ := calibrator.Calibrate()
+//	cal := &Calibration{...} // built from the live screen size (see bot.go)
 //	classifier := NewClassifier(cal, DefaultClassifierConfig())
 //
 //	classify := func(screen gocv.Mat) (GameState, int) {
@@ -58,11 +58,10 @@
 // Detection priority orders states from most interruptive (dialogs, gem popup)
 // to least (main village) so overlays never confuse the classifier.
 //
-// # Template Extraction
+// # Template Matching
 //
-// The Explorer saves cropped template images to assets/templates/ as it maps
-// states. These can be used as a fallback for template matching when pixel
-// checks are ambiguous. See TemplateStore for the matching API.
+// TemplateStore matches cropped template images against the live screen as a
+// fallback when pixel checks are ambiguous.
 //
 // # Thread Safety
 //

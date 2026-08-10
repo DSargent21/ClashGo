@@ -1,7 +1,6 @@
 package updater
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -17,14 +16,14 @@ import (
 // Example:
 //
 //	{
-//	  "version": "0.2.0-beta",
+//	  "version": "0.3.0",
 //	  "release_date": "2026-07-08T12:00:00Z",
 //	  "notes": "Bug fixes + new auto-attack presets.",
 //	  "min_supported": "0.1.0",
 //	  "platforms": {
 //	    "darwin": {
-//	      "asset_name": "ClashGO-v0.2.0-beta-macOS.zip",
-//	      "asset_url": "https://github.com/.../ClashGO-v0.2.0-beta-macOS.zip",
+//	      "asset_name": "ClashGO-v0.3.0-macOS.zip",
+//	      "asset_url": "https://github.com/.../ClashGO-v0.3.0-macOS.zip",
 //	      "size": 12345678,
 //	      "sha256": "abc123..."
 //	    }
@@ -131,18 +130,9 @@ func hasPrefix(s, p string) bool {
 }
 
 func hasSuffix(s, suf string) bool {
-	// hasSuffix with empty suf always returned true because
-	// s[len(s):] == "" for any non-negative length. Skip that case
-	// so picker callers can use "" as a sentinel.
+
 	if suf == "" {
 		return false
 	}
 	return len(s) >= len(suf) && s[len(s)-len(suf):] == suf
-}
-
-// MustSerializeManifest is exposed for the Makefile invocation (via a
-// tiny CLI added later). For now it's used in tests.
-func MustSerializeManifest(m Manifest) []byte {
-	b, _ := json.MarshalIndent(m, "", "  ")
-	return b
 }

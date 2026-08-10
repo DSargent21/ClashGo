@@ -239,6 +239,82 @@ func (c *Classifier) buildRules() {
 				{38, 603, 0x0A, 0x22, 0x3F, 25},
 			},
 		},
+		// StateTapToContinue is the post-boot "ТАР!" (tap-to-continue /
+		// collect) splash that Clash shows right after the game relaunches.
+		// It is a near-black screen with a large red/orange artwork and a
+		// beige "ТАР!" prompt near the top; tapping the prompt text dismisses
+		// it into the game. Previously the classifier misread the orange art
+		// as StateBattle (1/9 pixels) which made the stuck-watchdog
+		// force-stop the game in an endless restart loop.
+		//
+		// Signature: beige tap text at (450,195), dark near-black corners,
+		// red/orange artwork at (430,300). Priority 97 sits above the
+		// obstruction modals so the splash is never misread as Battle (90)
+		// or MainVillage (60).
+		{
+			State:    StateTapToContinue,
+			Priority: 97,
+			Weight:   110,
+			Desc:     "post-boot tap-to-continue / collect splash (ТАР!)",
+			// NOTE: shares priority 97 with StateWelcomeBack. They cannot
+			// co-fire in practice (WelcomeBack needs the red banner +
+			// btn_okay template; the splash has neither), and a splash
+			// winning the tie is the desired outcome.
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// Beige "ТАР!" prompt text (two points inside the glyphs,
+				// sampled at 0 distance on the live splash; the strongest
+				// discriminator — never present on the village)
+				{414, 182, 0xE1, 0xCF, 0xBC, 45},
+				{450, 185, 0xE2, 0xD0, 0xBC, 45},
+				// Dark near-black top-left corner (no village HUD)
+				{40, 40, 0x14, 0x0D, 0x1E, 30},
+			},
+		},
+		// StateNewsSplash is the post-boot news/announcement screen (e.g. the
+		// "Meteor Golem" troop intro) with a light-green Continue button at
+		// bottom-center. Tapping Continue dismisses it into the village.
+		// It previously read as StateUnknown, so the bot neither dismissed it
+		// nor waited — the stuck-watchdog eventually force-restarted the game.
+		// Priority 95 sits just below the obstruction modals and above Battle.
+		{
+			State:    StateNewsSplash,
+			Priority: 95,
+			Weight:   100,
+			Desc:     "post-boot news splash with Continue button",
+			// NOTE: shares priority 95 with StateObstacleDialog. They
+			// cannot co-fire (ObstacleDialog needs the light-gray dialog
+			// pixel at (324,499) + white corner + green button; the dark
+			// news splash has none of those).
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// Light-green Continue button
+				{403, 535, 0xBE, 0xEA, 0x8C, 40},
+				// Button top highlight (near-white)
+				{403, 525, 0xFD, 0xFF, 0xF6, 25},
+				// Pink/purple announcement art (center)
+				{430, 200, 0xFE, 0xCA, 0xFF, 50},
+			},
+		},
+		// StateLogo is the CoC castle logo / connecting splash shown while
+		// the game establishes its session after the tap-to-continue screen.
+		// It is static for 1-3 minutes (no progress indicator); classifying it
+		// keeps the stuck-watchdog from force-restarting mid-boot.
+		{
+			State:    StateLogo,
+			Priority: 92,
+			Weight:   92,
+			Desc:     "CoC castle logo / connecting splash (fallback; observed castle-like frames were actually the news splash)",
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// Pink/red logo art (center)
+				{430, 220, 0xFF, 0x74, 0xD0, 60},
+				// Light logo band
+				{430, 320, 0xFF, 0xE7, 0xE0, 50},
+				// Dark left background
+				{60, 400, 0x2F, 0x1A, 0x0E, 35},
+			},
+		},
 		{
 			State:    StateWelcomeBack,
 			Priority: 97,
@@ -520,47 +596,6 @@ type StateClassifier interface {
 }
 
 var _ StateClassifier = (*Classifier)(nil)
-
-func ClassifyStateFast(screen gocv.Mat, cal *Calibration, r []StateRule) GameState {
-	if screen.Empty() {
-		return StateUnknown
-	}
-
-	best := StateUnknown
-	bestScore := 0
-
-	for _, rule := range r {
-		passed := 0
-		for _, chk := range rule.Checks {
-			sx, sy := cal.ScaleRef(chk.X, chk.Y)
-			if sx < 0 || sy < 0 || sx >= screen.Cols() || sy >= screen.Rows() {
-				continue
-			}
-
-			b := screen.GetUCharAt(sy, sx*3)
-			g := screen.GetUCharAt(sy, sx*3+1)
-			r := screen.GetUCharAt(sy, sx*3+2)
-
-			dr := absDiff(int(r), int(chk.R))
-			dg := absDiff(int(g), int(chk.G))
-			db := absDiff(int(b), int(chk.B))
-
-			if math.Sqrt(float64(dr*dr+dg*dg+db*db)) <= float64(chk.Tolerance) {
-				passed++
-			}
-		}
-
-		if passed >= rule.MinPass {
-			score := passed*100 + rule.Weight
-			if score > bestScore {
-				bestScore = score
-				best = rule.State
-			}
-		}
-	}
-
-	return best
-}
 
 type ClassifierResult struct {
 	State      GameState

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/logger"
@@ -20,7 +18,6 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/rs/zerolog/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"gocv.io/x/gocv"
 )
 
 // App struct
@@ -30,7 +27,6 @@ type App struct {
 	botCtx    context.Context
 	cancel    context.CancelFunc
 	mu        sync.Mutex
-	echo      *echo.Echo
 	lastStats bot.BotStats
 	logBuffer []string
 
@@ -38,9 +34,12 @@ type App struct {
 	// so React's 2 s poll for GetAttackHistory doesn't hit the
 	// filesystem on every tick. Refreshed lazily on first call
 	// (cold start) and eagerly on each bot.statsUpdate callback
-	// (end of every attack — bounded to ~once per attack, well
-	// below the 0.5 Hz React poll). RWMutex because read dominates
-	// on the hot IPC path.
+	// (end of every attack — bounded to ~once per attack, plus the
+	// per-search-skip refresh, both far below the 0.5 Hz React
+	// poll). RWMutex because read dominates on the hot IPC path.
+	// Every eager refresh is a FORCED disk re-read (see
+	// refreshHistory) — a warm cache must never be treated as
+	// authoritative, or the latest attack would never surface.
 	cachedHistory   []bot.AttackReport
 	cachedHistoryMu sync.RWMutex
 
@@ -165,21 +164,7 @@ func (a *App) saveStats() {
 	a.mu.Lock()
 	stats := a.lastStats
 	if a.bot != nil {
-		current := a.bot.Stats()
-		stats = bot.BotStats{
-			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
-			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
-			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
-			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
-			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
-			Stars0:           a.lastStats.Stars0 + current.Stars0,
-			Stars1:           a.lastStats.Stars1 + current.Stars1,
-			Stars2:           a.lastStats.Stars2 + current.Stars2,
-			Stars3:           a.lastStats.Stars3 + current.Stars3,
-			Uptime:           a.lastStats.Uptime + current.Uptime,
-			CPUTimeSec:       current.CPUTimeSec,
-			CPUCores:         current.CPUCores,
-		}
+		stats = mergeStats(a.lastStats, a.bot.Stats())
 	}
 	a.mu.Unlock()
 
@@ -191,6 +176,28 @@ func (a *App) saveStats() {
 
 	if err := bot.AsyncWriteFile(paths.ResolveConfig("stats.json"), bytes, 0644); err != nil {
 		log.Error().Err(err).Msg("failed to write stats.json")
+	}
+}
+
+// mergeStats accumulates the live bot's session counters into acc.
+// Bot counters are zeroed on every NewBot, so persisted/returned totals
+// are acc + current. AdbHealth and CPU metrics are live values and are
+// always taken from current.
+func mergeStats(acc, current bot.BotStats) bot.BotStats {
+	return bot.BotStats{
+		AttacksCompleted: acc.AttacksCompleted + current.AttacksCompleted,
+		SearchSkips:      acc.SearchSkips + current.SearchSkips,
+		TotalGold:        acc.TotalGold + current.TotalGold,
+		TotalElixir:      acc.TotalElixir + current.TotalElixir,
+		TotalDE:          acc.TotalDE + current.TotalDE,
+		Stars0:           acc.Stars0 + current.Stars0,
+		Stars1:           acc.Stars1 + current.Stars1,
+		Stars2:           acc.Stars2 + current.Stars2,
+		Stars3:           acc.Stars3 + current.Stars3,
+		Uptime:           acc.Uptime + current.Uptime,
+		AdbHealth:        current.AdbHealth,
+		CPUTimeSec:       current.CPUTimeSec,
+		CPUCores:         current.CPUCores,
 	}
 }
 
@@ -263,12 +270,25 @@ type BotStatus struct {
 }
 
 // StartBot starts the bot with the given thresholds
+//
+// The returned BotStatus reports running=true immediately: the boot
+// runs in a background goroutine (BlueStacks launch + ADB connect +
+// boot probe can take 1-3 minutes on a cold start). If the boot
+// fails, the `bot_error` / `bot_init_failed` events flip the UI back
+// to stopped; if the user clicks Stop mid-boot, the captured
+// per-call context is cancelled and the boot goroutine aborts
+// instead of finishing the boot and starting anyway (the old
+// behavior — see the concurrency notes in StopBot).
 func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled bool) BotStatus {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if a.bot != nil {
+		a.mu.Unlock()
 		return BotStatus{Running: true, Message: "Bot already running"}
+	}
+	if a.cancel != nil {
+		a.mu.Unlock()
+		return BotStatus{Running: true, Message: "Bot is still starting up — wait for it to connect or press Stop first"}
 	}
 
 	cfg := config.LoadOrDefault("config.json")
@@ -278,12 +298,29 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
 	cfg.Search.Enabled = searchEnabled
 
-	// Create a placeholder to indicate the bot is starting
+	// Create a placeholder to indicate the bot is starting. The
+	// context is captured by value into the goroutine so a quick
+	// Stop → Start cycle can't have the OLD goroutine observe the NEW
+	// context (and wrongly claim success).
 	a.botCtx, a.cancel = context.WithCancel(context.Background())
+	bootCtx := a.botCtx
+	a.mu.Unlock()
 
-	go func() {
-		b, err := bot.NewBot(cfg)
+	go func(bootCtx context.Context) {
+		b, err := bot.NewBotWithContext(bootCtx, cfg)
 		if err != nil {
+			if bootCtx.Err() != nil {
+				// The user clicked Stop while BlueStacks was booting.
+				// NewBotWithContext already closed its client; just
+				// reset the start state. No error events — the stop
+				// was intentional.
+				log.Info().Msg("bot boot cancelled by user (Stop clicked during startup)")
+				a.mu.Lock()
+				a.clearStartStateLocked()
+				a.mu.Unlock()
+				return
+			}
+
 			// The orchestrator wraps the error with a Summary(); the
 			// underlying cause is still reachable via errors.Unwrap
 			// for programmatic consumers. The console logger now
@@ -296,8 +333,7 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 			})
 
 			a.mu.Lock()
-			a.cancel()
-			a.bot = nil
+			a.clearStartStateLocked()
 			a.mu.Unlock()
 			return
 		}
@@ -323,20 +359,82 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 		}
 
 		a.mu.Lock()
+		if bootCtx.Err() != nil {
+			// Stop was clicked between NewBotWithContext returning and
+			// this assignment (e.g. while the bot was still settling
+			// the game). Discard the freshly-booted bot instead of
+			// starting it behind the user's back.
+			a.clearStartStateLocked()
+			a.mu.Unlock()
+			log.Info().Msg("bot boot finished after Stop was clicked; discarding and shutting down")
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error().Interface("panic", r).Msg("recovered panic during discarded-bot teardown")
+					}
+				}()
+				b.Stop()
+			}()
+			return
+		}
 		a.bot = b
 		a.mu.Unlock()
 
-		if err := a.bot.Start(); err != nil {
+		// Use the LOCAL b, never a.bot: StopBot nulls a.bot (under
+		// lock) the moment a Stop lands, and reading a.bot without the
+		// lock here would panic with a nil deref exactly in the race
+		// this fix is supposed to make reliable.
+		if err := b.Start(); err != nil {
+			if bootCtx.Err() != nil {
+				// Stop landed between the assignment and Start() — with
+				// the fail-fast client, b.Start() fails on the closed
+				// transport. Intentional stop: no error event, just
+				// tear down the booted bot so the next Start is clean.
+				log.Info().Msg("bot start aborted by stop; discarding")
+				a.mu.Lock()
+				a.clearStartStateLocked()
+				a.mu.Unlock()
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Error().Interface("panic", r).Msg("recovered panic during discarded-bot teardown")
+						}
+					}()
+					b.Stop()
+				}()
+				return
+			}
+
 			log.Error().Err(err).Msg("failed to start bot")
 			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Start Error: %v", err))
 
+			// Clear the WHOLE start placeholder (bot AND cancel/botCtx)
+			// — leaving a.cancel set would make every future StartBot
+			// return "still starting up" forever.
 			a.mu.Lock()
-			a.bot = nil
+			a.clearStartStateLocked()
 			a.mu.Unlock()
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error().Interface("panic", r).Msg("recovered panic during failed-start teardown")
+					}
+				}()
+				b.Stop()
+			}()
 		}
-	}()
+	}(bootCtx)
 
 	return BotStatus{Running: true, Message: "Bot initialization started in background"}
+}
+
+// clearStartStateLocked resets the start placeholder after a failed
+// or user-cancelled boot so a subsequent StartBot starts fresh.
+// Caller MUST hold a.mu.
+func (a *App) clearStartStateLocked() {
+	a.bot = nil
+	a.cancel = nil
+	a.botCtx = nil
 }
 
 // StopBot stops the bot instantly.
@@ -375,28 +473,22 @@ func (a *App) StopBot() BotStatus {
 	}
 
 	if a.bot == nil {
+		// The cancel above is the important part: it aborts a boot in
+		// progress (the boot goroutine observes the cancelled context
+		// and discards the bot instead of starting it). Report the
+		// state honestly so the UI doesn't think a running bot exists.
+		startupInFlight := a.cancel != nil
 		a.mu.Unlock()
+		if startupInFlight {
+			return BotStatus{Running: false, Message: "Bot stop requested (startup cancelled)"}
+		}
 		return BotStatus{Running: false, Message: "Bot not running"}
 	}
 
 	// Capture and accumulate final stats before stopping. All counters
 	// are atomic.Int* loads, so this is O(1) and non-blocking.
 	current := a.bot.Stats()
-	a.lastStats = bot.BotStats{
-		AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
-		SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
-		TotalGold:        a.lastStats.TotalGold + current.TotalGold,
-		TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
-		TotalDE:          a.lastStats.TotalDE + current.TotalDE,
-		Stars0:           a.lastStats.Stars0 + current.Stars0,
-		Stars1:           a.lastStats.Stars1 + current.Stars1,
-		Stars2:           a.lastStats.Stars2 + current.Stars2,
-		Stars3:           a.lastStats.Stars3 + current.Stars3,
-		Uptime:           a.lastStats.Uptime + current.Uptime,
-		AdbHealth:        current.AdbHealth,
-		CPUTimeSec:       current.CPUTimeSec,
-		CPUCores:         current.CPUCores,
-	}
+	a.lastStats = mergeStats(a.lastStats, current)
 
 	// Snapshot the bot pointer + synchronously cancel its context so
 	// the captureLoop and any in-flight executeAttackSequence see the
@@ -460,22 +552,7 @@ func (a *App) GetStats() bot.BotStats {
 
 	res := a.lastStats
 	if a.bot != nil {
-		current := a.bot.Stats()
-		res = bot.BotStats{
-			AttacksCompleted: a.lastStats.AttacksCompleted + current.AttacksCompleted,
-			SearchSkips:      a.lastStats.SearchSkips + current.SearchSkips,
-			TotalGold:        a.lastStats.TotalGold + current.TotalGold,
-			TotalElixir:      a.lastStats.TotalElixir + current.TotalElixir,
-			TotalDE:          a.lastStats.TotalDE + current.TotalDE,
-			Stars0:           a.lastStats.Stars0 + current.Stars0,
-			Stars1:           a.lastStats.Stars1 + current.Stars1,
-			Stars2:           a.lastStats.Stars2 + current.Stars2,
-			Stars3:           a.lastStats.Stars3 + current.Stars3,
-			Uptime:           a.lastStats.Uptime + current.Uptime,
-			AdbHealth:        current.AdbHealth,
-			CPUTimeSec:       current.CPUTimeSec,
-			CPUCores:         current.CPUCores,
-		}
+		res = mergeStats(a.lastStats, a.bot.Stats())
 	}
 	return res
 }
@@ -557,68 +634,27 @@ func (a *App) ensureHistoryLoadedLocked() {
 // is bounded by attack frequency (~one refresh every few minutes of
 // normal play) — well below the 0.5 Hz React poll.
 //
+// This MUST force a disk re-read on every call. The naive approach
+// (just calling ensureHistoryLoadedLocked) no-ops once cachedHistory
+// is warm — and the cache is warmed by React's very first
+// GetAttackHistory poll at app launch. That froze the UI on the
+// launch-time snapshot forever: loot totals kept climbing (they're
+// read live from atomics in GetStats) while the latest attack never
+// appeared in history. Nulling the cache first routes through the
+// shared parse path so read+parse logic stays in one place.
+//
 // Holds cachedHistoryMu through the disk read so concurrent React
 // polls wait on the writer rather than racing the assign. The
 // per-attack write-lock window is ~50 ms (read+parse) which is
 // imperceptible at 0.5 Hz polling.
 func (a *App) refreshHistory() {
 	a.cachedHistoryMu.Lock()
+	a.cachedHistory = nil
 	a.ensureHistoryLoadedLocked()
 	a.cachedHistoryMu.Unlock()
 }
 
-// GetLiveScreenshot captures the current frame via ADB and encodes it to base64
-func (a *App) GetLiveScreenshot() (string, error) {
-	a.mu.Lock()
-	var client *adb.Client
-	if a.bot != nil {
-		// Optimization: If the bot is running, it's already capturing frames.
-		// Return the latest processed frame instead of triggering a new ADB capture.
-		frame := a.bot.GetLastFrame()
-		if frame != "" {
-			a.mu.Unlock()
-			return frame, nil
-		}
-		client = a.bot.GetClient()
-	}
-	a.mu.Unlock()
 
-	if client == nil {
-		// Bot isn't running and we have no client to fall back to.
-		// React's setInterval(updateScreenshot, 1000) calls this IPC
-		// method once per second. When ADB is offline, an unbounded
-		// adb.Connect() here stacks a goroutine per tick and floods
-		// Wails' IPC bridge until the webview hangs on a black frame.
-		// Returning empty is the correct placeholder while the bot
-		// isn't started; once the user clicks Start, the running-bot
-		// branch above (GetLastFrame / a.bot.GetClient()) takes over.
-		//
-		// IMPORTANT: if you ever re-add client.Connect() below, it
-		// MUST be wrapped in a finite context.WithTimeout(<=2*time.Second)
-		// so a single stalled connect cannot pin a goroutine — see
-		// the IPC-bridge-storm comment above. Without a timeout, this
-		// method will re-black-screen wails dev on adb-unreachable launch.
-		return "", nil
-	}
-
-	mat, err := client.CaptureToMat()
-	if err != nil {
-		return "", err
-	}
-	defer mat.Close()
-
-	if mat.Empty() {
-		return "", fmt.Errorf("empty mat captured")
-	}
-
-	buf, err := gocv.IMEncode(".jpg", mat)
-	if err != nil {
-		return "", err
-	}
-	defer buf.Close()
-
-	return base64.StdEncoding.EncodeToString(buf.GetBytes()), nil
-}
 
 // SaveConfig updates config.json settings
 func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool, stall int) error {

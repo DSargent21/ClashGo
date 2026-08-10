@@ -12,9 +12,9 @@ import (
 
 // RedZone represents detected deployment boundary.
 type RedZone struct {
-	BBox     image.Rectangle // Bounding box of red zone
-	Valid    bool            // Whether detection succeeded
-	Contours int             // Number of contours found
+	BBox     image.Rectangle
+	Valid    bool
+	Contours int
 }
 
 // RedLineDetector finds the red deployment boundary on screen.
@@ -33,25 +33,21 @@ func NewRedLineDetector(logger zerolog.Logger) *RedLineDetector {
 func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 	h, w := screen.Rows(), screen.Cols()
 
-	// Crop to playfield only (above troop bar)
 	roi := screen
 	if uiCutoff < h {
 		roi = screen.Region(image.Rect(0, 0, w, uiCutoff))
 	}
 	defer roi.Close()
 
-	// Detect red zone mask
 	mask := r.detectRedMask(roi)
 	defer mask.Close()
 
-	// Find contours
 	contours := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
 	if contours.Size() == 0 {
 		r.logger.Debug().Msg("no red zone contours found")
 		return RedZone{Valid: false}
 	}
 
-	// Collect all valid bounding boxes
 	type bbox struct {
 		rect image.Rectangle
 		area float64
@@ -61,7 +57,7 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 	for i := 0; i < contours.Size(); i++ {
 		cnt := contours.At(i)
 		area := gocv.ContourArea(cnt)
-		if area < 400 { // skip tiny noise
+		if area < 400 {
 			continue
 		}
 		rect := gocv.BoundingRect(cnt)
@@ -73,23 +69,20 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 		return RedZone{Valid: false}
 	}
 
-	// Sort by area descending
 	sort.Slice(boxes, func(i, j int) bool {
 		return boxes[i].area > boxes[j].area
 	})
 
-	// Find the largest contour that spans ≥55% of playfield
 	minW := int(float64(w) * 0.55)
 	minH := int(float64(uiCutoff) * 0.55)
 
 	for _, b := range boxes {
 		rect := b.rect
 
-		// Skip if too small
 		if rect.Dx() < minW || rect.Dy() < minH {
 			continue
 		}
-		// Skip if basically full screen (noise)
+
 		if rect.Dx() > int(float64(w)*0.97) && rect.Dy() > int(float64(uiCutoff)*0.97) {
 			continue
 		}
@@ -109,7 +102,6 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 		}
 	}
 
-	// Fallback: use bounding box of all contours combined
 	xMin, yMin := w, uiCutoff
 	xMax, yMax := 0, 0
 	for _, b := range boxes {
@@ -149,7 +141,7 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 // detectRedMask call. Building them once avoids repeatedly allocating +
 // freeing kernel Mats on the per-deploy hot path.
 var (
-	redlineKernelsOnce sync.Once
+	redlineKernelsOnce              sync.Once
 	redlineKh, redlineKv, redlineKs gocv.Mat
 )
 
@@ -169,13 +161,6 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	defer vision.PutMat(hsv)
 	gocv.CvtColor(roi, &hsv, gocv.ColorBGRToHSV)
 
-	// Red wraps around 0°/180° in HSV, so two ranges needed
-	// Red low: H=0-12, S=100-255, V=100-255
-	// Red high: H=168-180, S=100-255, V=100-255
-	// Orange: H=10-24, S=120-255, V=120-255
-	// Pink: H=140-170, S=60-220, V=160-255
-	// Magenta: H=150-175, S=80-255, V=140-255
-
 	m1 := vision.GetMatFrom(hsv)
 	defer vision.PutMat(m1)
 	m2 := vision.GetMatFrom(hsv)
@@ -193,9 +178,8 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	gocv.InRangeWithScalar(hsv, gocv.NewScalar(140, 60, 160, 0), gocv.NewScalar(170, 220, 255, 0), &m4)
 	gocv.InRangeWithScalar(hsv, gocv.NewScalar(150, 80, 140, 0), gocv.NewScalar(175, 255, 255, 0), &m5)
 
-	// Union all masks
 	mask := gocv.NewMat()
-	// NOTE: do NOT defer mask.Close() - caller owns the returned mask
+
 	gocv.BitwiseOr(m1, m2, &mask)
 
 	tmp := vision.GetMatFrom(hsv)
@@ -207,7 +191,6 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	gocv.BitwiseOr(mask, m5, &tmp)
 	tmp.CopyTo(&mask)
 
-	// Morphology closing: bridge dash gaps
 	kh, kv, ks := redlineKernels()
 	gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, kh)
 	tmp.CopyTo(&mask)
@@ -217,33 +200,4 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	tmp.CopyTo(&mask)
 
 	return mask
-}
-
-// IsInsideRedZone checks if a point is inside the red zone with margin.
-func (r *RedLineDetector) IsInsideRedZone(zone RedZone, x, y, margin int) bool {
-	if !zone.Valid {
-		return false
-	}
-	return x >= zone.BBox.Min.X-margin &&
-		x <= zone.BBox.Max.X+margin &&
-		y >= zone.BBox.Min.Y-margin &&
-		y <= zone.BBox.Max.Y+margin
-}
-
-// GetFreeSpace returns free space in pixels on each edge of the red zone.
-func (r *RedLineDetector) GetFreeSpace(zone RedZone, screenW, screenH, uiCutoff int) map[string]int {
-	if !zone.Valid {
-		return map[string]int{
-			"left":   screenW / 3,
-			"right":  screenW / 3,
-			"top":    uiCutoff / 3,
-			"bottom": uiCutoff / 3,
-		}
-	}
-	return map[string]int{
-		"left":   zone.BBox.Min.X,
-		"right":  screenW - zone.BBox.Max.X,
-		"top":    zone.BBox.Min.Y,
-		"bottom": uiCutoff - zone.BBox.Max.Y,
-	}
 }

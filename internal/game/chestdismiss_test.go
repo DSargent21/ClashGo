@@ -50,11 +50,19 @@ func withFastChestAnimSettle(t *testing.T) {
 // TapRandomized call and replays a pre-scripted sequence of Mats on
 // each CaptureToMat. Every Mat it creates (initial script + overruns)
 // is tracked in `allMats` so the test can release them all on Close.
+// SwipeBezier calls are recorded (endpoints + duration) so gesture
+// tests (e.g. Navigator.IdlePan) can assert geometry without a device.
 type fakeDevice struct {
 	caps     []gocv.Mat
 	capIdx   int
 	recorded []image.Point
+	swipes   []swipeCall
 	allMats  []gocv.Mat
+}
+
+// swipeCall is the recorded shape of one SwipeBezier invocation.
+type swipeCall struct {
+	x1, y1, x2, y2, ms int
 }
 
 func newFakeDevice(numFrames int) *fakeDevice {
@@ -85,6 +93,10 @@ func (f *fakeDevice) Close() error {
 func (f *fakeDevice) Tap(x, y int) error           { f.recorded = append(f.recorded, image.Pt(x, y)); return nil }
 func (f *fakeDevice) TapRandomized(x, y int) error { return f.Tap(x, y) }
 func (f *fakeDevice) Swipe(x1, y1, x2, y2, ms int) error {
+	return nil
+}
+func (f *fakeDevice) SwipeBezier(x1, y1, x2, y2, ms int) error {
+	f.swipes = append(f.swipes, swipeCall{x1: x1, y1: y1, x2: x2, y2: y2, ms: ms})
 	return nil
 }
 func (f *fakeDevice) Pinch(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {

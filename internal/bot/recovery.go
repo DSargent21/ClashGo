@@ -50,56 +50,30 @@ import (
 // RecoveryStrategy is one named escalation step.
 type RecoveryStrategy struct {
 	Name string
-	// Apply is the side-effecting action. It returns nil on success
-	// or an error if the strategy itself failed (e.g. SoftReset
-	// timeout). The error is reported on the BootReport.
+
 	Apply func(ctx context.Context) error
-	// Cost is a rough estimate of how long Apply takes. Used only
-	// for the "total recovery time" reporting — not for budgeting.
+
 	Cost time.Duration
-	// Destructive is true for strategies that kill the emulator or
-	// the game. The orchestrator's AllowNuclear flag controls whether
-	// strategies with Destructive=true are ever invoked.
+
 	Destructive bool
 }
 
 // RecoveryConfig is the orchestration knobs the policy consults.
 type RecoveryConfig struct {
-	// MaxAttempts is the cap on the whole boot sequence (NOT per
-	// strategy). Default 5: one initial try + four escalations.
 	MaxAttempts int
 
-	// AllowNuclear gates the RestartBlueStacks and NuclearOption
-	// strategies. In dev mode the orchestrator sets this to false so
-	// a coding error can't trigger a BlueStacks restart loop in
-	// the dev's editor.
 	AllowNuclear bool
 
-	// InitialBackoff is the wait before the SECOND attempt. Each
-	// subsequent attempt doubles, capped at MaxBackoff. 500ms is a
-	// reasonable default — long enough to let a shell call return
-	// its real result, short enough that a human doesn't notice.
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
-}
-
-// DefaultRecoveryConfig returns the production defaults.
-func DefaultRecoveryConfig() RecoveryConfig {
-	return RecoveryConfig{
-		MaxAttempts:    5,
-		AllowNuclear:   true,
-		InitialBackoff: 500 * time.Millisecond,
-		MaxBackoff:     4 * time.Second,
-	}
 }
 
 // RecoveryPolicy wires the strategy ladder to the live Client. It is
 // constructed once by the orchestrator and consulted at most once
 // per attempt. Stateless after construction.
 type RecoveryPolicy struct {
-	cfg     RecoveryConfig
-	client  adbClient
-	onApply func(RecoveryStrategy) // optional callback for the report
+	cfg    RecoveryConfig
+	client adbClient
 }
 
 // adbClient is the narrow subset of *adb.Client that the recovery
@@ -213,9 +187,7 @@ func (p *RecoveryPolicy) Strategies(packageName string, w, h, dpi int) []Recover
 // (e.g. don't try RelaunchGame if the failure is in adb.connect
 // itself).
 func (p *RecoveryPolicy) Escalate(strats []RecoveryStrategy, attempt int) int {
-	// attempt is 1-based: 1 is the first escalation, 2 is the
-	// second, etc. The ladder has len(strats) entries; if attempt
-	// exceeds it, we're done.
+
 	if attempt < 1 {
 		return 0
 	}
@@ -249,9 +221,7 @@ func SuggestedAction(lastStep, lastStrategy, lastErr string) string {
 	if lastErr == "" {
 		lastErr = "unknown"
 	}
-	// Sort heuristics by specificity so the most useful suggestion
-	// wins. We don't want to say "relaunch BlueStacks" when the
-	// real issue is a bad ADB host config.
+
 	hints := []struct {
 		match  string
 		action string
@@ -268,8 +238,7 @@ func SuggestedAction(lastStep, lastStrategy, lastErr string) string {
 		{"calibrate", "screen capture failed; check that the BlueStacks window is visible and not occluded"},
 		{"StartApp", "could not start Clash of Clans — confirm it's installed: adb shell pm list packages | grep clashofclans"},
 	}
-	// Sort by match length descending so the most specific hint wins
-	// over the generic "timeout" hint when both could apply.
+
 	sort.SliceStable(hints, func(i, j int) bool {
 		return len(hints[i].match) > len(hints[j].match)
 	})
@@ -278,7 +247,7 @@ func SuggestedAction(lastStep, lastStrategy, lastErr string) string {
 			return h.action
 		}
 	}
-	// Last strategy attempted is a useful fallback context.
+
 	switch lastStrategy {
 	case "RetryTransport":
 		return "could not reconnect to ADB; check that BlueStacks is still running"
@@ -312,9 +281,7 @@ func containsFold(haystack, needle string) bool {
 		for j := 0; j < len(needle); j++ {
 			h := haystack[i+j]
 			n := needle[j]
-			// ASCII-only case fold. The match strings we use
-			// ("transport", "boot_completed", etc.) are all ASCII
-			// so this is sufficient.
+
 			if h >= 'A' && h <= 'Z' {
 				h += 'a' - 'A'
 			}

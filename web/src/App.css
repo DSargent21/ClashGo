@@ -1,17 +1,25 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap');
-
+/* Geist is loaded once via <link> in index.html (preconnected Google
+   Fonts). This @import previously double-fetched the same family and
+   could render a FOIT flash; removed. `.font-headline` still resolves
+   to the preloaded Geist face. */
 :root {
   font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color-scheme: light dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Theme-aware form controls: the default `light dark` made native
+     widgets flip to dark even in the light UI. Drive it off Tailwind's
+     `.dark` class instead. */
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
 }
 
-.font-headline { font-family: 'Geist', sans-serif; }
+.font-headline { font-family: 'Geist', 'Inter', sans-serif; }
 
 .draggable {
   -webkit-app-region: drag;
@@ -33,10 +41,58 @@
     display: flex;
 }
 
+/* Slim scrollbars everywhere — the main content area, the console,
+   dropdowns, and modal bodies share one quiet treatment. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(113, 113, 122, 0.35); /* zinc-500 */
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(113, 113, 122, 0.6); }
+html.dark ::-webkit-scrollbar-thumb {
+  background-color: rgba(82, 82, 91, 0.6); /* zinc-600 */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* The console scrollbar adapts to the theme. In light mode the
+   console has a white background, so the thumb is gray; in dark
+   mode the console is near-black, so the thumb is white-alpha. */
 .terminal-scroll::-webkit-scrollbar { width: 5px; height: 5px; }
 .terminal-scroll::-webkit-scrollbar-track { background: transparent; }
-.terminal-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 10px; }
-.terminal-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
+.terminal-scroll::-webkit-scrollbar-thumb { background: rgba(113, 113, 122, 0.25); border-radius: 10px; border: 0; }
+.terminal-scroll::-webkit-scrollbar-thumb:hover { background: rgba(113, 113, 122, 0.5); }
+html.dark .terminal-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); }
+html.dark .terminal-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
+
+/* Kill the mobile/touch blue flash on tap; the active:scale feedback
+   on buttons already covers the pressed state. */
+* { -webkit-tap-highlight-color: transparent; }
+
+/* Accessibility — a crisp, on-brand focus ring for keyboard users
+   without cluttering pointer-driven interactions. */
+:focus-visible {
+  outline: 2px solid rgba(16, 185, 129, 0.65); /* emerald-500 */
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Selection tint — emerald to match the accent used across the UI. */
+::selection {
+  background: rgba(16, 185, 129, 0.22);
+}
+
+/* Console filter-match highlight: keeps the message's severity color
+   while making the matched substring pop with a soft amber wash. */
+mark {
+  background: rgba(245, 158, 11, 0.28); /* amber-500 */
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}
 
 /* Transitions */
 .transition-all { transition-property: all; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 300ms; }
@@ -59,4 +115,31 @@ input[type="number"]::-webkit-outer-spin-button {
 .dropdown-pop {
   animation: dropdown-pop 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
   transform-origin: top center;
+}
+
+/* UpdateBanner modal + RestartSplash keyframes. Previously declared
+   inside inline <style> tags in UpdateBanner.tsx; hoisted here so
+   the animation contract lives in one place and the component tree
+   carries no runtime-injected CSS. */
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.94) translateY(8px) }
+  to   { opacity: 1; transform: scale(1) translateY(0) }
+}
+@keyframes shimmer {
+  from { transform: translateX(-100%) }
+  to   { transform: translateX(300%) }
+}
+.animate-fadeIn { animation: fade-in 200ms ease-out; }
+.animate-scaleIn { animation: scale-in 180ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+/* Respect users who prefer reduced motion — collapse decorative
+   animation to near-zero without breaking state feedback (the
+   pulse dots that signal "running" keep a minimal blink). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

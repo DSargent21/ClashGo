@@ -70,32 +70,11 @@ type ProbeResult struct {
 // chosen to be safe for the production BlueStacks-on-macOS case but
 // dev mode shrinks them via dev-fail-fast.
 type BootProbeConfig struct {
-	// PerSignalTimeout caps how long any one signal can take. 5s is
-	// well above a healthy device's per-call latency (50-200ms) and
-	// well below the point where a hung call is worth waiting for.
 	PerSignalTimeout time.Duration
 
-	// PollInterval is the gap between probe passes. 2s matches the
-	// prior WaitForBoot cadence. In dev mode this drops to 500ms.
 	PollInterval time.Duration
 
-	// MinReadySignals is how many signals must agree before the
-	// probe reports ready. Default 2 (so 2-of-4 is enough); the
-	// boot_completed-only check would correspond to MinReady=1 +
-	// only-the-legacy-signal in use, but the orchestrator always
-	// queries all four.
 	MinReadySignals int
-}
-
-// DefaultBootProbeConfig returns the production defaults. Used when
-// no override is supplied (typically the orchestrator overrides for
-// dev mode).
-func DefaultBootProbeConfig() BootProbeConfig {
-	return BootProbeConfig{
-		PerSignalTimeout: 5 * time.Second,
-		PollInterval:     2 * time.Second,
-		MinReadySignals:  2,
-	}
 }
 
 // BootProber runs the multi-signal probe. Construct one with
@@ -106,16 +85,8 @@ type BootProber struct {
 	runner ShellRunner
 	cfg    BootProbeConfig
 
-	// packageName is the Android package whose presence in `pm list
-	// packages` is the success signal for SignalPackageMgr. Empty
-	// means "any non-empty output is success" (e.g. the PackageManager
-	// is up at all).
 	packageName string
 
-	// screencapMinLuma is the minimum mean BGR luma for the screen
-	// signal to be considered ready. 8/255 = "not all black" — a
-	// real Android UI almost always has at least a status bar pixel
-	// above this. Calibrated against a black-frame test fixture.
 	screencapMinLuma float64
 }
 
@@ -188,8 +159,7 @@ func (p *BootProber) WaitReady(ctx context.Context) (ProbeResult, error) {
 	}
 	ticker := time.NewTicker(p.cfg.PollInterval)
 	defer ticker.Stop()
-	// Take one immediate sample so a device that was already ready
-	// before the call doesn't have to wait a full PollInterval.
+
 	res := p.Probe(ctx)
 	if res.Ready {
 		return res, nil
@@ -284,16 +254,13 @@ func (p *BootProber) probeScreenReady(ctx context.Context) SignalStatus {
 		st.Error = fmt.Sprintf("incomplete screencap: got %d, want %d", len(buf), expected+12)
 		return st
 	}
-	// screencap on Android outputs RGBA. Sample mean luma using the
-	// perceptual Rec. 601 weights (0.299R + 0.587G + 0.114B).
+
 	var sum uint64
-	const stride = 8 // sample every 8th pixel for speed (~312K samples for 860x732)
+	const stride = 8
 	pixels := buf[12 : expected+12]
 	n := 0
 	for i := 0; i+4 <= len(pixels); i += 4 * stride {
-		// Android screencap is RGBA. Use R, G, B. Cast to uint64
-		// so the 299/587/114 multiplications don't overflow uint32
-		// for a fully-saturated (255,255,255) pixel.
+
 		r := uint64(pixels[i])
 		g := uint64(pixels[i+1])
 		b := uint64(pixels[i+2])
@@ -304,8 +271,7 @@ func (p *BootProber) probeScreenReady(ctx context.Context) SignalStatus {
 		st.Error = "no pixels in screencap"
 		return st
 	}
-	// Rec. 601 weights sum to 1000, so divide by 1000 to get a 0-255
-	// luma value.
+
 	mean := float64(sum) / float64(n) / 1000.0
 	st.Value = fmt.Sprintf("mean_luma=%.1f (%dx%d)", mean, width, height)
 	st.Ready = mean >= p.screencapMinLuma
@@ -336,15 +302,12 @@ func (p *BootProber) probePackageMgr(ctx context.Context) SignalStatus {
 		return st
 	}
 	if p.packageName == "" {
-		// No specific package configured — any non-empty output means
-		// PackageManager is responsive.
+
 		st.Ready = true
 		st.Value = "pm responsive"
 		return st
 	}
-	// Match `package:<name>` in the output. TrimSpace + a simple
-	// contains check is enough — pm's output is line-delimited and
-	// we don't need exact-line matching.
+
 	want := "package:" + p.packageName
 	if containsLine(out, want) {
 		st.Ready = true
@@ -358,7 +321,7 @@ func (p *BootProber) probePackageMgr(ctx context.Context) SignalStatus {
 // containsLine is a small helper to keep the readiness check
 // allocation-free. Looks for a literal `want` line prefix.
 func containsLine(out, want string) bool {
-	// Fast path: simple substring.
+
 	if len(want) == 0 {
 		return true
 	}

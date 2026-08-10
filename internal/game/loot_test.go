@@ -240,42 +240,57 @@ func TestLootAccuracyExact(t *testing.T) {
 		failures, len(lootTestCases))
 }
 
+// victoryTestCase captures the ground truth for an end-of-battle screen.
+// screen_victory.png is the tracked regression fixture for victory-screen
+// parsing, including the league-bonus column (which previously clipped a
+// trailing zero on a live capture). The former screen_victory_live.png
+// fixture was a live capture containing real player names and was removed
+// for privacy; screen_victory.png keeps victory-screen coverage.
+type victoryTestCase struct {
+	name      string
+	imgPath   string
+	wantStars int
+	loot      Resources
+	bonus     Resources
+}
+
+var victoryTestCases = []victoryTestCase{
+	{
+		name:      "screen_victory",
+		imgPath:   "testdata/screen_victory.png",
+		wantStars: 2,
+		loot:      Resources{Gold: 1985245, Elixir: 1985977, DarkElixir: 21600},
+		bonus:     Resources{Gold: 312400, Elixir: 312400, DarkElixir: 2310},
+	},
+}
+
 func TestLootVictory(t *testing.T) {
 	lr := newTestLootRecognizer(t)
-	img := gocv.IMRead("testdata/screen_victory.png", gocv.IMReadColor)
-	if img.Empty() {
-		t.Skip("screen_victory.png is missing")
-	}
-	defer img.Close()
 
-	result, err := lr.ReadBattleResult(img)
-	if err != nil {
-		t.Fatalf("ReadBattleResult: %v", err)
-	}
+	for _, tc := range victoryTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			img := gocv.IMRead(tc.imgPath, gocv.IMReadColor)
+			if img.Empty() {
+				t.Skipf("%s is missing", tc.imgPath)
+			}
+			defer img.Close()
 
-	if result.Stars != 2 {
-		t.Errorf("Stars = %d, want 2", result.Stars)
-	}
+			result, err := lr.ReadBattleResult(img)
+			if err != nil {
+				t.Fatalf("ReadBattleResult: %v", err)
+			}
 
-	// Battle Loot
-	if result.Loot.Gold != 1985245 {
-		t.Errorf("Loot.Gold = %d, want 1985245", result.Loot.Gold)
-	}
-	if result.Loot.Elixir != 1985977 {
-		t.Errorf("Loot.Elixir = %d, want 1985977", result.Loot.Elixir)
-	}
-	if result.Loot.DarkElixir != 21600 {
-		t.Errorf("Loot.DE = %d, want 21600", result.Loot.DarkElixir)
-	}
+			if result.Stars != tc.wantStars {
+				t.Errorf("Stars = %d, want %d", result.Stars, tc.wantStars)
+			}
 
-	// Bonus Loot
-	if result.Bonus.Gold != 312400 {
-		t.Errorf("Bonus.Gold = %d, want 312400", result.Bonus.Gold)
-	}
-	if result.Bonus.Elixir != 312400 {
-		t.Errorf("Bonus.Elixir = %d, want 312400", result.Bonus.Elixir)
-	}
-	if result.Bonus.DarkElixir != 2310 {
-		t.Errorf("Bonus.DE = %d, want 2310", result.Bonus.DarkElixir)
+			if result.Loot != tc.loot {
+				t.Errorf("Loot = %+v, want %+v", result.Loot, tc.loot)
+			}
+
+			if result.Bonus != tc.bonus {
+				t.Errorf("Bonus = %+v, want %+v", result.Bonus, tc.bonus)
+			}
+		})
 	}
 }

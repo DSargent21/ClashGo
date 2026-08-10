@@ -54,7 +54,7 @@ import (
 //   - skip_button        — OPTIONAL. Small rect around Skip on the chest.
 //   - confirm_yes_button — OPTIONAL. Small rect around Confirm Yes on
 //     the post-skip dialog. Captured in a SEPARATE picker run
-//     (cmd/pick_chest_roi -confirm-only) AFTER the user manually
+//     (tools/picker.py --rect confirm_yes_button) AFTER the user manually
 //     presses Skip on the chest screen, because the dialog isn't
 //     visible during the initial chest-screen screenshot.
 type ChestROISchema struct {
@@ -222,7 +222,7 @@ func randomPointInRect(r Rectangle) (int, int) {
 // and (nil, err) only on truly unrecoverable problems (parse error
 // or invalid geometry).
 //
-// JSON shape (matches the picker output of cmd/pick_rect):
+// JSON shape (matches the picker output of tools/picker.py --rect):
 //
 //	{
 //	  "x1": 100, "y1": 100, "x2": 200, "y2": 200

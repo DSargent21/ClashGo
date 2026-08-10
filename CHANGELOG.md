@@ -2,6 +2,162 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-08-10
+
+### Added
+- **Autonomous-run resilience hardening** (all live-verified on BlueStacks Air):
+  - **Emulator-death recovery ladder** — when screen capture dies mid-session
+    the bot now escalates transport reconnect → adb-server reset →
+    BlueStacks relaunch → boot re-orchestration instead of force-stopping
+    the game against a dead transport and spinning forever
+    (`recoverEmulator` in `internal/bot/bot.go`).
+  - **Panic containment** — recover guards around the capture frame loop and
+    the attack-sequence goroutine, so one bad frame or missing asset can no
+    longer kill the whole process.
+  - **Nil-template fallback** — the template store degrades to an empty
+    (non-nil) store when assets can't be resolved, so loot/battle OCR keeps
+    running instead of panicking mid-attack (`internal/game/templates.go`).
+  - **Process keepalive** — `tools/run_bot_keepalive.sh` respawns the CLI
+    bot ~10s after ANY exit (panic, OOM, kill) and pins
+    `CLASHGO_ASSETS_DIR` so templates/strategies resolve even under launchd
+    (whose default cwd is `/`).
+- **Web UI overhaul** — polished dashboard console (severity chips,
+  text filter, copy, match highlighting, pause-on-hover auto-scroll),
+  config view with live range validation + `role=switch` toggles + keyboard
+  accessible combobox, two-step armed reset confirm, ADB status pill with
+  semantic colors, analytics donut, dark-mode toggle, and an a11y pass
+  (`role=log`, focus-visible rings, `prefers-reduced-motion`).
+- **Human-gesture input layer** (autonomous-hardening iteration 1):
+  - `adb.SwipeBezier` — low-level `sendevent` quadratic-bezier swipe with
+    ease-in-out velocity (accelerate → coast → decelerate) and a random
+    10-20% perpendicular arc so every drag reads as a real finger; wired
+    into the navigator's village camera pans; degrades to the linear path
+    on devices that can't inject raw input. Unit-tested
+    (`internal/adb/bezier_test.go`).
+  - `TapHuman` now emits ~1-in-5 taps as a 60-130ms press-and-release
+    instead of an instant down/up pair, and hesitates with a Gaussian
+    reaction delay (base 250ms / σ 70ms — mass in the 180-320ms human
+    band, tail ~460ms) before committing. Hot deploy loops (`TapFast` /
+    `TapAsync`) are untouched and stay fast.
+  - `Navigator.IdlePan` — randomized bezier camera pan + micro-pause +
+    mirrored return for idle base-wandering; throttled (~18s) in the
+    bot's idle-in-village path and deliberately NOT `recordActivity`, so
+    the stuck-watchdog still fires on genuinely stuck idles. Unit-tested
+    (`internal/game/navigator_test.go`).
+  - `cmd/swipe_probe` — standalone live-gesture verification harness
+    (`launcher` / `game` / `idlepan` modes) for Phase-1 style isolated
+    emulator action checks.
+- **Logging** — `logs/autonomous_loop.log` records each hardening-loop
+  iteration's audit findings, live-verification results, and regression
+  status.
+- **Post-boot splash auto-handling — the bot can now boot unattended.**
+  After every relaunch, Clash of Clans shows a short splash chain (the
+  "ТАР!" tap-to-continue / collect screen → the CoC castle logo, which
+  sits static 1-3 min while the session connects → an optional news /
+  announcement splash with a Continue button) before the village loads.
+  Previously the classifier misread the collect splash's orange artwork
+  as `StateBattle` (1/9 pixels), the stuck-watchdog force-stopped the
+  game, and every relaunch re-showed the splash — an endless
+  force-stop/relaunch loop with zero attacks. Now:
+  - 3 new states — `StateTapToContinue`, `StateNewsSplash`, `StateLogo`
+    (`internal/game/types.go`) with classifier rules
+    (`internal/game/classifier.go`) verified at 0 distance on live
+    captures and 0 false-positives on the village.
+  - Auto-dismiss in `processFrame` (`internal/bot/bot.go`) — taps the
+    "ТАР!" prompt text (ref 450,195) and the news Continue button (ref
+    403,535), each through a single in-flight goroutine guarded by the
+    atomic `splashDismissInFlight` flag. Deliberately does NOT
+    `recordActivity` so a genuinely-stuck splash variant still trips the
+    stuck-watchdog.
+  - Boot-grace in `checkStuck` — splash states get a 5-minute window
+    (the logo has no progress indicator) instead of the generic 35s
+    timeout that caused mid-boot force-restarts.
+  - Mirrored dismissal cases in `internal/bot/wall_upgrade.go`.
+  - Live-verified: restart loop eliminated (1 startup restart vs 15+),
+    splash auto-dismissals, and full attacks completing with correct
+    result parsing.
+- **Text-based observability tooling — the bot's "eye view" for a
+  terminal-only session.**
+  - `cmd/screendump` — captures the live screen (or reads a saved PNG),
+    runs the bot's real classifier with per-rule pixel evidence, renders
+    a color-mapped ASCII layout, probes key button pixels, and
+    optionally OCRs on-screen text. `-watch` loops every 3s.
+  - `tools/observe.sh` — one-shot bundle: capture + classify + color map
+    + OCR, artifacts saved to `obs/<timestamp>/` with an `obs/latest`
+    symlink for convenience.
+  - `tools/ocr.swift` — on-device Apple Vision OCR (no tesseract / no
+    network); prints `x,y,w,h | text` per recognized region in
+    screenshot pixel space.
+  - `cmd/classify_probe` / `cmd/result_probe` / `cmd/swipe_probe` —
+    standalone diagnostics for classifier state, battle-result OCR
+    parsing, and human-gesture verification respectively.
+  - See `docs/OBSERVABILITY.md` for the full workflow.
+
+### Changed
+- **Massive dead-code cleanup** — removed ~16.5k lines of unreachable code
+  and pruned the repo tree:
+  - **Deleted the NATS event-bus subsystem** (`internal/bus`,
+    `internal/agent`, `internal/geo`, `internal/world`,
+    `game/enricher.go` + `game/explorer.go`, `docker-compose.yml`) — zero
+    production references; NATS deps dropped from `go.mod`/`go.sum`.
+  - **Removed ~35 verified-dead functions** across `attack`, `bot`, `game`,
+    `vision`, `logger`, `adb`, `training`, `updater`, `strategy` — incl. the
+    NDJSON log mirror, `ParseCSV`, `ClassifyStateFast`, `SpellLine`,
+    `isUnitSelected`, `hasColorSignature`, `WaitForSlotEmpty`, the legacy
+    `SlotManager` helpers, the validator `Planner` engine
+    (`internal/attack/plan.go` + its test), `game.Calibrator`, and the
+    `adb.WithDeviceID` option.
+  - **Deleted 48 unreferenced `cmd/` diagnostic tools** — kept the five wired
+    into Makefile/scripts (`attack_record`, `capture_template`,
+    `design_attack`, `release_manifest`, `test_wall_upgrade`).
+  - **Dropped dead struct fields** — `app.echo`, `transport.seq`,
+    `bot.lastFrameTime`, `bootorchestrator.mu`, `recovery.onApply`,
+    `updater.manifest`, `troop_counter.calibrated/scaleX/scaleY`.
+  - **Consolidated duplicated logic** — `app.go` stats merge extracted into a
+    `mergeStats` helper; `Transport.ExecRaw` merged into `Exec`; the
+    `version.go` build-date + Makefile ldflag removed.
+  - **Frontend** — fixed 4 unused-variable TS errors (`App.tsx`, `main.tsx`,
+    `Sidebar.tsx`).
+  - **Docs + tree** — README / DESIGN / PERFORMANCE / CHEST refreshed for the
+    new layout; orphaned `assets/grab/` screenshots and stale `.gitignore`
+    entries removed.
+
+### Fixed
+- **BlueStacks Air cold boot burned 90s then failed** — `waitForVMProcess`
+  waited for `qemu-system`/`hd-adb` process names that never appear on
+  BlueStacks Air for Apple Silicon (the VM runs in-process), so every cold
+  boot hit the full wait and logged a spurious "VM did not start" failure.
+  An open adb port (5555+) now counts as a VM-up signal — the same signal
+  the ADB-connect wait already uses (`internal/adb/emulator_mac.go`).
+- **Nil-pointer panic on missing templates** — `NewLootRecognizer` panicked
+  on a nil template store when assets didn't resolve (e.g. running from a
+  launchd cwd of `/`), killing the bot at attack entry. The store now
+  falls back to an empty store and the attack goroutine is panic-guarded.
+- **Attack History lagged the loot totals** — the history entry was only
+  appended after Return Home + wall upgrades (which can take minutes), so
+  the dashboard showed fresh gold/elixir totals long before the new attack
+  row appeared — and the entry was lost entirely if Return Home failed.
+  `executeAttackSequence` now records the report and fires the UI refresh
+  at battle-result parse time (`internal/bot/bot.go`).
+- **League Bonus gold misread by a factor of 10** — the bonus column's
+  right padding clipped the trailing digit (bonus gold "+256 000" read as
+  25600): the digit lost its right edge and its template-match score fell
+  below the 0.5 floor. Narrow columns now get relaxed padding
+  (`internal/game/loot.go`) and the bonus ROI's right edge was widened
+  (`assets/battle_loot_rois.json`). Regression-tested via
+  `TestLootVictory/screen_victory` on the tracked fixture
+  (`internal/game/testdata/screen_victory.png`); the former
+  `screen_victory_live.png` fixture was removed for privacy (it was a live
+  capture containing real player names and was gitignored, so it silently
+  skipped on fresh clones anyway).
+- **Endless force-stop/relaunch loop on the post-boot collect splash** —
+  the "ТАР!" tap-to-continue screen was misclassified as `StateBattle`, so
+  the stuck-watchdog force-stopped the game and every relaunch re-showed
+  the splash. Root cause, the mapped boot-splash chain, and the fix are
+  documented in the Added entry above and in `docs/OBSERVABILITY.md`.
+  Verified live: restart count dropped from 15+ to 1, and the bot
+  completed multiple attacks with correct result parsing.
+
 ## [0.2.0-beta] - 2026-08-05
 
 ### Added

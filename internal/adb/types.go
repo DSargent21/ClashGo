@@ -66,10 +66,6 @@ func WithZoomKeys(out, in string) Option {
 	}
 }
 
-func WithDeviceID(id string) Option {
-	return func(c *Client) { c.DeviceID = id }
-}
-
 func WithJitterTaps(v bool) Option {
 	return func(c *Client) { c.jitterTaps = v }
 }

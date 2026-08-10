@@ -117,6 +117,13 @@ type WallUpgradeHooks struct {
 	// wall-selection after a failed button-template match. May be nil.
 	Dismiss func()
 
+	// StopCheck is consulted at the top of every wall-upgrade
+	// iteration; when it returns true the loop breaks immediately
+	// (between walls, never mid-tap). May be nil. Production wires
+	// `func() bool { return b.ctx.Err() != nil }` so a user Stop
+	// interrupts an otherwise-unbounded wall-upgrade run.
+	StopCheck func() bool
+
 	// OnStep is the optional phase-boundary instrumentation hook.
 	OnStep func(step string, data map[string]any)
 }
@@ -134,6 +141,9 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 		Templates: b.templates,
 		Classify:  b.classify,
 		Dismiss:   b.dismissSelection,
+		// StopCheck lets a user Stop interrupt the otherwise-unbounded
+		// wall-upgrade loop at its next iteration boundary.
+		StopCheck: func() bool { return b.ctx.Err() != nil },
 	})
 }
 
@@ -213,6 +223,15 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 	}
 
 	for upgradeCount := 1; ; upgradeCount++ {
+		// Stop check: the loop is otherwise unbounded (it only exits
+		// when no affordable wall remains). Breaking at the iteration
+		// boundary keeps a user Stop from leaving the bot tapping
+		// walls for minutes.
+		if h.StopCheck != nil && h.StopCheck() {
+			h.Logger.Info().Msg("Wall upgrade loop stopped by stop signal")
+			h.step("stopped", nil)
+			break
+		}
 		h.Logger.Info().Int("count", upgradeCount).Msg("Starting wall upgrade loop iteration")
 		h.step("iteration_start", map[string]any{"count": upgradeCount})
 		// Reset per-wall: defensive capture failures on wall N
@@ -1306,6 +1325,14 @@ func dismissInterruptionsFor(h *WallUpgradeHooks) {
 		_ = h.Client.Tap(ox, oy)
 	case game.StateChatOpen:
 		_ = h.Client.Back()
+	case game.StateTapToContinue:
+		// Post-boot "ТАР!" collect splash — tap the prompt text.
+		px, py := h.Cal.ScaleRef(450, 195)
+		_ = h.Client.Tap(px, py)
+	case game.StateNewsSplash:
+		// Post-boot news splash — tap the green Continue button.
+		px, py := h.Cal.ScaleRef(403, 535)
+		_ = h.Client.Tap(px, py)
 	}
 }
 

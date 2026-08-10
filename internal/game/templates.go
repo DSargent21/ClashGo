@@ -43,6 +43,23 @@ func NewTemplateStore(dir string) (*TemplateStore, error) {
 	}, nil
 }
 
+// NewEmptyTemplateStore returns a VALID TemplateStore that holds no
+// templates. Resilience fallback: when the template directory cannot
+// be created/read (read-only assets mount, misconfigured asset path,
+// cwd-dependent resolution failing under launchd), callers used to
+// receive a nil *TemplateStore and then panic on the first
+// ts.Get()/Match() dereference (observed live: SIGSEGV in
+// LootRecognizer.prepareDigitTemplates killing the bot mid-attack).
+// With an empty store every lookup returns "not found" and the bot
+// falls back to its color/pinpoint heuristics instead of crashing.
+func NewEmptyTemplateStore() *TemplateStore {
+	return &TemplateStore{
+		dir:       "",
+		templates: make(map[string]gocv.Mat),
+		registry:  make(map[string]TemplateMeta),
+	}
+}
+
 func (ts *TemplateStore) Save(name string, state GameState, rgn image.Rectangle, screen gocv.Mat) error {
 	if screen.Empty() || !rgn.In(image.Rect(0, 0, screen.Cols(), screen.Rows())) {
 		return fmt.Errorf("invalid region or empty screen")

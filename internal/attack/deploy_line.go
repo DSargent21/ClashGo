@@ -2,27 +2,26 @@ package attack
 
 import (
 	"image"
-	"math"
 
 	"github.com/rs/zerolog"
 )
 
 const (
-	standoff    = 80  // min distance from red zone
-	margin      = 30  // distance from screen edge
-	yTopMin     = 110 // below top HUD
-	yBotPad     = 80  // above troop bar
-	xMinPad     = 60  // left screen edge padding
-	linePoints  = 15  // points per deployment line
-	lineSpacing = 35  // spacing between points
+	standoff    = 80
+	margin      = 30
+	yTopMin     = 110
+	yBotPad     = 80
+	xMinPad     = 60
+	linePoints  = 15
+	lineSpacing = 35
 )
 
 // DeployLine represents a calculated deployment line.
 type DeployLine struct {
-	Points  []image.Point // Tap coordinates
-	Side    string        // "left", "right", "top", "bottom"
-	Anchor  image.Point   // Center of line (for spells)
-	Outside bool          // Whether line is outside red zone
+	Points  []image.Point
+	Side    string
+	Anchor  image.Point
+	Outside bool
 }
 
 // DeployLineCalculator computes deployment lines dynamically.
@@ -47,12 +46,10 @@ func (d *DeployLineCalculator) Calculate(
 		count = linePoints
 	}
 
-	// If no red zone detected, use fallback
 	if !zone.Valid {
 		return d.fallbackLine(screenW, screenH, uiCutoff, count)
 	}
 
-	// Get free space on each edge
 	freeSpace := map[string]int{
 		"left":   zone.BBox.Min.X,
 		"right":  screenW - zone.BBox.Max.X,
@@ -60,22 +57,18 @@ func (d *DeployLineCalculator) Calculate(
 		"bottom": uiCutoff - zone.BBox.Max.Y,
 	}
 
-	// Pick side
 	side := d.pickSide(freeSpace, preferSide)
 
-	// Check if we have space
 	if freeSpace[side] <= 0 {
 		d.logger.Warn().Str("side", side).Msg("no space on preferred side, using fallback")
 		return d.fallbackLine(screenW, screenH, uiCutoff, count)
 	}
 
-	// Clamp values
 	xLo := xMinPad
 	xHi := screenW - xMinPad
 	yTop := yTopMin
 	yBot := uiCutoff - yBotPad
 
-	// Calculate line points
 	var points []image.Point
 
 	switch side {
@@ -140,13 +133,11 @@ func (d *DeployLineCalculator) Calculate(
 		points = d.linspaceX(xStart, xEnd, y, count)
 	}
 
-	// Clamp all points to safe zones
 	for i := range points {
 		points[i].X = clamp(points[i].X, xLo, xHi)
 		points[i].Y = clamp(points[i].Y, yTop, yBot)
 	}
 
-	// Calculate anchor (center of line)
 	anchor := points[len(points)/2]
 
 	d.logger.Info().
@@ -165,12 +156,11 @@ func (d *DeployLineCalculator) Calculate(
 
 // pickSide selects edge with most free space.
 func (d *DeployLineCalculator) pickSide(freeSpace map[string]int, prefer string) string {
-	// Use preferred side if it has space
+
 	if prefer != "" && freeSpace[prefer] > 0 {
 		return prefer
 	}
 
-	// Pick side with most free space
 	best := "left"
 	bestSpace := 0
 	for side, space := range freeSpace {
@@ -185,7 +175,7 @@ func (d *DeployLineCalculator) pickSide(freeSpace map[string]int, prefer string)
 // fallbackLine creates a line when no red zone is detected.
 // Uses fixed positions near screen edges.
 func (d *DeployLineCalculator) fallbackLine(screenW, screenH, uiCutoff, count int) DeployLine {
-	// Default to left edge
+
 	x := xMinPad
 	yStart := yTopMin
 	yEnd := uiCutoff - yBotPad
@@ -225,59 +215,7 @@ func (d *DeployLineCalculator) linspaceX(xStart, xEnd, y, count int) []image.Poi
 	return points
 }
 
-// SpellLine calculates spell deployment points along a line into the base.
-// Spells go from anchor point TOWARD the base center, offset left/right.
-func (d *DeployLineCalculator) SpellLine(
-	anchor image.Point,
-	screenW, uiCutoff int,
-	count int,
-	depthPct float64,
-) []image.Point {
-	cx, cy := screenW/2, uiCutoff/2
-	dx := float64(cx - anchor.X)
-	dy := float64(cy - anchor.Y)
-	norm := math.Sqrt(dx*dx + dy*dy)
-	if norm < 1 {
-		norm = 1
-	}
-	ux, uy := dx/norm, dy/norm
-	// Perpendicular
-	px, py := -uy, ux
-
-	points := make([]image.Point, count)
-	for i := 0; i < count; i++ {
-		depth := depthPct + 0.10*float64(i/2)
-		depth = clampF(depth, 0.30, 0.95)
-
-		baseX := float64(anchor.X) + ux*norm*depth
-		baseY := float64(anchor.Y) + uy*norm*depth
-
-		offset := 90.0 + 35.0*float64(i/2)
-		sign := 1.0
-		if i%2 != 0 {
-			sign = -1.0
-		}
-
-		sx := int(baseX + px*offset*sign)
-		sy := int(baseY + py*offset*sign)
-		sx = clamp(sx, 60, screenW-60)
-		sy = clamp(sy, 60, uiCutoff-60)
-		points[i] = image.Pt(sx, sy)
-	}
-	return points
-}
-
 func clamp(v, min, max int) int {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
-}
-
-func clampF(v, min, max float64) float64 {
 	if v < min {
 		return min
 	}

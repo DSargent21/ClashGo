@@ -17,33 +17,57 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
   stats, adbPort, darkMode, setDarkMode, onResetStats,
   appVersion, updateStatus, onCheckUpdates, onClearSkip,
 }) => {
+  // Destructive action protection: the first click only ARMS the reset
+  // (visual shift + "click again" prompt); a second click within 4s
+  // actually fires it. Prevents fat-finger stat wipes.
+  const [resetArmed, setResetArmed] = React.useState(false);
+  const resetTimerRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => () => {
+    if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+  }, []);
+
+  const handleResetClick = () => {
+    if (!resetArmed) {
+      setResetArmed(true);
+      resetTimerRef.current = window.setTimeout(() => setResetArmed(false), 4000);
+      return;
+    }
+    if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+    setResetArmed(false);
+    onResetStats();
+  };
+
   return (
     <div className="bg-white dark:bg-zinc-900 p-10 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none max-w-2xl mx-auto transition-all duration-500">
 
       <div className="flex justify-between items-center mb-12">
         <div>
           <h3 className="text-2xl font-bold text-zinc-950 dark:text-white mb-2 tracking-tight">System Settings</h3>
-          <p className="text-sm text-zinc-400 dark:text-zinc-500 font-medium">Core application and connection status.</p>
+          <p className="text-sm text-zinc-500 dark:text-zinc-500 font-medium">Core application and connection status.</p>
         </div>
         <div className="w-14 h-14 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm transition-colors">
-          <span className="material-symbols-outlined text-zinc-400 dark:text-zinc-500 text-2xl">memory</span>
+          <span className="material-symbols-outlined text-zinc-500 dark:text-zinc-500 text-2xl">memory</span>
         </div>
       </div>
 
       <div className="space-y-4">
         {/* Dark Mode Toggle */}
-        <div 
+        <button
+          type="button"
+          role="switch"
+          aria-checked={darkMode}
           onClick={() => setDarkMode(!darkMode)}
-          className="flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group cursor-pointer"
+          className="w-full flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group cursor-pointer text-left"
         >
           <div className="flex items-center gap-5">
             <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 group-hover:scale-105 transition-all duration-300 shadow-sm">
-              <span className="material-symbols-outlined text-xl text-zinc-400 dark:text-zinc-500">
+              <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">
                 {darkMode ? 'dark_mode' : 'light_mode'}
               </span>
             </div>
             <div className="flex flex-col">
-              <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">App Theme</span>
+              <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">App Theme</span>
               <span className="text-sm font-bold text-zinc-950 dark:text-white">{darkMode ? 'Dark' : 'Light'}</span>
             </div>
           </div>
@@ -52,10 +76,10 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
           >
             <div className={`w-4 h-4 rounded-full bg-white dark:bg-zinc-400 transition-all duration-500 ease-in-out shadow-md ${darkMode ? 'translate-x-6' : 'translate-x-0'}`}></div>
           </div>
-        </div>
+        </button>
 
           {[
-            { label: 'Connection Status', value: stats.adb_health.consecutive_fails === 0 ? 'Optimal' : 'Interrupted', status: stats.adb_health.consecutive_fails === 0 ? 'success' : 'error', icon: 'hub' },
+            { label: 'Connection Status', value: stats.adb_health.consecutive_fails === 0 ? 'Optimal' : 'Interrupted', status: stats.adb_health.consecutive_fails === 0 ? 'success' : 'error', icon: 'hub', detail: stats.adb_health.last_error },
             { label: 'ADB Port', value: adbPort.toString(), status: 'info', icon: 'router' },
             { label: 'Capture Latency', value: isNaN(stats.adb_health.avg_capture_ms) ? '0ms' : `${stats.adb_health.avg_capture_ms.toFixed(1)}ms`, status: stats.adb_health.avg_capture_ms < 200 ? 'success' : 'info', icon: 'speed' },
             // cpu_time_sec is device-independent (absolute CPU seconds since
@@ -68,11 +92,14 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
           <div key={i} className="flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group">
             <div className="flex items-center gap-5">
               <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-zinc-100 dark:border-zinc-800 group-hover:scale-105 transition-all duration-300 shadow-sm">
-                <span className="material-symbols-outlined text-xl text-zinc-400 dark:text-zinc-500">{item.icon}</span>
+                <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">{item.icon}</span>
               </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">{item.label}</span>
+              <div className="flex flex-col min-w-0">
+                <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">{item.label}</span>
                 <span className={`text-sm font-bold tracking-tight ${item.status === 'error' ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-950 dark:text-white'}`}>{item.value}</span>
+                {item.detail && (
+                  <span className="mt-1 text-[10px] font-mono text-rose-500/70 truncate max-w-[220px]" title={item.detail}>{item.detail}</span>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -86,17 +113,32 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
 
         {/* Update row — surfaces current version + a manual check
             button so users can force a refresh without waiting for the
-            6h background poller. */}
+            6h background poller. Rendered as a keyboard-accessible
+            div[role=button] because it contains a real <button>
+            (Resume notifications) — nesting buttons would be
+            invalid HTML. */}
         <div
+          role="button"
+          tabIndex={0}
           onClick={onCheckUpdates}
-          className="flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group cursor-pointer"
+          onKeyDown={(e) => {
+            // Ignore keydowns originating from the nested "Resume
+            // notifications" button — otherwise pressing Space/Enter
+            // there would also trigger a manual update check.
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onCheckUpdates();
+            }
+          }}
+          className="w-full flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group cursor-pointer text-left"
         >
           <div className="flex items-center gap-5">
             <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-zinc-100 dark:border-zinc-800 group-hover:scale-105 transition-all duration-300 shadow-sm">
-              <span className="material-symbols-outlined text-xl text-zinc-400 dark:text-zinc-500">system_update</span>
+              <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">system_update</span>
             </div>
             <div className="flex flex-col">
-              <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">
+              <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">
                 App Version
               </span>
               <span className="text-sm font-bold tracking-tight text-zinc-950 dark:text-white tabular-nums">
@@ -113,7 +155,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
             {updateStatus.skip_version && (
               <button
                 onClick={(e) => { e.stopPropagation(); onClearSkip(); }}
-                className="text-[10px] font-black text-zinc-400 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
+                className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
                 title={`Resume notifications for v${updateStatus.skip_version}`}
               >
                 Resume notifications
@@ -124,22 +166,33 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         </div>
 
 
-        {/* Reset Section */}
+        {/* Reset Section — armed-confirm to protect against misclicks. */}
         <div className="pt-8 mt-8 border-t border-zinc-50 dark:border-zinc-800/50">
-           <button 
-             onClick={onResetStats}
-             className="w-full flex justify-between items-center bg-rose-50/50 dark:bg-rose-950/10 p-6 rounded-2xl border border-rose-100/50 dark:border-rose-900/20 hover:bg-rose-100/50 dark:hover:bg-rose-950/20 transition-all duration-300 group"
+           <button
+             onClick={handleResetClick}
+             aria-live="polite"
+             className={`w-full flex justify-between items-center p-6 rounded-2xl border transition-all duration-300 group ${
+               resetArmed
+                 ? 'bg-rose-500 border-rose-600 text-white shadow-[0_0_30px_-6px_rgba(244,63,94,0.5)]'
+                 : 'bg-rose-50/50 dark:bg-rose-950/10 border-rose-100/50 dark:border-rose-900/20 hover:bg-rose-100/50 dark:hover:bg-rose-950/20'
+             }`}
            >
              <div className="flex items-center gap-5">
-               <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-rose-100 dark:border-rose-900 group-hover:scale-105 transition-all duration-300 shadow-sm">
-                 <span className="material-symbols-outlined text-xl text-rose-500 dark:text-rose-400" style={{ fontVariationSettings: "'FILL' 1" }}>delete_forever</span>
+               <div className={`w-12 h-12 rounded-xl flex items-center justify-center border transition-all duration-300 shadow-sm ${
+                 resetArmed ? 'bg-white/20 border-white/30' : 'bg-white dark:bg-zinc-900 border-rose-100 dark:border-rose-900 group-hover:scale-105'
+               }`}>
+                 <span className={`material-symbols-outlined text-xl ${resetArmed ? 'text-white animate-pulse' : 'text-rose-500 dark:text-rose-400'}`} style={{ fontVariationSettings: "'FILL' 1" }}>{resetArmed ? 'warning' : 'delete_forever'}</span>
                </div>
                <div className="flex flex-col text-left">
-                 <span className="text-[10px] font-black text-rose-400 dark:text-rose-500 uppercase tracking-[0.2em] mb-0.5">Danger Zone</span>
-                 <span className="text-sm font-bold text-rose-600 dark:text-rose-400">Reset All Statistics</span>
+                 <span className={`text-[10px] font-black uppercase tracking-[0.2em] mb-0.5 ${resetArmed ? 'text-white/80' : 'text-rose-600 dark:text-rose-500'}`}>Danger Zone</span>
+                 <span className={`text-sm font-bold ${resetArmed ? 'text-white' : 'text-rose-600 dark:text-rose-400'}`}>
+                   {resetArmed ? 'Click again to confirm — wipes all stats' : 'Reset All Statistics'}
+                 </span>
                </div>
              </div>
-             <span className="material-symbols-outlined text-rose-300 dark:text-rose-800 group-hover:translate-x-1 transition-transform">chevron_right</span>
+             <span className={`material-symbols-outlined transition-transform ${resetArmed ? 'text-white animate-pulse' : 'text-rose-400 dark:text-rose-800 group-hover:translate-x-1'}`}>
+               {resetArmed ? 'error' : 'chevron_right'}
+             </span>
            </button>
         </div>
       </div>

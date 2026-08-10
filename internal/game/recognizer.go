@@ -10,9 +10,7 @@ import (
 )
 
 type Recognizer struct {
-	pool   sync.Pool
-	width  int
-	height int
+	pool sync.Pool
 }
 
 func NewRecognizer() *Recognizer {

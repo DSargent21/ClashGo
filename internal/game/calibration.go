@@ -1,11 +1,8 @@
 package game
 
 import (
-	"fmt"
 	"image"
 	"math"
-
-	"github.com/Ducky705/ClashGO/internal/adb"
 )
 
 const (
@@ -23,37 +20,9 @@ type Calibration struct {
 	Verified   bool
 }
 
-func NewCalibrator(client *adb.Client) *Calibrator {
-	return &Calibrator{client: client}
-}
-
-type Calibrator struct {
-	client *adb.Client
-}
-
-func (c *Calibrator) Calibrate() (*Calibration, error) {
-	mat, err := c.client.CaptureToMat()
-	if err != nil {
-		return nil, fmt.Errorf("calibration capture: %w", err)
-	}
-	defer mat.Close()
-
-	w, h := mat.Cols(), mat.Rows()
-
-	cal := &Calibration{
-		PhysicalW:  w,
-		PhysicalH:  h,
-		ScaleX:     float64(w) / RefWidth,
-		ScaleY:     float64(h) / RefHeight,
-		MidOffsetY: (h - RefHeight) / 2,
-		BottomOffY: h - RefHeight,
-		Verified:   false,
-	}
-
-	cal.Verified = true
-	return cal, nil
-}
-
+// Calibration is normally built by the bot from the live screen size (see
+// internal/bot/bot.go); the struct literal keeps all scaling math local to
+// this package and resolution-independent.
 func (c *Calibration) ScaleRef(x, y int) (int, int) {
 	return int(float64(x) * c.ScaleX), int(float64(y) * c.ScaleY)
 }

@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -166,8 +165,6 @@ type BootOrchestrator struct {
 	policy *RecoveryPolicy
 	report *BootReport
 	logger zerolog.Logger
-
-	mu sync.Mutex
 }
 
 // NewBootOrchestrator wires the orchestrator. The client is the
@@ -251,16 +248,27 @@ func (o *BootOrchestrator) Boot(ctx context.Context) (*BootContext, error) {
 	// invalidates any in-flight ADB transport. Doing it after the
 	// connect loop forced the probe to fight a half-dead device for
 	// 90s and emit the "boot probe failed" warnings seen in dev runs.
+	//
+	// Deliberately NON-terminal: on a cold boot the internal VM wait
+	// can expire before qemu-system-aarch64 / hd-adb appear (a 2020
+	// MacBook Air takes 45-70s+, the wait used to be 45s and the
+	// FIRST Start click always failed while the SECOND one — with
+	// BlueStacks already up — succeeded in under a second). We log
+	// the failure and fall through to connectADB, which has its own
+	// 90s budget + mid-budget adb-server reset to absorb the
+	// remaining lag. The boot only fails if BOTH ensure AND the ADB
+	// connect loop give up.
+	var ensureErr error
 	if o.cfg.ExpectedDPI > 0 { // heuristic: only call when DPI is configured
 		start := time.Now()
-		if err := o.client.EnsureBlueStacksMac(o.cfg.ExpectedWidth, o.cfg.ExpectedHeight, o.cfg.ExpectedDPI); err != nil {
+		if err := o.client.EnsureBlueStacksMacCtx(bctx, o.cfg.ExpectedWidth, o.cfg.ExpectedHeight, o.cfg.ExpectedDPI); err != nil {
+			ensureErr = err
 			o.report.AppendStep("bluestacks.ensure", start, BootResultError, err.Error())
-			o.report.Complete("failed", err, SuggestedAction("bluestacks.ensure", "", err.Error()))
-			o.persist()
-			return nil, fmt.Errorf("bluestacks: %w", err)
+			o.logger.Warn().Err(err).Msg("BlueStacks ensure reported an error; continuing to ADB connect loop to absorb slow cold boot")
+		} else {
+			o.report.AppendStep("bluestacks.ensure", start, BootResultOK, fmt.Sprintf("ensured %dx%d@%d", o.cfg.ExpectedWidth, o.cfg.ExpectedHeight, o.cfg.ExpectedDPI))
+			o.report.SetBlueStacksEnsured(true)
 		}
-		o.report.AppendStep("bluestacks.ensure", start, BootResultOK, fmt.Sprintf("ensured %dx%d@%d", o.cfg.ExpectedWidth, o.cfg.ExpectedHeight, o.cfg.ExpectedDPI))
-		o.report.SetBlueStacksEnsured(true)
 	}
 
 	// Phase 2: ADB connect loop. Polls Reconnect until success or
@@ -269,6 +277,12 @@ func (o *BootOrchestrator) Boot(ctx context.Context) (*BootContext, error) {
 	if err := o.connectADB(bctx); err != nil {
 		o.report.Complete("failed", err, SuggestedAction("adb.connect", "", err.Error()))
 		o.persist()
+		if ensureErr != nil {
+			// Surface the more actionable ensure error ("BlueStacks
+			// VM never became reachable") alongside the connect
+			// failure — the latter is often just a symptom.
+			return nil, fmt.Errorf("bluestacks: %v; adb connect: %w", ensureErr, err)
+		}
 		return nil, fmt.Errorf("adb connect: %w", err)
 	}
 

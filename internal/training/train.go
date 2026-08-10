@@ -74,9 +74,6 @@ func (t *Trainer) IdentifyTroops(screen gocv.Mat) ([]TroopCount, error) {
 		return nil, fmt.Errorf("templates not loaded")
 	}
 
-	// Army overview region in Army Camp tab
-	// Typically horizontal icons from X=60 to X=800, Y=200 to Y=400
-	// We'll scan a slightly larger area and use template matching
 	armyRegion := t.cal.ScaleRefRect(60, 200, 800, 450)
 	if !t.cal.IsRectInBounds(armyRegion) {
 		return nil, fmt.Errorf("army region outside screen bounds")
@@ -87,27 +84,21 @@ func (t *Trainer) IdentifyTroops(screen gocv.Mat) ([]TroopCount, error) {
 
 	var detected []TroopCount
 
-	// List all templates in the 'troops' category (assuming naming convention or category filter)
-	// For now, we'll look for templates with "troop_" prefix or in a sub-store
-	// To simplify, let's assume any template starting with "troop_" is a troop icon
 	allNames := t.templates.List(game.StateArmyCamp)
 
 	for _, name := range allNames {
-		// Only process troop templates
-		// For this implementation, we assume the user provides templates named "Barbarian", "Archer", etc.
+
 		tpl, ok := t.templates.Get(name)
 		if !ok {
 			continue
 		}
 
-		// Match template in the army region
 		matches, err := vision.MatchTemplate(regionMat, tpl, 0.8)
 		if err == nil && len(matches) > 0 {
-			// Found the troop!
-			// In a real bot, we'd also read the number below the icon
+
 			detected = append(detected, TroopCount{
 				Name:  name,
-				Count: len(matches), // This is a placeholder, should read text
+				Count: len(matches),
 			})
 		}
 	}
@@ -272,12 +263,12 @@ func (t *Trainer) OpenTrainArmy(screen gocv.Mat) (game.GameState, error) {
 }
 
 func (t *Trainer) SelectArmy1(screen gocv.Mat) error {
-	// Replaced by step-by-step sequence in bot.go
+
 	return nil
 }
 
 func (t *Trainer) ClickBattle(screen gocv.Mat) error {
-	// Replaced by step-by-step sequence in bot.go
+
 	return nil
 }
 
@@ -398,13 +389,4 @@ func (t *Trainer) readNumber(screen gocv.Mat, r image.Rectangle) int {
 
 func (t *Trainer) GetTrainTime() time.Duration {
 	return t.cfg.SleepAfterTrain.Duration
-}
-
-func DefaultTrainQueue() []QueueEntry {
-	return []QueueEntry{
-		{Troop: "Giant", Count: 6},
-		{Troop: "Archer", Count: 80},
-		{Troop: "WallBreaker", Count: 10},
-		{Troop: "Dragon", Count: 4},
-	}
 }

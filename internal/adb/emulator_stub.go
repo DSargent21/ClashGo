@@ -9,12 +9,19 @@
 package adb
 
 import (
+	"context"
 	"errors"
 	"time"
 )
 
 // EnsureBlueStacksMac is a stub for non-macOS platforms.
 func (c *Client) EnsureBlueStacksMac(width, height, dpi int) error {
+	return errors.New("BlueStacks auto-config only supported on macOS")
+}
+
+// EnsureBlueStacksMacCtx is a stub for non-macOS platforms. Mirrors
+// the emulator_mac.go signature so the boot orchestrator compiles.
+func (c *Client) EnsureBlueStacksMacCtx(_ context.Context, width, height, dpi int) error {
 	return errors.New("BlueStacks auto-config only supported on macOS")
 }
 
@@ -30,13 +37,13 @@ func (c *Client) isBlueStacksDevice(id string) bool {
 
 // waitForVMProcess is a stub for non-darwin platforms — mirrors
 // the signature used by emulator_mac.go so the package compiles.
-func (c *Client) waitForVMProcess(_ time.Duration) error {
+func (c *Client) waitForVMProcess(_ context.Context, _ time.Duration) error {
 	return errors.New("BlueStacks auto-config only supported on macOS")
 }
 
 // waitForBlueStacksADB is a stub for non-darwin platforms. Mirror
 // of the darwin waitForBlueStacksADB signature.
-func (c *Client) waitForBlueStacksADB(_ time.Duration) error {
+func (c *Client) waitForBlueStacksADB(_ context.Context, _ time.Duration) error {
 	return errors.New("BlueStacks auto-config only supported on macOS")
 }
 
