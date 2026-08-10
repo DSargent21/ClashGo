@@ -100,16 +100,16 @@ func GetAssetsDir() string {
 	// the package-init walk-up in init() finds no in-tree assets dir
 	// and the packaged app would otherwise resolve assets to /assets
 	// — an empty dir that silently breaks strategy listing (the Config
-	// page) and template loading (bot OCR). Same layout probe the
-	// config-dir resolver already uses via isPackagedApp.
-	if runtime.GOOS == "darwin" {
+	// page) and template loading (bot OCR). isPackagedApp() is the same
+	// layout probe the config-dir resolver already uses; reuse it
+	// rather than duplicating the MacOS-dir check here.
+	if runtime.GOOS == "darwin" && isPackagedApp() {
 		if execPath, err := os.Executable(); err == nil {
-			macosDir := filepath.Dir(execPath)
-			if filepath.Base(macosDir) == "MacOS" {
-				res := filepath.Join(filepath.Dir(macosDir), "Resources", "assets")
-				if info, err := os.Stat(res); err == nil && info.IsDir() {
-					return res
-				}
+			// execPath is <bundle>/Contents/MacOS/ClashGO
+			contentsDir := filepath.Dir(filepath.Dir(execPath))
+			res := filepath.Join(contentsDir, "Resources", "assets")
+			if info, err := os.Stat(res); err == nil && info.IsDir() {
+				return res
 			}
 		}
 	}
