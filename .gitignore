@@ -104,6 +104,7 @@ logs/
 !internal/game/testdata/screen_ocr.png
 !internal/game/testdata/screen_victory.png
 !web/src/assets/images/clashgo-logo.png
+!build/appicon.png
 assets/templates/debug/
 
 # Auto-generated bindings (do not commit)
