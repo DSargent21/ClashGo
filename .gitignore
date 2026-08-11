@@ -26,7 +26,9 @@ internal/updater/skip_version.txt
 
 # Go
 vendor/
-go.sum
+# NOTE: go.sum is intentionally committed (reproducible CI builds).
+# The Release workflow builds from a fresh checkout on GitHub
+# Actions — without go.sum, `go build` fails with missing checksums.
 
 # Compiled Application Binaries (root & build/)
 ClashGO
