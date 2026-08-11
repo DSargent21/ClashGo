@@ -32,10 +32,11 @@ jobs:
   release:
     # github.ref_name already includes the "v" prefix (e.g. v0.3.1).
     name: Build & publish ${{ github.ref_name }}
-    # Pinned to the exact image the opencv@4/gocv pairing was verified
-    # against (macos-26 arm64). macos-latest is a moving target and a
-    # future toolchain drift could break the gocv cgo build.
-    runs-on: macos-26-arm64
+    # NOTE: keep macos-latest. The explicit macos-26-arm64 label does
+    # NOT match a GitHub-hosted runner pool (jobs queue forever), and
+    # macos-latest currently resolves to the same macos-26 arm64 image
+    # the opencv@4/gocv pairing was verified against.
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - name: Checkout
