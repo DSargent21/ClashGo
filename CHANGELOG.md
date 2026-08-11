@@ -4,11 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## [0.3.0-beta] - 2026-08-10
 
-> **Note on versioning:** v0.3.0-beta shipped earlier today; the in-app
-> auto-update and release-automation work below was folded into THIS
-> release rather than bumping to v0.3.1, so there is exactly one v0.3
-> build for everyone.
-
 ### Added
 - **Auto-pop update dialog** — when a new release is published, ClashGO
   now opens the update window by itself (no pill click needed): one-click

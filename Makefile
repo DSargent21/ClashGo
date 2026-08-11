@@ -125,6 +125,12 @@ build-gui:
 # manifest target — produces build/bin/latest.json once the zip is on
 # disk. Standalone so it can be invoked from CI without a full GUI
 # build. Run after `build-cli` (which produces the zip via `release`).
+# Optional release-notes file for latest.json ("notes" field). The CI
+# workflow passes the CHANGELOG section for the tagged version so the
+# in-app update window shows what's new instead of "No release notes"
+# and the GitHub release body carries the same text.
+NOTES_FILE ?=
+
 manifest:
 	@echo "Building release_manifest helper..."
 	@mkdir -p $(BUILD_DIR)
@@ -136,7 +142,8 @@ manifest:
 		-min-supported $(MIN_SUPPORTED) \
 		-out $(BUILD_DIR)/latest.json \
 		-repo Ducky705/ClashGO \
-		-os darwin
+		-os darwin \
+		$(if $(NOTES_FILE),-notes-file $(NOTES_FILE))
 
 # stage-app injects the read-only assets (templates, strategies) and the
 # in-app update helper into the built .app bundle itself, then re-signs

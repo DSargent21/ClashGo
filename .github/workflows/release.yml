@@ -1,9 +1,14 @@
 # Release — auto-publish ClashGO releases from tags.
 #
-# Pushing a tag like `v0.3.1` triggers this workflow. It builds the
+# Pushing a tag like `v0.3.0-beta` triggers this workflow. It builds the
 # macOS zip + DMG + latest.json (the exact artifacts `make release`
 # produces locally) on a fresh macOS runner and publishes them to a
 # GitHub Release with the tag name as the version.
+#
+# Release notes come from CHANGELOG.md: the section headed
+# `## [<version>]` is extracted and used BOTH as the `notes` field in
+# latest.json (so the in-app auto-pop update window shows what's new)
+# and as the GitHub release body.
 #
 # Secrets: this workflow uses ONLY the built-in GITHUB_TOKEN (scoped to
 # `contents: write` below). No personal access token is embedded
@@ -11,7 +16,7 @@
 # unauthenticated, so nothing secret ships to end users.
 #
 # To cut a release:
-#     git tag v0.3.1 && git push origin v0.3.1
+#     git tag v0.3.0-beta && git push origin v0.3.0-beta
 # That's it — the release appears once the build finishes.
 
 name: Release
@@ -30,7 +35,7 @@ concurrency:
 
 jobs:
   release:
-    # github.ref_name already includes the "v" prefix (e.g. v0.3.1).
+    # github.ref_name already includes the "v" prefix (e.g. v0.3.0-beta).
     name: Build & publish ${{ github.ref_name }}
     # NOTE: keep macos-latest. The explicit macos-26-arm64 label does
     # NOT match a GitHub-hosted runner pool (jobs queue forever), and
@@ -75,10 +80,25 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Build release artifacts (zip + DMG + latest.json)
-        # Strip the leading "v" from the tag for VERSION.
+        # Strip the leading "v" from the tag for VERSION. Extract the
+        # CHANGELOG section for this version into a notes file that is
+        # used for both latest.json and the GitHub release body.
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          make release VERSION="$VERSION"
+          NOTES_FILE="$(mktemp)"
+          # Grab everything under "## [<version>]" until the next "## "
+          # heading (drop the heading line itself). Falls back to an
+          # empty file when the section is missing so the build never
+          # breaks on a fresh tag.
+          awk -v pat="## [$VERSION]" '
+            index($0, pat) == 1 { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          echo "NOTES_FILE=$NOTES_FILE" >> "$GITHUB_ENV"
+          echo "release notes ($(wc -l < "$NOTES_FILE" | tr -d ' ') lines):"
+          head -3 "$NOTES_FILE"
+          make release VERSION="$VERSION" NOTES_FILE="$NOTES_FILE"
 
       - name: Publish GitHub Release
         env:
@@ -95,10 +115,17 @@ jobs:
             fi
           done
 
-          # Prerelease = tag contains a dash (e.g. v0.3.1-beta).
+          # Prerelease = tag contains a dash (e.g. v0.3.0-beta).
           PRERELEASE_FLAG=""
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Reuse the same notes file the build step wrote, so the
+          # GitHub release body matches latest.json's notes field.
+          NOTES_FILE="${NOTES_FILE:-$(mktemp)}"
+          if [[ ! -s "$NOTES_FILE" ]]; then
+            echo "no changelog section for $GITHUB_REF_NAME — using generated notes" >&2
           fi
 
           # Idempotency: `gh release create` fails if the release already
@@ -116,7 +143,7 @@ jobs:
             "$DMG" \
             "$MANIFEST" \
             --title "ClashGO $GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file "$NOTES_FILE" \
             $PRERELEASE_FLAG
 
           echo "Release published: $GITHUB_REF_NAME"
