@@ -30,6 +30,15 @@ All notable changes to this project will be documented in this file.
 - **App icon + bundle signature** — ClashGO logo lands on the app icon
   and the DMG bundle is re-signed (ad-hoc) after asset injection
   (`tools/build_dmg.sh`).
+- **Release workflow hardening** (all caught while shipping v0.3.1):
+  - `go.sum` is now committed — it was gitignored, so a fresh CI checkout
+    had no checksums and `go build` failed (`go.sum`, `.gitignore`).
+  - CI pins the **`opencv@4`** formula — `brew install opencv` now ships
+    OpenCV 5, which drops the `opencv4.pc` file that gocv v0.43.0 compiles
+    against (`release.yml`).
+  - The publish step is idempotent — re-running the workflow or
+    force-pushing a tag no longer fails because the release already
+    exists (`release.yml`).
 
 ## [0.3.0-beta] - 2026-08-10
 

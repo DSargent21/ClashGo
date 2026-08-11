@@ -28,7 +28,13 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
   on-screen text — a terminal-only "eye view" for debugging without a
   GUI. See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
 - **Replayable attacks**: `make attack-record` records a deploy you perform on the emulator; `make attack-replay` re-fires that JSON on the device with classification + extras. Useful for sharing working attacks without re-engineering.
-  - In-app updater: New releases ship through GitHub Releases. Once a version is published, ClashGO's UI shows a banner; clicking it downloads + verifies (SHA256), then opens Finder so you can drag-replace. No new servers, no manual checks. Skip / later are honored.
+  - **In-app updater (auto-pop)**: New releases ship through GitHub
+    Releases. When a version is published, ClashGO **pops up the update
+    window on its own** (no click needed) offering one-click
+    *Update & Restart*: it downloads the zip, verifies the SHA256
+    against `latest.json`, swaps the running app in place, and relaunches.
+    No new servers, no manual checks. "Later" silences it for the session;
+    "Skip version" silences it permanently.
 
 ### 🛠️ How to use
 1. **Emulator**: Set your emulator (like BlueStacks) to **860x732** resolution and **160 DPI**.
