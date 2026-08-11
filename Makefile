@@ -8,7 +8,7 @@ MACOS_VERSION=$(shell sw_vers -productVersion | cut -d . -f 1-2)
 # Wails GUI build (build/darwin). Override VERSION on the command line
 # before running `make release`:
 #
-#     make release VERSION=0.3.1
+#     make release VERSION=0.3.0-beta
 #
 # The same value goes into:
 #   - Go ldflags (binary --version)

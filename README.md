@@ -89,11 +89,11 @@ always **BlueStacks**, not the bot.
 
 Updates are powered by GitHub Releases — no extra infrastructure.
 
-1. Bump `productVersion` in `wails.json` (e.g. `0.3.1`).
+1. Bump `productVersion` in `wails.json` (e.g. `0.3.0-beta`).
 2. Commit + push, then tag it:
 
    ```sh
-   git tag v0.3.1 && git push origin v0.3.1
+   git tag v0.3.0-beta && git push origin v0.3.0-beta
    ```
 
    Pushing a `v*` tag runs the **Release** workflow
@@ -107,10 +107,10 @@ Updates are powered by GitHub Releases — no extra infrastructure.
 
 Manual fallback (no CI):
 
-1. `make release VERSION=0.3.1` — produces the zip, the DMG,
+1. `make release VERSION=0.3.0-beta` — produces the zip, the DMG,
    and `latest.json`.
-2. Publish a GitHub release tagged `v0.3.1`, and attach:
-   - `ClashGO-v0.3.1-macOS.zip`
+2. Publish a GitHub release tagged `v0.3.0-beta`, and attach:
+   - `ClashGO-v0.3.0-beta-macOS.zip`
    - `latest.json`
 
 ### 🤝 HELP WANTED (Porting to Windows)

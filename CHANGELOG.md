@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.1] - 2026-08-10
+## [0.3.0-beta] - 2026-08-10
+
+> **Note on versioning:** v0.3.0-beta shipped earlier today; the in-app
+> auto-update and release-automation work below was folded into THIS
+> release rather than bumping to v0.3.1, so there is exactly one v0.3
+> build for everyone.
 
 ### Added
 - **Auto-pop update dialog** — when a new release is published, ClashGO
@@ -15,34 +20,6 @@ All notable changes to this project will be documented in this file.
   `latest.json` on a fresh runner and publishes them to a GitHub Release
   automatically. Uses only the built-in `GITHUB_TOKEN` — no personal
   access token ships in the app, the repo, or the artifacts.
-
-### Fixed
-- **Window close no longer freezes the app** — the async log writer now
-  flushes blocked callers immediately instead of deadlocking on shutdown
-  (`internal/bot/asyncwriter.go`).
-- **Packaged-app Config crash** — assets are injected into the .app
-  bundle for BOTH packaging paths (DMG and zip), the Config page no
-  longer crashes on a nil strategies slice, and the sidebar cleanup was
-  removed (`internal/paths`, `Makefile`, `web/src`).
-- **`latest.json` min_supported default** — beta releases now default to
-  the previous minor instead of the current version, so beta users still
-  get the update banner (`Makefile`).
-- **App icon + bundle signature** — ClashGO logo lands on the app icon
-  and the DMG bundle is re-signed (ad-hoc) after asset injection
-  (`tools/build_dmg.sh`).
-- **Release workflow hardening** (all caught while shipping v0.3.1):
-  - `go.sum` is now committed — it was gitignored, so a fresh CI checkout
-    had no checksums and `go build` failed (`go.sum`, `.gitignore`).
-  - CI pins the **`opencv@4`** formula — `brew install opencv` now ships
-    OpenCV 5, which drops the `opencv4.pc` file that gocv v0.43.0 compiles
-    against (`release.yml`).
-  - The publish step is idempotent — re-running the workflow or
-    force-pushing a tag no longer fails because the release already
-    exists (`release.yml`).
-
-## [0.3.0-beta] - 2026-08-10
-
-### Added
 - **Autonomous-run resilience hardening** (all live-verified on BlueStacks Air):
   - **Emulator-death recovery ladder** — when screen capture dies mid-session
     the bot now escalates transport reconnect → adb-server reset →
@@ -195,6 +172,30 @@ All notable changes to this project will be documented in this file.
   documented in the Added entry above and in `docs/OBSERVABILITY.md`.
   Verified live: restart count dropped from 15+ to 1, and the bot
   completed multiple attacks with correct result parsing.
+
+### Fixed
+- **Window close no longer freezes the app** — the async log writer now
+  flushes blocked callers immediately instead of deadlocking on shutdown
+  (`internal/bot/asyncwriter.go`).
+- **Packaged-app Config crash** — assets are injected into the .app
+  bundle for BOTH packaging paths (DMG and zip), the Config page no
+  longer crashes on a nil strategies slice, and the sidebar cleanup was
+  removed (`internal/paths`, `Makefile`, `web/src`).
+- **`latest.json` min_supported default** — beta releases now default to
+  the previous minor instead of the current version, so beta users still
+  get the update banner (`Makefile`).
+- **App icon + bundle signature** — ClashGO logo lands on the app icon
+  and the DMG bundle is re-signed (ad-hoc) after asset injection
+  (`tools/build_dmg.sh`).
+- **Release workflow hardening** (all caught while shipping this release):
+  - `go.sum` is now committed — it was gitignored, so a fresh CI checkout
+    had no checksums and `go build` failed (`go.sum`, `.gitignore`).
+  - CI pins the **`opencv@4`** formula — `brew install opencv` now ships
+    OpenCV 5, which drops the `opencv4.pc` file that gocv v0.43.0 compiles
+    against (`release.yml`).
+  - The publish step is idempotent — re-running the workflow or
+    force-pushing a tag no longer fails because the release already
+    exists (`release.yml`).
 
 ## [0.2.0-beta] - 2026-08-05
 
