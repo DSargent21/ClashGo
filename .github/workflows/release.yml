@@ -32,7 +32,10 @@ jobs:
   release:
     # github.ref_name already includes the "v" prefix (e.g. v0.3.1).
     name: Build & publish ${{ github.ref_name }}
-    runs-on: macos-latest
+    # Pinned to the exact image the opencv@4/gocv pairing was verified
+    # against (macos-26 arm64). macos-latest is a moving target and a
+    # future toolchain drift could break the gocv cgo build.
+    runs-on: macos-26-arm64
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -95,6 +98,16 @@ jobs:
           PRERELEASE_FLAG=""
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Idempotency: `gh release create` fails if the release already
+          # exists (workflow re-run, tag force-push). Delete-then-create
+          # makes re-runs safe.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME exists — recreating"
+            # Delete the release only, NOT the tag (--cleanup-tag would
+            # remove the ref this workflow was triggered by).
+            gh release delete "$GITHUB_REF_NAME" --yes
           fi
 
           gh release create "$GITHUB_REF_NAME" \
