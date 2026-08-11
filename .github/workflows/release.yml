@@ -51,12 +51,21 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Install OpenCV (gocv build dependency)
+      - name: Install OpenCV 4 (gocv build dependency)
+        # gocv v0.43.0 compiles against OpenCV 4.x — its cgo preamble runs
+        # `pkg-config --cflags opencv4`, and OpenCV 5 dropped the
+        # opencv4.pc file name. `brew install opencv` now yields 5.0.0,
+        # so we MUST pin the keg-only opencv@4 formula instead. The local
+        # dev env (sdk/cv-env) uses OpenCV 4.10 for the same reason.
         run: |
-          brew install opencv
-          # gocv resolves OpenCV via pkg-config; make sure the freshly
-          # installed keg is the one on the path.
-          echo "PKG_CONFIG_PATH=$(brew --prefix opencv)/lib/pkgconfig" >> "$GITHUB_ENV"
+          brew install opencv@4
+          OPENCV_PC="$(brew --prefix opencv@4)/lib/pkgconfig"
+          echo "PKG_CONFIG_PATH=$OPENCV_PC" >> "$GITHUB_ENV"
+          # Fail fast with a clear message if pkg-config can't see it.
+          if ! PKG_CONFIG_PATH="$OPENCV_PC" pkg-config --modversion opencv4; then
+            echo "opencv4.pc not found under $OPENCV_PC" >&2
+            exit 1
+          fi
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
