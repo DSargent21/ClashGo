@@ -115,12 +115,6 @@ jobs:
             fi
           done
 
-          # Prerelease = tag contains a dash (e.g. v0.3.0-beta).
-          PRERELEASE_FLAG=""
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
-
           # Reuse the same notes file the build step wrote, so the
           # GitHub release body matches latest.json's notes field.
           NOTES_FILE="${NOTES_FILE:-$(mktemp)}"
@@ -138,12 +132,18 @@ jobs:
             gh release delete "$GITHUB_REF_NAME" --yes
           fi
 
+          # NOTE: deliberately NO --prerelease flag, even for -beta tags.
+          # The in-app updater resolves "latest" via GitHub's
+          # /releases/latest endpoint, which EXCLUDES prereleases — a
+          # prerelease-flagged beta would never be offered to users and
+          # would leave the older release marked "Latest". This project's
+          # convention (v0.1.0-beta / v0.2.0-beta) is to publish beta
+          # builds as regular releases so the update flow works.
           gh release create "$GITHUB_REF_NAME" \
             "$ZIP" \
             "$DMG" \
             "$MANIFEST" \
             --title "ClashGO $GITHUB_REF_NAME" \
-            --notes-file "$NOTES_FILE" \
-            $PRERELEASE_FLAG
+            --notes-file "$NOTES_FILE"
 
           echo "Release published: $GITHUB_REF_NAME"
