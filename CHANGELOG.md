@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-08-10
+
+### Added
+- **Auto-pop update dialog** — when a new release is published, ClashGO
+  now opens the update window by itself (no pill click needed): one-click
+  *Update & Restart*, SHA256-verified download, in-place bundle swap, and
+  a non-dismissible restart splash. "Later" silences it for the session;
+  "Skip version" silences it permanently (`web/src/components/UpdateBanner.tsx`).
+- **One-command release publishing** — pushing a `v*` tag now runs
+  `.github/workflows/release.yml`, which builds the macOS zip, DMG, and
+  `latest.json` on a fresh runner and publishes them to a GitHub Release
+  automatically. Uses only the built-in `GITHUB_TOKEN` — no personal
+  access token ships in the app, the repo, or the artifacts.
+
+### Fixed
+- **Window close no longer freezes the app** — the async log writer now
+  flushes blocked callers immediately instead of deadlocking on shutdown
+  (`internal/bot/asyncwriter.go`).
+- **Packaged-app Config crash** — assets are injected into the .app
+  bundle for BOTH packaging paths (DMG and zip), the Config page no
+  longer crashes on a nil strategies slice, and the sidebar cleanup was
+  removed (`internal/paths`, `Makefile`, `web/src`).
+- **`latest.json` min_supported default** — beta releases now default to
+  the previous minor instead of the current version, so beta users still
+  get the update banner (`Makefile`).
+- **App icon + bundle signature** — ClashGO logo lands on the app icon
+  and the DMG bundle is re-signed (ad-hoc) after asset injection
+  (`tools/build_dmg.sh`).
+
 ## [0.3.0-beta] - 2026-08-10
 
 ### Added

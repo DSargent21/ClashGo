@@ -83,13 +83,29 @@ always **BlueStacks**, not the bot.
 
 Updates are powered by GitHub Releases — no extra infrastructure.
 
-1. Bump `productVersion` in `wails.json` (e.g. `0.3.0-beta`).
-2. `make release VERSION=0.3.0-beta` — produces the zip, the DMG,
+1. Bump `productVersion` in `wails.json` (e.g. `0.3.1`).
+2. Commit + push, then tag it:
+
+   ```sh
+   git tag v0.3.1 && git push origin v0.3.1
+   ```
+
+   Pushing a `v*` tag runs the **Release** workflow
+   (`.github/workflows/release.yml`), which builds the macOS zip, the
+   DMG, and `latest.json` on a fresh runner and publishes them to a
+   GitHub Release automatically. No manual upload, no secrets — the
+   workflow uses GitHub's built-in `GITHUB_TOKEN`, and the app itself
+   checks the public GitHub API unauthenticated.
+3. Existing users get an auto-popping update window within 6h (or on
+   next launch) offering one-click *Update & Restart*.
+
+Manual fallback (no CI):
+
+1. `make release VERSION=0.3.1` — produces the zip, the DMG,
    and `latest.json`.
-3. Publish a GitHub release tagged `v0.3.0-beta`, and attach:
-   - `ClashGO-v0.3.0-beta-macOS.zip`
+2. Publish a GitHub release tagged `v0.3.1`, and attach:
+   - `ClashGO-v0.3.1-macOS.zip`
    - `latest.json`
-4. Existing users get a banner within 6h (or on next launch).
 
 ### 🤝 HELP WANTED (Porting to Windows)
 Right now, this is heavily tested on macOS. I'd love some help **porting/testing this for Windows**. If you're a dev and want to help me make this not-just-a-Mac-thing, open a PR or hit me up!
