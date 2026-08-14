@@ -392,17 +392,17 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	sub := screen.Region(roi)
 	defer sub.Close()
 
-	gray := gocv.NewMat()
-	defer gray.Close()
+	gray := vision.GetMat(sub.Rows(), sub.Cols(), gocv.MatTypeCV8UC1)
+	defer vision.PutMat(gray)
 	gocv.CvtColor(sub, &gray, gocv.ColorBGRToGray)
 
-	hsv := gocv.NewMat()
-	defer hsv.Close()
+	hsv := vision.GetMat(sub.Rows(), sub.Cols(), gocv.MatTypeCV8UC3)
+	defer vision.PutMat(hsv)
 	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
 
 	// 1. Resize 5x first to ensure image dimensions are larger than kernel size (61x61)
-	scaled := gocv.NewMat()
-	defer scaled.Close()
+	scaled := vision.GetMat(sub.Rows()*5, sub.Cols()*5, gocv.MatTypeCV8UC1)
+	defer vision.PutMat(scaled)
 	gocv.Resize(gray, &scaled, image.Point{X: 0, Y: 0}, 5.0, 5.0, gocv.InterpolationCubic)
 
 	// 2. Estimate background brightness on scaled image with dynamic kernel size safety
@@ -420,23 +420,23 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		kSize = 3
 	}
 
-	bg := gocv.NewMat()
-	defer bg.Close()
+	bg := vision.GetMatFrom(scaled)
+	defer vision.PutMat(bg)
 	gocv.GaussianBlur(scaled, &bg, image.Point{X: kSize, Y: kSize}, 0, 0, gocv.BorderDefault)
 
 	// 3. Remove slow illumination changes
-	norm := gocv.NewMat()
-	defer norm.Close()
+	norm := vision.GetMatFrom(scaled)
+	defer vision.PutMat(norm)
 	gocv.Subtract(scaled, bg, &norm)
 
 	// 4. Stretch contrast
 	gocv.Normalize(norm, &norm, 0, 255, gocv.NormMinMax)
 
 	// 5. Scaled Otsu thresholding to prevent hollow digits by keeping shaded inner text regions white
-	binary := gocv.NewMat()
-	defer binary.Close()
-	dummy := gocv.NewMat()
-	defer dummy.Close()
+	binary := vision.GetMatFrom(norm)
+	defer vision.PutMat(binary)
+	dummy := vision.GetMatFrom(norm)
+	defer vision.PutMat(dummy)
 	otsuVal := gocv.Threshold(norm, &dummy, 0, 255, gocv.ThresholdBinary|gocv.ThresholdOtsu)
 	gocv.Threshold(norm, &binary, otsuVal*0.60, 255, gocv.ThresholdBinary)
 
@@ -454,7 +454,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		gocv.BitwiseNot(binary, &binary)
 	}
 
-	bestVal, bestScore := 0, -1.0
+	bestVal := 0
 	roiCenterY := scaled.Rows() / 2
 
 	contours := gocv.FindContours(binary, gocv.RetrievalExternal, gocv.ChainApproxSimple)
@@ -555,7 +555,6 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		}
 		cleaned = bestCluster
 
-		score := float64(len(cleaned)*len(cleaned)) * 100.0
 		s := ""
 		details := ""
 		for _, d := range cleaned {
@@ -572,12 +571,9 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		if lr.Debug {
 			lr.logger.Debug().Str("digits", s).Str("pos", details).Msg("row OCR pass")
 		}
-		if score > bestScore {
-			val, _ := strconv.Atoi(s)
-			if val < 100000000 {
-				bestVal = val
-				bestScore = score
-			}
+		val, _ := strconv.Atoi(s)
+		if val < 100000000 {
+			bestVal = val
 		}
 	}
 	return bestVal

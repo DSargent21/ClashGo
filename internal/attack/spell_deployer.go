@@ -92,7 +92,7 @@ func (sd *SpellDeployer) deployFourSides(unit strategy.Unit, _ *TrackedSlot, tar
 			if !ok {
 				edge, ok = sd.pCfg.SpellEdgesA[edgeName]
 				if !ok {
-					edge, _ = sd.pCfg.Edges[edgeName]
+					edge = sd.pCfg.Edges[edgeName]
 				}
 			}
 

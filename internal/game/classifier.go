@@ -500,10 +500,8 @@ func (c *Classifier) buildRules() {
 		},
 	}
 
-	for _, r := range baseRules {
-		// We no longer scale rules because we normalize the screen height in ClassifyState
-		c.rules = append(c.rules, r)
-	}
+	// We no longer scale rules because we normalize the screen height in ClassifyState
+	c.rules = append(c.rules, baseRules...)
 
 	sort.Slice(c.rules, func(i, j int) bool {
 		return c.rules[i].Priority > c.rules[j].Priority

@@ -19,7 +19,6 @@ import (
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/paths"
-	"github.com/Ducky705/ClashGO/internal/training"
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
@@ -39,7 +38,6 @@ type Bot struct {
 	classify func(gocv.Mat) (game.GameState, int)
 
 	attackExec *attack.Executor
-	trainer    *training.Trainer
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -202,7 +200,6 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	}
 
 	attackExec := attack.NewExecutor(client, cal, &cfg.Attack, log.Logger)
-	trainer := training.NewTrainer(client, cal, &cfg.Training, log.Logger)
 
 	var templates *game.TemplateStore
 	templates, err = game.NewTemplateStore(paths.Resolve("templates"))
@@ -237,7 +234,6 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		recognizer:        recognizer,
 		cfg:               cfg,
 		attackExec:        attackExec,
-		trainer:           trainer,
 		ctx:               ctx,
 		cancel:            cancel,
 		logger:            log.With().Str("bot", "orchestrator").Logger(),
@@ -287,7 +283,6 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	b.navigator.SetDisableChestDismissal(b.cfg.Device.DisableChestDismissal)
 
 	b.attackExec.SetClassifier(b.classify)
-	b.trainer.SetClassifier(b.classify)
 
 	return b, nil
 }
@@ -828,11 +823,7 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 		Bool("is_orange", isOrange).
 		Msg("attack button detection check")
 
-	if !isOrange {
-		return false
-	}
-
-	return true
+	return isOrange
 }
 
 func (b *Bot) isOrange(screen gocv.Mat, x, y int) bool {
@@ -1582,8 +1573,8 @@ func (b *Bot) colorCheck(screen gocv.Mat, x, y int, lower, upper gocv.Scalar, mi
 	sub := screen.Region(region)
 	defer sub.Close()
 
-	mask := gocv.NewMat()
-	defer mask.Close()
+	mask := vision.GetMat(sub.Rows(), sub.Cols(), gocv.MatTypeCV8UC1)
+	defer vision.PutMat(mask)
 	gocv.InRangeWithScalar(sub, lower, upper, &mask)
 
 	return gocv.CountNonZero(mask) > minPixels
@@ -1768,9 +1759,6 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 	b.cfg = cfg
 	if b.attackExec != nil {
 		b.attackExec.UpdateConfig(&cfg.Attack)
-	}
-	if b.trainer != nil {
-		b.trainer.UpdateConfig(&cfg.Training)
 	}
 
 	if b.navigator != nil {

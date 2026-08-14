@@ -1040,7 +1040,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 					if !ok {
 						edge, ok = pCfg.SpellEdgesA[currentEdge]
 						if !ok {
-							edge, _ = pCfg.Edges[currentEdge]
+							edge = pCfg.Edges[currentEdge]
 						}
 					}
 

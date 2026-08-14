@@ -188,8 +188,7 @@ func Load(path string) (*BotConfig, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	var cfg BotConfig
-	cfg = *DefaultConfig()
+	cfg := *DefaultConfig()
 
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)

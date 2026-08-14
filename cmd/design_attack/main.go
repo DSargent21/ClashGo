@@ -499,7 +499,7 @@ func drawOverlay(m gocv.Mat, st *state) {
 	panelW, panelH := 460, 130
 	rect := image.Rect(8, 8, 8+panelW, 8+panelH)
 	gocv.Rectangle(&m, rect, color.RGBA{0, 0, 0, 200}, -1)
-	lines := []string{}
+	var lines []string
 	if st.idx < len(st.planned) {
 		u := st.planned[st.idx]
 		kind := "line (2 clicks: P1=start, P2=end; press m to add sub-line)"
