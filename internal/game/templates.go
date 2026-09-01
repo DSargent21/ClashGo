@@ -114,10 +114,13 @@ func (ts *TemplateStore) Match(screen gocv.Mat, state GameState, threshold float
 			continue
 		}
 
-		result := gocv.NewMat()
-		gocv.MatchTemplate(screen, tmpl, &result, gocv.TmCcoeffNormed, vision.EmptyMask())
-		_, maxVal, _, _ := gocv.MinMaxLoc(result)
-		result.Close()
+		// Result Mat comes from the shared vision pool (zeroed on Put) instead
+		// of alloc+close per template per frame — this loop runs on the
+		// classifier tick for every registered state template.
+		res := vision.GetMat(screen.Rows()-tmpl.Rows()+1, screen.Cols()-tmpl.Cols()+1, gocv.MatTypeCV32FC1)
+		gocv.MatchTemplate(screen, tmpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
+		_, maxVal, _, _ := gocv.MinMaxLoc(res)
+		vision.PutMat(res)
 
 		if maxVal > bestConf {
 			bestConf = maxVal
@@ -160,10 +163,11 @@ func (ts *TemplateStore) MatchMultiScale(screen gocv.Mat, state GameState, minSc
 			if resized.Empty() || resized.Cols() > screen.Cols() || resized.Rows() > screen.Rows() {
 				continue
 			}
-			result := gocv.NewMat()
-			gocv.MatchTemplate(screen, resized, &result, gocv.TmCcoeffNormed, vision.EmptyMask())
-			_, maxVal, _, _ := gocv.MinMaxLoc(result)
-			result.Close()
+			// Pooled result Mat — same rationale as Match().
+			res := vision.GetMat(screen.Rows()-resized.Rows()+1, screen.Cols()-resized.Cols()+1, gocv.MatTypeCV32FC1)
+			gocv.MatchTemplate(screen, resized, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
+			_, maxVal, _, _ := gocv.MinMaxLoc(res)
+			vision.PutMat(res)
 
 			if maxVal > bestConf {
 				bestConf = maxVal

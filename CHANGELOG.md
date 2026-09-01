@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0-beta] - 2026-08-31
+
+### Changed
+- **Frame-hot-path template matching is single-scale by default**
+  (`internal/vision/vision.go`) — `MatchTemplate` no longer blindly
+  escalates every call to a 5-step multi-scale search (0.8–1.2). That
+  escalation cost 5 `Resize` allocations + 5 cgo matches per call on the
+  per-frame path. Callers that genuinely need density-scale tolerance
+  call `MatchMultiScale` explicitly (named templates hit the scaled
+  template cache). Expected effect: per-frame template matching cgo work
+  drops from 5×N to N matches (N = templates checked).
+- **Pooled result Mats on the classifier and loot-OCR paths**
+  (`internal/game/templates.go`, `internal/game/loot.go`) — the result
+  Mat for `MatchTemplate` results now comes from the shared vision Mat
+  pool (`vision.GetMat`/`PutMat`) instead of `gocv.NewMat()` + `Close()`
+  per template per frame. Zero result-Mat heap allocation on the
+  classifier tick and loot OCR hot paths.
+- **Persistent ADB shell pipe is now enabled by default**
+  (`internal/config/config.go`) — `UseShellPipe: true`. Removes the
+  ~100–300ms `app_process` JVM spin-up per tap during attack cycles
+  (measured 30–80ms/command on USB, more on WiFi ADB). Automatic
+  fallback to the legacy one-shot transport is verified
+  (`routeTap` → `markPipeBroken` → legacy tap path), and pipe start
+  failure logs a warning and degrades gracefully.
+
+### Fixed
+- **`--once` CLI runs now exit cleanly** (`cli.go`, `internal/bot/bot.go`)
+  — main() previously blocked forever on `ctx.Done()` after the bot
+  finished its final attack, so a `--once` run hung with the process
+  alive after the session summary printed. `Bot.Done()` exposes a
+  channel that closes on graceful attack-cap shutdown, and main()
+  selects on it.
+- **Boot survives a wedged `wm size`** (`internal/bot/bootorchestrator.go`)
+  — when the `wm size` shell call fails (BlueStacks returning
+  "ADB: closed" while SurfaceFlinger still serves frames), the boot
+  orchestrator now falls back to the live screencap's 12-byte header
+  for authoritative pixel dimensions instead of aborting the whole
+  boot and leaving the Start button dead.
+
+### Verified
+- Full end-to-end live run on BlueStacks Air (860×732): boot → calibrate
+  → attack search → loot OCR → EDrag Rush attack (100% deploy, 3 stars,
+  2.1M elixir) → graceful shutdown, exit code 0.
+
 ## [0.3.0-beta] - 2026-08-10
 
 ### Added

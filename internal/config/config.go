@@ -168,7 +168,7 @@ func DefaultConfig() *BotConfig {
 			SaveScreenshots:    true,
 			TemplateDebug:      false,
 			StateDebug:         false,
-			UseShellPipe:       false,
+			UseShellPipe:       true,
 			ShellPipeSyncFlush: true,
 			JitterTaps:         true,
 			JitterDelays:       true,

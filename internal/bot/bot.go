@@ -41,6 +41,7 @@ type Bot struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	done   chan struct{}
 	logger zerolog.Logger
 
 	attackCount atomic.Int32
@@ -236,6 +237,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		attackExec:        attackExec,
 		ctx:               ctx,
 		cancel:            cancel,
+		done:              make(chan struct{}),
 		logger:            log.With().Str("bot", "orchestrator").Logger(),
 		startedAt:         startedWall,
 		lastAction:        time.Now(),
@@ -245,6 +247,16 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		cpuSampler:        newCPUSampler(),
 		dukePicksFile:     dukePicksFile,
 	}
+
+	// Close `done` the moment the bot's runtime context is cancelled
+	// (Stop click in the GUI, or the attack-cap graceful shutdown after
+	// a --once CLI run) so external owners — the CLI's main() — can
+	// wait on b.Done() instead of polling stats or blocking on a
+	// signal that never arrives.
+	go func() {
+		<-ctx.Done()
+		close(b.done)
+	}()
 
 	if dukePicksFile != nil {
 		writePick := func(target, chosen string) {
@@ -334,6 +346,13 @@ func (b *Bot) Stop() {
 func (b *Bot) Cancel() {
 	b.cancel()
 }
+
+// Done returns a channel that closes when the bot's runtime context
+// is cancelled — i.e. after a Stop, or after the attack-cap graceful
+// shutdown (a --once CLI run). External owners (the CLI main) wait on
+// it so they can exit once the bot finishes its session instead of
+// blocking on a signal that never arrives.
+func (b *Bot) Done() <-chan struct{} { return b.done }
 func (b *Bot) captureLoop() {
 	gc := game.NewGameContext()
 
@@ -556,12 +575,12 @@ func (b *Bot) restartGame() {
 // cheap→destructive ladder, re-probing liveness (wm size) after
 // each step, and only relaunches BlueStacks as a last resort:
 //
-//	1. screen-size probe     — device alive? just restart the game
-//	2. transport Reconnect   — stale socket after a BlueStacks blip
-//	3. ResetAdbServer        — stale adb-server registration
-//	   (note: drops ALL adb connections on this host — logged)
-//	4. EnsureBlueStacksMac   — emulator really gone; relaunch at the
-//	   configured resolution, then poll up to 2 min for adb
+//  1. screen-size probe     — device alive? just restart the game
+//  2. transport Reconnect   — stale socket after a BlueStacks blip
+//  3. ResetAdbServer        — stale adb-server registration
+//     (note: drops ALL adb connections on this host — logged)
+//  4. EnsureBlueStacksMac   — emulator really gone; relaunch at the
+//     configured resolution, then poll up to 2 min for adb
 func (b *Bot) recoverEmulator() {
 	b.logger.Warn().Msg("capture pipeline dead; beginning device recovery ladder")
 

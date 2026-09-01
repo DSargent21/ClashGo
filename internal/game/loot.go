@@ -283,10 +283,10 @@ func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, colRef image.Rect
 		if !anchorROI.Empty() {
 			if tpl, ok := lr.templates.Get(name); ok && !tpl.Empty() {
 				region := screen.Region(anchorROI)
-				res := gocv.NewMat()
+				res := vision.GetMat(region.Rows()-tpl.Rows()+1, region.Cols()-tpl.Cols()+1, gocv.MatTypeCV32FC1)
 				gocv.MatchTemplate(region, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
 				_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
-				res.Close()
+				vision.PutMat(res)
 				region.Close()
 
 				if maxConf > minConf {
@@ -357,10 +357,10 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 	for i, ic := range icons {
 		tpl, ok := lr.templates.Get(ic.tpl)
 		if ok && !tpl.Empty() {
-			res := gocv.NewMat()
+			res := vision.GetMat(screen.Rows()-tpl.Rows()+1, screen.Cols()-tpl.Cols()+1, gocv.MatTypeCV32FC1)
 			gocv.MatchTemplate(screen, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
 			_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
-			res.Close()
+			vision.PutMat(res)
 
 			if maxConf > 0.8 {
 				// Anchor to icon. Starting ROI directly inside the icon area

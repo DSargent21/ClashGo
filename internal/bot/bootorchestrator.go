@@ -27,6 +27,7 @@ package bot
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -503,26 +504,62 @@ func (o *BootOrchestrator) probeWithRecovery(ctx context.Context) (adb.ProbeResu
 	return adb.ProbeResult{}, errors.New("boot probe exhausted recovery attempts")
 }
 
-// screenSize fetches wm size. The shell call goes through the
-// context-aware wrapper with the per-call timeout so a hung device
-// can't stall this step past its budget.
+// screenSize fetches the display dimensions. The primary source is
+// `wm size`; when that shell call fails (a wedged WindowManager on
+// BlueStacks returns "ADB: closed" while SurfaceFlinger still serves
+// frames) we fall back to the live screencap, whose 12-byte header
+// carries the authoritative pixel dimensions the bot's calibration
+// needs anyway. Without the fallback a single flaky shell call aborts
+// the whole boot and the Start button looks dead.
 func (o *BootOrchestrator) screenSize(ctx context.Context) (int, int, error) {
 	start := time.Now()
 	pctx, cancel := context.WithTimeout(ctx, o.cfg.AdbPerCallTimeout)
 	defer cancel()
-	out, err := o.runner.Shell(pctx, "wm size")
+
+	w, h, err := o.screenSizeFromWmSize(pctx)
+	if err == nil {
+		o.report.AppendStep("screen.size", start, BootResultOK, fmt.Sprintf("%dx%d", w, h))
+		return w, h, nil
+	}
+
+	o.logger.Warn().Err(err).Msg("wm size failed; falling back to screencap dimensions")
+	w, h, capErr := o.screenSizeFromScreencap(pctx)
+	if capErr != nil {
+		o.report.AppendStep("screen.size", start, BootResultError, fmt.Sprintf("wm size: %v; screencap: %v", err, capErr))
+		return 0, 0, fmt.Errorf("screen size: wm size: %v; screencap: %w", err, capErr)
+	}
+
+	o.report.AppendStep("screen.size", start, BootResultOK, fmt.Sprintf("%dx%d (screencap fallback)", w, h))
+	return w, h, nil
+}
+
+func (o *BootOrchestrator) screenSizeFromWmSize(ctx context.Context) (int, int, error) {
+	out, err := o.runner.Shell(ctx, "wm size")
 	if err != nil {
-		o.report.AppendStep("screen.size", start, BootResultError, err.Error())
 		return 0, 0, err
 	}
 	var w, h int
 	if _, err := fmt.Sscanf(out, "Physical size: %dx%d", &w, &h); err != nil {
 		if _, err := fmt.Sscanf(out, "Override size: %dx%d", &w, &h); err != nil {
-			o.report.AppendStep("screen.size", start, BootResultError, fmt.Sprintf("parse %q: %v", out, err))
 			return 0, 0, fmt.Errorf("parse wm size %q: %w", out, err)
 		}
 	}
-	o.report.AppendStep("screen.size", start, BootResultOK, fmt.Sprintf("%dx%d", w, h))
+	return w, h, nil
+}
+
+func (o *BootOrchestrator) screenSizeFromScreencap(ctx context.Context) (int, int, error) {
+	buf, err := o.runner.CaptureScreen(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(buf) < 12 {
+		return 0, 0, fmt.Errorf("screencap response too short (%d bytes)", len(buf))
+	}
+	w := int(binary.LittleEndian.Uint32(buf[0:4]))
+	h := int(binary.LittleEndian.Uint32(buf[4:8]))
+	if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+		return 0, 0, fmt.Errorf("screencap returned invalid dimensions %dx%d", w, h)
+	}
 	return w, h, nil
 }
 
