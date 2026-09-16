@@ -229,6 +229,7 @@ func SuggestedAction(lastStep, lastStrategy, lastErr string) string {
 		{"ResetAdbServer", "local adb-server was reset to clear stale device registrations; if you have other adb tools connected, they will need to reconnect"},
 		{"transport connect", "check that BlueStacks is running and ADB is enabled in BlueStacks settings"},
 		{"no ADB devices", "open BlueStacks and confirm the instance is started (the multi-instance manager)"},
+		{"adb: closed", "BlueStacks ADB daemon is wedged — the bot auto-retries with a reconnect and adb-server reset; if it keeps failing, restart BlueStacks"},
 		{"wm size", "BlueStacks may still be initializing; wait 30s and try again"},
 		{"boot_completed", "BlueStacks is taking unusually long to boot — close other heavy apps and try again"},
 		{"bootanim", "BlueStacks boot animation is stuck; try Settings → Reset in BlueStacks"},

@@ -35,11 +35,46 @@ LDFLAGS := -X main.version=$(VERSION) \
 # MIN_SUPPORTED= on the command line when the default is wrong.
 MIN_SUPPORTED ?= $(shell echo "$(VERSION)" | awk -F'[.-]' '{ if (NF > 3) { m = $$2 - 1; if (m < 0) m = 0; print $$1 "." m ".0" } else { print $$1 "." $$2 ".0" } }')
 
-.PHONY: all build build-cli build-gui clean release manifest
+# OpenCV test ldflags: the local Homebrew/sdk OpenCV build ships dylibs
+# with @rpath install names, so test binaries need the lib dir baked into
+# LC_RPATH or they abort at spawn ("Library not loaded: libopencv_gapi").
+# Resolved via pkg-config; empty when unavailable (CI runners use a
+# keg-only install where the default linking already works).
+OPENCV_LIBDIR := $(shell pkg-config --variable=libdir opencv4 2>/dev/null)
+ifneq ($(OPENCV_LIBDIR),)
+    GOTEST_LDFLAGS := -ldflags='-extldflags=-Wl,-rpath,$(OPENCV_LIBDIR)'
+endif
+
+.PHONY: all build build-cli build-gui clean release manifest test test-go test-py
 
 all: build-cli build-gui
 
 build: build-cli build-gui
+
+# test: full verification suite — vet, Go tests, Python strategy contract
+# tests. go vet before tests so a type error fails fast without paying
+# for the (slow) first OpenCV link.
+test: test-go test-py
+	@echo "ALL TESTS PASSED"
+
+test-go:
+	@echo "Running go vet ./..."
+	go vet ./...
+	@echo "Running go test ./..."
+	go test $(GOTEST_LDFLAGS) ./...
+
+# Locate a python3 interpreter that actually has pytest + pyyaml. The
+# macOS system python3 (CLT 3.9) lacks both, while framework/homebrew
+# installs carry them — probe candidates instead of assuming.
+PYTEST_PY := $(shell for p in python3 /usr/local/bin/python3.12 /opt/homebrew/bin/python3 $(HOME)/.local/bin/python3.11; do command -v $$p >/dev/null 2>&1 || continue; $$p -c "import pytest, yaml" >/dev/null 2>&1 && { command -v $$p; break; }; done)
+
+test-py:
+	@echo "Running strategy contract tests (pytest)"
+ifdef PYTEST_PY
+	$(PYTEST_PY) -m pytest tests/
+else
+	@echo "SKIP: no python3 with pytest+pyyaml found — strategy contract tests not run"
+endif
 
 build-cli:
 	@echo "Building CLI (version=$(VERSION), commit=$(GIT_COMMIT))..."

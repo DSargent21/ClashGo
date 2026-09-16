@@ -55,6 +55,13 @@ type AttackConfig struct {
 	WardenUseAtPct      int      `json:"warden_use_at_pct"`
 	ReserveDEPercent    int      `json:"reserve_de_percent"`
 	StallTimerSeconds   int      `json:"stall_timer_seconds"`
+	// MinSecondsBetweenAttacks is the minimum pause between the end of one
+	// battle (Return Home) and the start of the next attack sequence.
+	// Armies take real time to retrain; without this gate the bot attacked
+	// back-to-back ~8s apart with whatever the camps held (observed live:
+	// three near-identical defeats in under four minutes). 0 disables the
+	// pause.
+	MinSecondsBetweenAttacks int `json:"min_seconds_between_attacks"`
 }
 
 type SearchConfig struct {
@@ -90,9 +97,9 @@ type DebugConfig struct {
 	//   false = Tap is fire-and-forget (fastest; rely on HumanSleep between
 	//           batches to preserve ordering).
 	// Only consulted when UseShellPipe is true.
-	ShellPipeSyncFlush bool `json:"shell_pipe_sync_flush"`
-	JitterTaps         bool `json:"jitter_taps"`
-	JitterDelays       bool `json:"jitter_delays"`
+	ShellPipeSyncFlush bool    `json:"shell_pipe_sync_flush"`
+	JitterTaps         bool    `json:"jitter_taps"`
+	JitterDelays       bool    `json:"jitter_delays"`
 	MaxJitterPixels    float64 `json:"max_jitter_pixels"`
 	JitterFraction     float64 `json:"jitter_fraction"`
 }
@@ -137,16 +144,17 @@ func DefaultConfig() *BotConfig {
 			SleepAfterTrain:      Duration{5 * time.Second},
 		},
 		Attack: AttackConfig{
-			Enabled:             true,
-			StrategyFile:        paths.Resolve("strategies/auto_edrag_rush.yaml"),
-			MaxAttackPerSession: 100,
-			DropDelay:           Duration{500 * time.Millisecond},
-			SpellDelay:          Duration{2 * time.Second},
-			EndBattleDelay:      Duration{30 * time.Second},
-			QueenChargeAtPct:    50,
-			WardenUseAtPct:      30,
-			ReserveDEPercent:    200,
-			StallTimerSeconds:   10,
+			Enabled:                  true,
+			StrategyFile:             paths.Resolve("strategies/auto_edrag_rush.yaml"),
+			MaxAttackPerSession:      100,
+			DropDelay:                Duration{500 * time.Millisecond},
+			SpellDelay:               Duration{2 * time.Second},
+			EndBattleDelay:           Duration{30 * time.Second},
+			QueenChargeAtPct:         50,
+			WardenUseAtPct:           30,
+			ReserveDEPercent:         200,
+			StallTimerSeconds:        10,
+			MinSecondsBetweenAttacks: 30,
 		},
 		Search: SearchConfig{
 			Enabled:              true,

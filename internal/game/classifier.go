@@ -380,20 +380,95 @@ func (c *Classifier) buildRules() {
 				{796, 564, 0xFC, 0xBA, 0x36, 50},
 			},
 		},
+		// StateBattleEnd previously matched on the btn_return_home template
+		// ALONE (MinPass 0). That was dangerously loose: the "Connection
+		// lost" dialog also renders a RETURN HOME button, and dim village
+		// frames can weakly match the template, so the bot believed it was
+		// on a battle-result screen while actually sitting on a village or
+		// a disconnect dialog — tapping dead coordinates forever (observed
+		// live: 18:26 boot → 18:28 ReturnHome fallback → 18:33 emergency
+		// restart loop). The pixel anchors below are the battle-result
+		// panel's light-blue trophy band and orange star row — decorations
+		// that exist only on a genuine result screen.
 		{
 			State:    StateBattleEnd,
 			Priority: 88,
 			Weight:   88,
-			Desc:     "battle result stars",
+			Desc:     "battle result stars (template + result-panel pixels)",
 			Template: "btn_return_home",
-			MinPass:  0,
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// Golden star/bonus band (sampled live on a real result
+				// screen at 12:30; the connection-lost dialog is dark at
+				// this point, so this doubles as its discriminator)
+				{430, 240, 0xF1, 0xCB, 0x53, 45},
+				// White header area above the stars
+				{430, 120, 0xF7, 0xFD, 0xFE, 30},
+				// Light blue-gray sub-band
+				{430, 180, 0xD0, 0xD8, 0xE2, 30},
+			},
+		},
+		// StateConnectionLost is the game's disconnect dialog ("Connection
+		// lost / You have lost connection with the server...") with TRY
+		// AGAIN and RETURN HOME buttons. Previously it had NO rule and was
+		// misread as StateBattleEnd (the RETURN HOME button satisfied that
+		// rule's template-only match), leaving the bot tapping result-screen
+		// coordinates forever. The dialog dims everything behind it, so its
+		// dark-panel pixels double as the discriminator against a real
+		// result screen.
+		// StateConfirmExit is CoC's "Do you want to quit the game?" dialog
+		// with Cancel (orange) and Okay (green) buttons. It appears when the
+		// app's Back button is pressed on the main village — which a
+		// misclassified ArmyCamp frame used to trigger (see the ArmyCamp
+		// guard in processFrame). Previously undetected: the bot sat on the
+		// dialog for the full boot-splash grace (5 min) then force-
+		// restarted, every cycle. Panel pixel = the dialog's light-gray
+		// body; both buttons must match (real villages have neither).
+		{
+			State:    StateConfirmExit,
+			Priority: 99,
+			Weight:   99,
+			Desc:     "quit confirm dialog (Cancel / Okay)",
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// Green Okay button
+				{497, 431, 0xD6, 0xF4, 0x76, 45},
+				// Orange Cancel button
+				{279, 429, 0xFE, 0xC3, 0x69, 45},
+				// Light-gray dialog body between the texts
+				{430, 340, 0xE8, 0xE8, 0xE0, 25},
+			},
+		},
+		{
+			State:    StateConnectionLost,
+			Priority: 98,
+			Weight:   98,
+			Desc:     "connection lost dialog (TRY AGAIN / RETURN HOME)",
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// TRY AGAIN button text (light blue-gray)
+				{300, 478, 0xCB, 0xE6, 0xFF, 40},
+				// RETURN HOME button text (same light blue-gray)
+				{431, 581, 0xCB, 0xE6, 0xFF, 45},
+				// Dimmed dark panel between the two texts
+				{430, 520, 0x1A, 0x1C, 0x1E, 20},
+			},
 		},
 		{
 			State:    StateArmyCamp,
 			Priority: 85,
 			Weight:   85,
 			Desc:     "army overview tab open",
-			MinPass:  1,
+			// MinPass was 1, but the brown pixel check at (479,149) also
+			// passes on ordinary main-village frames (observed live:
+			// village (479,149) = RGB(61,53,62), within tolerance of
+			// 0x4D3E33), misclassifying the village as ArmyCamp. That
+			// made processFrame press Back — which on the real village
+			// opens the quit-confirm dialog — the stuck loop this
+			// classifier change is part of fixing. Both anchors are the
+			// army-overview tab header (red + brown side by side); a
+			// genuine camp always shows both.
+			MinPass:  2,
 			Checks: []PixelCheck{
 				{529, 149, 0xF1, 0x55, 0x4F, 25},
 				{479, 149, 0x4D, 0x3E, 0x33, 25},

@@ -2,6 +2,141 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0-beta] - 2026-09-16
+
+### Added
+- **Deploy budget — the deploy phase is now wall-clock bounded**
+  (`internal/attack/attack.go`). `StartDeployBudget` arms a deadline
+  (~2× the longest legitimately-observed full deployment) and every
+  reconcile / sweep / verify loop consults `DeployBudgetExhausted()`
+  between rounds. Observed live before this: a spent Earthquake card whose
+  cooldown icon never reads "empty" kept the sweep re-firing taps for
+  ~2 minutes *after* the battle had ended. Leftover slots are now reported
+  as undeployed so the attack report shows the partial failure instead of
+  a phantom success.
+- **`end_at_percent` per-strategy auto-end** (`pkg/strategy/yaml_parser.go`,
+  `internal/attack/attack.go`) — a strategy can declare the destruction
+  percentage at which the win is already secured (e.g. `valk_spam.yaml`
+  ends at 50%). In threshold mode the stall timer is deliberately disabled
+  *below* the threshold so a stall can never abandon the win early, and the
+  battle only ends when the red **End Battle** button is actually on screen.
+- **Battle-outcome correctness** (`internal/attack/attack.go`):
+  `LastDestructionPercent` latches the highest destruction read during the
+  battle (monotonic, so a transient 0 as the overlay renders can't win),
+  `ThDestroyed` latches the golden "Town Hall destroyed" banner from an
+  optional `stall_config.th_banner_zone`, and `StarsFromOutcome` scores
+  stars from the outcome (≥50% = 1★, TH = +1★, 100% = 3★) when the result
+  panel's OCR fails. `ResetBattleOutcome` clears both at the top of
+  `WaitForBattleEndCtx` — live, battle 1's garbage 381% read was still
+  latched when battle 2's result was parsed, turning a 32% defeat into
+  "3 stars".
+- **`StateConnectionLost` + `StateConfirmExit`** (`internal/game/types.go`,
+  `internal/game/classifier.go`, `internal/bot/bot.go`) — the disconnect
+  dialog (TRY AGAIN / RETURN HOME) was misread as `StateBattleEnd`, so the
+  bot tapped result-screen coordinates forever (live: 18:26 boot → 18:28
+  ReturnHome fallback → 18:33 restart loop). TRY AGAIN reconnects in
+  place; the quit-confirm dialog is dismissed with CANCEL.
+- **Saved-army slot selection** (`cmd/`… `internal/bot/bot.go`,
+  `pkg/strategy/yaml_parser.go`) — strategies declare `army_slot` and
+  `selectArmySlot` clicks that recipe card in the army list (measured
+  geometry: first card at ref-y 227, ~54px stacking). `valk_spam.yaml`
+  targets the 4th recipe.
+- **Inter-attack cooldown** (`min_seconds_between_attacks`, default 30s)
+  — without it the bot re-attacked ~8s after every Return Home with
+  whatever the camps held (live: three near-identical defeats in under
+  four minutes).
+- **BlueStacks adbd wedge workaround** (`internal/adb/transport.go`,
+  `internal/adb/shellpipe.go`). In the wedged state adbd answers every
+  bare command with `FAIL "closed"` while compound commands
+  (`getprop x; <cmd>`) run normally. `shellWedgeFallback` rewrites the
+  service string, `stripPrefixLine` drops the extra output line, and the
+  exec-service path falls back to `shell:` (with a 16→12-byte screencap
+  header normalizer) — the wedge survives `adb kill-server`, so this is
+  the only durable fix at the transport layer.
+- **`screenSize` recovery ladder** (`internal/bot/bootorchestrator.go`) —
+  a failed `wm size` now escalates retry-transport → `adb kill-server` +
+  start-server between attempts instead of burning the budget against the
+  same wedged socket.
+- **Phase-level deploy offset propagation** (`internal/attack/deploy_planner.go`,
+  `pkg/strategy/yaml_parser.go`) — a phase pin like `offset: 130 # Deeper
+  in for EQs` now applies to every unit in the phase (per-unit `offset`
+  still wins).
+- **Post-deploy spell reconciliation** (`internal/attack/spell_deployer.go`)
+  — `Amount: "All"` resolves to the card's live OCR count (11 rage on one
+  card, 4 EQs on another) instead of a hardcoded 5, and
+  `VerifyAndReconcile` re-reads the slot afterwards and re-fires the
+  difference. A no-progress stop (two identical positive reads) and a
+  zero-OCR-streak bound stop a spent card from eating taps forever.
+- **`cmd/wedge_probe`** — standalone live harness for the adbd-wedge
+  detection + compound-command fallback.
+- **Test coverage for every new decision path** — `deploy_budget_test.go`,
+  `battle_end_test.go` (destruction → stars, trophy/star pixel anchors,
+  defeat fixtures), `spell_deployer_test.go` (tap-level assertions + formula
+  geometry), `slot_manager_test.go` (duplicate manual-label hijack),
+  `testharness_test.go`, `bootorchestrator_test.go` (wm-size fallback),
+  `classifier_stuck_test.go`, `formula_test.go`, `yaml_parser_test.go`, plus
+  Python strategy-contract tests (`tests/test_spell_placement.py`,
+  `tests/test_valk_strategy.py`) wired into `make test`.
+
+### Changed
+- **Loot OCR is content-located, not slot-located**
+  (`internal/game/loot.go`) — loot rows are found by detecting bright,
+  low-saturation connected components (the white/gold digits) inside a
+  generous search zone and grouping them into horizontal text lines, so the
+  reading no longer depends on fixed HUD geometry. Digit ROIs get relaxed
+  padding for narrow columns (the League Bonus gold was read 10× low when
+  the right edge clipped the trailing digit), and implausible reads are
+  rejected instead of being fed to the stall timer.
+- **Frame loop 10 Hz → 4 Hz** (`internal/bot/bot.go`) — during a battle the
+  deploy and battle-end goroutines run their own captures at their own
+  cadence, so the full-screen classify at 10 Hz was mostly redundant
+  (~55ms captures + classify pinned a core). 4 Hz still catches the result
+  overlay fast enough for ReturnHome and the stuck-watchdog.
+- **ArmyCamp rule hardened** (`internal/game/classifier.go`) — the lone
+  brown pixel anchor also passed on ordinary village frames (live:
+  `(479,149) = RGB(61,53,62)`), which made `processFrame` press Back on the
+  real village and open the quit-confirm dialog the bot then sat on for the
+  5-minute boot grace; the rule now requires both army-overview tab-header
+  anchors, and a frame that still shows the real Attack! button is treated
+  as the main village and never Back-pressed.
+- **Battle-search / bonus ROIs widened** (`assets/battle_loot_rois.json`) to
+  match the new content-located loot reader.
+- **`make test`** now runs the full contract suite — `go vet`, Go tests
+  (with the local OpenCV `LC_RPATH` injected via `pkg-config`), and the
+  Python strategy tests, with a graceful skip when no pytest-capable
+  interpreter is present.
+- **`valk_spam.yaml`** declares `end_at_percent: 50` and `army_slot: 4`.
+
+### Fixed
+- **Fabricated 3-star victories** — the destruction-rule read used to
+  OVERRIDE the result panel's parsed stars, so a garbage stall-ROI percent
+  (381%, 851%, 991%) turned live defeats into wins. The visual parse is now
+  ground truth and the rule read is only a fallback when the panel parse
+  fails outright.
+- **Star art read as victory on the defeat screen** — the result-panel star
+  parse is now two-pass and defeat-safe; pinned by the new
+  `internal/game/testdata/screen_defeat.png` fixture.
+- **Stale `manual_labels.json` entries creating duplicate unit identities**
+  (`internal/attack/slot_manager.go`) — a manual label now loses to a
+  template match on a *different* slot. Live, a stale "grand warden" label
+  on the unidentified Dragon Duke slot stole the warden's main-phase deploy
+  and the Duke was never swept (it looked deployed).
+- **`wm size` wedge aborting the boot** — falls back to the live
+  screencap's header for authoritative pixel dimensions (this is the same
+  fix family as 0.4.0's boot fallback, now with the retry ladder above).
+- **Pipe read deadline left armed after service negotiation**
+  (`internal/adb/shellpipe.go`) — the idle `discardReader` inherited the
+  shell-timeout deadline and marked a perfectly healthy pipe broken
+  ("adb shell pipe reader stopped: i/o timeout") mid battle-end wait.
+
+### Verified
+- Full live session on BlueStacks Air (860×732, SM-G998B profile): boot →
+  classify → attack search → loot OCR → EDrag Rush and Valkyrie/EQ runs →
+  result parse (stars derived from destruction, defeat fixture matched) →
+  graceful shutdown.
+- `make test` green: `go vet` clean, all Go packages pass, 24/24 Python
+  strategy-contract tests pass.
+
 ## [0.4.0-beta] - 2026-08-31
 
 ### Changed

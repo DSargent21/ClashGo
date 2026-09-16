@@ -57,6 +57,8 @@ const (
 	StateTapToContinue
 	StateNewsSplash
 	StateLogo
+	StateConnectionLost
+	StateConfirmExit
 )
 
 var stateNames = map[GameState]string{
@@ -81,6 +83,8 @@ var stateNames = map[GameState]string{
 	StateTapToContinue:  "TapToContinue",
 	StateNewsSplash:     "NewsSplash",
 	StateLogo:           "Logo",
+	StateConnectionLost: "ConnectionLost",
+	StateConfirmExit:    "ConfirmExit",
 }
 
 func (s GameState) String() string {
