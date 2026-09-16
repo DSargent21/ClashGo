@@ -80,10 +80,24 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 			}
 		}
 
+		// Evidence bar. At the reference geometry MinPass is exact: the probes
+		// were tuned there as a 1-pixel fingerprint. Elsewhere they are mapped
+		// predictions, and a rule with several probes and MinPass 1 fires off a
+		// single accidental colour hit on UI it was never authored against —
+		// measured on live village frames, one ObstacleDialog probe passing at
+		// 1920x1080 was enough to outrank the village. Requiring a second probe
+		// can only remove false positives; a single-probe rule keeps its bar,
+		// because those are full-screen states (loading) that must stay
+		// detectable. See docs/RESOLUTION.md.
+		minPass := rule.MinPass
+		if minPass == 1 && len(rule.Checks) > 1 && !c.cal.IsReferenceGeometry() {
+			minPass = 2
+		}
+
 		totalScore := 0
 		pixelPassed := false
-		if rule.MinPass > 0 {
-			if passed >= rule.MinPass {
+		if minPass > 0 {
+			if passed >= minPass {
 				totalScore = passed * 100
 				pixelPassed = true
 			}

@@ -30,6 +30,15 @@ type DeviceConfig struct {
 	DPI                   int    `json:"dpi"`
 	RestartOnStartup      bool   `json:"restart_on_startup"`
 	DisableChestDismissal bool   `json:"disable_chest_dismissal"`
+
+	// DisplayScale pins the display scale: the factor the game renders HUD
+	// chrome and world content at, relative to the 860x732 reference frame.
+	// 0 derives it from the screen diagonal, which measured 1.9% off the live
+	// value at 1280x720; pin a measured one for anything but the reference
+	// geometry. Measure with `cmd/resprobe` (reference frame + target frame),
+	// then check the anchors land with `cmd/screendump -k <value> -anchors`.
+	// See docs/RESOLUTION.md.
+	DisplayScale float64 `json:"display_scale"`
 }
 
 type TrainingConfig struct {

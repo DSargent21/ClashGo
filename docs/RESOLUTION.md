@@ -75,19 +75,56 @@ The residual is the whole reason the migration is not a one-line change: a 3%
 scale error moves a reference point at x≈800 by ~24 px, and the classifier's
 probes are single pixels with a ±25–50 channel distance. The reference
 geometry is exact, so its calibrated thresholds are unaffected — but a
-*predicted* `k` at a new geometry cannot be trusted for 1-px probes. Two
-candidates, both compatible with the measurements: the game renders from a
-fixed 960×540 design canvas (`k = diag(screen)/diag(960,540)`: predicts 1.3325
-at 1280×720 and exactly 2.0 at 1920×1080), and the HUD may scale slightly more
-than the world (1.36 vs 1.325). Measure, don't predict:
+*predicted* `k` at a new geometry cannot be trusted for 1-px probes. The game
+may well render from a fixed 960×540 design canvas (`k =
+diag(screen)/diag(960,540)`: predicts 1.3325 at 1280×720 and exactly 2.0 at
+1920×1080) and the HUD may scale slightly more than the world (1.36 vs 1.325),
+but both remain unconfirmed — so measure, don't predict.
 
-* preferred — measure `k` live at boot by template-matching a known HUD
-template (e.g. `btn_attack` in the village) over a fine scale sweep around the
-prediction, and store the result in `Calibration.K`;
-* or probe a small neighbourhood (±2 px) at non-reference geometries instead
-of a single pixel, which absorbs the residual — but that weakens rule
-discrimination and must be re-validated against the false-positive cases the
-anchors were tightened for (`ArmyCamp`, `StateBattleEnd`).
+### Two ways of closing the residual that were tried and rejected
+
+Both were implemented, run against live frames, and removed again. The numbers
+are kept here so nobody re-litigates them from scratch.
+
+**1. Measure `k` at runtime by template-matching a HUD anchor.** The idea was
+to sweep a template's scale over a bounded window around the prediction and
+lock onto the confidence peak. It does not work with this template set: swept
+over 0.8–1.8, the best village anchors (`btn_attack`, the one MainVillage is
+built on) peak at **conf 0.30 at their own geometry**, and the resource icons
+peak at the *low* end of the sweep (`icon_gold` at 0.8, conf 0.71) because
+`TM_CCOEFF_NORMED` monotonically favours a smaller template against a busy
+frame. Confidence is therefore not comparable across scales, and there is no
+trustworthy anchor in the store to fix that. Removed; `cmd/resprobe` against a
+reference capture is the measurement tool.
+
+**2. Widen each single-pixel probe to a small window.** `ProbeRadius` sized a
+window from the anchor's distance from its edge/centre (the residual is
+proportional to that distance) plus a 2 px floor for the measurement's own
+resolution, capped at 10 px so a probe cannot swallow a neighbour. At the
+reference geometry it was a zero-width identity, and it did absorb the
+residual. It was still wrong: a 1-pixel probe is a *fingerprint*, and widening
+it converts a precise negative into a plausible positive. On real village
+frames the new code flipped the state — `MainVillage` → `ObstacleDialog`
+(score 195) at 1280×720 and → `NewsSplash` (score 300) on a second 720p frame,
+where the unmodified code returned `MainVillage` on both. Removed.
+
+### What closed it instead
+
+* **Pin the measured scale** — `device.display_scale` in config reaches
+  `Calibration.SetDisplayScale`, which supersedes the derivation. Pinning
+  restores the *positive* evidence exactly: the elixir-icon probe lands on the
+  live icon and `MainVillage` scores 260 at 1280×720, 1600×900, 1920×1080 and
+  1290×1098 — the reference score, on real frames (see the table below).
+* **Raise the evidence bar off the reference geometry rather than widen the
+  probes** — a rule with more than one probe and `MinPass == 1` needs two
+  passes when the geometry is not the reference. That only removes false
+  positives: it is what stops one accidental mapped hit from outranking the
+  village (measured: `ObstacleDialog` at 1920×1080). Single-probe rules keep
+  their bar at every geometry, because those are full-screen states (loading)
+  that must stay detectable.
+
+Neither is a substitute for per-state validation at the new geometry, and the
+bot logs a warning at boot off the reference geometry saying exactly that.
 
 Also measured: **`k` does not depend on density.** 1280×720 with density
 240, 320 and 480 (with a full CoC restart in between, so the value is not
@@ -177,25 +214,59 @@ Landed (reference geometry verified unchanged, live and in the test suite):
   it removes the per-frame `ResizeToHeight(732)`;
 * `cmd/screendump -anchors` prints every rule anchor under both models with
   the sampled colour and a hit/miss verdict, which is the verification tool
-  for the rest of the migration.
+  for the rest of the migration; `-k <scale>` runs it under a pinned scale;
+* `Calibration.SetDisplayScale` and `DeviceConfig.DisplayScale`
+  (`device.display_scale`) pin a scale measured with `cmd/resprobe`;
+* a raised evidence bar off the reference geometry (two probes instead of one
+  for any rule with several probes), and a boot-time warning that the dataset
+  is calibrated for 860×732.
 
 Verified live at 1280×720: the mapped anchor positions land within ~3 px of
 the elements' measured positions (top-right resource icons matched at
 `(1240,46)` and `(1240,127)` against mapped `(1241,46)` and `(1241,124)`, at
 confidences 0.92 and 0.97). What that same run also showed is the failure mode
-to fix next: with the predicted `k`, the elixir-icon probe sampled 3 px
+the pin fixes: with the derived `k`, the elixir-icon probe sampled 3 px
 off and fell outside its ±40 tolerance while every position was structurally
 right.
 
-Still to do: measure `k` live at boot; re-validate each `AnchorCenter` verdict
-against a live frame of its own state (village, boot splash, search, battle,
-result, army selection, chest are all reachable on demand); migrate the
-remaining consumers (`internal/bot` button ROIs, `internal/game/loot.go`
-result panel + rois, `internal/game/chestdismiss.go`, `internal/game/navigator.go`,
-`internal/attack` slot bar / troop counter / hero manager / spell deployer /
-red line / deploy geometry); re-check the world band clipping for deploy
-points outside `ref y ∈ [94, 638]`; and finish with a real attack run, since
-that is the only check that covers the deploy mapping.
+Village-frame scores across geometries (real captures, `cmd/screendump`; the
+reference on the same scene scores `MainVillage` 260 = 2 of 7 probes + weight):
+
+| Geometry | probes with derived `k` | derived state | pinned `k` | pinned state |
+| --- | --- | --- | --- | --- |
+| 860×732 (reference) | 2/7 → 260 | `MainVillage` | n/a | n/a |
+| 1280×720 | 1/7 → 160 | `Unknown` | 1.325 | `MainVillage` 260 |
+| 1600×900 | 1/7 → 160 | `Unknown` | 1.68 | `MainVillage` 260 |
+| 1920×1080 | 1/7 → 160 | `Unknown` | 2.00 | `MainVillage` 260 |
+| 1290×1098 | 2/7 → 260 | `MainVillage` 260 | 1.50 | `MainVillage` 260 |
+| 645×549 | 0/7 | `Unknown` | 0.72 | `Unknown` (capture not validated) |
+
+The derived-`k` column returning `Unknown` rather than a wrong state is the
+raised evidence bar doing its job: before it, the same frames could resolve to
+`ObstacleDialog`/`NewsSplash`.
+
+Two structural limits are visible in those rows and are *not* fixed by
+pinning:
+
+* **Centred overlays clip at a wider aspect.** A centred anchor keeps its
+distance to the viewport centre, so `ObstacleDialog`'s white corner at ref
+`(272,11)` — 355 px above the centre — maps 462 px above the centre at
+1280×720, past the top of the frame, and clamps to row 0. Every centred state
+(loading, the splash chain, dialogs, the result panel) needs re-authoring at a
+new aspect, not just re-mapping.
+* **Only the village was validated.** The table covers one state. Battle,
+result, army-selection, chest and splash frames have not been captured at any
+non-reference geometry at all.
+
+Still to do: capture and re-validate each state's anchors at the target
+geometry (village, boot splash, search, battle, result, army selection, chest
+are all reachable on demand); re-author the centred states that clip at the new
+aspect; migrate the remaining consumers (`internal/bot` button ROIs,
+`internal/game/loot.go` result panel + rois, `internal/game/chestdismiss.go`,
+`internal/game/navigator.go`, `internal/attack` slot bar / troop counter / hero
+manager / spell deployer / red line / deploy geometry); re-check the world band
+clipping for deploy points outside `ref y ∈ [94, 638]`; and finish with a real
+attack run, since that is the only check that covers the deploy mapping.
 
 ## Measuring
 
@@ -216,6 +287,20 @@ go run ./cmd/resprobe -a ref_860x732.png -b cand_1280x720.png \
   with more texture before believing it.
 * HUD patches (`Attack!` at ref 20,688 100×30; `SHOP` at ref 770,690 55×26)
   measure the edge-anchored scale.
+
+Verify a candidate scale against live frames with `cmd/screendump`, which prints
+the per-rule probe counts and the colour sampled at every anchor:
+
+```bash
+# same scene, both geometries, then compare
+cmd/screendump -img village_860x732.png -anchors
+cmd/screendump -img village_1280x720.png -anchors -k 1.325
+```
+
+A correct pin restores the village's probe count to its reference value (2 of 7)
+and the reference score (260); a pin that is off by more than ~1% shows up as a
+lower probe count, and a geometry that cannot be pinned this way is a geometry
+the rule dataset has not been authored for.
 
 Live experiments must reset the override afterwards — `wm size reset` and
 `wm density reset` — and CoC recreates its surface (a few seconds of black

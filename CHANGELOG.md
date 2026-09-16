@@ -31,17 +31,46 @@ All notable changes to this project will be documented in this file.
   step-by-step migration plan for adopting a real 720p phone geometry, plus
 the phase-1 status (what is landed, what is verified, what remains).
 
+- **Display-geometry migration, phase 2 — pin the scale, raise the bar**
+  (`internal/game/calibration.go`, `internal/game/classifier.go`,
+  `internal/config/config.go`, `internal/bot/bot.go`). `Calibration`
+  gained `SetDisplayScale` and `DeviceConfig` a `display_scale` field, so a
+  scale measured with `cmd/resprobe` can supersede the diagonal-ratio
+  derivation: at 1280×720 the derivation is 1.9% low, and that was enough for
+  the village's elixir-icon probe to miss and drop `MainVillage` to 1 of 7
+  passing anchors. With the measured scale pinned, real village frames score
+  260 — the reference score — at 1280×720, 1600×900, 1920×1080 and 1290×1098.
+  Off the reference geometry a rule with several probes and `MinPass == 1` now
+  needs two passes, so a single accidental mapped hit cannot outrank a state
+  (measured: one `ObstacleDialog` probe was enough at 1920×1080); single-probe
+  states keep their bar. The bot logs a warning at boot when the geometry is
+  not the reference, naming the pin and `docs/RESOLUTION.md`.
+- **`cmd/screendump -k <scale>`** — runs the anchor dump and classifier under a
+  pinned display scale, which is how a `display_scale` value is verified
+  against a live frame.
+
 ### Notes
 - The device geometry is **unchanged** (860×732 @320) until the migration's
   remaining consumers are done. A config flip alone is not enough: it
   misplaces every classifier pixel anchor (measured live: `MainVillage` drops
   2/7 → 1/7 passing anchors, score 260 → 160) and pushes the template scale
   outside the previous `0.9–1.1` window.
-- Measuring `k` live at boot is the next required step: the diagonal-ratio
-  prediction is 2–5% off at non-reference geometries, which is enough to miss
-  a 1-pixel probe even when the anchor is structurally correct (same run: the
-  top-right icon anchors landed within 3 px at confidences 0.92/0.97, while a
-  third probe 3 px off fell outside its ±40 tolerance).
+- Two obvious ways of closing the remaining scale residual were implemented,
+  measured and **removed**; the numbers are in
+  [`docs/RESOLUTION.md`](docs/RESOLUTION.md) so they are not re-litigated:
+  measuring `k` at runtime from a template's confidence peak (no template in
+  the store is a usable anchor — `btn_attack`, which `MainVillage` is built on,
+  peaks at confidence 0.30 at its own geometry, and the resource icons peak at
+  the bottom of the sweep), and widening each single-pixel probe to a small
+  window (it absorbs the residual, but turns a 1-pixel fingerprint into a
+  plausible positive: real 720p village frames flipped from `MainVillage` to
+  `ObstacleDialog` / `NewsSplash`).
+- Remaining before a resolution flip is safe: re-author and validate the centred
+  states, which **clip** at a wider aspect (a centred anchor 355 px above the
+  reference centre maps past the top of a 1280×720 frame), validate every state
+  at the target geometry rather than only the village, and migrate the attack
+  path's geometry (button ROIs, slot bar, troop counts, loot/result panel,
+  deploy points). See `docs/RESOLUTION.md`.
 
 ## [0.5.0-beta] - 2026-09-16
 

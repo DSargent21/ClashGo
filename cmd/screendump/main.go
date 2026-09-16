@@ -36,10 +36,11 @@ func main() {
 	watch := flag.Bool("watch", false, "live loop: refresh every 3s until Ctrl-C")
 	save := flag.String("save", "", "copy the analyzed frame to this path")
 	dumpAnchors := flag.Bool("anchors", false, "dump every rule anchor under both geometry models (ref -> live coords + sampled RGB)")
+	k := flag.Float64("k", 0, "override the derived display scale (0 = derive from the screen diagonal); see docs/RESOLUTION.md for how to measure it")
 	flag.Parse()
 
 	for {
-		runOnce(*imgPath, *doOCR, *save, *dumpAnchors)
+		runOnce(*imgPath, *doOCR, *save, *dumpAnchors, *k)
 		if !*watch {
 			return
 		}
@@ -47,7 +48,7 @@ func main() {
 	}
 }
 
-func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool) {
+func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool, displayScale float64) {
 	img := gocv.Mat{}
 	if imgPath != "" {
 		img = gocv.IMRead(imgPath, gocv.IMReadColor)
@@ -82,6 +83,9 @@ func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool) {
 
 	cal := game.NewCalibration(img.Cols(), img.Rows())
 	cal.Verified = true
+	if displayScale > 0 {
+		cal.SetDisplayScale(displayScale)
+	}
 
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).Level(zerolog.ErrorLevel)
 	classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), logger)

@@ -3,6 +3,7 @@ package game
 import (
 	"image"
 	"math"
+	"sync/atomic"
 )
 
 // Reference frame. Every authored coordinate in this package and in the
@@ -61,10 +62,16 @@ type Calibration struct {
 	// K is the display scale of the live geometry relative to the reference
 	// frame: HUD elements and world content are rendered K times larger than
 	// at 860x732. 1.0 at the reference geometry. NewCalibration derives it
-	// from the screen diagonal; a caller that measured K from a live template
-	// match may overwrite it (the measurement is the better number — see
-	// docs/RESOLUTION.md).
+	// from the screen diagonal; SetDisplayScale can replace it with a value
+	// measured on the running device — see docs/RESOLUTION.md.
 	K float64
+
+	// override holds math.Float64bits of a caller-supplied display scale, or 0
+	// when the derived K is in use. An atomic rather than a plain float so the
+	// scale can be replaced while the bot's goroutines are running: DisplayScale
+	// is read on hot paths (per frame, per pixel probe), where a lock would be a
+	// tax on every sample.
+	override atomic.Uint64
 }
 
 // NewCalibration builds a calibration for a live frame geometry.
@@ -90,12 +97,43 @@ func NewCalibration(physW, physH int) *Calibration {
 
 // DisplayScale returns the scale the game renders HUD chrome and world
 // content at for this geometry (1.0 when unset, so a zero Calibration behaves
-// like the reference).
+// like the reference). A caller-supplied scale wins over the derived value.
 func (c *Calibration) DisplayScale() float64 {
-	if c == nil || c.K <= 0 {
+	if c == nil {
+		return 1.0
+	}
+	if bits := c.override.Load(); bits != 0 {
+		return math.Float64frombits(bits)
+	}
+	if c.K <= 0 {
 		return 1.0
 	}
 	return c.K
+}
+
+// SetDisplayScale pins the display scale, superseding the diagonal-ratio
+// derivation. Callers use it with a scale measured on the actual device
+// (`cmd/resprobe`, see docs/RESOLUTION.md); a non-positive or non-finite value
+// is ignored so a zero config field means "derive it". Safe to call while other
+// goroutines use the calibration: the value is read back by DisplayScale and
+// therefore by every mapping.
+func (c *Calibration) SetDisplayScale(k float64) {
+	if c == nil || k <= 0 || math.IsNaN(k) || math.IsInf(k, 0) {
+		return
+	}
+	c.override.Store(math.Float64bits(k))
+}
+
+// DisplayScaleOverride reports the pinned display scale, if one was set.
+func (c *Calibration) DisplayScaleOverride() (float64, bool) {
+	if c == nil {
+		return 0, false
+	}
+	bits := c.override.Load()
+	if bits == 0 {
+		return 0, false
+	}
+	return math.Float64frombits(bits), true
 }
 
 // IsReferenceGeometry reports whether this calibration is the authored

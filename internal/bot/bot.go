@@ -57,16 +57,16 @@ type Bot struct {
 	seqRunning  atomic.Bool
 	zoomedOut   atomic.Bool
 
-	chestDismissInFlight  atomic.Bool
-	splashDismissInFlight atomic.Bool
+	chestDismissInFlight    atomic.Bool
+	splashDismissInFlight   atomic.Bool
 	connLostDismissInFlight atomic.Bool
 	lastArmyCampGuardLog    time.Time
-	startedAt             time.Time
-	lastAction            time.Time
-	lastSequenceStart     time.Time
-	lastNav               time.Time
-	lastCapture           time.Time
-	lastIdlePan           time.Time
+	startedAt               time.Time
+	lastAction              time.Time
+	lastSequenceStart       time.Time
+	lastNav                 time.Time
+	lastCapture             time.Time
+	lastIdlePan             time.Time
 	// lastAttackEnd is stamped when a battle fully returns home; the
 	// inter-attack cooldown (cfg.Attack.MinSecondsBetweenAttacks) is
 	// measured from it. Written by the attack goroutine only.
@@ -160,11 +160,41 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	// the game actually renders (see game.Calibration and docs/RESOLUTION.md).
 	cal := game.NewCalibration(w, h)
 	cal.Verified = true
+	// A pinned scale from config wins over the diagonal-ratio derivation
+	// (docs/RESOLUTION.md): the derivation measured 1.9% off on 1280x720, and a
+	// 1-pixel HUD probe notices 2% at the far edge of the frame.
+	if cfg.Device.DisplayScale > 0 {
+		cal.SetDisplayScale(cfg.Device.DisplayScale)
+	}
 	log.Info().
 		Int("screen_w", w).
 		Int("screen_h", h).
 		Float64("display_scale", cal.DisplayScale()).
+		Bool("display_scale_pinned", cfg.Device.DisplayScale > 0).
 		Msg("calibration built")
+	// Off the reference geometry the whole dataset is a mapped prediction, so
+	// say so loudly: at 1280x720 an unpinned scale left the village with 1 of 7
+	// probes passing, and some states misrank (docs/RESOLUTION.md). Behaviour
+	// is safe either way — an unrecognised screen is reported as unknown rather
+	// than acted on — but the log is where a stall gets explained.
+	if !cal.IsReferenceGeometry() {
+		if cfg.Device.DisplayScale > 0 {
+			log.Warn().
+				Int("screen_w", w).
+				Int("screen_h", h).
+				Float64("display_scale", cfg.Device.DisplayScale).
+				Msg("non-reference display geometry with a pinned scale: the classifier and attack geometry are calibrated for " +
+					"860x732 at the reference aspect. Validate states live with cmd/screendump and docs/RESOLUTION.md before trusting an attack run.")
+		} else {
+			log.Warn().
+				Int("screen_w", w).
+				Int("screen_h", h).
+				Float64("derived_scale", cal.DisplayScale()).
+				Msg("non-reference display geometry without a pinned display scale: the derived scale measured 1.9% off at " +
+					"1280x720, which loses single-pixel probes. Measure the live scale with cmd/resprobe and set device.display_scale, " +
+					"or run at 860x732. See docs/RESOLUTION.md.")
+		}
+	}
 
 	packageName := cfg.Device.PackageName
 	if packageName == "" {
