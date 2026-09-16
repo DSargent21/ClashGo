@@ -77,6 +77,14 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 	// Get all undeployed slots
 	undeployed := sw.slotManager.GetUndeployedSlots()
 	for _, slot := range undeployed {
+		// Battle-timer guard: never start a new slot's taps once the
+		// deploy budget is gone (see DeployBudget). The reconcile loops
+		// below also check per round, but this keeps us from even
+		// beginning a doomed slot.
+		if sw.executor.DeployBudgetExhausted() {
+			sw.logger.Warn().Msg("sweep: deploy budget exhausted; abandoning remaining slots")
+			break
+		}
 		// Skip siege slots (handled separately)
 		if slot.Category == "Siege" {
 			continue
@@ -154,6 +162,13 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 			const maxRounds = 6
 			placed := false
 			for round := 0; round < maxRounds; round++ {
+				// Battle-timer guard between rounds: a stuck slot (spent
+				// card reading visually non-empty, OCR down) must not burn
+				// the whole 6-round budget re-firing into an ended battle.
+				if sw.executor.DeployBudgetExhausted() {
+					sw.logger.Warn().Str("unit", slot.UnitName).Msg("event troop sweep: deploy budget exhausted; abandoning slot")
+					break
+				}
 				// Capture FRESH screen for each check
 				freshScreen, err := sw.executor.CaptureFresh()
 				if err != nil {
@@ -345,8 +360,29 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 	// Each round fires ONLY the remaining count (count is updated from the
 	// live read), so a 50-unit slot fires 51→37→16→3 instead of re-firing
 	// the full 51 on every attempt (the old 260-tap waste).
+	//
+	// zeroOCRStreak bounds the pathological "never visually empty" case
+	// (live: a spent earthquake-spell card routed through the troop sweep
+	// reads OCR=0 + visually-busy forever — its cooldown icon never
+	// "empties" — and the old code re-fired a blind batch of 3 for 8
+	// attempts × 6 outer rounds ≈ 24+ wasted taps into an empty card).
+	// A card that actually holds units renders a count digit in the bar;
+	// OCR reads zero here, after a full fire pass + settle, ONLY when the
+	// card is spent or locked. One blind fallback batch absorbs a transient
+	// re-render frame; a second consecutive zero read abandons the card.
 	maxAttempts := 8
+	zeroOCRStreak := 0
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Battle-timer guard: 8 reconcile attempts exist to survive OCR
+		// hiccups, not to re-fire a slot that never empties for the whole
+		// battle. Once the deploy budget is gone the slot is abandoned.
+		if sw.executor.DeployBudgetExhausted() {
+			sw.logger.Warn().
+				Str("unit", slot.UnitName).
+				Int("attempt", attempt+1).
+				Msg("sweep reconcile: deploy budget exhausted; abandoning slot")
+			return false
+		}
 		if count <= 0 {
 			count = 3
 		}
@@ -403,13 +439,28 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 		// live OCR=0 (or vice versa) still means "not done" — keep the
 		// remaining as the fire target so we converge.
 		if liveAfter > 0 {
+			// OCR sees a real digit: the card genuinely holds units.
+			// Reset the zero-streak and fire exactly what's left.
+			zeroOCRStreak = 0
 			count = padCount(liveAfter)
 		} else {
-			// visual non-empty but live OCR returned 0 — could be a
-			// queued CC troop, a transient frame, OR (critically) OCR
-			// that just keeps failing. Fire a small fallback batch so
-			// progress is always made; the next attempt re-checks from
-			// a fresh screen.
+			// Visual non-empty but live OCR returned 0. Could be a queued
+			// CC troop or a transient frame — but ALSO (and critically)
+			// a spent card whose cooldown icon never reads empty. Fire
+			// one small fallback batch so a genuinely-full card still
+			// makes progress; if the SECOND consecutive reconcile also
+			// reads zero the card has no count digit at all (spent or
+			// locked), so blind taps will never help — abandon it.
+			zeroOCRStreak++
+			if zeroOCRStreak >= 2 {
+				slot.IsEmpty = true
+				sw.logger.Warn().
+					Str("unit", slot.UnitName).
+					Int("attempt", attempt+1).
+					Int("zero_reads", zeroOCRStreak).
+					Msg("sweep reconcile: OCR reads zero for consecutive reconciles after firing; card is spent or locked — marking deployed")
+				return true
+			}
 			count = 3
 		}
 		sw.logger.Info().
@@ -417,6 +468,7 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 			Int("attempt", attempt+1).
 			Int("remaining_read", liveAfter).
 			Int("next_fire", count).
+			Int("zero_streak", zeroOCRStreak).
 			Bool("visual_nonempty", !visualAfter).
 			Msg("sweep reconcile: slot still non-empty; re-firing remaining")
 		time.Sleep(200 * time.Millisecond)
@@ -447,6 +499,12 @@ func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count 
 		p1, p2 = p2, p1
 	}
 	for i := 0; i < count; i += 3 {
+		// Battle-timer guard inside the hot loop: even a single batch of
+		// triple-taps is wasted (and risky — it can land on the result
+		// overlay) once the battle is over.
+		if sw.executor.DeployBudgetExhausted() {
+			return false
+		}
 		batchSize := 3
 		if i+3 > count {
 			batchSize = count - i

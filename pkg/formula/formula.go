@@ -114,12 +114,17 @@ func (e UnitEntry) IsLines() bool {
 //
 // `corner_overrides` is omitted from JSON when nil, so old formulas
 // (with only Units) continue to round-trip cleanly.
+// ScreenSize is the reference frame the formula was authored on
+// (typically 860x732). MirrorForCorner reflects around its center and
+// ApplyScreenScale projects onto the live screen size.
+type ScreenSize struct {
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
 type Formula struct {
-	Name   string `json:"name"`
-	Screen struct {
-		W int `json:"w"`
-		H int `json:"h"`
-	} `json:"screen"`
+	Name            string                          `json:"name"`
+	Screen          ScreenSize                      `json:"screen"`
 	Units           map[string]UnitEntry            `json:"units"`
 	CornerOverrides map[string]map[string]UnitEntry `json:"corner_overrides,omitempty"`
 }
@@ -275,32 +280,43 @@ func (f *Formula) MirrorForCorner(targetEdge string) {
 		h = 1
 	}
 
+	// mirrorPoint returns a NEW reflected point instead of mutating the
+	// receiver in place. The old code mutated e.P in place, which aliased
+	// across units that share the same authored point (e.g. "barbarian
+	// king" and "archer queen" both pinned at (636, 510) in the shipped
+	// auto_edrag_rush formula): after one mirror pass the shared *Point
+	// was flipped TWICE (636 -> 224 -> 636), silently un-mirroring every
+	// unit that referenced it. A second corner in the same process then
+	// compounded the damage. Copying first makes the transform idempotent
+	// per call and safe when several units reference one coordinate.
+	mirrorPoint := func(p *Point, axis, size int) *Point {
+		if p == nil {
+			return nil
+		}
+		q := *p
+		switch axis {
+		case 'x':
+			q.X = size - q.X
+		case 'y':
+			q.Y = size - q.Y
+		}
+		return &q
+	}
+
 	for name, e := range f.Units {
 		if mirrorX {
-			if e.P != nil {
-				e.P.X = w - e.P.X
-			}
-			if e.P1 != nil {
-				e.P1.X = w - e.P1.X
-			}
-			if e.P2 != nil {
-				e.P2.X = w - e.P2.X
-			}
+			e.P = mirrorPoint(e.P, 'x', w)
+			e.P1 = mirrorPoint(e.P1, 'x', w)
+			e.P2 = mirrorPoint(e.P2, 'x', w)
 			for i := range e.Lines {
 				e.Lines[i].P1.X = w - e.Lines[i].P1.X
 				e.Lines[i].P2.X = w - e.Lines[i].P2.X
 			}
 		}
 		if mirrorY {
-			if e.P != nil {
-				e.P.Y = h - e.P.Y
-			}
-			if e.P1 != nil {
-				e.P1.Y = h - e.P1.Y
-			}
-			if e.P2 != nil {
-				e.P2.Y = h - e.P2.Y
-			}
+			e.P = mirrorPoint(e.P, 'y', h)
+			e.P1 = mirrorPoint(e.P1, 'y', h)
+			e.P2 = mirrorPoint(e.P2, 'y', h)
 			for i := range e.Lines {
 				e.Lines[i].P1.Y = h - e.Lines[i].P1.Y
 				e.Lines[i].P2.Y = h - e.Lines[i].P2.Y

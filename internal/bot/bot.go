@@ -59,16 +59,27 @@ type Bot struct {
 
 	chestDismissInFlight  atomic.Bool
 	splashDismissInFlight atomic.Bool
+	connLostDismissInFlight atomic.Bool
+	lastArmyCampGuardLog    time.Time
 	startedAt             time.Time
 	lastAction            time.Time
 	lastSequenceStart     time.Time
 	lastNav               time.Time
 	lastCapture           time.Time
 	lastIdlePan           time.Time
-	stuckTimeout          time.Duration
-	cpuSampler            *cpuSampler
+	// lastAttackEnd is stamped when a battle fully returns home; the
+	// inter-attack cooldown (cfg.Attack.MinSecondsBetweenAttacks) is
+	// measured from it. Written by the attack goroutine only.
+	lastAttackEnd time.Time
+	stuckTimeout  time.Duration
+	cpuSampler    *cpuSampler
 
 	dukePicksFile *os.File
+	// armySlot is the 1-based saved-army recipe the strategy wants armed
+	// before attacking (strategy YAML army_slot; default 1). Loaded once
+	// at construction so clickSequence can select it before the strategy
+	// phases run.
+	armySlot int
 
 	historyCache []AttackReport
 
@@ -248,6 +259,18 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		dukePicksFile:     dukePicksFile,
 	}
 
+	// Resolve the strategy's declared army slot once at boot so the
+	// pre-battle click sequence can arm the right saved recipe. The
+	// strategy is parsed again later for the deploy phases; this early
+	// read only needs army_slot (falls back to slot 1 on any error).
+	if strat, err := strategy.ParseYAML(cfg.Attack.StrategyFile); err == nil {
+		b.armySlot = strat.SelectedArmySlot()
+		log.Info().Int("army_slot", b.armySlot).Str("strategy", strat.Name).Msg("resolved strategy army slot")
+	} else {
+		b.armySlot = 1
+		log.Warn().Err(err).Str("path", cfg.Attack.StrategyFile).Msg("could not pre-read strategy for army slot; defaulting to slot 1")
+	}
+
 	// Close `done` the moment the bot's runtime context is cancelled
 	// (Stop click in the GUI, or the attack-cap graceful shutdown after
 	// a --once CLI run) so external owners — the CLI's main() — can
@@ -366,7 +389,14 @@ func (b *Bot) captureLoop() {
 	getCaptureInterval := func() time.Duration {
 		switch gc.State {
 		case game.StateBattle, game.StateSearchMap, game.StateLoading:
-			return 100 * time.Millisecond
+			// 250ms (4Hz) instead of the old 10Hz: during an attack the
+			// deploy/battle-end goroutines run their own captures at their
+			// own cadence, so the frame loop's full-screen classify was
+			// mostly redundant (observed: ~55ms captures + classify at 10Hz
+			// pinned one core during every battle). 4Hz still catches the
+			// result overlay fast enough for ReturnHome and the stuck
+			// watchdog.
+			return 250 * time.Millisecond
 		case game.StateMainVillage, game.StateArmySelection, game.StateArmyCamp:
 			return 300 * time.Millisecond
 		default:
@@ -758,6 +788,57 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
+	// Connection-lost dialog. CoC shows this whenever the game's own
+	// server link drops (emulator network blip, server restart); the
+	// classifier used to misread it as StateBattleEnd — the dialog's
+	// RETURN HOME button satisfied that rule's template-only match —
+	// and the bot tapped result-screen coordinates forever (observed
+	// live: 18:26 boot → 18:28 ReturnHome fallback → 18:33 emergency
+	// restart loop). Tapping TRY AGAIN (ref 300,478) makes the game
+	// reconnect in place. Like the splash dismissal below, activity is
+	// deliberately NOT recorded: the adb tap reports success even when
+	// the dialog survives, and the stuck-watchdog must still fire if
+	// reconnect keeps failing.
+	if state == game.StateConnectionLost {
+		if b.connLostDismissInFlight.CompareAndSwap(false, true) {
+			b.logger.Warn().Msg("connection lost dialog detected; tapping TRY AGAIN...")
+			go func() {
+				defer b.connLostDismissInFlight.Store(false)
+				time.Sleep(800 * time.Millisecond)
+				x, y := b.cal.ScaleRef(300, 478)
+				if err := b.client.TapRandomized(x, y); err != nil {
+					b.logger.Warn().Err(err).Msg("connection-lost dismiss tap failed; will retry on next detection")
+					return
+				}
+				b.logger.Info().Msg("connection-lost TRY AGAIN tapped; waiting for reconnect")
+			}()
+		}
+		return
+	}
+
+	// Quit-confirm dialog ("Do you want to quit the game?", Cancel /
+	// Okay). Defense in depth for the ArmyCamp misclassification guard
+	// above: if a Back press still lands on the real main village, this
+	// dialog appears and must be dismissed with CANCEL — otherwise the
+	// bot sits on it for the boot-splash grace (5 min) then force-
+	// restarts. Same no-recordActivity reasoning as the splash handler.
+	if state == game.StateConfirmExit {
+		if b.connLostDismissInFlight.CompareAndSwap(false, true) {
+			b.logger.Warn().Msg("quit-confirm dialog detected; tapping Cancel...")
+			go func() {
+				defer b.connLostDismissInFlight.Store(false)
+				time.Sleep(800 * time.Millisecond)
+				x, y := b.cal.ScaleRef(279, 429)
+				if err := b.client.TapRandomized(x, y); err != nil {
+					b.logger.Warn().Err(err).Msg("quit-confirm cancel tap failed; will retry on next detection")
+					return
+				}
+				b.logger.Info().Msg("quit-confirm Cancel tapped")
+			}()
+		}
+		return
+	}
+
 	if gc.State == game.StateBattleEnd || gc.State == game.StateReturnHome {
 		b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
 		go b.attackExec.ReturnHome()
@@ -797,6 +878,24 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	}
 
 	if gc.State == game.StateArmyCamp && time.Since(b.lastNav) > 3*time.Second {
+		// Guard against a misclassification, not a real camp: a dim or
+		// zoomed village frame can pass the ArmyCamp rule's single loose
+		// brown pixel check. Pressing Back on the actual main village opens
+		// CoC's "Do you want to quit the game?" confirm dialog, which no
+		// rule detects — the bot then sat on that dialog for the full
+		// boot-splash grace (5 min) and force-restarted, every cycle
+		// (observed live 11:32–11:43). A frame that still shows the real
+		// Attack! button IS the main village; skip the Back press.
+		if b.findAttackButton(screen, 0.45) {
+			// Throttle the log: the guard can fire every frame while the
+			// misclassification persists, which would spam 10 lines/sec.
+			if time.Since(b.lastArmyCampGuardLog) > 10*time.Second {
+				b.lastArmyCampGuardLog = time.Now()
+				b.logger.Info().Msg("ArmyCamp state but attack button visible; treating as main village (misclassification guard)")
+			}
+			b.recordActivity()
+			return
+		}
 		b.lastNav = time.Now()
 		b.logger.Info().Msg("in ArmyCamp, returning to main village...")
 		go b.navigator.NavigateToMainVillage(gc)
@@ -912,6 +1011,27 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	if b.attackCount.Load() >= int32(b.cfg.Attack.MaxAttackPerSession) {
 		return
+	}
+
+	// Inter-attack cooldown. Armies need real time to retrain; without a
+	// gate the bot re-attacked ~8s after every Return Home with whatever
+	// the camps held (observed live: three near-identical defeats in <4
+	// minutes). min_seconds_between_attacks is the human-real pause;
+	// waiting inside the sequence goroutine (seqRunning is already held)
+	// keeps the capture loop from starting a second sequence meanwhile.
+	gap := time.Duration(b.cfg.Attack.MinSecondsBetweenAttacks) * time.Second
+	if gap > 0 && !b.lastAttackEnd.IsZero() {
+		if wait := gap - time.Since(b.lastAttackEnd); wait > 0 {
+			b.logger.Info().
+				Dur("wait", wait).
+				Int("min_gap_s", b.cfg.Attack.MinSecondsBetweenAttacks).
+				Msg("waiting out inter-attack cooldown before next search")
+			select {
+			case <-time.After(wait):
+			case <-b.ctx.Done():
+				return
+			}
+		}
 	}
 
 	if !b.clickSequence() {
@@ -1073,6 +1193,15 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		// artifact matches the final parse.
 		b.client.JitteredSleep(1800 * time.Millisecond)
 
+		// Authoritative star signal: the destruction percentage the battle
+		// wait sampled from the stall ROI (proven live: valk runs tracked
+		// 23% -> 50% tick by tick). CoC scores stars from the outcome,
+		// not from the result-screen art: >=50% = 1 star, TH destroyed =
+		// +1, 100% = 3 (see game.StarsFromOutcome). When the wait had no
+		// percent ROI to sample (no stall_config, no end_at_percent) this
+		// stays 0 and the visual parse below is the fallback.
+		finalPct := b.attackExec.LastDestructionPercent()
+
 		var parsedResult game.BattleResult
 		parsedOK := false
 		prevHash := uint64(0)
@@ -1125,12 +1254,34 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			bonusDE = parsedResult.Bonus.DarkElixir
 			parsedResults = true
 
+			// The result panel's star art is the ground truth: the two-pass
+			// defeat-safe read correctly returned 0 stars on the live 32%
+			// defeat (the OCR'd "Defeat" screen). The destruction-rule read
+			// (stall ROI) is only a fallback when the panel parse fails
+			// entirely — see the !parsedOK branch below. This block used to
+			// OVERRIDE the visual stars with the rule whenever any percent
+			// was measured, and a garbage stall-ROI read (381%, later
+			// clamped + per-battle-reset in WaitForBattleEndCtx) turned live
+			// defeats into fabricated 3-star victories. Visual wins now;
+			// the rule comparison is logged for observability only.
+			if finalPct > 0 {
+				ruleStars := game.StarsFromOutcome(finalPct, b.attackExec.ThDestroyed())
+				if ruleStars != battleStars {
+					b.logger.Info().
+						Int("visual_stars", battleStars).
+						Int("rule_stars", ruleStars).
+						Int("destruction_pct", finalPct).
+						Bool("th_destroyed", b.attackExec.ThDestroyed()).
+						Msg("battle stars: keeping visual parse over destruction-rule read")
+				}
+			}
+
 			b.totalGold.Add(int64(parsedResult.Loot.Gold + parsedResult.Bonus.Gold))
 			b.totalElixir.Add(int64(parsedResult.Loot.Elixir + parsedResult.Bonus.Elixir))
 			b.totalDE.Add(int64(parsedResult.Loot.DarkElixir + parsedResult.Bonus.DarkElixir))
-			b.totalStars.Add(int32(parsedResult.Stars))
+			b.totalStars.Add(int32(battleStars))
 
-			switch parsedResult.Stars {
+			switch battleStars {
 			case 0:
 				b.stars0.Add(1)
 			case 1:
@@ -1142,12 +1293,25 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			}
 
 			b.logger.Info().
-				Int("stars", parsedResult.Stars).
+				Int("stars", battleStars).
 				Int("gold", parsedResult.Loot.Gold).
 				Int("bonus_gold", parsedResult.Bonus.Gold).
+				Int("destruction_pct", finalPct).
 				Msg("battle result processed")
 		} else {
-			b.logger.Error().Msg("battle result OCR failed after retries; recording unparsed attack")
+			// OCR failed after retries — still record the rules-derived
+			// star count when the wait measured destruction, so a battle
+			// is never reported as a 0-star defeat merely because the
+			// result panel misparsed.
+			if finalPct > 0 {
+				battleStars = game.StarsFromOutcome(finalPct, b.attackExec.ThDestroyed())
+				b.logger.Error().
+					Int("stars", battleStars).
+					Int("destruction_pct", finalPct).
+					Msg("battle result OCR failed after retries; stars recorded from destruction rules")
+			} else {
+				b.logger.Error().Msg("battle result OCR failed after retries; recording unparsed attack")
+			}
 		}
 	} else if b.ctx.Err() != nil {
 		// The bot was stopped mid-battle. Exit cleanly — no forced
@@ -1243,6 +1407,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		b.restartGame()
 		return
 	}
+
+	// Stamp the attack boundary so the inter-attack cooldown has a clean
+	// reference point (set only on a real return home, not on a restart).
+	b.lastAttackEnd = time.Now()
 
 	sideX := int(537 * b.cal.ScaleX)
 	sideY := int(693 * b.cal.ScaleY)
@@ -1359,18 +1527,18 @@ func (b *Bot) clickSequence() bool {
 	}
 	b.client.JitteredSleep(500 * time.Millisecond)
 
-	army1Clicked := false
+	armyClicked := false
 	for attempt := 0; attempt < 3; attempt++ {
-		if b.findAndClick("btn_army_1", "Army 1", 1) {
-			army1Clicked = true
+		if b.selectArmySlot() {
+			armyClicked = true
 			break
 		}
 		b.client.JitteredSleep(500 * time.Millisecond)
 	}
-	if !army1Clicked {
-		b.logger.Warn().Msg("army 1 button did not appear, continuing anyway")
+	if !armyClicked {
+		b.logger.Warn().Int("army_slot", b.armySlot).Msg("army recipe card did not appear, continuing anyway")
 		if screen, err := b.client.CaptureToMat(); err == nil {
-			b.DumpDiagnostics("click_army_1_not_found", screen, nil)
+			b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": b.armySlot})
 			screen.Close()
 		}
 	}
@@ -1391,6 +1559,40 @@ func (b *Bot) clickSequence() bool {
 
 	b.logger.Info().Msg("waiting for battle state (searching)...")
 	return b.waitForBattleState(60 * time.Second)
+}
+
+// selectArmySlot clicks the saved-recipe card for b.armySlot in the
+// army-selection list opened by the Army Arrow. Each recipe card is a
+// ~146px-tall row in a vertically scrolling list; the first card sits at
+// ref-y 227 and cards stack every ~54px once the list is expanded
+// (measured on the live 860x732 BlueStacks layout). Slot 1 keeps the
+// legacy template path (btn_army_1) for backward compatibility with
+// older game layouts; slots 2+ use the measured card geometry.
+func (b *Bot) selectArmySlot() bool {
+	slot := b.armySlot
+	if slot <= 0 {
+		slot = 1
+	}
+
+	if slot == 1 {
+		return b.findAndClick("btn_army_1", "Army 1", 1)
+	}
+
+	// Card rows in the saved-recipes list (reference resolution).
+	// cardY is the vertical center of the Nth card body; tapping the
+	// card body sets it as the active army (verified live: slot 4 at
+	// y≈403 fired the "Recipe ... set as active army!" toast).
+	cardY := 227 + (slot-1)*54
+	tapX, tapY := b.cal.ScaleRef(430, cardY)
+
+	b.logger.Info().Int("army_slot", slot).Int("x", tapX).Int("y", tapY).Msg("selecting saved army recipe card")
+	if err := b.client.TapRandomized(tapX, tapY); err != nil {
+		b.logger.Warn().Err(err).Msg("army recipe card tap failed")
+		return false
+	}
+	time.Sleep(1000 * time.Millisecond)
+	b.recordActivity()
+	return true
 }
 
 // Pinpoint defines a precise location on the reference screen (860x732)
@@ -1635,6 +1837,14 @@ func (b *Bot) dismissInterruptions() {
 	case game.StateNewsSplash:
 		// Post-boot news splash — tap the green Continue button.
 		px, py := b.cal.ScaleRef(403, 535)
+		b.client.TapRandomized(px, py)
+	case game.StateConnectionLost:
+		// Connection-lost dialog — tap TRY AGAIN to reconnect in place.
+		px, py := b.cal.ScaleRef(300, 478)
+		b.client.TapRandomized(px, py)
+	case game.StateConfirmExit:
+		// Quit-confirm dialog — tap Cancel to stay in the game.
+		px, py := b.cal.ScaleRef(279, 429)
 		b.client.TapRandomized(px, py)
 	}
 }

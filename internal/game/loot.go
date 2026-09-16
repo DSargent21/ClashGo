@@ -128,35 +128,32 @@ func (lr *LootRecognizer) ReadDestructionPercentage(screen gocv.Mat, roi image.R
 }
 
 // ReadBattleResult reads the loot and star counts shown on the Clash of
-// Clans end-of-battle screen. Implementation mirrors ReadLootDetailed so
-// end-of-battle parses at the same accuracy as scout-screen filtrering:
+// Clans end-of-battle screen.
 //
-//   - Icon template match anchors the digit region (proven pattern from
-//     ReadLootDetailed; 0.65 is the empirically safe threshold across
-//     themes and emulator sizes).
-//   - Static per-column slot rectangles are the universal safety net;
-//     they are derived once from the column ROI so HUD shifts no longer
-//     pull digits out of alignment (the old code hard-coded absolute
-//     coordinates and went negative once calibrated ROIs moved).
-//   - Digit extraction is bounded to the column width, preventing bleed
-//     from the Bonus column into Battle Loot (or vice versa).
+// Loot rows are located by CONTENT, not by fixed slots: bright
+// low-saturation connected components (the white/gold loot digits) are
+// detected inside a generous search zone, grouped into horizontal text
+// lines, and each line is OCR'd with the shared readRow pipeline. The
+// game ships two result-screen layouts — the classic "You got / Bonus"
+// card and the compact themed overlay — whose rows sit at different x/y
+// positions, so no fixed per-row rectangle can serve both. Content
+// detection handles both, plus the defeat layout, without theme-specific
+// coordinates.
 //
-// Column ROIs can be overridden by assets/battle_loot_rois.json (preferred)
-// and assets/star_points.json (star pixel centers); both files are written
-// by tools/picker.py --preset battle-loot / star-points.
+// Search zones only bound where rows may appear; they can be overridden
+// by assets/battle_loot_rois.json (battleSearch / bonusSearch), written
+// by tools/picker.py --preset battle-loot. Star points come from
+// assets/star_points.json.
 func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error) {
-	gray := gocv.NewMat()
-	gocv.CvtColor(screen, &gray, gocv.ColorBGRToGray)
-	defer gray.Close()
-
 	var result BattleResult
 
-	battleSearch := image.Rect(311, 313, 501, 428) // Battle Loot column
-	// Bonus column right edge widened past the last digit (observed end
-	// ~671) with room for the relaxed narrow-column padding; the themed
-	// decorations further right are saturated and rejected by the color
-	// filter. See captureBattleColumn for the clipping story.
-	bonusSearch := image.Rect(571, 366, 682, 452) // League Bonus column
+	// Reference-resolution search zones (860x732). The battle zone's left
+	// edge starts at 300: digit rows begin at x>=325 on every observed
+	// layout, and the victory-ribbon tail bleeding into the panel's left
+	// edge (x~240-272) otherwise forms a phantom "text line" that displaces
+	// the gold row.
+	battleZone := image.Rect(300, 280, 520, 470) // Battle Loot column
+	bonusZone := image.Rect(530, 320, 676, 470)  // League Bonus column
 
 	if data, err := os.ReadFile(paths.Resolve("battle_loot_rois.json")); err == nil {
 		var custom struct {
@@ -165,22 +162,25 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		}
 		if json.Unmarshal(data, &custom) == nil {
 			if custom.BattleSearch.X2 > custom.BattleSearch.X1 {
-				battleSearch = image.Rect(custom.BattleSearch.X1, custom.BattleSearch.Y1, custom.BattleSearch.X2, custom.BattleSearch.Y2)
+				battleZone = image.Rect(custom.BattleSearch.X1, custom.BattleSearch.Y1, custom.BattleSearch.X2, custom.BattleSearch.Y2)
 			}
 			if custom.BonusSearch.X2 > custom.BonusSearch.X1 {
-				bonusSearch = image.Rect(custom.BonusSearch.X1, custom.BonusSearch.Y1, custom.BonusSearch.X2, custom.BonusSearch.Y2)
+				bonusZone = image.Rect(custom.BonusSearch.X1, custom.BonusSearch.Y1, custom.BonusSearch.X2, custom.BonusSearch.Y2)
 			}
 			lr.logger.Info().Msg("loaded custom battle loot ROIs")
 		}
 	}
 
-	lr.captureBattleColumn(screen, battleSearch, &result.Loot)
-	lr.captureBattleColumn(screen, bonusSearch, &result.Bonus)
+	lr.captureBattleColumn(screen, battleZone, &result.Loot)
+	lr.captureBattleColumn(screen, bonusZone, &result.Bonus)
 
-	// Star detection. CoC's end-of-battle star centers were captured
-	// empirically (see cmd/verify_end/main.go star debug); old hard-coded
-	// 365/220 / 495/220 sat slightly off the gold pixels and undercounted
-	// earned stars on bigger three-star outbreaks.
+	// Star detection. Two complementary passes share one goal: a defeat
+	// (0 stars) must NEVER read as a victory, and a victory must read its
+	// true count. The old single-pixel check (mean gray over a 5x5 patch
+	// > 100) was calibrated on themes that render three separate gold
+	// stars, and it read the ~110-luminance gray placeholder rings on a
+	// DEFEAT screen as stars — a live 35% defeat was reported as "2⭐".
+	// See readStars for the two-pass design.
 	starPoints := []image.Point{
 		{X: 327, Y: 205}, // Left
 		{X: 430, Y: 196}, // Middle
@@ -198,124 +198,425 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 		}
 	}
 
-	validStars := 0
-	for _, pt := range starPoints {
-		sx := int(float64(pt.X) * lr.cal.ScaleX)
-		sy := int(float64(pt.Y) * lr.cal.ScaleY)
-		rect := lr.safeRect(screen, image.Rect(sx-2, sy-2, sx+3, sy+3))
-		if rect.Empty() {
-			continue
-		}
-		sub := gray.Region(rect)
-		if sub.Mean().Val1 > 100 {
-			validStars++
-		}
-		sub.Close()
-	}
-	result.Stars = validStars
-	if result.Stars > 3 {
-		result.Stars = 3
-	}
+	result.Stars = lr.readStars(screen, starPoints)
 
 	return result, nil
 }
 
-// captureBattleColumn reads the three loot values (gold, elixir, DE) for
-// a single column on the end-of-battle screen. `colRef` is the column's
-// reference (860x732) ROI; it is split evenly into three absolute-physical
-// slot rectangles. Each slot is then re-anchored on the icon template, so
-// small theme/scale shifts still find the first digit immediately.
+// ---------------------------------------------------------------------------
+// Star detection.
 //
-// Writes gold/elixir/de into the supplied *Resources.
-func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, colRef image.Rectangle, dst *Resources) {
-	if colRef.Empty() {
-		return
+// The end-of-battle screen renders earned stars in one of two layouts
+// across themes, and BOTH must fail safe on defeats:
+//
+//   - Classic rows (three separate gold stars at fixed x positions) and
+//   - the current themed emblem (stars merged into one big filled star,
+//     hollow gold outline on a defeat).
+//
+// The old detector sampled a 5x5 gray mean at three configured points
+// and counted >100 as "star lit". Defeat placeholder rings render at
+// ~110 luminance, so a defeat could read as 1-2 stars (observed live:
+// a 35% defeat reported as "2⭐"). The replacement is strict twice:
+//
+//   Pass 1 — per-point (legacy layouts). A configured star point counts
+//   only when its patch contains genuinely BRIGHT pixels (luminance
+//   > 180) that are white or gold-warm; neutral gray (~110) and the
+//   gold banner both fail. Small patches prevent specks from counting.
+//
+//   Pass 2 — filled-star cluster (current themed emblem). The largest
+//   connected blob of bright-white pixels inside starBand is measured
+//   in reference pixels and mapped to 1-3 stars. Live calibration
+//   (860x732): 2-star victories = 4145-5055 px; defeats = 0 px. The
+//   mapping is anchored at ~2300 ref px per star, gated below 700 px
+//   so decoration specks can never masquerade as an emblem.
+//
+//   The final count is the greater of the two passes, clamped to 3, so
+//   a themed emblem (pass 2 = 2) still reports correctly when only one
+//   legacy point happens to land on it (pass 1 = 1).
+// ---------------------------------------------------------------------------
+
+// starBand is the reference-resolution region that contains the star
+// display on every observed end-of-battle layout (the "Total damage"
+// line sits above it, the Victory/Defeat text below).
+var starBand = image.Rect(240, 140, 460, 260)
+
+// starClusterMinRef gates pass 2: filled-star clusters measure
+// 4000+ ref px live, so 700 cleanly rejects decoration specks even on
+// scaled-down or mid-animation frames.
+const starClusterMinRef = 700
+
+// starClusterPerRef is the reference-pixel area attributed to one star.
+// Anchored on two live 2-star victories (4145 and 4895 px) and the
+// tracked regression fixture (4709 px): 4145/2300 = 1.8 -> 2,
+// 4895/2300 = 2.1 -> 2, 4709/2300 = 2.0 -> 2.
+const starClusterPerRef = 2300
+
+// isStarPixel reports whether an HSV pixel looks like earned-star
+// material: genuinely bright AND either white (the filled themed emblem)
+// or gold-warm (classic star icons). Neutral grays — the ~110-luminance
+// placeholder rings that broke the old <=100 mean check — and saturated
+// non-warm decorations (the league-bonus panel) are rejected.
+func isStarPixel(h, s, v uint8) bool {
+	if v < 181 {
+		return false
 	}
-
-	scaleX, scaleY := lr.cal.ScaleX, lr.cal.ScaleY
-	sx1 := int(float64(colRef.Min.X) * scaleX)
-	sy1 := int(float64(colRef.Min.Y) * scaleY)
-	sx2 := int(float64(colRef.Max.X) * scaleX)
-	sy2 := int(float64(colRef.Max.Y) * scaleY)
-
-	// Inward padding so the row never touches the icon column edge.
-	padL := int(8 * scaleX)
-	padR := int(4 * scaleX)
-	// Narrow columns (the League Bonus column is ~103 ref px wide) have
-	// digits that run almost to the column's right edge, so full padding
-	// clips the final digit. Observed live: bonus gold "+256 000" read as
-	// 25600 — the trailing zero lost its right edge and its template-match
-	// score fell just below the 0.5 floor while the identical elixir row
-	// (same clipping, one pixel of luck) passed. Relax to 4/2 so the last
-	// digit is never clipped; the saturated panel decorations to the right
-	// are rejected by the per-blob color filter.
-	if sx2-sx1 < padL+padR+int(20*scaleX) || sx2-sx1 < int(130*scaleX) {
-		padL, padR = 4, 2
+	if s < 70 {
+		return true // bright white
 	}
+	return h < 50 || h > 160 // bright gold / warm hues (HSV hue: 0-179)
+}
 
-	colHeight := sy2 - sy1
-	rowHeight := colHeight / 3
-	if rowHeight < int(6*scaleY) {
-		rowHeight = colHeight
-	}
-
-	makeRow := func(i int) image.Rectangle {
-		y1 := sy1 + i*rowHeight
-		y2 := y1 + rowHeight
-		if i == 2 {
-			y2 = sy2 // Pin the last row's bottom to the column boundary.
+// readStars runs the two-pass star detector and returns an earned-star
+// count in [0,3].
+func (lr *LootRecognizer) readStars(screen gocv.Mat, starPoints []image.Point) int {
+	legacy := 0
+	for _, pt := range starPoints {
+		if lr.starAtPoint(screen, pt) {
+			legacy++
 		}
-		return lr.safeRect(screen, image.Rect(sx1+padL, y1, sx2-padR, y2))
 	}
-	rows := []image.Rectangle{makeRow(0), makeRow(1), makeRow(2)}
-	iconNames := []string{"icon_gold", "icon_elixir", "icon_de"}
-	values := []int{0, 0, 0}
 
-	// Anchor search ROI = full column, but capped to the column boundary
-	// so the icon template never returns hits from the next column.
-	anchorROI := lr.safeRect(screen, image.Rect(sx1, sy1, sx2, sy2))
+	if cluster := lr.starClusterCount(screen); cluster > legacy {
+		legacy = cluster
+	}
+	if legacy > 3 {
+		legacy = 3
+	}
+	return legacy
+}
 
-	const minConf = float32(0.65)
-	for i, name := range iconNames {
-		// Try icon-anchored read first (same proven pattern as
-		// ReadLootDetailed). On match we offset from the icon out into
-		// the slot's right edge, which guarantees digit span fits.
-		if !anchorROI.Empty() {
-			if tpl, ok := lr.templates.Get(name); ok && !tpl.Empty() {
-				region := screen.Region(anchorROI)
-				res := vision.GetMat(region.Rows()-tpl.Rows()+1, region.Cols()-tpl.Cols()+1, gocv.MatTypeCV32FC1)
-				gocv.MatchTemplate(region, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
-				_, maxConf, _, maxLoc := gocv.MinMaxLoc(res)
-				vision.PutMat(res)
-				region.Close()
+// starAtPoint counts genuine star pixels in a small patch around a
+// configured point. Returns true when the patch holds enough bright
+// white/gold pixels to be a lit star (>= 5 of a 10x10 ref patch; the
+// classic star icons fill most of their footprint).
+func (lr *LootRecognizer) starAtPoint(screen gocv.Mat, pt image.Point) bool {
+	sx := int(float64(pt.X) * lr.cal.ScaleX)
+	sy := int(float64(pt.Y) * lr.cal.ScaleY)
+	r := lr.safeRect(screen, image.Rect(sx-5, sy-5, sx+5, sy+5))
+	if r.Empty() || r.Dx() < 4 || r.Dy() < 4 {
+		return false
+	}
+	sub := screen.Region(r)
+	defer sub.Close()
 
-				if maxConf > minConf {
-					absX := anchorROI.Min.X + maxLoc.X
-					absY := anchorROI.Min.Y + maxLoc.Y
-					x1 := absX + int(4*scaleX)
-					if x1 < rows[i].Min.X {
-						x1 = rows[i].Min.X
-					}
-					x2 := min(absX+int(220*scaleX), rows[i].Max.X)
-					rect := image.Rect(x1, absY-int(5*scaleY), x2, absY+tpl.Rows()+int(5*scaleY))
-					if lr.Debug {
-						lr.logger.Debug().Str("tpl", name).Float32("conf", maxConf).Int("absX", absX).Int("absY", absY).Int("x1", rect.Min.X).Int("x2", rect.Max.X).Msg("battle column icon-anchored read")
-					}
-					values[i] = lr.readRow(screen, rect)
-					continue
-				}
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+
+	// Count qualifying pixels over the tiny patch (rows x cols, each
+	// pixel packed H,S,V in the channel stride).
+	ok := 0
+	for row := 0; row < hsv.Rows(); row++ {
+		for col := 0; col < hsv.Cols(); col++ {
+			if isStarPixel(hsv.GetUCharAt(row, col*3), hsv.GetUCharAt(row, col*3+1), hsv.GetUCharAt(row, col*3+2)) {
+				ok++
 			}
 		}
-		// Static fallback: the row rectangle derived from the column ROI.
-		if lr.Debug {
-			lr.logger.Debug().Str("tpl", name).Str("rect", rows[i].String()).Msg("battle column static fallback read")
+	}
+	return ok >= 5
+}
+
+// starClusterCount measures the largest connected blob of bright-white
+// pixels inside the star band and maps its reference-resolution area to
+// 1-3 stars (0 when no filled emblem is present).
+func (lr *LootRecognizer) starClusterCount(screen gocv.Mat) int {
+	roi := lr.safeRect(screen, image.Rect(
+		int(float64(starBand.Min.X)*lr.cal.ScaleX),
+		int(float64(starBand.Min.Y)*lr.cal.ScaleY),
+		int(float64(starBand.Max.X)*lr.cal.ScaleX),
+		int(float64(starBand.Max.Y)*lr.cal.ScaleY),
+	))
+	if roi.Empty() {
+		return 0
+	}
+	sub := screen.Region(roi)
+	defer sub.Close()
+
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+
+	// Saturation < 70 AND Value > 200 -> binary white mask. The themed
+	// emblem body is bright white; gold banner/decorations and gray
+	// placeholders are excluded (see isStarPixel for the reasoning).
+	hsvChans := gocv.Split(hsv)
+	for i := range hsvChans {
+		ch := hsvChans[i] // bind per-iteration: `defer c.Close()` would close the last channel 3x
+		defer ch.Close()
+	}
+	sNotSat := gocv.NewMat()
+	defer sNotSat.Close()
+	gocv.Threshold(hsvChans[1], &sNotSat, 70, 255, gocv.ThresholdBinaryInv)
+	vBright := gocv.NewMat()
+	defer vBright.Close()
+	gocv.Threshold(hsvChans[2], &vBright, 200, 255, gocv.ThresholdBinary)
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.BitwiseAnd(sNotSat, vBright, &mask)
+
+	// 3x3 open removes single-pixel speckle so FindContours sees only
+	// real shapes.
+	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(3, 3))
+	defer kernel.Close()
+	gocv.MorphologyEx(mask, &mask, gocv.MorphOpen, kernel)
+
+	contours := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+	defer contours.Close()
+
+	largest := 0.0
+	for i := 0; i < contours.Size(); i++ {
+		if a := gocv.ContourArea(contours.At(i)); a > largest {
+			largest = a
 		}
-		values[i] = lr.readRow(screen, rows[i])
+	}
+
+	// Normalize to reference resolution so the threshold/scale constants
+	// hold across emulator sizes.
+	refArea := largest / (lr.cal.ScaleX * lr.cal.ScaleY)
+	if refArea < starClusterMinRef {
+		return 0
+	}
+	if lr.Debug {
+		lr.logger.Debug().Float64("refArea", refArea).Int("band", roi.Dx()*roi.Dy()).Msg("battle star cluster measured")
+	}
+	n := int(refArea/starClusterPerRef + 0.5) // round to nearest star
+	if n < 1 {
+		n = 1
+	}
+	if n > 3 {
+		n = 3
+	}
+	return n
+}
+
+// StarsFromOutcome derives the earned star count from the battle's
+// measured outcome using CoC's scoring rules (NOT from result-screen
+// pixels):
+//
+//	>= 50% destruction          -> 1 star
+//	Town Hall destroyed         -> +1 star
+//	100% destruction            -> 3 stars
+//
+// thDestroyed should be false when the TH state was not observed; the
+// function then reports 1 star for any 50-99% win, which is the
+// conservative (never inflated) answer.
+func StarsFromOutcome(destructionPercent int, thDestroyed bool) int {
+	if destructionPercent >= 100 {
+		return 3
+	}
+	stars := 0
+	if destructionPercent >= 50 {
+		stars = 1
+	}
+	if thDestroyed {
+		stars++
+	}
+	if stars > 3 {
+		stars = 3
+	}
+	return stars
+}
+
+// captureBattleColumn reads the three loot values (gold, elixir, DE) for
+// a single column on the end-of-battle screen. `zoneRef` is the column's
+// reference-resolution search zone; text lines are detected inside it by
+// content (bright, low-saturation glyph blobs grouped into rows), the
+// bottom-most three lines are treated as gold/elixir/DE, and each is OCR'd
+// with the shared readRow pipeline.
+//
+// Writes gold/elixir/de into the supplied *Resources.
+func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, zoneRef image.Rectangle, dst *Resources) {
+	lines := lr.detectBattleTextLines(screen, zoneRef)
+	if lr.Debug {
+		for i, ln := range lines {
+			lr.logger.Debug().Int("line", i).Str("rect", ln.rect.String()).Int("glyphs", ln.glyphs).Msg("battle text line")
+		}
+	}
+
+	// The bottom-most three lines are the loot values. Themes vary in how
+	// many text rows the panel carries above them (e.g. a "LEAGUE BONUS"
+	// header line in the same zone), so anchor on the bottom instead of
+	// assuming the panel's internal layout.
+	var rows [3]image.Rectangle
+	for i := 0; i < 3; i++ {
+		idx := len(lines) - 3 + i
+		if idx >= 0 {
+			rows[i] = lines[idx].rect
+		}
+	}
+
+	values := [3]int{}
+	for i := range rows {
+		if rows[i].Empty() {
+			continue
+		}
+		// Pad the detected line so descenders and anti-aliased glyph edges
+		// survive readRow's binarization; readRow re-bounds the text itself.
+		padY := int(6 * lr.cal.ScaleY)
+		padX := int(4 * lr.cal.ScaleX)
+		r := lr.safeRect(screen, image.Rect(rows[i].Min.X-padX, rows[i].Min.Y-padY, rows[i].Max.X+padX, rows[i].Max.Y+padY))
+		values[i] = lr.readRow(screen, r)
+		if lr.Debug {
+			lr.logger.Debug().Int("row", i).Str("rect", r.String()).Int("value", values[i]).Msg("battle loot row read")
+		}
 	}
 
 	dst.Gold = values[0]
 	dst.Elixir = values[1]
 	dst.DarkElixir = values[2]
+}
+
+// battleTextLine is one detected row of loot digits inside a search zone.
+type battleTextLine struct {
+	rect   image.Rectangle
+	glyphs int
+}
+
+// Glyph geometry gates for loot digits, in reference pixels (860x732).
+// Digit glyphs on every observed result-screen theme measure ~10-13 ref px
+// tall and ~5-12 wide; the wide gates tolerate theme variation, and the
+// line-glyph threshold (>=3) rejects lone decoration blobs. The digit '1'
+// renders ~2 ref px wide at small sizes — hence minW=2.
+const (
+	battleGlyphMinH     = 9
+	battleGlyphMaxH     = 30
+	battleGlyphMinW     = 2
+	battleGlyphMaxW     = 18
+	battleGlyphMinArea  = 8
+	battleGlyphMinFill  = 0.30
+	battleLineMinGlyphs = 3
+	battleLineTolY      = 12 // vertical center tolerance when grouping glyphs into lines; must exceed the within-row spread of adjacent decoration blobs (observed ~10) but stay well under the ~31 px row pitch
+	battleRunGapX       = 16 // max horizontal gap inside one glyph run
+)
+
+// detectBattleTextLines finds horizontal rows of bright, low-saturation
+// glyph blobs (loot digits) inside a reference-resolution zone. Blobs are
+// grouped into lines by vertical center; per line, the longest glyph run
+// (gap <= battleRunGapX) wins, so icon shine or separated panel-tab glyphs
+// never displace the digit row itself.
+func (lr *LootRecognizer) detectBattleTextLines(screen gocv.Mat, zoneRef image.Rectangle) []battleTextLine {
+	if zoneRef.Empty() {
+		return nil
+	}
+	zone := lr.safeRect(screen, image.Rect(
+		int(float64(zoneRef.Min.X)*lr.cal.ScaleX),
+		int(float64(zoneRef.Min.Y)*lr.cal.ScaleY),
+		int(float64(zoneRef.Max.X)*lr.cal.ScaleX),
+		int(float64(zoneRef.Max.Y)*lr.cal.ScaleY),
+	))
+	if zone.Empty() || zone.Dx() < 10 || zone.Dy() < 10 {
+		return nil
+	}
+
+	sub := screen.Region(zone)
+	defer sub.Close()
+
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+
+	// Loot digits render near-white (saturation < 70) with value > 170.
+	// Icons, ribbons, and panel decorations are saturated or darker, so
+	// they never enter the mask.
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(0, 0, 170, 0), gocv.NewScalar(179, 70, 255, 0), &mask)
+
+	stats := gocv.NewMat()
+	centroids := gocv.NewMat()
+	defer stats.Close()
+	defer centroids.Close()
+	labels := gocv.NewMat()
+	defer labels.Close()
+	n := gocv.ConnectedComponentsWithStats(mask, &labels, &stats, &centroids)
+
+	type glyph struct{ x, y, w, h int }
+	var glyphs []glyph
+	for i := 1; i < n; i++ { // 0 is the background label
+		// stats is MatTypeCV32S; GetIntAt (not GetFloatAt) reads the raw
+		// int32 values — GetFloatAt would reinterpret the bits as floats.
+		x := int(stats.GetIntAt(i, int(gocv.CC_STAT_LEFT)))
+		y := int(stats.GetIntAt(i, int(gocv.CC_STAT_TOP)))
+		w := int(stats.GetIntAt(i, int(gocv.CC_STAT_WIDTH)))
+		h := int(stats.GetIntAt(i, int(gocv.CC_STAT_HEIGHT)))
+		area := int(stats.GetIntAt(i, int(gocv.CC_STAT_AREA)))
+		if h < int(battleGlyphMinH*lr.cal.ScaleY) || h > int(battleGlyphMaxH*lr.cal.ScaleY) {
+			continue
+		}
+		if w < int(battleGlyphMinW*lr.cal.ScaleX) || w > int(battleGlyphMaxW*lr.cal.ScaleX) {
+			continue
+		}
+		if area < battleGlyphMinArea || float64(area)/float64(w*h) < battleGlyphMinFill {
+			continue
+		}
+		glyphs = append(glyphs, glyph{x, y, w, h})
+	}
+	if len(glyphs) == 0 {
+		return nil
+	}
+
+	// Group glyph centers into lines: sort by vertical center, sweep, and
+	// start a new line whenever the center jumps more than battleLineTolY
+	// from the running line's mean center.
+	sort.Slice(glyphs, func(i, j int) bool {
+		return glyphs[i].y+glyphs[i].h/2 < glyphs[j].y+glyphs[j].h/2
+	})
+	type line struct {
+		glyphs []glyph
+		sumCY  float64
+	}
+	var lines []line
+	for _, g := range glyphs {
+		cy := float64(g.y + g.h/2)
+		if len(lines) > 0 {
+			last := &lines[len(lines)-1]
+			if math.Abs(cy-last.sumCY/float64(len(last.glyphs))) <= float64(battleLineTolY)*lr.cal.ScaleY {
+				last.glyphs = append(last.glyphs, g)
+				last.sumCY += cy
+				continue
+			}
+		}
+		lines = append(lines, line{glyphs: []glyph{g}, sumCY: cy})
+	}
+
+	var out []battleTextLine
+	for _, ln := range lines {
+		if len(ln.glyphs) < battleLineMinGlyphs {
+			continue
+		}
+		sort.Slice(ln.glyphs, func(i, j int) bool { return ln.glyphs[i].x < ln.glyphs[j].x })
+		// Split into runs by horizontal gap; the longest run is the digit
+		// row. Icon shine / panel-tab glyphs sitting near the text line end
+		// up in their own short run and are dropped.
+		maxGap := float64(battleRunGapX) * lr.cal.ScaleX
+		runs := [][]glyph{{ln.glyphs[0]}}
+		for _, g := range ln.glyphs[1:] {
+			last := runs[len(runs)-1]
+			tail := last[len(last)-1]
+			if float64(g.x-(tail.x+tail.w)) <= maxGap {
+				runs[len(runs)-1] = append(last, g)
+			} else {
+				runs = append(runs, []glyph{g})
+			}
+		}
+		best := runs[0]
+		for _, r := range runs[1:] {
+			if len(r) > len(best) {
+				best = r
+			}
+		}
+		rect := image.Rect(best[0].x, best[0].y, best[0].x+best[0].w, best[0].y+best[0].h)
+		for _, g := range best[1:] {
+			rect = rect.Union(image.Rect(g.x, g.y, g.x+g.w, g.y+g.h))
+		}
+		// Back to absolute screen coordinates.
+		out = append(out, battleTextLine{
+			rect:   rect.Add(zone.Min),
+			glyphs: len(best),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].rect.Min.Y < out[j].rect.Min.Y })
+	return out
 }
 
 // safeRect clamps r to img bounds. Returns image.Rectangle{} when r collapses.

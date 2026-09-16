@@ -453,6 +453,15 @@ func (hm *HeroManager) DeployTroops(
 	const reconcileRounds = 3
 	const reconcileSettleMs = 150
 	for round := 0; round < reconcileRounds; round++ {
+		// Battle-timer guard: the reconcile top-ups exist to catch genuine
+		// drops CoC swallowed, not to re-fire a spent card forever. Once
+		// the deploy budget is gone the slot is left for the (also
+		// budget-guarded) sweep.
+		if hm.executor.DeployBudgetExhausted() {
+			hm.logger.Warn().Str("unit", unit.Name).Msg("troop reconcile: deploy budget exhausted; stopping")
+			hm.slotManager.RecordAttempt(unitName, false)
+			return false
+		}
 		hm.executor.HumanSleep(reconcileSettleMs, 30)
 
 		live, visualEmpty := hm.liveCountAndEmpty(slot)

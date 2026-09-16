@@ -94,9 +94,53 @@ func (p *ShellPipe) Start() error {
 	}
 	// 2. exec:sh
 	if err := sendADBPacket(conn, "exec:sh", p.timeout); err != nil {
-		conn.Close()
-		return fmt.Errorf("exec:sh: %w", err)
+		// BlueStacks adbd wedge (see transport.go's bluestacksWedgePrefix):
+		// in the wedged state the device answers bare services with FAIL
+		// "closed" while compound commands run normally. exec:sh has no
+		// fallback form of its own, so open a one-shot shell that runs the
+		// compound prefix and then `exec sh` — the exec replaces the
+		// one-shot shell, leaving the socket as the interactive shell's
+		// stdin exactly like exec:sh would have. Once the shell is up, its
+		// child processes (input, etc.) are spawned by the shell itself,
+		// bypassing the wedged per-command routing, so plain command lines
+		// work from then on.
+		//
+		// The fallback MUST use a fresh connection: the adb server drops
+		// the device socket after answering a FAIL, so reusing `conn` for
+		// a second service read returns EOF (observed live on the first
+		// implementation). Transport.Exec avoids this by dialing a new
+		// connection per attempt.
+		if strings.Contains(strings.ToLower(err.Error()), "closed") {
+			conn.Close()
+			p.logger.Info("exec:sh answered FAIL closed; retrying via wedge-safe 'getprop; exec sh' on a fresh connection")
+			conn2, derr := net.DialTimeout("tcp", addr, DialTimeout)
+			if derr != nil {
+				return fmt.Errorf("exec:sh + wedge-safe fallback: dial: %w", derr)
+			}
+			if derr := sendADBPacket(conn2, "host:transport:"+p.deviceID, p.timeout); derr != nil {
+				conn2.Close()
+				return fmt.Errorf("exec:sh + wedge-safe fallback: transport: %w", derr)
+			}
+			if derr := sendADBPacket(conn2, "shell:"+bluestacksWedgePrefix+"exec sh", p.timeout); derr != nil {
+				conn2.Close()
+				return fmt.Errorf("exec:sh + wedge-safe fallback: %w", derr)
+			}
+			conn = conn2
+		} else {
+			conn.Close()
+			return fmt.Errorf("exec:sh: %w", err)
+		}
 	}
+
+	// sendADBPacket arms a read deadline during the service negotiation
+	// (each packet has its own timeout). If left set, the idle
+	// discardReader hits it ~30s after Start and marks the pipe broken
+	// even though the connection is perfectly healthy (observed live:
+	// "adb shell pipe reader stopped: i/o timeout" exactly 30s after
+	// pipe start, mid battle-end wait). The shell is interactive from
+	// here on — per-command write deadlines in handlePipeCmd bound
+	// stalled commands, so clear the lingering deadlines.
+	conn.SetDeadline(time.Time{})
 
 	p.conn = conn
 	p.started.Store(true)
@@ -281,6 +325,9 @@ func (p *ShellPipe) handlePipeCmd(pc pipeCmd) {
 		}
 		return
 	}
+	// Clear the per-write deadline so an idle pipe (mid battle-end wait,
+	// between attacks) never trips a stale timeout in discardReader.
+	conn.SetDeadline(time.Time{})
 	if pc.done != nil {
 		close(pc.done)
 	}

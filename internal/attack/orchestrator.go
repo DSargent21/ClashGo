@@ -23,6 +23,10 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	w, h := screen.Cols(), screen.Rows()
 	targetEdge := s.TargetEdge
 
+	// Record the active strategy so the battle-end wait can honor
+	// per-strategy knobs (e.g. end_at_percent auto-end threshold).
+	e.activeStrategy = s
+
 	// Pre-flight validation
 	if err := e.Validate(s); err != nil {
 		e.logger.Error().Err(err).Msg("pre-flight validation failed")
@@ -252,6 +256,17 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 
 	// 6. Initialize tap executor
 	tapExec := NewTapExecutor(e.client, e.cal, e.logger)
+	// Give deployers a unit-name -> slot lookup (used to pair Amount:"All"
+	// spells with their live OCR counts).
+	tapExec.SetSlotResolver(slotMgr.GetSlot)
+
+	// Arm the deploy budget. Every phase/reconcile/sweep loop below
+	// consults tapExec.DeployBudgetExhausted() between rounds so a stuck
+	// slot (spent spell card still reading visually non-empty, broken OCR,
+	// etc.) can never fire taps past the 3-minute battle timer. Observed
+	// live: the EQ-spell sweep kept re-firing for ~2 minutes after the
+	// battle had already ended because no wall-clock bound existed.
+	tapExec.StartDeployBudget()
 
 	// 7. Plan phases
 	planner := NewDeployPlanner(slotMgr, pCfg, targetEdge, w, h, e.logger)
@@ -262,13 +277,31 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 
 	// 9. Execute each phase
 	for _, plan := range plans {
+		// Hard deploy-time stop: if the budget ran out mid-plan, abandon
+		// the remaining phases instead of tapping into the battle timer.
+		// The leftover slots are reported as undeployed so the attack
+		// report shows the partial failure instead of a phantom success.
+		if tapExec.DeployBudgetExhausted() {
+			remaining := len(slotMgr.GetUndeployedSlots())
+			e.logger.Warn().
+				Str("phase", plan.Phase.Name).
+				Dur("budget", DeployBudget).
+				Int("undeployed", remaining).
+				Msg("deploy budget exhausted before phases completed; stopping deploy (battle-timer guard)")
+			return remaining, fmt.Errorf("deploy budget exhausted (%s); %d slots undeployed", DeployBudget, remaining)
+		}
+
 		e.logger.Info().Str("phase", plan.Phase.Name).Msg("attack phase")
 		if e.OnPhaseStart != nil {
 			e.OnPhaseStart(plan.Phase.Name, targetEdge)
 		}
 
-		// Deploy spells
-		spellDeployer := NewSpellDeployer(tapExec, pCfg, formulaPtr, w, h, e.logger)
+		// Deploy spells. Thread the live OCR counts + slot resolver so
+		// Amount:"All" spells tap exactly the count the army carries
+		// instead of a hardcoded 5 (the valk EQ army carries e.g. 4 EQs
+		// on one card; the edrag rush carries 11 rage on another).
+		spellDeployer := NewSpellDeployerWithCounts(tapExec, pCfg, formulaPtr, w, h, countMap, e.logger)
+		spellDeployer.SetCounter(troopCounter, slotMgr.GetBarY())
 		for _, up := range ResolveSpellTargets(plan) {
 			if up.Slot == nil {
 				continue
@@ -298,6 +331,22 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			success := spellDeployer.DeploySpell(up.Unit, up.Slot, targetEdge, plan.Phase.Pattern)
 			if success {
 				slotMgr.MarkDeployed(strings.ToLower(up.Unit.Name))
+				// Post-deploy verify: live-OCR the card count and re-fire
+				// any spells that didn't drop (same reconcile philosophy as
+				// the troop path). Best-effort — a failed OCR just logs.
+				// 4 rounds: each round fires only the unconfirmed remainder,
+				// and the internal no-progress stop aborts early when OCR
+				// reads the same count twice — so more headroom only helps
+				// genuinely draining multi-charge cards, never the spent-
+				// card loop (live: 1-charge rage re-fired for the old 2-
+				// round budget while OCR read "1" every time).
+				if extra, confirmed := spellDeployer.VerifyAndReconcile(up.Unit, up.Slot, targetEdge, plan.Phase.Pattern, 4); extra > 0 {
+					e.logger.Info().
+						Str("unit", up.Unit.Name).
+						Int("extra_fired", extra).
+						Bool("confirmed_empty", confirmed).
+						Msg("spell reconcile fired extra spells")
+				}
 			}
 		}
 

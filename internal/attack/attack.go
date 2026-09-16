@@ -34,11 +34,63 @@ type Executor struct {
 	classify      func(gocv.Mat) (game.GameState, int)
 	tappedSiegeXs map[int]bool
 	templates     map[string]gocv.Mat
+	// activeStrategy mirrors the strategy being executed so the battle-end
+	// wait can honor per-strategy knobs (e.g. EndAtPercent). Nil when no
+	// dynamic deploy has run yet.
+	activeStrategy *strategy.DynamicStrategy
+
+	// lastDestructionPct is the highest destruction percentage the battle
+	// wait measured from the stall ROI (monotonic in practice). It is the
+	// authoritative "final damage" for star computation per game rules
+	// (>=50% = 1 star, TH destroyed = +1, 100% = 3). Zero when the wait
+	// had no percent ROI to sample. Updated on the executor's goroutine
+	// and read right after WaitForBattleEndCtx returns on the same
+	// goroutine — no locking needed.
+	lastDestructionPct int
+	// thDestroyed latches once the golden "Town Hall destroyed" banner is
+	// observed in the optional stall_config th_banner_zone. False when the
+	// zone is unconfigured (TH state unknown).
+	thDestroyed bool
 
 	OnPhaseStart func(phase string, edge string)
 	OnUnitDeploy func(unit string, slotX int, slotY int)
 
 	OnDukePick func(targetEdge string, chosenEdge string)
+}
+
+// LastDestructionPercent returns the highest destruction percentage the
+// battle-end wait measured from the stall ROI (0 when nothing was read).
+func (e *Executor) LastDestructionPercent() int {
+	return e.lastDestructionPct
+}
+
+// ThDestroyed reports whether the golden Town Hall destroyed banner was
+// seen during the wait (false when no th_banner_zone is configured, i.e.
+// the TH state is unknown).
+func (e *Executor) ThDestroyed() bool {
+	return e.thDestroyed
+}
+
+// goldPixels counts golden-text pixels (BGR: strong red, mid green, weak
+// blue) in a physical ROI. The "Town Hall destroyed" banner renders as
+// golden lettering on a dark band, so this signature cleanly separates it
+// from the bright-white troop bar and the pale battle HUD.
+func (e *Executor) goldPixels(screen gocv.Mat, roi image.Rectangle) int {
+	if roi.Empty() {
+		return 0
+	}
+	sub := screen.Region(roi)
+	defer sub.Close()
+	count := 0
+	for y := 0; y < sub.Rows(); y++ {
+		for x := 0; x < sub.Cols(); x++ {
+			p := sub.GetVecbAt(y, x)
+			if p[2] > 140 && p[1] > 70 && p[0] < 110 && p[2] >= p[1] {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 type PrecisionConfig struct {
@@ -60,6 +112,15 @@ type StallConfig struct {
 	ConfirmBtn image.Point     `json:"confirm_btn"`
 	RefWidth   int             `json:"ref_width"`
 	RefHeight  int             `json:"ref_height"`
+	// ThBannerZone is an OPTIONAL reference-resolution region to scan for
+	// the persistent golden "Town Hall destroyed" banner that appears above
+	// the troop bar once the TH falls. When configured, the battle wait
+	// latches ThDestroyed the first tick the zone contains at least
+	// ThBannerGold gold pixels. Leave empty to treat the TH as unknown
+	// (star counting then relies on destruction percent alone; the zone
+	// was not yet calibrated from a live TH-destroyed capture).
+	ThBannerZone image.Rectangle `json:"th_banner_zone,omitempty"`
+	ThBannerGold int             `json:"th_banner_gold"`
 }
 
 type ManualEdge struct {
@@ -145,6 +206,12 @@ func (e *Executor) loadTemplates() {
 
 func (e *Executor) SetClassifier(fn func(gocv.Mat) (game.GameState, int)) {
 	e.classify = fn
+}
+
+// SetActiveStrategy records the strategy being executed so battle-end
+// waiting can honor per-strategy knobs (end_at_percent). Pass nil to clear.
+func (e *Executor) SetActiveStrategy(s *strategy.DynamicStrategy) {
+	e.activeStrategy = s
 }
 
 func (e *Executor) UpdateConfig(cfg *config.AttackConfig) {
@@ -1535,10 +1602,72 @@ func (e *Executor) WaitForBattleEnd(timeout time.Duration) bool {
 // attack goroutine polling for the full timeout (up to 4 minutes)
 // and, because CaptureToMat reconnects a closed transport, it kept
 // issuing taps the whole time.
+//
+// When the active strategy sets end_at_percent, the battle also ends
+// as soon as the destruction percentage reaches that threshold — the
+// win is already secured, so waiting longer only burns wall time.
+// endAtPercentReached is the single auto-end decision: the battle ends
+// early only when the active strategy declared a threshold (endAtPct > 0)
+// AND the measured destruction has reached it (>=, not > — a valk_spam
+// army that secured the win at exactly 50% must not keep fighting).
+// A threshold of 0 disables the feature entirely.
+func endAtPercentReached(endAtPct, currentPct int) bool {
+	return endAtPct > 0 && currentPct >= endAtPct
+}
+
+// validDestructionRead reports whether a stall-ROI OCR read is a
+// plausible enemy destruction percentage. Destruction in CoC is capped at
+// 100; reads above that are digit-OCR garbage of whatever counter sits
+// under the ROI on the current HUD/theme (observed live on auto_edrag
+// battles: reads of 381, 851, 991 while the result screen later showed a
+// 32% defeat). Garbage reads must never feed the stall timer, the
+// end_at_percent auto-end, or the battle's star computation.
+func validDestructionRead(pct int) bool {
+	return pct >= 0 && pct <= 100
+}
+
+// ResetBattleOutcome clears the per-battle destruction/TH state. Called
+// at the top of WaitForBattleEndCtx so a misread from a previous battle
+// can never bleed into the next battle's star computation (observed live:
+// battle 1's garbage 381% was still latched on the shared Executor when
+// battle 2's result was parsed, turning a 32% defeat into "3 stars").
+func (e *Executor) ResetBattleOutcome() {
+	e.lastDestructionPct = 0
+	e.thDestroyed = false
+}
+
+// endButtonVisible reports whether the red "End Battle" button is on the
+// given frame at the stall_config end_button location. CoC only shows
+// that button once the army is fully spent, so tapping it blind when it
+// is absent just taps the map. The check mirrors EndBattle's legacy
+// dynamic probe (bright red pixel). Returns false when no stall_config is
+// loaded or the probe point is off-screen.
+func (e *Executor) endButtonVisible(screen gocv.Mat, sCfg StallConfig) bool {
+	if sCfg.RefWidth == 0 || sCfg.RefHeight == 0 {
+		return false
+	}
+	scaleX := float64(e.cal.PhysicalW) / float64(sCfg.RefWidth)
+	scaleY := float64(e.cal.PhysicalH) / float64(sCfg.RefHeight)
+	x := int(float64(sCfg.EndButton.X) * scaleX)
+	y := int(float64(sCfg.EndButton.Y) * scaleY)
+	if x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
+		return false
+	}
+	b := screen.GetUCharAt(y, x*3)
+	g := screen.GetUCharAt(y, x*3+1)
+	r := screen.GetUCharAt(y, x*3+2)
+	return r > 130 && g < 110 && b < 110
+}
+
 func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
+
+	// Per-battle outcome reset. lastDestructionPct / thDestroyed are
+	// executor-scoped and would otherwise carry a previous battle's reads
+	// into this one's star computation (see ResetBattleOutcome).
+	e.ResetBattleOutcome()
 
 	lastPct := 0
 	lastPctTime := time.Now()
@@ -1570,6 +1699,22 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 		)
 	}
 
+	// Optional golden "Town Hall destroyed" banner scan. The banner sits
+	// above the troop bar and persists for the rest of the battle once the
+	// TH falls, so a single tick crossing the gold-pixel threshold latches
+	// ThDestroyed. Coordinates follow percent_roi's reference scheme.
+	var thRoi image.Rectangle
+	hasThZone := !sCfg.ThBannerZone.Empty()
+	if hasThZone {
+		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
+		thRoi = image.Rect(
+			int(float64(sCfg.ThBannerZone.Min.X)*scaleX),
+			int(float64(sCfg.ThBannerZone.Min.Y)*scaleY),
+			int(float64(sCfg.ThBannerZone.Max.X)*scaleX),
+			int(float64(sCfg.ThBannerZone.Max.Y)*scaleY),
+		)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1578,6 +1723,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 		case <-ticker.C:
 			screen, err := e.client.CaptureToMat()
 			if err != nil {
+				e.logger.Warn().Err(err).Msg("battle-end wait capture failed; retrying next tick")
 				continue
 			}
 			state, _ := e.classify(screen)
@@ -1587,19 +1733,104 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 				return true
 			}
 
-			if e.cfg.StallTimerSeconds > 0 && hasStallROI {
+			// Per-strategy auto-end threshold from end_at_percent (0 = off).
+			endAtPct := 0
+			if e.activeStrategy != nil {
+				endAtPct = e.activeStrategy.EndAtPercent
+			}
+
+			// Destruction-percent reads serve two purposes: the stall
+			// timer and the strategy's end_at_percent auto-end. When a
+			// strategy declares a threshold, the stall timer is disabled
+			// BELOW it — ending early on a stall would abandon the win
+			// the strategy is built around (e.g. valk_spam's 50%). Only
+			// the deadline bounds how long we keep waiting for it.
+			if hasStallROI && (e.cfg.StallTimerSeconds > 0 || endAtPct > 0) {
 				currentPct := lootRec.ReadDestructionPercentage(screen, pRoi)
-				if currentPct > lastPct {
-					lastPct = currentPct
+
+				// Garbage-read guard: destruction can never exceed 100, so a
+				// >100 read means the ROI is scanning an unrelated counter on
+				// this HUD/theme. Such ticks are ignored entirely — they must
+				// not latch as destruction (fake stars), must not satisfy
+				// end_at_percent (early surrender), and must not stall-end
+				// the battle. The stall timer is reset as if progress was
+				// made so a garbage-reading HUD lets the battle run its
+				// natural course to the result overlay.
+				if !validDestructionRead(currentPct) {
+					e.logger.Debug().
+						Int("raw_pct", currentPct).
+						Msg("stall ROI misread outside 0-100; ignoring tick")
 					lastPctTime = time.Now()
-					e.logger.Info().Int("percent", currentPct).Msg("destruction increased, resetting stall timer")
-				} else {
-					elapsed := time.Since(lastPctTime)
-					if elapsed > stallLimit {
-						e.logger.Warn().Int("last_pct", lastPct).Dur("elapsed", elapsed).Msg("stall detected, ending battle!")
+					screen.Close()
+					if time.Now().After(deadline) {
+						return false
+					}
+					continue
+				}
+
+				// Latch the highest measured destruction as the battle's
+				// final damage (destruction is monotonic; transient 0 reads
+				// happen when the overlay starts rendering before its state
+				// is classified, so max — not last — is authoritative).
+				if currentPct > e.lastDestructionPct {
+					e.lastDestructionPct = currentPct
+				}
+
+				// TH destroyed banner latch (only when the zone is
+				// calibrated in stall_config.json; see ThBannerZone).
+				if hasThZone && !e.thDestroyed {
+					gold := e.goldPixels(screen, thRoi)
+					if gold >= sCfg.ThBannerGold {
+						e.thDestroyed = true
+						e.logger.Info().Int("gold", gold).Msg("Town Hall destroyed banner detected")
+					}
+				}
+
+				// Progress visibility in threshold mode: log every tick so
+				// a long battle toward end_at_percent is observable (the
+				// stall branch's "destruction increased" only fires when
+				// the stall timer is active).
+				if endAtPct > 0 && currentPct != lastPct {
+					lastPct = currentPct
+					e.logger.Info().Int("percent", currentPct).Int("threshold", endAtPct).Msg("destruction progress toward strategy threshold")
+				}
+
+				if endAtPercentReached(endAtPct, currentPct) {
+					// End only when the red End Battle button is actually on
+					// screen (army fully spent). A misread percent must not
+					// tap the map mid-fight.
+					if !e.endButtonVisible(screen, sCfg) {
+						e.logger.Debug().Int("percent", currentPct).Msg("threshold reached but End Battle button not visible; keeping battle alive")
+					} else {
+						e.logger.Info().Int("percent", currentPct).Int("threshold", endAtPct).Msg("destruction reached strategy threshold, ending battle!")
 						screen.Close()
 						e.EndBattle()
 						return true
+					}
+				}
+
+				if e.cfg.StallTimerSeconds > 0 && endAtPct == 0 {
+					if currentPct > lastPct {
+						lastPct = currentPct
+						lastPctTime = time.Now()
+						e.logger.Info().Int("percent", currentPct).Msg("destruction increased, resetting stall timer")
+					} else {
+						elapsed := time.Since(lastPctTime)
+						if elapsed > stallLimit {
+							// Stall-end only when the red End Battle button is on
+							// screen. If it is not, troops are still fighting —
+							// ending blind would tap the map, and the "stall" may
+							// be a HUD/OCR artifact rather than a dead army.
+							if !e.endButtonVisible(screen, sCfg) {
+								e.logger.Warn().Int("last_pct", lastPct).Msg("stall detected but End Battle button not visible; keeping battle alive")
+								lastPctTime = time.Now()
+							} else {
+								e.logger.Warn().Int("last_pct", lastPct).Dur("elapsed", elapsed).Msg("stall detected, ending battle!")
+								screen.Close()
+								e.EndBattle()
+								return true
+							}
+						}
 					}
 				}
 			}
