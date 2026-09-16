@@ -18,6 +18,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
@@ -34,10 +35,11 @@ func main() {
 	doOCR := flag.Bool("ocr", false, "run Apple Vision OCR on the frame")
 	watch := flag.Bool("watch", false, "live loop: refresh every 3s until Ctrl-C")
 	save := flag.String("save", "", "copy the analyzed frame to this path")
+	dumpAnchors := flag.Bool("anchors", false, "dump every rule anchor under both geometry models (ref -> live coords + sampled RGB)")
 	flag.Parse()
 
 	for {
-		runOnce(*imgPath, *doOCR, *save)
+		runOnce(*imgPath, *doOCR, *save, *dumpAnchors)
 		if !*watch {
 			return
 		}
@@ -45,7 +47,7 @@ func main() {
 	}
 }
 
-func runOnce(imgPath string, doOCR bool, savePath string) {
+func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool) {
 	img := gocv.Mat{}
 	if imgPath != "" {
 		img = gocv.IMRead(imgPath, gocv.IMReadColor)
@@ -78,15 +80,8 @@ func runOnce(imgPath string, doOCR bool, savePath string) {
 		fmt.Printf("saved frame -> %s\n", savePath)
 	}
 
-	cal := &game.Calibration{
-		PhysicalW:  img.Cols(),
-		PhysicalH:  img.Rows(),
-		ScaleX:     float64(img.Cols()) / float64(game.RefWidth),
-		ScaleY:     float64(img.Rows()) / float64(game.RefHeight),
-		MidOffsetY: (img.Rows() - game.RefHeight) / 2,
-		BottomOffY: img.Rows() - game.RefHeight,
-		Verified:   true,
-	}
+	cal := game.NewCalibration(img.Cols(), img.Rows())
+	cal.Verified = true
 
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).Level(zerolog.ErrorLevel)
 	classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), logger)
@@ -104,16 +99,16 @@ func runOnce(imgPath string, doOCR bool, savePath string) {
 	for _, rule := range classifier.GetRules() {
 		passed := 0
 		for _, chk := range rule.Checks {
-			sx, sy := cal.ScaleRef(chk.X, chk.Y)
+			// Mirror ClassifyState exactly: reference coords mapped through
+			// the rule's anchor, colour distance as a vector length.
+			sx, sy := cal.MapX(chk.X, rule.Anchor), cal.MapY(chk.Y, rule.Anchor)
 			if sx < 0 || sy < 0 || sx >= img.Cols() || sy >= img.Rows() {
 				continue
 			}
 			b := img.GetUCharAt(sy, sx*3)
 			g := img.GetUCharAt(sy, sx*3+1)
 			r := img.GetUCharAt(sy, sx*3+2)
-			if abs(int(r)-int(chk.R)) <= chk.Tolerance &&
-				abs(int(g)-int(chk.G)) <= chk.Tolerance &&
-				abs(int(b)-int(chk.B)) <= chk.Tolerance {
+			if colorDistance(int(r), int(g), int(b), chk) <= float64(chk.Tolerance) {
 				passed++
 			}
 		}
@@ -124,31 +119,53 @@ func runOnce(imgPath string, doOCR bool, savePath string) {
 		if rule.Template != "" {
 			marker += "T"
 		}
-		fmt.Printf("  %s %-18s pass=%d/%d minpass=%d\n", marker, rule.State.String(), passed, len(rule.Checks), rule.MinPass)
+		anchor := "edge"
+		if rule.Anchor == game.AnchorCenter {
+			anchor = "centre"
+		}
+		fmt.Printf("  %s %-18s pass=%d/%d minpass=%d (%s)\n", marker, rule.State.String(), passed, len(rule.Checks), rule.MinPass, anchor)
+	}
+
+	if dumpAnchors {
+		fmt.Println("--- anchors (ref -> live, both models) ---")
+		for _, rule := range classifier.GetRules() {
+			if len(rule.Checks) == 0 {
+				continue
+			}
+			fmt.Printf("  %-18s anchor=%s\n", rule.State.String(), anchorName(rule.Anchor))
+			for _, chk := range rule.Checks {
+				ex, ey := cal.MapX(chk.X, game.AnchorEdge), cal.MapY(chk.Y, game.AnchorEdge)
+				cx, cy := cal.MapX(chk.X, game.AnchorCenter), cal.MapY(chk.Y, game.AnchorCenter)
+				fmt.Printf("    ref(%3d,%3d) want RGB(%3d,%3d,%3d)±%-3d edge(%4d,%4d)%s centre(%4d,%4d)%s\n",
+					chk.X, chk.Y, chk.R, chk.G, chk.B, chk.Tolerance,
+					ex, ey, sampleNote(img, ex, ey, chk), cx, cy, sampleNote(img, cx, cy, chk))
+			}
+		}
 	}
 
 	fmt.Println("--- color map (G=green O=orange R=red B=blue P=purple Y=yellow W=white .=dim #=bright) ---")
 	renderColorMap(img)
 
-	fmt.Println("--- key button pixels (ref coords -> live RGB) ---")
+	fmt.Println("--- key button pixels (ref coords -> live RGB per model) ---")
 	probes := []struct {
-		name string
-		x, y int
+		name   string
+		x, y   int
+		anchor game.Anchor
 	}{
-		{"attack(64,666)", 64, 666},
-		{"find_match(158,494)", 158, 494},
-		{"battle(731,537)", 731, 537},
-		{"army_arrow(514,192)", 514, 192},
-		{"army_1(513,230)", 513, 230},
-		{"next(794,577)", 794, 577},
-		{"return_home(431,581)", 431, 581},
-		{"okay(430,520)", 430, 520},
-		{"gold_icon(35,85)", 35, 85},
-		{"elixir_icon(35,115)", 35, 115},
-		{"de_icon(35,145)", 35, 145},
+		{"attack", 64, 666, game.AnchorEdge},
+		{"find_match", 158, 494, game.AnchorEdge},
+		{"battle", 731, 537, game.AnchorEdge},
+		{"army_arrow", 514, 192, game.AnchorCenter},
+		{"army_1", 513, 230, game.AnchorCenter},
+		{"next", 794, 577, game.AnchorEdge},
+		{"return_home", 431, 581, game.AnchorCenter},
+		{"okay", 430, 520, game.AnchorCenter},
+		{"gold_icon", 35, 85, game.AnchorEdge},
+		{"elixir_icon", 35, 115, game.AnchorEdge},
+		{"de_icon", 35, 145, game.AnchorEdge},
 	}
 	for _, p := range probes {
-		sx, sy := cal.ScaleRef(p.x, p.y)
+		sx, sy := cal.MapX(p.x, p.anchor), cal.MapY(p.y, p.anchor)
 		if sx < 0 || sy < 0 || sx >= img.Cols() || sy >= img.Rows() {
 			fmt.Printf("  %-20s out of bounds\n", p.name)
 			continue
@@ -156,7 +173,8 @@ func runOnce(imgPath string, doOCR bool, savePath string) {
 		b := img.GetUCharAt(sy, sx*3)
 		g := img.GetUCharAt(sy, sx*3+1)
 		r := img.GetUCharAt(sy, sx*3+2)
-		fmt.Printf("  %-20s (%3d,%3d) RGB(%3d,%3d,%3d) %s\n", p.name, sx, sy, r, g, b, hueLabel(int(r), int(g), int(b)))
+		fmt.Printf("  %-14s ref(%3d,%3d) %-6s -> (%4d,%4d) RGB(%3d,%3d,%3d) %s\n",
+			p.name, p.x, p.y, anchorName(p.anchor), sx, sy, r, g, b, hueLabel(int(r), int(g), int(b)))
 	}
 
 	if doOCR {
@@ -265,6 +283,37 @@ func dominantHue(r, g, b int) (byte, bool) {
 		return 'B', true
 	}
 	return 0, false
+}
+
+// colorDistance mirrors ClassifyState's colour comparison (vector length in
+// RGB space), so this tool's pass counts and the classifier's agree.
+func colorDistance(r, g, b int, chk game.PixelCheck) float64 {
+	dr := r - int(chk.R)
+	dg := g - int(chk.G)
+	db := b - int(chk.B)
+	return math.Sqrt(float64(dr*dr + dg*dg + db*db))
+}
+
+func anchorName(a game.Anchor) string {
+	if a == game.AnchorCenter {
+		return "centre"
+	}
+	return "edge"
+}
+
+// sampleNote samples a mapped point and reports whether it satisfies the
+// check, so an anchor dump shows at a glance which model lands on the element.
+func sampleNote(img gocv.Mat, x, y int, chk game.PixelCheck) string {
+	if x < 0 || y < 0 || x >= img.Cols() || y >= img.Rows() {
+		return " oob"
+	}
+	b := img.GetUCharAt(y, x*3)
+	g := img.GetUCharAt(y, x*3+1)
+	r := img.GetUCharAt(y, x*3+2)
+	if colorDistance(int(r), int(g), int(b), chk) <= float64(chk.Tolerance) {
+		return " HIT"
+	}
+	return " miss"
 }
 
 func hueLabel(r, g, b int) string {

@@ -52,20 +52,17 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 		return StateUnknown, 0
 	}
 
-	var norm gocv.Mat
-	defer func() {
-		if !norm.Closed() {
-			norm.Close()
-		}
-	}()
-
 	var scores []scoredState
 
 	for _, rule := range c.rules {
 		passed := 0
 		for _, chk := range rule.Checks {
-			// Scaled coordinates from reference coordinates (height 732/width 860) to actual physical screen
-			sx, sy := c.cal.ScaleRef(chk.X, chk.Y)
+			// Reference coordinates -> live geometry. HUD chrome keeps its
+			// distance to the nearest screen edge, centred overlays and
+			// world coordinates keep their distance to the centre; both are
+			// the identity at the reference geometry (see Calibration.Anchor
+			// and docs/RESOLUTION.md).
+			sx, sy := c.cal.MapX(chk.X, rule.Anchor), c.cal.MapY(chk.Y, rule.Anchor)
 			if sx < 0 || sy < 0 || sx >= screen.Cols() || sy >= screen.Rows() {
 				continue
 			}
@@ -101,27 +98,21 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 		// Or if the rule has no pixel checks (pixelPassed will be true).
 		if rule.Template != "" && c.templates != nil && pixelPassed {
 			tpl, ok := c.templates.Get(rule.Template)
-			if ok {
-			if norm.Closed() || norm.Cols() < 1 || norm.Rows() < 1 {
-				norm = vision.ResizeToHeight(screen, 732)
-			}
-			// Resize can yield an empty/zero-dim Mat on a
-			// degenerate capture; never hand that to MatchTemplate
-			// (cgo segfault on a 0x0 search area). gocv.Mat.Empty()
-			// is unreliable for zero-size allocated Mats, so check
-			// dimensions explicitly.
-			if norm.Cols() < 2 || norm.Rows() < 2 {
-				continue
-			}
-				// Use the cached variant passing rule.Template as the
-				// cache key. The empty-name bypass in MatchMultiScale()
-				// rebuilds scaled template Mats inside the loop on
-				// every call; this fixes ~3× Mat allocs per matching
-				// rule per frame at 10 FPS in battle state.
+			if ok && tpl.Cols() > 1 && tpl.Rows() > 1 {
+				// Match on the RAW frame with the templates scaled by the
+				// display scale k: the reference templates were captured at
+				// k == 1, and a non-reference geometry renders HUD chrome k
+				// times larger. Sweeping ±10% around k is exactly the legacy
+				// 0.9-1.1 sweep when k == 1, so the reference geometry keeps
+				// its calibrated thresholds — and it removes the per-frame
+				// ResizeToHeight(732) that used to precede this match.
+				// The cached variant builds the scaled template Mats once per
+				// (name, window) and reuses them for the rest of the session.
+				k := c.cal.DisplayScale()
 				matches, err := vision.MatchMultiScaleROICached(
-					norm, tpl, rule.Template,
-					0.9, 1.1, 3, c.cfg.TemplateThreshold,
-					image.Rect(0, 0, norm.Cols(), norm.Rows()),
+					screen, tpl, rule.Template,
+					k*0.9, k*1.1, 3, c.cfg.TemplateThreshold,
+					image.Rect(0, 0, screen.Cols(), screen.Rows()),
 				)
 				if err == nil && len(matches) > 0 {
 					bestConf = matches[0].Confidence
@@ -197,12 +188,24 @@ type scoredState struct {
 }
 
 func (c *Classifier) buildRules() {
+	// Rule anchors: AnchorEdge (the default, omitted below) is HUD chrome that
+	// is laid out against the nearest screen edge — the village's top-right
+	// storage icons and bottom-left Attack! button, the in-battle resource
+	// icons and End Battle / Next buttons, the builder-base indicator. Those
+	// anchors keep their authoring geometry at any display size.
+	//
+	// AnchorCenter is centred content: full-screen art (loading, splash,
+	// search-map clouds), the battle-result panel and its Return Home button,
+	// and every dialog/overlay — all of which are laid out around the
+	// viewport centre, so their anchors follow the centre. Marker order and
+	// the per-rule reasoning live in docs/RESOLUTION.md.
 	baseRules := []StateRule{
 		{
 			State:    StateLoading,
 			Priority: 99,
 			Weight:   99,
 			Desc:     "loading screen",
+			Anchor:   AnchorCenter,
 			MinPass:  1,
 			Checks: []PixelCheck{
 				{324, 499, 0xCB, 0xCD, 0xD3, 15},
@@ -231,6 +234,7 @@ func (c *Classifier) buildRules() {
 			Priority: 98,
 			Weight:   98,
 			Desc:     "search map - clouds",
+			Anchor:   AnchorCenter,
 			MinPass:  1,
 			Checks: []PixelCheck{
 				{290, 366, 0xFF, 0xFF, 0xFF, 30},
@@ -256,6 +260,7 @@ func (c *Classifier) buildRules() {
 			Priority: 97,
 			Weight:   110,
 			Desc:     "post-boot tap-to-continue / collect splash (ТАР!)",
+			Anchor:   AnchorCenter,
 			// NOTE: shares priority 97 with StateWelcomeBack. They cannot
 			// co-fire in practice (WelcomeBack needs the red banner +
 			// btn_okay template; the splash has neither), and a splash
@@ -282,6 +287,7 @@ func (c *Classifier) buildRules() {
 			Priority: 95,
 			Weight:   100,
 			Desc:     "post-boot news splash with Continue button",
+			Anchor:   AnchorCenter,
 			// NOTE: shares priority 95 with StateObstacleDialog. They
 			// cannot co-fire (ObstacleDialog needs the light-gray dialog
 			// pixel at (324,499) + white corner + green button; the dark
@@ -305,6 +311,7 @@ func (c *Classifier) buildRules() {
 			Priority: 92,
 			Weight:   92,
 			Desc:     "CoC castle logo / connecting splash (fallback; observed castle-like frames were actually the news splash)",
+			Anchor:   AnchorCenter,
 			MinPass:  2,
 			Checks: []PixelCheck{
 				// Pink/red logo art (center)
@@ -320,6 +327,7 @@ func (c *Classifier) buildRules() {
 			Priority: 97,
 			Weight:   110,
 			Desc:     "welcome back chief popup",
+			Anchor:   AnchorCenter,
 			Template: "btn_okay",
 			MinPass:  1,
 			Checks: []PixelCheck{
@@ -334,6 +342,7 @@ func (c *Classifier) buildRules() {
 			Priority: 96,
 			Weight:   100,
 			Desc:     "gem purchase popup",
+			Anchor:   AnchorCenter,
 			MinPass:  3,
 			Checks: []PixelCheck{
 				// Original: 608,240 @ 1280x720 -> ref 860x732
@@ -347,6 +356,7 @@ func (c *Classifier) buildRules() {
 			Priority: 95,
 			Weight:   95,
 			Desc:     "blocking dialog",
+			Anchor:   AnchorCenter,
 			MinPass:  1,
 			Checks: []PixelCheck{
 				{324, 499, 0xCB, 0xCD, 0xD3, 15},
@@ -395,6 +405,7 @@ func (c *Classifier) buildRules() {
 			Priority: 88,
 			Weight:   88,
 			Desc:     "battle result stars (template + result-panel pixels)",
+			Anchor:   AnchorCenter,
 			Template: "btn_return_home",
 			MinPass:  2,
 			Checks: []PixelCheck{
@@ -429,6 +440,7 @@ func (c *Classifier) buildRules() {
 			Priority: 99,
 			Weight:   99,
 			Desc:     "quit confirm dialog (Cancel / Okay)",
+			Anchor:   AnchorCenter,
 			MinPass:  2,
 			Checks: []PixelCheck{
 				// Green Okay button
@@ -444,6 +456,7 @@ func (c *Classifier) buildRules() {
 			Priority: 98,
 			Weight:   98,
 			Desc:     "connection lost dialog (TRY AGAIN / RETURN HOME)",
+			Anchor:   AnchorCenter,
 			MinPass:  2,
 			Checks: []PixelCheck{
 				// TRY AGAIN button text (light blue-gray)
@@ -459,6 +472,7 @@ func (c *Classifier) buildRules() {
 			Priority: 85,
 			Weight:   85,
 			Desc:     "army overview tab open",
+			Anchor:   AnchorCenter,
 			// MinPass was 1, but the brown pixel check at (479,149) also
 			// passes on ordinary main-village frames (observed live:
 			// village (479,149) = RGB(61,53,62), within tolerance of
@@ -479,6 +493,7 @@ func (c *Classifier) buildRules() {
 			Priority: 80,
 			Weight:   80,
 			Desc:     "shield info overlay",
+			Anchor:   AnchorCenter,
 			MinPass:  1,
 			Checks: []PixelCheck{
 				{455, 158, 0xFF, 0x8D, 0x95, 15},
@@ -489,6 +504,7 @@ func (c *Classifier) buildRules() {
 			Priority: 75,
 			Weight:   75,
 			Desc:     "chat tab visible",
+			Anchor:   AnchorCenter,
 			MinPass:  2,
 			Checks: []PixelCheck{
 				{264, 295, 0xF3, 0xAB, 0x28, 15},
@@ -533,6 +549,7 @@ func (c *Classifier) buildRules() {
 			Priority: 50,
 			Weight:   50,
 			Desc:     "return home button",
+			Anchor:   AnchorCenter,
 			MinPass:  1,
 			Checks: []PixelCheck{
 				{290, 576, 0x6C, 0xBB, 0x1F, 15},
@@ -543,6 +560,7 @@ func (c *Classifier) buildRules() {
 			Priority: 50,
 			Weight:   50,
 			Desc:     "settings page",
+			Anchor:   AnchorCenter,
 			MinPass:  1,
 			Checks: []PixelCheck{
 				{556, 565, 0xFF, 0xFF, 0xFF, 10},
@@ -575,7 +593,9 @@ func (c *Classifier) buildRules() {
 		},
 	}
 
-	// We no longer scale rules because we normalize the screen height in ClassifyState
+	// Rules are kept in reference coordinates: ClassifyState maps each check
+	// through the live Calibration (see StateRule.Anchor), so the authored
+	// numbers stay the single source of truth for every geometry.
 	c.rules = append(c.rules, baseRules...)
 
 	sort.Slice(c.rules, func(i, j int) bool {

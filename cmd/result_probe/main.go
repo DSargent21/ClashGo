@@ -48,15 +48,8 @@ func main() {
 
 	fmt.Printf("image: %dx%d\n", img.Cols(), img.Rows())
 
-	cal := &game.Calibration{
-		PhysicalW:  img.Cols(),
-		PhysicalH:  img.Rows(),
-		ScaleX:     float64(img.Cols()) / float64(game.RefWidth),
-		ScaleY:     float64(img.Rows()) / float64(game.RefHeight),
-		MidOffsetY: (img.Rows() - game.RefHeight) / 2,
-		BottomOffY: img.Rows() - game.RefHeight,
-		Verified:   true,
-	}
+	cal := game.NewCalibration(img.Cols(), img.Rows())
+	cal.Verified = true
 
 	// Classify first so we know what state the bot sees in this frame.
 	classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), logger)

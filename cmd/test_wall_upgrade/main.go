@@ -132,15 +132,8 @@ func main() {
 		fmt.Printf("\n❌ ScreenSize: %v\n", err)
 		os.Exit(1)
 	}
-	cal := &game.Calibration{
-		PhysicalW:  w,
-		PhysicalH:  h,
-		ScaleX:     float64(w) / float64(game.RefWidth),
-		ScaleY:     float64(h) / float64(game.RefHeight),
-		MidOffsetY: (h - game.RefHeight) / 2,
-		BottomOffY: h - game.RefHeight,
-		Verified:   true,
-	}
+	cal := game.NewCalibration(w, h)
+	cal.Verified = true
 	ts, err := game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
 		fmt.Printf("\n❌ NewTemplateStore: %v\n", err)

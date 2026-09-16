@@ -154,15 +154,17 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("boot returned invalid screen size %dx%d; cannot calibrate", w, h)
 	}
-	cal := &game.Calibration{
-		PhysicalW:  w,
-		PhysicalH:  h,
-		ScaleX:     float64(w) / float64(game.RefWidth),
-		ScaleY:     float64(h) / float64(game.RefHeight),
-		MidOffsetY: (h - game.RefHeight) / 2,
-		BottomOffY: h - game.RefHeight,
-		Verified:   true,
-	}
+	// NewCalibration derives the display scale (K) from the live geometry as
+	// well as the per-axis ratios; at 860x732 every mapping stays the
+	// identity, at other geometries the HUD/world anchors follow the layout
+	// the game actually renders (see game.Calibration and docs/RESOLUTION.md).
+	cal := game.NewCalibration(w, h)
+	cal.Verified = true
+	log.Info().
+		Int("screen_w", w).
+		Int("screen_h", h).
+		Float64("display_scale", cal.DisplayScale()).
+		Msg("calibration built")
 
 	packageName := cfg.Device.PackageName
 	if packageName == "" {

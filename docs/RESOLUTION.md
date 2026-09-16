@@ -56,11 +56,38 @@ Two findings drive the migration plan:
    bottom-anchored HUD point at ref y 695 maps to y≈672 under the edge model
    but to y≈788 (off-screen) under the centred world model.
 
-`k` tracks the **screen diagonal ratio**:
-`k ≈ √(W²+H²) / √(860²+732²)` — 1.30 predicted vs 1.325 measured at
-1280×720, 1.50 at 1290×1098, 0.75 at 645×549. That is consistent with the
-game keeping a constant *physical* UI size: the reported screen size in
-inches never changes, so the pixel-per-inch ratio is the diagonal ratio.
+`k` tracks the **screen diagonal ratio**: `k ≈ √(W²+H²) / √(860²+732²)`.
+That is consistent with the game keeping a constant *physical* UI size: the
+reported screen size in inches never changes, so the pixel-per-inch ratio is
+the diagonal ratio. It is exact for aspect-preserving geometries and within a
+few percent elsewhere — measured vs predicted:
+
+| Geometry | `k` measured | diagonal-ratio prediction | error |
+| --- | --- | --- | --- |
+| 860×732 (reference) | 1.000 | 1.000 | by construction |
+| 1280×720 | 1.325 (world) / 1.36 (HUD icon, conf 0.97) | 1.3006 | +1.9% / +4.6% |
+| 1600×900 | 1.68 | 1.626 | +3.3% |
+| 1920×1080 | 2.00 | 1.951 | +2.5% |
+| 1290×1098 | 1.500 | 1.500 | 0% |
+| 645×549 | ≈0.70–0.75 | 0.750 | 0 to −6.7% |
+
+The residual is the whole reason the migration is not a one-line change: a 3%
+scale error moves a reference point at x≈800 by ~24 px, and the classifier's
+probes are single pixels with a ±25–50 channel distance. The reference
+geometry is exact, so its calibrated thresholds are unaffected — but a
+*predicted* `k` at a new geometry cannot be trusted for 1-px probes. Two
+candidates, both compatible with the measurements: the game renders from a
+fixed 960×540 design canvas (`k = diag(screen)/diag(960,540)`: predicts 1.3325
+at 1280×720 and exactly 2.0 at 1920×1080), and the HUD may scale slightly more
+than the world (1.36 vs 1.325). Measure, don't predict:
+
+* preferred — measure `k` live at boot by template-matching a known HUD
+template (e.g. `btn_attack` in the village) over a fine scale sweep around the
+prediction, and store the result in `Calibration.K`;
+* or probe a small neighbourhood (±2 px) at non-reference geometries instead
+of a single pixel, which absorbs the residual — but that weakens rule
+discrimination and must be re-validated against the false-positive cases the
+anchors were tightened for (`ArmyCamp`, `StateBattleEnd`).
 
 Also measured: **`k` does not depend on density.** 1280×720 with density
 240, 320 and 480 (with a full CoC restart in between, so the value is not
@@ -130,6 +157,45 @@ Aspect-preserving geometries are the cheap case: at 1290×1098 and 645×549
 working unchanged — verified live for classification. A "cosmetic" resolution
 change that keeps the aspect can therefore ship without recalibration, but it
 does not move the display onto a real device profile either.
+
+## Migration progress
+
+Landed (reference geometry verified unchanged, live and in the test suite):
+
+* `Calibration.K` (display scale) plus `MapX`/`MapY`/`MapPoint`/`MapRect`
+  implementing both anchors, and `NewCalibration` as the single constructor
+  (zero-value and 860×732 calibrations are the identity, so every existing
+  caller and test is unaffected);
+* `StateRule.Anchor` with per-rule semantics — `AnchorEdge` for HUD chrome
+  (`StateBattle`, `StateMainVillage`, `StateBuilderBase`, `StateFindMatch`,
+  `StateArmySelection`), `AnchorCenter` for centred overlays and world/full-
+  screen art (result panel, every dialog, splash chain, search map, army
+  overview, chat, shield, settings, loading);
+* `ClassifyState` maps each probe through the live calibration and matches
+  templates on the **raw** frame with the scaled-template cache, sweeping
+  `k×0.9 .. k×1.1` — identical to the old `0.9–1.1` sweep when `k == 1`, and
+  it removes the per-frame `ResizeToHeight(732)`;
+* `cmd/screendump -anchors` prints every rule anchor under both models with
+  the sampled colour and a hit/miss verdict, which is the verification tool
+  for the rest of the migration.
+
+Verified live at 1280×720: the mapped anchor positions land within ~3 px of
+the elements' measured positions (top-right resource icons matched at
+`(1240,46)` and `(1240,127)` against mapped `(1241,46)` and `(1241,124)`, at
+confidences 0.92 and 0.97). What that same run also showed is the failure mode
+to fix next: with the predicted `k`, the elixir-icon probe sampled 3 px
+off and fell outside its ±40 tolerance while every position was structurally
+right.
+
+Still to do: measure `k` live at boot; re-validate each `AnchorCenter` verdict
+against a live frame of its own state (village, boot splash, search, battle,
+result, army selection, chest are all reachable on demand); migrate the
+remaining consumers (`internal/bot` button ROIs, `internal/game/loot.go`
+result panel + rois, `internal/game/chestdismiss.go`, `internal/game/navigator.go`,
+`internal/attack` slot bar / troop counter / hero manager / spell deployer /
+red line / deploy geometry); re-check the world band clipping for deploy
+points outside `ref y ∈ [94, 638]`; and finish with a real attack run, since
+that is the only check that covers the deploy mapping.
 
 ## Measuring
 

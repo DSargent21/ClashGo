@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Display-geometry migration, phase 1 — resolution-independent calibration**
+  (`internal/game/calibration.go`, `internal/game/classifier.go`).
+  `Calibration` now carries the game's display scale `K` and maps reference
+  coordinates through the layout the game actually renders: `AnchorEdge` for
+  HUD chrome (buttons, bars, top-left resource icons), which keeps its
+  distance to the nearest screen edge, and `AnchorCenter` for centred
+  overlays, world coordinates and full-screen art. `ClassifyState` maps every
+  probe through the live calibration and matches templates on the raw frame
+  with the scaled-template cache, sweeping `k×0.9 .. k×1.1` — identical to
+  the previous `0.9–1.1` sweep at the reference geometry (verified live: same
+  state, same score, same per-rule evidence), while a scaled geometry now
+  matches instead of silently failing. The per-frame
+  `ResizeToHeight(732)` is gone. `cmd/screendump -anchors` dumps every rule
+  anchor under both models with the sampled colour and a hit/miss verdict —
+  the verification instrument for the remaining phases.
 - **`cmd/resprobe`** — measures how the CoC HUD and world scale between two
   framebuffer geometries by template-matching a reference patch over a grid
   of (scaleX, scaleY) pairs. It is the instrument behind
@@ -13,14 +28,20 @@ All notable changes to this project will be documented in this file.
   *uniformly about the viewport centre* by the screen-diagonal ratio; the HUD
   is edge-anchored at the same scale; density is irrelevant), why the current
   single-affine reference model cannot survive an aspect change, and the
-  step-by-step migration plan for adopting a real 720p phone geometry.
+  step-by-step migration plan for adopting a real 720p phone geometry, plus
+the phase-1 status (what is landed, what is verified, what remains).
 
 ### Notes
-- Adopting `1280×720` requires the calibration work in
-  `docs/RESOLUTION.md` — a config flip alone misplaces every classifier pixel
-  anchor (measured live: `MainVillage` drops 2/7 → 1/7 passing anchors, score
-  260 → 160) and pushes the template scale outside the `0.9–1.1`
-  multi-scale window.
+- The device geometry is **unchanged** (860×732 @320) until the migration's
+  remaining consumers are done. A config flip alone is not enough: it
+  misplaces every classifier pixel anchor (measured live: `MainVillage` drops
+  2/7 → 1/7 passing anchors, score 260 → 160) and pushes the template scale
+  outside the previous `0.9–1.1` window.
+- Measuring `k` live at boot is the next required step: the diagonal-ratio
+  prediction is 2–5% off at non-reference geometries, which is enough to miss
+  a 1-pixel probe even when the anchor is structurally correct (same run: the
+  top-right icon anchors landed within 3 px at confidences 0.92/0.97, while a
+  third probe 3 px off fell outside its ±40 tolerance).
 
 ## [0.5.0-beta] - 2026-09-16
 
