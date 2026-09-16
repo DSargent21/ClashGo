@@ -511,7 +511,7 @@ func statusSymbol(ok bool) string {
 // dismissHelper mirrors Bot.dismissSelection — taps a neutral
 // bottom-left area to clear any active selection menus.
 func dismissHelper(client *adb.Client, cal *game.Calibration, logger zerolog.Logger) {
-	x, y := cal.ScaleRef(50, 450)
+	x, y := cal.Centre(50, 450)
 	_ = client.Tap(x, y)
 	time.Sleep(500 * time.Millisecond)
 	logger.Debug().Int("x", x).Int("y", y).Msg("dismiss tap")

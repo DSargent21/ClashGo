@@ -17,8 +17,13 @@ import (
 )
 
 type LootRecognizer struct {
-	cal            *Calibration
-	templates      *TemplateStore
+	cal       *Calibration
+	templates *TemplateStore
+	// scale is the display scale, used for every length threshold in the
+	// result-panel OCR path (glyph heights/widths, line gaps, tolerances):
+	// reference distances grow with the display scale on both axes, not with a
+	// per-axis framebuffer ratio.
+	scale          float64
 	digitTemplates []gocv.Mat
 	// scaledDigitCache holds per-(w,h) pre-scaled digit templates so
 	// matchDigit does not re-Resize every template for every blob.
@@ -53,10 +58,14 @@ type detectedDigit struct {
 func NewLootRecognizer(cal *Calibration, ts *TemplateStore, logger zerolog.Logger) *LootRecognizer {
 	lr := &LootRecognizer{
 		cal:              cal,
+		scale:            1.0,
 		templates:        ts,
 		digitTemplates:   make([]gocv.Mat, 10),
 		scaledDigitCache: make(map[string][]gocv.Mat),
 		logger:           logger.With().Str("component", "loot_recognizer").Logger(),
+	}
+	if cal != nil {
+		lr.scale = cal.DisplayScale()
 	}
 	lr.prepareDigitTemplates()
 	return lr
@@ -290,8 +299,9 @@ func (lr *LootRecognizer) readStars(screen gocv.Mat, starPoints []image.Point) i
 // white/gold pixels to be a lit star (>= 5 of a 10x10 ref patch; the
 // classic star icons fill most of their footprint).
 func (lr *LootRecognizer) starAtPoint(screen gocv.Mat, pt image.Point) bool {
-	sx := int(float64(pt.X) * lr.cal.ScaleX)
-	sy := int(float64(pt.Y) * lr.cal.ScaleY)
+	// Result-panel content is a centred overlay, so its points and ROIs are
+	// mapped around the viewport centre (docs/RESOLUTION.md).
+	sx, sy := lr.cal.Centre(pt.X, pt.Y)
 	r := lr.safeRect(screen, image.Rect(sx-5, sy-5, sx+5, sy+5))
 	if r.Empty() || r.Dx() < 4 || r.Dy() < 4 {
 		return false
@@ -320,12 +330,7 @@ func (lr *LootRecognizer) starAtPoint(screen gocv.Mat, pt image.Point) bool {
 // pixels inside the star band and maps its reference-resolution area to
 // 1-3 stars (0 when no filled emblem is present).
 func (lr *LootRecognizer) starClusterCount(screen gocv.Mat) int {
-	roi := lr.safeRect(screen, image.Rect(
-		int(float64(starBand.Min.X)*lr.cal.ScaleX),
-		int(float64(starBand.Min.Y)*lr.cal.ScaleY),
-		int(float64(starBand.Max.X)*lr.cal.ScaleX),
-		int(float64(starBand.Max.Y)*lr.cal.ScaleY),
-	))
+	roi := lr.safeRect(screen, lr.cal.CentreRect(starBand))
 	if roi.Empty() {
 		return 0
 	}
@@ -371,8 +376,10 @@ func (lr *LootRecognizer) starClusterCount(screen gocv.Mat) int {
 	}
 
 	// Normalize to reference resolution so the threshold/scale constants
-	// hold across emulator sizes.
-	refArea := largest / (lr.cal.ScaleX * lr.cal.ScaleY)
+	// hold across emulator sizes: an area scales with the display scale
+	// squared, not with the product of two per-axis ratios.
+	k := lr.cal.DisplayScale()
+	refArea := largest / (k * k)
 	if refArea < starClusterMinRef {
 		return 0
 	}
@@ -452,8 +459,8 @@ func (lr *LootRecognizer) captureBattleColumn(screen gocv.Mat, zoneRef image.Rec
 		}
 		// Pad the detected line so descenders and anti-aliased glyph edges
 		// survive readRow's binarization; readRow re-bounds the text itself.
-		padY := int(6 * lr.cal.ScaleY)
-		padX := int(4 * lr.cal.ScaleX)
+		padY := int(lr.cal.Length(6))
+		padX := int(lr.cal.Length(4))
 		r := lr.safeRect(screen, image.Rect(rows[i].Min.X-padX, rows[i].Min.Y-padY, rows[i].Max.X+padX, rows[i].Max.Y+padY))
 		values[i] = lr.readRow(screen, r)
 		if lr.Debug {
@@ -498,12 +505,8 @@ func (lr *LootRecognizer) detectBattleTextLines(screen gocv.Mat, zoneRef image.R
 	if zoneRef.Empty() {
 		return nil
 	}
-	zone := lr.safeRect(screen, image.Rect(
-		int(float64(zoneRef.Min.X)*lr.cal.ScaleX),
-		int(float64(zoneRef.Min.Y)*lr.cal.ScaleY),
-		int(float64(zoneRef.Max.X)*lr.cal.ScaleX),
-		int(float64(zoneRef.Max.Y)*lr.cal.ScaleY),
-	))
+	// The battle-loot / bonus columns are on the centred result panel.
+	zone := lr.safeRect(screen, lr.cal.CentreRect(zoneRef))
 	if zone.Empty() || zone.Dx() < 10 || zone.Dy() < 10 {
 		return nil
 	}
@@ -540,10 +543,10 @@ func (lr *LootRecognizer) detectBattleTextLines(screen gocv.Mat, zoneRef image.R
 		w := int(stats.GetIntAt(i, int(gocv.CC_STAT_WIDTH)))
 		h := int(stats.GetIntAt(i, int(gocv.CC_STAT_HEIGHT)))
 		area := int(stats.GetIntAt(i, int(gocv.CC_STAT_AREA)))
-		if h < int(battleGlyphMinH*lr.cal.ScaleY) || h > int(battleGlyphMaxH*lr.cal.ScaleY) {
+		if h < int(battleGlyphMinH*lr.scale) || h > int(battleGlyphMaxH*lr.scale) {
 			continue
 		}
-		if w < int(battleGlyphMinW*lr.cal.ScaleX) || w > int(battleGlyphMaxW*lr.cal.ScaleX) {
+		if w < int(battleGlyphMinW*lr.scale) || w > int(battleGlyphMaxW*lr.scale) {
 			continue
 		}
 		if area < battleGlyphMinArea || float64(area)/float64(w*h) < battleGlyphMinFill {
@@ -570,7 +573,7 @@ func (lr *LootRecognizer) detectBattleTextLines(screen gocv.Mat, zoneRef image.R
 		cy := float64(g.y + g.h/2)
 		if len(lines) > 0 {
 			last := &lines[len(lines)-1]
-			if math.Abs(cy-last.sumCY/float64(len(last.glyphs))) <= float64(battleLineTolY)*lr.cal.ScaleY {
+			if math.Abs(cy-last.sumCY/float64(len(last.glyphs))) <= float64(battleLineTolY)*lr.scale {
 				last.glyphs = append(last.glyphs, g)
 				last.sumCY += cy
 				continue
@@ -588,7 +591,7 @@ func (lr *LootRecognizer) detectBattleTextLines(screen gocv.Mat, zoneRef image.R
 		// Split into runs by horizontal gap; the longest run is the digit
 		// row. Icon shine / panel-tab glyphs sitting near the text line end
 		// up in their own short run and are dropped.
-		maxGap := float64(battleRunGapX) * lr.cal.ScaleX
+		maxGap := float64(battleRunGapX) * lr.scale
 		runs := [][]glyph{{ln.glyphs[0]}}
 		for _, g := range ln.glyphs[1:] {
 			last := runs[len(runs)-1]
@@ -667,17 +670,17 @@ func (lr *LootRecognizer) ReadLootDetailed(screen gocv.Mat) (LootReport, error) 
 				// Anchor to icon. Starting ROI directly inside the icon area
 				// because readRow uses Color/Saturation to skip the actual icon bits.
 				rect := image.Rect(
-					maxLoc.X+int(4*lr.cal.ScaleX),
-					maxLoc.Y-int(5*lr.cal.ScaleY),
-					maxLoc.X+int(450*lr.cal.ScaleX),
-					maxLoc.Y+tpl.Rows()+int(5*lr.cal.ScaleY),
+					maxLoc.X+int(4*lr.scale),
+					maxLoc.Y-int(5*lr.scale),
+					maxLoc.X+int(450*lr.scale),
+					maxLoc.Y+tpl.Rows()+int(5*lr.scale),
 				)
 				results[i] = lr.readRow(screen, rect)
 				continue
 			}
 		}
 		// Fallback ROIs: Inclusive X1=40 to catch the very first digit
-		rect := image.Rect(int(40*lr.cal.ScaleX), int(float64(ic.y1)*lr.cal.ScaleY), int(450*lr.cal.ScaleX), int(float64(ic.y2)*lr.cal.ScaleY))
+		rect := image.Rect(int(40*lr.scale), int(float64(ic.y1)*lr.scale), int(450*lr.scale), int(float64(ic.y2)*lr.scale))
 		results[i] = lr.readRow(screen, rect)
 	}
 
@@ -762,10 +765,10 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	var detected []detectedDigit
 	for i := 0; i < contours.Size(); i++ {
 		rect := gocv.BoundingRect(contours.At(i))
-		minH := int(7*lr.cal.ScaleY) * 5
-		maxH := int(40*lr.cal.ScaleY) * 5
-		minW := int(1*lr.cal.ScaleX) * 5
-		maxW := int(40*lr.cal.ScaleX) * 5
+		minH := int(7*lr.scale) * 5
+		maxH := int(40*lr.scale) * 5
+		minW := int(1*lr.scale) * 5
+		maxW := int(40*lr.scale) * 5
 
 		if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW {
 			continue
@@ -829,7 +832,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		var clusters [][]detectedDigit
 		if len(cleaned) > 0 {
 			current := []detectedDigit{cleaned[0]}
-			maxGap := int(80 * lr.cal.ScaleX)
+			maxGap := int(80 * lr.scale)
 			for i := 1; i < len(cleaned); i++ {
 				gap := cleaned[i].rect.Min.X - cleaned[i-1].rect.Max.X
 				if gap <= maxGap {
@@ -920,8 +923,8 @@ func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
 
 	// Thin vertical blobs are almost always '1'
 	if bestDigit == -1 || maxConf < 0.55 {
-		minH1 := int(12 * lr.cal.ScaleY)
-		maxW1 := int(6 * lr.cal.ScaleX)
+		minH1 := int(12 * lr.scale)
+		maxW1 := int(6 * lr.scale)
 		if bw >= 1 && bw <= maxW1 && bh >= minH1 { // Narrower and taller
 			fill := float64(gocv.CountNonZero(bin)) / float64(bw*bh)
 			if fill > 0.65 {

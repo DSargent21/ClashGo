@@ -624,8 +624,8 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 						match = findMatch(lastBar, t)
 						if match != nil {
 							if strings.EqualFold(unitName, "grand warden") {
-								shiftX := int(-6.0 * e.cal.ScaleX)
-								shiftY := int(-16.0 * e.cal.ScaleY)
+								shiftX := -int(e.cal.Length(6))
+								shiftY := -int(e.cal.Length(16))
 								match.Point.X += shiftX
 								match.Point.Y += shiftY
 								e.logger.Info().Int("orig_x", match.Point.X-shiftX).Int("orig_y", match.Point.Y-shiftY).
@@ -928,7 +928,7 @@ func (e *Executor) IsSlotEmpty(screen gocv.Mat, x, y int) bool {
 }
 
 func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
-	size := int(25.0 * e.cal.ScaleX)
+	size := int(e.cal.Length(25))
 	ratio := slotActivity(screen, x, y, 860, size)
 	isEmpty := ratio < 0.08
 
@@ -942,7 +942,7 @@ func (e *Executor) isSlotEmpty(screen gocv.Mat, x, y int) bool {
 }
 
 func (e *Executor) getSlotActivityRatio(screen gocv.Mat, x, y int) float64 {
-	size := int(25.0 * e.cal.ScaleX)
+	size := int(e.cal.Length(25))
 	return slotActivity(screen, x, y, 860, size)
 }
 
@@ -953,7 +953,7 @@ func (e *Executor) GetSlotActivityRatio(screen gocv.Mat, x, y int) float64 {
 
 // GetSlotY returns the Y coordinate used for slot detection.
 func (e *Executor) GetSlotY(h, mBarY int) int {
-	slotY := mBarY + int(38.0*e.cal.ScaleY)
+	slotY := mBarY + int(e.cal.Length(38))
 	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotY      int `json:"slot_y"`
@@ -1094,7 +1094,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 
 					for j := 0; j < 4; j++ {
 						angle := float64(j) * 2.0 * math.Pi / 4.0
-						radius := 18.0 * e.cal.ScaleX
+						radius := e.cal.Length(18)
 						tx := targetPt.X + int(radius*math.Cos(angle))
 						ty := targetPt.Y + int(radius*math.Sin(angle))
 						jPt := e.addJitter(image.Pt(tx, ty), 6)
@@ -1165,7 +1165,7 @@ func (e *Executor) deployUnit(unit strategy.Unit, match *vision.Match, pCfg Prec
 				var offset image.Point
 				if maxSpells > 1 {
 					angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
-					radius := 18.0 * e.cal.ScaleX
+					radius := e.cal.Length(18)
 					offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
 				}
 				pt := image.Pt(spellTarget.X+offset.X, spellTarget.Y+offset.Y)
@@ -1523,10 +1523,11 @@ func (e *Executor) EndBattle() error {
 		pinpoint = true
 	}
 
-	ex, ey := e.cal.ScaleRef(34, 588)
+	// End Battle is bottom-left HUD chrome (measured at 1280x720: the bottom
+	// HUD keeps its bottom margin, so a centred anchor would be 125 px low).
+	ex, ey := e.cal.Hud(34, 588)
 	if pinpoint {
-		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
-		ex, ey = int(float64(sCfg.EndButton.X)*scaleX), int(float64(sCfg.EndButton.Y)*scaleY)
+		ex, ey = e.cal.AnchorPoint(sCfg.EndButton.X, sCfg.EndButton.Y, game.AnchorEdge)
 		e.logger.Info().Int("x", ex).Int("y", ey).Msg("using pinpoint End Battle button")
 	} else {
 		screen, err := e.client.CaptureToMat()
@@ -1538,7 +1539,7 @@ func (e *Executor) EndBattle() error {
 				{X: 112, Y: 408},
 			}
 			for _, pos := range positions {
-				sx, sy := e.cal.ScaleRef(pos.X, pos.Y)
+				sx, sy := e.cal.Hud(pos.X, pos.Y)
 				if sx >= 0 && sy >= 0 && sx < screen.Cols() && sy < screen.Rows() {
 					b := screen.GetUCharAt(sy, sx*3)
 					g := screen.GetUCharAt(sy, sx*3+1)
@@ -1557,10 +1558,10 @@ func (e *Executor) EndBattle() error {
 	}
 	time.Sleep(120 * time.Millisecond)
 
-	okX, okY := e.cal.ScaleRef(520, 430)
+	// The confirmation popup is a centred dialog.
+	okX, okY := e.cal.Centre(520, 430)
 	if pinpoint {
-		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
-		okX, okY = int(float64(sCfg.ConfirmBtn.X)*scaleX), int(float64(sCfg.ConfirmBtn.Y)*scaleY)
+		okX, okY = e.cal.AnchorPoint(sCfg.ConfirmBtn.X, sCfg.ConfirmBtn.Y, game.AnchorCenter)
 		e.logger.Info().Int("x", okX).Int("y", okY).Msg("using pinpoint Confirm button")
 	}
 	if err := e.client.TapHuman(okX, okY, 5.0); err != nil {
@@ -1571,7 +1572,8 @@ func (e *Executor) EndBattle() error {
 }
 
 func (e *Executor) ReturnHome() error {
-	hx, hy := e.cal.ScaleRef(430, 566)
+	// Return Home sits on the centred battle-result panel.
+	hx, hy := e.cal.Centre(430, 566)
 	if err := e.client.TapHuman(hx, hy, 5.0); err != nil {
 		return err
 	}
@@ -1932,7 +1934,7 @@ type TroopSlot struct {
 
 func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBarY int) []TroopSlot {
 	var activeXs []int
-	slotY := mBarY + int(38.0*e.cal.ScaleY)
+	slotY := mBarY + int(e.cal.Length(38))
 
 	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
@@ -1959,8 +1961,8 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	if len(activeXs) == 0 {
 		e.logger.Info().Msg("manual calibration missing/empty, falling back to grid detection")
-		step := int(75.0 * e.cal.ScaleX)
-		startX := int(40.0 * e.cal.ScaleX)
+		step := int(e.cal.Length(75))
+		startX := int(e.cal.Length(40))
 		for x := startX; x < w-20; x += step {
 			if !e.isSlotEmpty(screen, x, slotY) {
 				activeXs = append(activeXs, x)
@@ -2043,7 +2045,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 	}
 	if firstSpellX == 9999 {
 
-		firstSpellX = lastHeroX + int(70.0*e.cal.ScaleX)
+		firstSpellX = lastHeroX + int(e.cal.Length(70))
 	}
 
 	var slots []TroopSlot
@@ -2070,9 +2072,9 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 			}
 		}
 
-		if x >= firstSpellX-int(30.0*e.cal.ScaleX) {
+		if x >= firstSpellX-int(e.cal.Length(30)) {
 			cat = "Spell"
-		} else if x >= firstHeroX-int(30.0*e.cal.ScaleX) && x <= lastHeroX+int(30.0*e.cal.ScaleX) {
+		} else if x >= firstHeroX-int(e.cal.Length(30)) && x <= lastHeroX+int(e.cal.Length(30)) {
 			cat = "Hero"
 		} else if isSiege {
 			cat = "Siege"
@@ -2088,7 +2090,7 @@ func (e *Executor) ParseLayout(screen gocv.Mat, pCfg PrecisionConfig, w, h, mBar
 
 	if len(slots) > 0 {
 		lastIdx := len(slots) - 1
-		if slots[lastIdx].Category == "Spell" && slots[lastIdx].X > w-int(100.0*e.cal.ScaleX) {
+		if slots[lastIdx].Category == "Spell" && slots[lastIdx].X > w-int(e.cal.Length(100)) {
 			slots[lastIdx].Category = "CC"
 			e.logger.Info().Int("x", slots[lastIdx].X).Msg("classified last slot as CC")
 		}
@@ -2101,8 +2103,8 @@ func (e *Executor) addJitter(pt image.Point, maxPixels int) image.Point {
 	if maxPixels <= 0 {
 		return pt
 	}
-	jx := int(float64(maxPixels) * e.cal.ScaleX)
-	jy := int(float64(maxPixels) * e.cal.ScaleY)
+	jx := int(e.cal.Length(float64(maxPixels)))
+	jy := jx
 	if jx <= 0 {
 		jx = 1
 	}

@@ -364,7 +364,8 @@ func (n *Navigator) dismissChestRewardWithCfg(cfg *ChestROISchema, continueRect 
 func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
 	// 1. tap Skip (uniform-random within the configured rect).
 	sx, sy := randomPointInRect(*cfg.SkipButton)
-	skipX, skipY := n.cal.ScaleRef(sx, sy)
+	// Chest flow buttons are on centred overlays (docs/RESOLUTION.md).
+	skipX, skipY := n.cal.Centre(sx, sy)
 	if err := n.client.TapRandomized(skipX, skipY); err != nil {
 		n.logger.Warn().Err(err).Msg("chest: Skip tap failed; continuing")
 	}
@@ -374,7 +375,7 @@ func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
 
 	// 3. tap Confirm Yes.
 	cx, cy := randomPointInRect(*cfg.ConfirmYesButton)
-	confirmX, confirmY := n.cal.ScaleRef(cx, cy)
+	confirmX, confirmY := n.cal.Centre(cx, cy)
 	if err := n.client.TapRandomized(confirmX, confirmY); err != nil {
 		n.logger.Warn().Err(err).Msg("chest: Confirm tap failed; continuing")
 	}
@@ -470,7 +471,7 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 	for attempt := 0; attempt < chestContinueMaxTaps; attempt++ {
 		time.Sleep(ChestAnimSettle)
 		rx, ry := randomPointInRect(*continueRect)
-		cx, cy := n.cal.ScaleRef(rx, ry)
+		cx, cy := n.cal.Centre(rx, ry)
 		if err := n.client.TapRandomized(cx, cy); err != nil {
 			n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
 		}
@@ -607,7 +608,7 @@ func (n *Navigator) chestTapScanLoop(cfg *ChestROISchema, maxIter int) error {
 		cxRef, cyRef := (active.X1+active.X2)/2, (active.Y1+active.Y2)/2
 
 		for t := 0; t < hammer; t++ {
-			sx, sy := n.cal.ScaleRef(cxRef, cyRef)
+			sx, sy := n.cal.Centre(cxRef, cyRef)
 			if err := n.client.TapRandomized(sx, sy); err != nil {
 				n.logger.Warn().Err(err).Int("iter", i).Int("hammer", t).
 					Msg("chest hammer tap failed; continuing")

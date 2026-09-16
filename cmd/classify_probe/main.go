@@ -67,7 +67,7 @@ func main() {
 	for _, rule := range classifier.GetRules() {
 		passed := 0
 		for _, chk := range rule.Checks {
-			sx, sy := cal.ScaleRef(chk.X, chk.Y)
+			sx, sy := cal.Hud(chk.X, chk.Y)
 			if sx < 0 || sy < 0 || sx >= img.Cols() || sy >= img.Rows() {
 				continue
 			}

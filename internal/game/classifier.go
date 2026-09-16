@@ -57,12 +57,13 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 	for _, rule := range c.rules {
 		passed := 0
 		for _, chk := range rule.Checks {
-			// Reference coordinates -> live geometry. HUD chrome keeps its
-			// distance to the nearest screen edge, centred overlays and
-			// world coordinates keep their distance to the centre; both are
-			// the identity at the reference geometry (see Calibration.Anchor
-			// and docs/RESOLUTION.md).
-			sx, sy := c.cal.MapX(chk.X, rule.Anchor), c.cal.MapY(chk.Y, rule.Anchor)
+			// Reference coordinates -> live geometry. A HUD rule's probe sits on
+			// a widget the game anchors to the screen, so each axis follows the
+			// edge (or the viewport centre) that widget is anchored to; an
+			// overlay/world rule's probe follows the viewport centre on both
+			// axes. Both are the identity at the reference geometry (see
+			// Calibration.Hud / Centre and docs/RESOLUTION.md).
+			sx, sy := c.cal.AnchorPoint(chk.X, chk.Y, rule.Anchor)
 			if sx < 0 || sy < 0 || sx >= screen.Cols() || sy >= screen.Rows() {
 				continue
 			}
@@ -279,7 +280,7 @@ func (c *Classifier) buildRules() {
 			// co-fire in practice (WelcomeBack needs the red banner +
 			// btn_okay template; the splash has neither), and a splash
 			// winning the tie is the desired outcome.
-			MinPass:  2,
+			MinPass: 2,
 			Checks: []PixelCheck{
 				// Beige "ТАР!" prompt text (two points inside the glyphs,
 				// sampled at 0 distance on the live splash; the strongest
@@ -306,7 +307,7 @@ func (c *Classifier) buildRules() {
 			// cannot co-fire (ObstacleDialog needs the light-gray dialog
 			// pixel at (324,499) + white corner + green button; the dark
 			// news splash has none of those).
-			MinPass:  2,
+			MinPass: 2,
 			Checks: []PixelCheck{
 				// Light-green Continue button
 				{403, 535, 0xBE, 0xEA, 0x8C, 40},
@@ -423,14 +424,20 @@ func (c *Classifier) buildRules() {
 			Template: "btn_return_home",
 			MinPass:  2,
 			Checks: []PixelCheck{
-				// Golden star/bonus band (sampled live on a real result
-				// screen at 12:30; the connection-lost dialog is dark at
-				// this point, so this doubles as its discriminator)
-				{430, 240, 0xF1, 0xCB, 0x53, 45},
-				// White header area above the stars
-				{430, 120, 0xF7, 0xFD, 0xFE, 30},
-				// Light blue-gray sub-band
-				{430, 180, 0xD0, 0xD8, 0xE2, 30},
+				// Opaque gold band across the panel (the star/bonus row),
+				// sampled live on both flanks because the centre column is
+				// the damage banner. Panel colours are translucent over the
+				// battlefield, so the probes sit on this band rather than on
+				// the panel body — the old body probes (white header, light
+				// blue sub-band) read dark grass on a defeat overlay and the
+				// rule never fired, hanging the battle-end wait.
+				{300, 240, 0xED, 0xCE, 0x5E, 45},
+				{560, 240, 0xF0, 0xD4, 0x70, 45},
+				// RETURN HOME button face (green). The connection-lost
+				// dialog has this button too, so it can satisfy this probe
+				// but not the gold band above — the 2-of-3 bar is what
+				// keeps the two apart.
+				{431, 600, 0x6C, 0xBB, 0x1F, 15},
 			},
 		},
 		// StateConnectionLost is the game's disconnect dialog ("Connection
@@ -496,7 +503,7 @@ func (c *Classifier) buildRules() {
 			// classifier change is part of fixing. Both anchors are the
 			// army-overview tab header (red + brown side by side); a
 			// genuine camp always shows both.
-			MinPass:  2,
+			MinPass: 2,
 			Checks: []PixelCheck{
 				{529, 149, 0xF1, 0x55, 0x4F, 25},
 				{479, 149, 0x4D, 0x3E, 0x33, 25},
@@ -566,7 +573,13 @@ func (c *Classifier) buildRules() {
 			Anchor:   AnchorCenter,
 			MinPass:  1,
 			Checks: []PixelCheck{
-				{290, 576, 0x6C, 0xBB, 0x1F, 15},
+				// Solid green face of the result overlay's RETURN HOME
+				// button, measured live (the button is horizontally centred,
+				// so this survives the centre-anchored mapping). The probe
+				// was authored 141 px to the left of where the button
+				// actually renders, which is why this state never fired
+				// either.
+				{431, 600, 0x6C, 0xBB, 0x1F, 15},
 			},
 		},
 		{

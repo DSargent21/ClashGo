@@ -224,16 +224,178 @@ func (c *Calibration) MapPixelCheck(chk PixelCheck, a Anchor) PixelCheck {
 	}
 }
 
+// AxisAnchor selects which screen edge — or the centre — a reference
+// coordinate keeps its distance to, on one axis. The game anchors each widget
+// per axis, and cmd/resprobe measures which: at 1280x720 the village builder
+// head (ref 430,30) lands at (640,40) — x centred, y top — while the army-bar
+// battle button (ref 525,247) lands at (767,200) — both axes centred, and the
+// Attack! button (ref 60,695) at (79,669) — left and bottom. A single anchor
+// for both axes therefore cannot express the layout, and the per-axis ratios
+// ScaleRef used (1.49 x, 0.98 y at 1280x720) match none of them.
+type AxisAnchor int
+
+const (
+	// AnchorLow keeps the distance to the low edge: left for x, top for y.
+	AnchorLow AxisAnchor = iota
+	// AnchorHigh keeps the distance to the high edge: right for x, bottom for y.
+	AnchorHigh
+	// AnchorMid keeps the distance to the axis centre.
+	AnchorMid
+)
+
+// The HUD is a small number of anchored widget groups, not one uniform layout,
+// so Hud picks each axis from the group a reference coordinate falls in. The
+// bands below are fractions of the reference axis and were chosen to fit every
+// live measurement (docs/RESOLUTION.md):
+//
+//	left column     x <  0.12 * 860 = 103   Attack!, shop, End Battle (x)
+//	right column    x >  0.88 * 860 = 757   resource icons (830), SHOP (770)
+//	top bar         y <= 0.232 * 732 = 170  resource column (y 16-145), builder head
+//	bottom stack    y >= 0.64 * 732 = 468   troop bar, Next, End Battle, attack buttons
+//	everything else                        centre-anchored widgets: the army bar
+//	                                       and its expansion (y 190-250), the
+//	                                       builder-head x, recipe cards, army arrow
+//
+// The top bar has to reach y 170 rather than a symmetric 12%: the resource
+// column runs from y 16 to y 145, and a probe at y 95 is still top-anchored
+// (measured: it lands at 124, not at the centre model's y 1).
+const (
+	hudXLowBand  = 0.12
+	hudXHighBand = 0.88
+	hudYLowBand  = 0.232
+	hudYHighBand = 0.64
+)
+
+// MapAxis maps one reference axis coordinate. The reference geometry and a
+// zero-value calibration are the identity, so every existing caller and test is
+// unaffected.
+func (c *Calibration) MapAxis(p, refSize, size int, a AxisAnchor) int {
+	if c.IsReferenceGeometry() || refSize <= 0 || size <= 0 {
+		return p
+	}
+	k := c.DisplayScale()
+	fp := float64(p)
+	switch a {
+	case AnchorHigh:
+		return clampInt(int(math.Round(float64(size)-(float64(refSize)-fp)*k)), 0, size-1)
+	case AnchorMid:
+		return clampInt(int(math.Round(float64(size)/2+(fp-float64(refSize)/2)*k)), 0, size-1)
+	default:
+		return clampInt(int(math.Round(fp*k)), 0, size-1)
+	}
+}
+
+// X maps a reference x with an explicit horizontal anchor.
+func (c *Calibration) X(x int, a AxisAnchor) int { return c.MapAxis(x, RefWidth, c.PhysicalW, a) }
+
+// Y maps a reference y with an explicit vertical anchor.
+func (c *Calibration) Y(y int, a AxisAnchor) int { return c.MapAxis(y, RefHeight, c.PhysicalH, a) }
+
+// Point2 maps a reference point with one anchor per axis.
+func (c *Calibration) Point2(x, y int, xa, ya AxisAnchor) (int, int) {
+	return c.X(x, xa), c.Y(y, ya)
+}
+
+// Rect2 maps a reference rectangle with one anchor per axis; the rectangle
+// keeps its K-scaled size whichever anchors are used, because both edges are
+// mapped with the same one.
+func (c *Calibration) Rect2(r image.Rectangle, xa, ya AxisAnchor) image.Rectangle {
+	x1, x2 := c.X(r.Min.X, xa), c.X(r.Max.X, xa)
+	y1, y2 := c.Y(r.Min.Y, ya), c.Y(r.Max.Y, ya)
+	if x1 > x2 {
+		x1, x2 = x2, x1
+	}
+	if y1 > y2 {
+		y1, y2 = y2, y1
+	}
+	return image.Rect(x1, y1, x2, y2)
+}
+
+// Hud maps a reference point on HUD chrome: each axis keeps its distance to the
+// edge it sits against, or to the viewport centre when it is not near an edge.
+// This is the mapping for buttons and bars — the widgets the game anchors to the
+// screen, not to the world.
+func (c *Calibration) Hud(x, y int) (int, int) {
+	return c.Point2(x, y, c.hudAxis(x, RefWidth), c.hudAxis(y, RefHeight))
+}
+
+// AnchorPoint maps a reference point declared with the classifier's semantic
+// anchor: AnchorEdge for HUD chrome (per-axis edge or centre anchoring) and
+// AnchorCenter for centred overlays and world content. Call sites that carry an
+// anchor declaration use this; call sites that know their context use Hud or
+// Centre directly.
+func (c *Calibration) AnchorPoint(x, y int, a Anchor) (int, int) {
+	if a == AnchorCenter {
+		return c.Centre(x, y)
+	}
+	return c.Hud(x, y)
+}
+
+// HudRect maps a reference rectangle on HUD chrome; the anchors are chosen from
+// the rectangle's centre point, so a rect that spans a whole bar (the troop
+// slot row, the troop counter) keeps that bar's anchoring.
+func (c *Calibration) HudRect(r image.Rectangle) image.Rectangle {
+	return c.Rect2(r, c.hudAxis((r.Min.X+r.Max.X)/2, RefWidth), c.hudAxis((r.Min.Y+r.Max.Y)/2, RefHeight))
+}
+
+// Centre maps a reference point on centred content: the game world (village,
+// battle field, base) and every full-screen overlay and dialog, which are laid
+// out around the viewport centre. Measured at 1280x720: a village tap at ref
+// (50,450) lands at (131,472) — the centre model — not at the left-edge offset
+// (66,346).
+func (c *Calibration) Centre(x, y int) (int, int) {
+	return c.Point2(x, y, AnchorMid, AnchorMid)
+}
+
+// CentreRect maps a rectangle on centred content (an overlay ROI, a world
+// zone).
+func (c *Calibration) CentreRect(r image.Rectangle) image.Rectangle {
+	return c.Rect2(r, AnchorMid, AnchorMid)
+}
+
+// hudAxis picks the anchor for one HUD axis from the reference coordinate's
+// widget group (see the band table above).
+func (c *Calibration) hudAxis(p, refSize int) AxisAnchor {
+	fp := float64(p)
+	switch refSize {
+	case RefWidth:
+		switch {
+		case fp < float64(RefWidth)*hudXLowBand:
+			return AnchorLow
+		case fp > float64(RefWidth)*hudXHighBand:
+			return AnchorHigh
+		}
+	case RefHeight:
+		switch {
+		case fp <= float64(RefHeight)*hudYLowBand:
+			return AnchorLow
+		case fp >= float64(RefHeight)*hudYHighBand:
+			return AnchorHigh
+		}
+	}
+	return AnchorMid
+}
+
+// Length scales a pixel distance (a radius, a spacing, a jitter bound) by the
+// display scale. Distances are not edge-anchored: they grow with K on both axes
+// whatever they measure.
+func (c *Calibration) Length(px float64) float64 {
+	if c == nil {
+		return px
+	}
+	return px * c.DisplayScale()
+}
+
 // Calibration is normally built by the bot from the live screen size (see
 // internal/bot/bot.go); the struct literal keeps all scaling math local to
 // this package and resolution-independent.
 //
-// ScaleRef is the LEGACY per-axis map: x by physW/RefWidth, y by
-// physH/RefHeight. It is correct at the reference geometry and for geometries
-// with the reference aspect ratio (where k == ScaleX == ScaleY), and is kept
-// for call sites that are genuinely resolution-proportional. Content that
-// follows the game's HUD/world layout (see Anchor) must use MapX/MapY/MapRect
-// instead.
+// DEPRECATED: ScaleRef is the per-axis ratio map (x by physW/RefWidth, y by
+// physH/RefHeight). It is right only at the reference geometry or where K
+// happens to equal both ratios, which no real geometry does at another aspect
+// (1.49 x, 0.98 y at 1280x720 against a measured K of 1.325). New call sites
+// must use Hud / Centre / X / Y / Length; the remaining callers are being
+// migrated in docs/RESOLUTION.md's plan.
 func (c *Calibration) ScaleRef(x, y int) (int, int) {
 	return int(float64(x) * c.ScaleX), int(float64(y) * c.ScaleY)
 }

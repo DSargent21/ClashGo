@@ -239,13 +239,13 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	}
 
 	// 4. Initialize SlotManager
-	slotMgr := NewSlotManager(screen, pCfg, w, h, mBarY, e.templates, e.classify, e.logger)
+	slotMgr := NewSlotManager(screen, e.cal, pCfg, w, h, mBarY, e.templates, e.classify, e.logger)
 	if len(slotMgr.GetAllSlots()) == 0 {
 		return 0, fmt.Errorf("no active slots detected")
 	}
 
 	// 5. Detect troop counts
-	troopCounter := NewTroopCounter(pCfg.Width, pCfg.Height, e.logger)
+	troopCounter := NewTroopCounter(e.cal, pCfg.Width, pCfg.Height, e.logger)
 	troopCounts := troopCounter.DetectCounts(screen, slotMgr.GetAllSlots(), mBarY)
 	countMap := GetAllCounts(troopCounts)
 	e.logger.Info().Interface("counts", countMap).Msg("detected troop counts")

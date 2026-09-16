@@ -43,10 +43,10 @@ type wallClient interface {
 // Coords are PHYSICAL pixels captured at the picker session's actual
 // screen size. Per the user's calibration baseline (860x732 on BlueStacks
 // Air + adb screencap at the device's native frame), the picker and the
-// bot's Cal.ScaleX/ScaleY agree at 1:1, so JSON values land directly in
-// bot tap coords without re-scaling. Mismatch on a different device
-// frame is a separate concern — fix at picker or bot, not within the
-// loader.
+// bot's reference frame agree at 1:1, so JSON values land directly in bot
+// reference coordinates without re-scaling. They are then mapped to the
+// live geometry by the caller; on a non-reference frame the picker output
+// needs re-picking, which is a separate concern.
 //
 // The legacy tap pattern in earlier versions of this file used the
 // image.Rectangle stdlib type via image.Rect(x1,y1,x2,y2). image.Rectangle
@@ -251,7 +251,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		h.step("main_village_verified", nil)
 
 		// 2. Click the builder head button in the top middle
-		bx, by := h.Cal.ScaleRef(430, 30)
+		bx, by := h.Cal.Hud(430, 30)
 		h.Logger.Debug().Int("x", bx).Int("y", by).Msg("Clicking builder head icon")
 		if err := h.Client.Tap(bx, by); err != nil {
 			h.Logger.Error().Err(err).Msg("Failed to tap builder head")
@@ -263,10 +263,10 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 
 		// ROI for the upgrades menu (default right side of the screen)
 		menuROI := image.Rect(
-			int(400*h.Cal.ScaleX),
-			int(50*h.Cal.ScaleY),
-			int(860*h.Cal.ScaleX),
-			int(732*h.Cal.ScaleY),
+			int(h.Cal.Length(400)),
+			int(h.Cal.Length(50)),
+			int(h.Cal.Length(860)),
+			int(h.Cal.Length(732)),
 		)
 
 		// Load custom ROI if it exists (assets/builder_menu_roi.json)
@@ -350,8 +350,8 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		// avoid dragging the map background.
 		scrollX := menuROI.Min.X + menuROI.Dx()/2
 		// Swipe strictly within scrollable bounds to maximize distance
-		topMargin := int(30 * h.Cal.ScaleY)
-		bottomMargin := int(30 * h.Cal.ScaleY)
+		topMargin := int(h.Cal.Length(30))
+		bottomMargin := int(h.Cal.Length(30))
 		sy1 := menuROI.Max.Y - bottomMargin
 		sy2 := menuROI.Min.Y + topMargin
 
@@ -466,7 +466,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// time over the prior 6×90 = 540px / 7×90 = 630px runs.
 			h.Logger.Debug().Int("scrollX", scrollX).Msg("Wall text not visible, scrolling up...")
 			startY := menuROI.Min.Y + menuROI.Dx()/2
-			endY := startY + int(100*h.Cal.ScaleY)
+			endY := startY + int(h.Cal.Length(100))
 			if err := h.Client.Swipe(scrollX, startY, scrollX, endY, 400); err != nil {
 				h.Logger.Error().Err(err).Msg("Failed to swipe up")
 				h.step("scroll_up_failed", map[string]any{"err": err.Error()})
@@ -761,7 +761,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// this when both are present — hasBlindFlow's gate above
 			// would already have triggered in that case, so reaching this
 			// branch means xPopupRect wasn't a workable Rect.
-			xBtnX, xBtnY := loadWallUpgradeXButton(h.Logger, h.Cal.ScaleX, h.Cal.ScaleY)
+			xBtnX, xBtnY := loadWallUpgradeXButton(h.Logger, h.Cal.Length(1), h.Cal.Length(1))
 			// Load btn_confirm_upgrade now (after the wall-pan settle) so
 			// log-spam is local to the new flow rather than the for loop.
 			// Nil-check is critical: vision.MatchMultiScaleROICached panics
@@ -819,7 +819,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					time.Sleep(1000 * time.Millisecond)
 					continue
 				}
-				bottomROI := image.Rect(0, int(400*h.Cal.ScaleY), modalScreen.Cols(), modalScreen.Rows())
+				bottomROI := image.Rect(0, int(h.Cal.Length(400)), modalScreen.Cols(), modalScreen.Rows())
 				confirmMatches, _ := vision.MatchMultiScaleROICached(modalScreen, confirmTpl, "btn_confirm_upgrade", 0.3, 1.5, 20, 0.70, bottomROI)
 
 				if len(confirmMatches) == 0 {
@@ -933,7 +933,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				continue
 			}
 			hasCapture = true
-			bottomROI := image.Rect(0, int(400*h.Cal.ScaleY), captureScreen.Cols(), captureScreen.Rows())
+			bottomROI := image.Rect(0, int(h.Cal.Length(400)), captureScreen.Cols(), captureScreen.Rows())
 			rawMatches, _ = vision.MatchMultiScaleAllROICached(captureScreen, upgradeTpl, "btn_upgrade_wall", 0.3, 1.5, 60, 0.65, bottomROI)
 
 			// Dedupe at 60px distance.
@@ -989,7 +989,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// The 0.40 threshold is intentionally very loose: it's only
 			// for diagnostic logging, never used for actual taps, so
 			// false-positives here are harmless.
-			bottomROI := image.Rect(0, int(400*h.Cal.ScaleY), captureScreen.Cols(), captureScreen.Rows())
+			bottomROI := image.Rect(0, int(h.Cal.Length(400)), captureScreen.Cols(), captureScreen.Rows())
 			debugMatches, _ := vision.MatchMultiScaleAllROICached(captureScreen, upgradeTpl, "btn_upgrade_wall", 0.3, 1.5, 60, 0.40, bottomROI)
 			if captureScreen.Empty() {
 				h.step("upgrade_not_found", map[string]any{
@@ -1162,7 +1162,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// wider-scope bottomROI; the multi-retry refactor moved that
 			// declaration into the loop body, so the candidate path
 			// re-declares it locally.
-			bottomROI := image.Rect(0, int(400*h.Cal.ScaleY), confirmScreen.Cols(), confirmScreen.Rows())
+			bottomROI := image.Rect(0, int(h.Cal.Length(400)), confirmScreen.Cols(), confirmScreen.Rows())
 			confirmMatches, _ := vision.MatchMultiScaleROICached(confirmScreen, confirmTpl, "btn_confirm_upgrade", 0.3, 1.5, 20, 0.70, bottomROI)
 			if len(confirmMatches) > 0 {
 				bestConfirm := confirmMatches[0]
@@ -1321,17 +1321,17 @@ func dismissInterruptionsFor(h *WallUpgradeHooks) {
 	case game.StateGemDialog, game.StateShieldInfo:
 		_ = h.Client.TapRandomized(175, 30)
 	case game.StateWelcomeBack:
-		ox, oy := h.Cal.ScaleRef(430, 520)
+		ox, oy := h.Cal.Centre(430, 520)
 		_ = h.Client.Tap(ox, oy)
 	case game.StateChatOpen:
 		_ = h.Client.Back()
 	case game.StateTapToContinue:
 		// Post-boot "ТАР!" collect splash — tap the prompt text.
-		px, py := h.Cal.ScaleRef(450, 195)
+		px, py := h.Cal.Centre(450, 195)
 		_ = h.Client.Tap(px, py)
 	case game.StateNewsSplash:
 		// Post-boot news splash — tap the green Continue button.
-		px, py := h.Cal.ScaleRef(403, 535)
+		px, py := h.Cal.Centre(403, 535)
 		_ = h.Client.Tap(px, py)
 	}
 }

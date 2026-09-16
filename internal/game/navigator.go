@@ -205,7 +205,8 @@ func (n *Navigator) dismissObstacle() {
 		{X: 500, Y: 430},
 	}
 	for _, pt := range candidates {
-		sx, sy := n.cal.ScaleRef(pt.X, pt.Y)
+		// Blind taps across the middle of the screen: centred content.
+		sx, sy := n.cal.Centre(pt.X, pt.Y)
 		n.client.TapRandomized(sx, sy)
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -232,19 +233,21 @@ func (n *Navigator) dismissWelcomeBack() {
 			}
 		}
 	}
-	// Fallback to center-ish tap
-	sx, sy := n.cal.ScaleRef(430, 520)
+	// Fallback to center-ish tap on the centred Welcome Back dialog.
+	sx, sy := n.cal.Centre(430, 520)
 	n.client.TapRandomized(sx, sy)
 	time.Sleep(1000 * time.Millisecond)
 }
 
 func (n *Navigator) dismissGemDialog() {
-	n.client.TapRandomized(175, 30)
+	x, y := n.cal.Centre(175, 30)
+	n.client.TapRandomized(x, y)
 	time.Sleep(300 * time.Millisecond)
 }
 
 func (n *Navigator) dismissShieldInfo() {
-	n.client.TapRandomized(175, 30)
+	x, y := n.cal.Centre(175, 30)
+	n.client.TapRandomized(x, y)
 	time.Sleep(300 * time.Millisecond)
 }
 
@@ -313,16 +316,20 @@ func (n *Navigator) ZoomIn() {
 	}
 }
 
+// PinchAtScaled runs a pinch whose four reference points are on the game world
+// (village zoom), which is centred content.
 func (n *Navigator) PinchAtScaled(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {
-	sx1, sy1 := n.cal.ScaleRef(x1, y1)
-	sx2, sy2 := n.cal.ScaleRef(x2, y2)
-	sx3, sy3 := n.cal.ScaleRef(x3, y3)
-	sx4, sy4 := n.cal.ScaleRef(x4, y4)
+	sx1, sy1 := n.cal.Centre(x1, y1)
+	sx2, sy2 := n.cal.Centre(x2, y2)
+	sx3, sy3 := n.cal.Centre(x3, y3)
+	sx4, sy4 := n.cal.Centre(x4, y4)
 	return n.client.Pinch(sx1, sy1, sx2, sy2, sx3, sy3, sx4, sy4, ms)
 }
 
+// TapAtScaled taps a reference coordinate on HUD chrome. Callers with world or
+// overlay coordinates should map through Centre instead.
 func (n *Navigator) TapAtScaled(x, y int) error {
-	sx, sy := n.cal.ScaleRef(x, y)
+	sx, sy := n.cal.Hud(x, y)
 	return n.client.Tap(sx, sy)
 }
 
@@ -373,12 +380,17 @@ func (n *Navigator) NavigateToMainVillage(ctx *GameContext) bool {
 		from, to GameState
 		action   TransitionAction
 		x, y     int
+		anchor   Anchor
 	}{
-		{StateBattle, StateBattleEnd, ActionTap, 34, 588},
-		{StateBattleEnd, StateReturnHome, ActionTap, 430, 566},
-		{StateReturnHome, StateMainVillage, ActionTap, 430, 566},
-		{StateArmyCamp, StateMainVillage, ActionBack, 0, 0},
-		{StateSettings, StateMainVillage, ActionBack, 0, 0},
+		// End Battle is bottom-left HUD chrome; Return Home sits on the centred
+		// battle-result panel. Measured at 1280x720: the bottom-left HUD keeps
+		// its bottom margin (the Attack! label lands at y 669 of 720), while a
+		// centred anchor there would put the button 191 px too low.
+		{StateBattle, StateBattleEnd, ActionTap, 34, 588, AnchorEdge},
+		{StateBattleEnd, StateReturnHome, ActionTap, 430, 566, AnchorCenter},
+		{StateReturnHome, StateMainVillage, ActionTap, 430, 566, AnchorCenter},
+		{StateArmyCamp, StateMainVillage, ActionBack, 0, 0, AnchorEdge},
+		{StateSettings, StateMainVillage, ActionBack, 0, 0, AnchorEdge},
 	}
 
 	for _, step := range seq {
@@ -386,7 +398,9 @@ func (n *Navigator) NavigateToMainVillage(ctx *GameContext) bool {
 			if step.action == ActionBack {
 				n.client.Back()
 			} else {
-				sx, sy := n.cal.ScaleRef(step.x, step.y)
+				// Both tap steps in the sequence are on centred screens: the End
+				// Battle button (battle HUD) and the result panel's Return Home.
+				sx, sy := n.cal.AnchorPoint(step.x, step.y, step.anchor)
 				n.client.Tap(sx, sy)
 			}
 			time.Sleep(1500 * time.Millisecond)
@@ -403,7 +417,7 @@ func (n *Navigator) NavigateToBattle(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateMainVillage {
-		ax, ay := n.cal.ScaleRef(60, 548)
+		ax, ay := n.cal.Hud(60, 548)
 
 		// Try to find the battle button via template matching
 		if n.templates != nil {
@@ -412,7 +426,10 @@ func (n *Navigator) NavigateToBattle(ctx *GameContext) bool {
 				screen, err := n.client.CaptureToMat()
 				if err == nil {
 					defer screen.Close()
-					matches, err := vision.MatchMultiScale(screen, tpl, 0.9*n.cal.ScaleY, 1.1*n.cal.ScaleY, 3, 0.6)
+					// Templates are captured at display scale 1.0, so sweep around the
+					// live display scale, not a per-axis ratio.
+					k := n.cal.DisplayScale()
+					matches, err := vision.MatchMultiScale(screen, tpl, 0.9*k, 1.1*k, 3, 0.6)
 					if err == nil && len(matches) > 0 {
 						sort.Slice(matches, func(i, j int) bool {
 							return matches[i].Confidence > matches[j].Confidence
@@ -437,7 +454,7 @@ func (n *Navigator) NavigateToArmyCamp(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateMainVillage {
-		ax, ay := n.cal.ScaleRef(40, 525)
+		ax, ay := n.cal.Hud(40, 525)
 		n.client.Tap(ax, ay)
 		time.Sleep(1500 * time.Millisecond)
 		return true
@@ -470,7 +487,7 @@ func (n *Navigator) NavigateToFindMatch(ctx *GameContext) bool {
 
 	// If we are in Main Village, first click Battle to open the menu
 	if ctx.State == StateMainVillage {
-		ax, ay := n.cal.ScaleRef(60, 548)
+		ax, ay := n.cal.Hud(60, 548)
 		n.client.Tap(ax, ay)
 		time.Sleep(1500 * time.Millisecond)
 		// Update state to check if we are in the menu
@@ -513,8 +530,9 @@ func (n *Navigator) NavigateToFindMatch(ctx *GameContext) bool {
 		}
 	}
 
-	// Fallback to scaled coordinates for the yellow "Find a Match" button
-	ax, ay := n.cal.ScaleRef(150, 540)
+	// Fallback coordinates for the yellow "Find a Match" button: bottom-stack
+	// HUD chrome on the search screen.
+	ax, ay := n.cal.Hud(150, 540)
 	n.logger.Info().
 		Int("ax", ax).
 		Int("ay", ay).
@@ -553,7 +571,7 @@ func (n *Navigator) NavigateToBuilderBase(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateMainVillage {
-		bx, by := n.cal.ScaleRef(830, 16)
+		bx, by := n.cal.Hud(830, 16)
 		n.client.Tap(bx, by)
 		time.Sleep(2000 * time.Millisecond)
 		return true
@@ -568,7 +586,7 @@ func (n *Navigator) NavigateToMainVillageFromBB(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateBuilderBase {
-		bx, by := n.cal.ScaleRef(830, 16)
+		bx, by := n.cal.Hud(830, 16)
 		n.client.Tap(bx, by)
 		time.Sleep(2000 * time.Millisecond)
 		return true

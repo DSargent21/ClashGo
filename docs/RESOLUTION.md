@@ -261,12 +261,91 @@ non-reference geometry at all.
 Still to do: capture and re-validate each state's anchors at the target
 geometry (village, boot splash, search, battle, result, army selection, chest
 are all reachable on demand); re-author the centred states that clip at the new
-aspect; migrate the remaining consumers (`internal/bot` button ROIs,
-`internal/game/loot.go` result panel + rois, `internal/game/chestdismiss.go`,
-`internal/game/navigator.go`, `internal/attack` slot bar / troop counter / hero
-manager / spell deployer / red line / deploy geometry); re-check the world band
-clipping for deploy points outside `ref y ∈ [94, 638]`; and finish with a real
-attack run, since that is the only check that covers the deploy mapping.
+aspect; migrate the remaining consumers (`internal/game/loot.go` result panel +
+rois, `internal/game/chestdismiss.go`, `internal/game/navigator.go`,
+`internal/attack` slot bar / troop counter / hero manager / spell deployer / red
+line / deploy geometry); re-check the world band clipping for deploy points
+outside `ref y ∈ [94, 638]`; and finish with a real attack run, since that is
+the only check that covers the deploy mapping.
+
+### Live run, 2026-09-16: what the first real attacks changed
+
+Running a full session (5 attacks, `max_attack_per_session: 5`) at the
+reference geometry first, then at 1280×720, moved the plan in two ways.
+
+**A blocker that had nothing to do with resolution.** No session could finish a
+single attack, at *any* geometry: the battle ended, the result overlay rendered,
+and the classifier returned `Unknown` on it — `StateBattleEnd` needed 2 of its 3
+probes and only ever got 1. Its two body probes (a white header at ref
+`(430,120)`, a light blue-gray band at `(430,180)`) read the *dimmed
+battlefield* on the current overlay, and `StateReturnHome`'s single probe sat at
+`(290,576)` — 141 px to the left of the button the game actually draws at
+`(431,600)`. `WaitForBattleEndCtx` polls for exactly those two states, so it
+spun until its 4-minute deadline, restarted the game, and repeated. The probes
+were re-measured off a live defeat overlay and now sit on the panel's opaque
+gold band (`(300,240)`, `(560,240)` — the star/bonus row, which is what
+separates the overlay from the connection-lost dialog that also renders a
+RETURN HOME button) and on the button face (`(431,600)`). With that fix the
+reference geometry completes **5/5 attacks** with loot parsed and a clean
+session shutdown (`attack cap reached, scheduling graceful shutdown`).
+Regression tests: `internal/game/classifier_result_test.go`, plus the
+re-measured positive case in `classifier_stuck_test.go`.
+
+**The pinpoints needed one anchor per axis, not one per widget.**
+`internal/bot`'s `villagePinpoints` mapped both axes with a single anchor, and
+the classifier's HUD band heuristic (`Hud`) reads the widget's *reference y* to
+pick the vertical one — which is right for the village HUD and wrong for the
+attack menu. Measured on the same menu open at both geometries (Apple Vision OCR
+label boxes): its buttons keep their **left** offset and are **centred
+vertically**. `Find a Match` at ref `(161,482)` renders at live `(217,515)`:
+`x = 161 × 1.325 = 213` (left-anchored) but `y = 720/2 + (482 − 366) × 1.325 =
+514` (centre-anchored), where the bottom-edge model puts it at `405` — 110 px
+above the button, so the tap missed and the search never started. `Pinpoint` now
+declares `XA`/`YA` explicitly, and every entry was re-authored from that
+disagreement: `btn_attack` is `(low, high)`, `btn_find_match` `(low, mid)`, the
+army-bar entries `(mid, mid)`, the bottom-right entries `(high, high)`.
+
+**The 720p run still does not reach a battle, and the last measured cause is a
+modal, not a mapping.** With the pinpoints fixed, the 720p run still ends in the
+`waiting for battle state (searching) … state=MainVillage` loop. Live captures
+at each failure show the cause: a **`SHINY ORE METEORITE` obstacle dialog**
+(`REMOVE` / `Move`) is open over the village. The zoom-out pinch is performed at
+the viewport centre, and because the world scales about the centre the pinch
+lands on the shiny-ore obstacle at 1280×720 while it lands on ordinary ground at
+860×732. `StateObstacleDialog` does not fire at 720p (its 3 probes are
+authored for the reference overlay, and its near-white corner probe at ref
+`(272,11)` is the clipping case documented above), so the bot never dismisses
+the modal, every later tap is swallowed by it, and the run times out and
+restarts — which does not clear the dialog because the boot "restart" launches
+the activity rather than force-stopping the package.
+
+So the next concrete step is state-by-state, and it is measurement, not
+guessing: capture each state at the target geometry with the bot stopped
+(`cmd/screendump -k <measured>`), re-author that state's probes and anchors, and
+re-run. The order that unblocks the flow fastest:
+
+1. `StateObstacleDialog` (and the other modals) at 1280×720 — it is the current
+   hard stop, and the dialog is reachable on demand;
+2. `StateSearchMap` + `StateBattle` (the clouds/battle HUD) at 1280×720;
+3. the result overlay at 1280×720 (its new probes are centre-anchored, so they
+   should map, but that has not been observed on a live 720p panel);
+4. the loot/base ROIs and the deploy geometry during the same run.
+
+A useful side-effect of the session: **`cmd/tplprobe`** (locate a stored
+template on a frame across a chosen scale sweep) and **`cmd/wmresize`**
+(change/restore the device geometry through the repo's own wedge-safe ADB
+transport, since the host `adb shell` returns `error: closed` on this
+BlueStacks instance). Both are development instruments and neither is needed by
+the bot at runtime.
+
+**Templates are older than the pinpoints.** `assets/templates/btn_attack.png`
+is a 246×63 asset whose "Attack!" label is ~243 px wide, while the live button
+label at the reference geometry is 74 px wide — the stored button templates are
+about 3.3× the reference scale and do not match a live frame even at the
+reference (matched against a self-crop of the same button as a control, which
+scores 1.00). The flow works anyway because the pinpoints short-circuit the
+template path. Worth knowing before trusting a "template failed to match"
+result: for these particular assets that failure means nothing.
 
 ## Measuring
 

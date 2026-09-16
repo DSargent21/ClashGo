@@ -64,8 +64,7 @@ func main() {
 
 	fmt.Println("star points (ref -> physical, star-pixel count in 11x11 patch, >=5 counts):")
 	for _, pt := range starPointsRef {
-		sx := int(float64(pt.X) * cal.ScaleX)
-		sy := int(float64(pt.Y) * cal.ScaleY)
+		sx, sy := cal.Centre(pt.X, pt.Y)
 		r := image.Rect(sx-5, sy-5, sx+6, sy+6)
 		if r.Min.X < 0 {
 			r.Min.X = 0

@@ -103,7 +103,7 @@ func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) {
 
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
-		ptY -= int(25.0 * t.cal.ScaleY)
+		ptY -= int(t.cal.Length(25))
 	}
 	jPt := t.addJitter(image.Pt(slot.X, ptY), jitterPx)
 	t.logger.Debug().
@@ -226,7 +226,7 @@ func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
 
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
-		ptY -= int(25.0 * t.cal.ScaleY)
+		ptY -= int(t.cal.Length(25))
 	}
 	t.logger.Info().
 		Int("x", slot.X).
@@ -266,8 +266,8 @@ func (t *TapExecutor) addJitter(pt image.Point, maxPixels int) image.Point {
 	if maxPixels <= 0 {
 		return pt
 	}
-	jx := int(float64(maxPixels) * t.cal.ScaleX)
-	jy := int(float64(maxPixels) * t.cal.ScaleY)
+	jx := int(t.cal.Length(float64(maxPixels)))
+	jy := jx
 	if jx <= 0 {
 		jx = 1
 	}

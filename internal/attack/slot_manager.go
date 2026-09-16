@@ -63,28 +63,38 @@ type SlotManager struct {
 	h         int
 	slotY     int
 	barY      int
-	logger    zerolog.Logger
+	// scale converts reference pixel distances (slot spacing, margins) to live
+	// pixels: the display scale, applied to both axes.
+	scale  func(float64) float64
+	logger zerolog.Logger
 }
 
 // NewSlotManager detects active slots, resolves identities via template matching + manual labels.
 func NewSlotManager(
 	screen gocv.Mat,
+	cal *game.Calibration,
 	pCfg PrecisionConfig,
 	w, h, mBarY int,
 	templates map[string]gocv.Mat,
 	classify func(gocv.Mat) (game.GameState, int),
 	logger zerolog.Logger,
 ) *SlotManager {
+	scale := func(px float64) float64 { return px }
+	if cal != nil {
+		scale = cal.Length
+	}
 	sm := &SlotManager{
 		unitIndex: make(map[string]*TrackedSlot),
 		xIndex:    make(map[int]*TrackedSlot),
 		w:         w,
 		h:         h,
 		barY:      mBarY,
+		scale:     scale,
 		logger:    logger.With().Str("component", "slot_manager").Logger(),
 	}
+	_ = screen
 
-	sm.slotY = mBarY + int(38.0*float64(h)/float64(pCfg.Height))
+	sm.slotY = mBarY + int(sm.scale(38))
 	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotY      int `json:"slot_y"`
@@ -142,9 +152,12 @@ func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
 	}
 
 	sm.logger.Info().Msg("manual calibration missing, falling back to grid detection")
-	scaleX := float64(sm.w) / 860.0
-	step := int(75.0 * scaleX)
-	startX := int(40.0 * scaleX)
+	// Slot spacing and the first slot's offset are lengths: they grow with the
+	// display scale, not with a per-axis framebuffer ratio (which is 1.49 x at
+	// 1280x720 against a measured 1.325 and would drift a whole slot by the end
+	// of the bar).
+	step := int(sm.scale(75))
+	startX := int(sm.scale(40))
 	var activeXs []int
 	for x := startX; x < sm.w-20; x += step {
 		if !isSlotEmptyStatic(screen, x, sm.slotY, sm.w, sm.h) {
@@ -259,12 +272,11 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 		}
 	}
 	if firstSpellX == 9999 {
-		firstSpellX = lastHeroX + int(70.0*float64(sm.w)/860.0)
+		firstSpellX = lastHeroX + int(sm.scale(70))
 	}
 
-	scaleX := float64(sm.w) / 860.0
-	heroMargin := int(30.0 * scaleX)
-	spellMargin := int(30.0 * scaleX)
+	heroMargin := int(sm.scale(30))
+	spellMargin := int(sm.scale(30))
 
 	for _, slot := range sm.slots {
 
@@ -298,7 +310,7 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 
 	if len(sm.slots) > 0 {
 		lastSlot := sm.slots[len(sm.slots)-1]
-		if lastSlot.Category == "Spell" && lastSlot.X > sm.w-int(100.0*float64(sm.w)/860.0) {
+		if lastSlot.Category == "Spell" && lastSlot.X > sm.w-int(sm.scale(100)) {
 			lastSlot.Category = "CC"
 			sm.logger.Info().Int("x", lastSlot.X).Msg("classified last slot as CC")
 		}

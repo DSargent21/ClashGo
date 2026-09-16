@@ -350,7 +350,7 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 			return emptyMat(), err
 		}
 	}
-		transport := c.transport
+	transport := c.transport
 	c.mu.Unlock()
 
 	bufPtr, n, err := transport.CaptureScreenPooled()
@@ -998,13 +998,22 @@ func (c *Client) ScreenSize() (int, int, error) {
 		return 0, 0, err
 	}
 
+	// An override wins: after a runtime `wm size WxH` the command prints both
+	// lines, and the override is what the framebuffer renders. Reading the
+	// physical size first made the bot calibrate for the wrong geometry — see
+	// docs/RESOLUTION.md.
 	var w, h int
-	if _, err := fmt.Sscanf(out, "Physical size: %dx%d", &w, &h); err != nil {
-		if _, err := fmt.Sscanf(out, "Override size: %dx%d", &w, &h); err != nil {
-			return 0, 0, fmt.Errorf("parse wm size: %w", err)
+	for _, line := range strings.Split(out, "\n") {
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "Override size: %dx%d", &w, &h); err == nil {
+			return w, h, nil
 		}
 	}
-	return w, h, nil
+	for _, line := range strings.Split(out, "\n") {
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "Physical size: %dx%d", &w, &h); err == nil {
+			return w, h, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("parse wm size: no size line in %q", strings.TrimSpace(out))
 }
 
 func (c *Client) ScreenCapPng(path string) error {

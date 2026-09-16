@@ -45,6 +45,16 @@ ifneq ($(OPENCV_LIBDIR),)
     GOTEST_LDFLAGS := -ldflags='-extldflags=-Wl,-rpath,$(OPENCV_LIBDIR)'
 endif
 
+# The CLI binary links the same @rpath dylibs, so it needs the same LC_RPATH —
+# without it `make build-cli` produces a binary that aborts at spawn with
+# "Library not loaded: @rpath/libopencv_gapi.410.dylib" and every probe/live
+# run in this repo is dead on arrival. Deliberately narrower than LDFLAGS:
+# the GUI bundle is packaged for other Macs and must NOT bake this machine's
+# lib path into it. Empty on CI, where keg-only linking already works.
+ifneq ($(OPENCV_LIBDIR),)
+    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR)
+endif
+
 .PHONY: all build build-cli build-gui clean release manifest test test-go test-py
 
 all: build-cli build-gui
@@ -79,7 +89,7 @@ endif
 build-cli:
 	@echo "Building CLI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
 
 # one-shot attack: capture screen, design placements per unit, deploy via
 # formula. No game restart, no bot search loop. Single command. Always

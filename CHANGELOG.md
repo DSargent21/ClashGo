@@ -48,6 +48,59 @@ the phase-1 status (what is landed, what is verified, what remains).
 - **`cmd/screendump -k <scale>`** — runs the anchor dump and classifier under a
   pinned display scale, which is how a `display_scale` value is verified
   against a live frame.
+- **`cmd/tplprobe`** — locates one stored template on a frame across a chosen
+  scale sweep and prints the ranked matches (confidence, centre, scale). Built
+  to answer "is this button where the mapping says it is, and at what scale is
+  it drawn" against live frames.
+- **`cmd/wmresize`** — changes or resets a running device's display geometry
+  through the repo's own wedge-safe ADB transport, which matters because the
+  host `adb shell` returns `error: closed` on this BlueStacks instance while
+  SurfaceFlinger still serves frames. Reports both `wm size` and the
+  authoritative screencap header.
+
+### Fixed
+- **No battle result screen could be classified, so no session could finish a
+  single attack at any geometry** (`internal/game/classifier.go`). The
+  `StateBattleEnd` probes were authored against an older overlay: two of its
+  three anchors (a white header at ref `(430,120)` and a light blue-gray band at
+  `(430,180)`) sample the *dimmed battlefield* on the current result panel, and
+  `StateReturnHome`'s single anchor sat 141 px left of the RETURN HOME button
+  the game draws. `WaitForBattleEndCtx` polls for those two states, so a finished
+  battle spun until its 4-minute deadline, restarted the game and repeated —
+  which is what the observed "stall detected but End Battle button not visible"
+  loop after 81% destruction actually was. The anchors were re-measured off a
+  live defeat overlay and now sit on the panel's opaque gold star/bonus band
+  (both flanks of the damage banner, which is also what separates the result
+  overlay from the connection-lost dialog) and on the button face at
+  `(431,600)`. Verified live: the reference geometry completes **5/5 attacks**
+  in one session with loot parsed and a clean shutdown. Regression coverage:
+  `internal/game/classifier_result_test.go`.
+- **`make build-cli` produced a binary that aborted at spawn** (`Makefile`).
+  The CLI links the same `@rpath` OpenCV dylibs the test binaries do, so it needs
+  the same `-Wl,-rpath,$(OPENCV_LIBDIR)`; without it every run died with
+  `Library not loaded: @rpath/libopencv_gapi.410.dylib` before printing a single
+  line. Scoped to the CLI target, because the packaged GUI bundle must not bake a
+  developer machine's library path into it.
+
+### Changed
+- **Pinpoints declare one anchor per axis, measured instead of inferred**
+  (`internal/bot/bot.go`). `villagePinpoints` entries carried a single
+  `Anchor`, so the classifier's HUD band heuristic picked the vertical anchor
+  from the widget's reference y — right for the village HUD, wrong for the
+  attack menu, whose buttons keep their **left** offset and are **centred
+  vertically** (live, same menu at both geometries: `Find a Match` at ref
+  `(161,482)` renders at 1280×720 `(217,515)`; the bottom-edge model put it at
+  `405`, 110 px above the button, so the search never started). Each entry now
+  declares `XA`/`YA`, re-authored from that measurement. Reference-geometry
+  behaviour is unchanged (the mapping is the identity there).
+- **`docs/RESOLUTION.md`** — a "Live run, 2026-09-16" section recording the
+  result-overlay finding, the per-axis anchor measurement, the 720p run's
+  measured blocker (a `SHINY ORE METEORITE` modal that the zoom-out pinch opens
+  at 720p because the world scales about the centre, and that
+  `StateObstacleDialog` does not detect at 720p), the state-by-state order that
+  unblocks it, and the observation that the stored button templates are ~3.3×
+  the reference scale and match nothing live (the pinpoints are why the flow
+  works regardless).
 
 ### Notes
 - The device geometry is **unchanged** (860×732 @320) until the migration's

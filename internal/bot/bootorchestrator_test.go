@@ -112,6 +112,31 @@ func TestScreenSizeHappyPath(t *testing.T) {
 	}
 }
 
+// A runtime `wm size` override must win over the physical size. Reading the
+// physical line first made the bot calibrate for 860x732 while the framebuffer
+// rendered 1280x720, so every tap and probe was placed for the wrong geometry.
+func TestScreenSizePrefersOverrideOverPhysical(t *testing.T) {
+	r := &fakeRunner{shellOut: "Physical size: 860x732\nOverride size: 1280x720\n"}
+	o := newOrchestratorWithRunner(r)
+	o.screenRecover = func(int) { t.Fatal("recovery must not fire when the override parses") }
+
+	w, h, err := o.screenSize(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if w != 1280 || h != 720 {
+		t.Fatalf("want the override 1280x720, got %dx%d", w, h)
+	}
+
+	// The wedged-shell workaround prefixes the command, so the lines do not
+	// have to start at byte 0 of the output.
+	r = &fakeRunner{shellOut: "x\nPhysical size: 860x732\nOverride size: 1280x720\n"}
+	o = newOrchestratorWithRunner(r)
+	if w, h, err = o.screenSize(context.Background()); err != nil || w != 1280 || h != 720 {
+		t.Fatalf("prefixed output: got %dx%d err=%v, want 1280x720", w, h, err)
+	}
+}
+
 // Recovery injection passes the right attempt number (1-based) so the
 // ladder can escalate cheap→destructive.
 func TestScreenSizeRecoveryLadderEscalates(t *testing.T) {

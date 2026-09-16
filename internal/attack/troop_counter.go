@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
@@ -20,6 +21,11 @@ type TroopCounter struct {
 
 	scaledDigitCache map[string][10]gocv.Mat
 	logger           zerolog.Logger
+
+	// scale converts reference-frame pixel distances to live pixels. It is the
+	// live calibration's display scale, not a per-axis framebuffer ratio: the
+	// card and digit sizes grow with the display scale on both axes.
+	scale func(float64) float64
 }
 
 // TroopCount represents a detected troop count for a slot.
@@ -31,10 +37,14 @@ type TroopCount struct {
 }
 
 // NewTroopCounter creates a new troop counter with digit templates.
-func NewTroopCounter(refW, refH int, logger zerolog.Logger) *TroopCounter {
+func NewTroopCounter(cal *game.Calibration, refW, refH int, logger zerolog.Logger) *TroopCounter {
 	tc := &TroopCounter{
 		logger:           logger.With().Str("component", "troop_counter").Logger(),
 		scaledDigitCache: make(map[string][10]gocv.Mat),
+		scale:            func(px float64) float64 { return px },
+	}
+	if cal != nil {
+		tc.scale = cal.Length
 	}
 	tc.loadDigitTemplates()
 	return tc
@@ -80,15 +90,10 @@ func (tc *TroopCounter) loadDigitTemplates() {
 // DetectCounts detects troop counts for all slots on the bar.
 // The count number appears above each card in the troop bar.
 func (tc *TroopCounter) DetectCounts(screen gocv.Mat, slots []*TrackedSlot, barY int) []TroopCount {
-	w := screen.Cols()
-	h := screen.Rows()
-	scaleX := float64(w) / 860.0
-	scaleY := float64(h) / 732.0
-
 	var results []TroopCount
 
 	for _, slot := range slots {
-		count := tc.detectSlotCount(screen, slot.X, slot.Y, barY, scaleX, scaleY)
+		count := tc.detectSlotCount(screen, slot.X, slot.Y, barY)
 		results = append(results, count)
 	}
 
@@ -97,20 +102,22 @@ func (tc *TroopCounter) DetectCounts(screen gocv.Mat, slots []*TrackedSlot, barY
 
 // detectSlotCount detects the count for a single slot.
 // The count number appears as "x60", "x9" etc. above each card in the troop bar.
-func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int, scaleX, scaleY float64) TroopCount {
+func (tc *TroopCounter) detectSlotCount(screen gocv.Mat, slotX, slotY, barY int) TroopCount {
 	result := TroopCount{
 		X:     slotX,
 		Count: 0,
 	}
 
-	cardWidth := int(60.0 * scaleX)
-	digitHeight := int(18.0 * scaleY)
-	digitWidth := int(12.0 * scaleX)
+	// Lengths around a live slot position: the card and its digits scale with
+	// the display scale on both axes.
+	cardWidth := int(tc.scale(60))
+	digitHeight := int(tc.scale(18))
+	digitWidth := int(tc.scale(12))
 
-	roiX1 := slotX - cardWidth/2 + int(5.0*scaleX)
-	roiY1 := barY - int(5.0*scaleY)
-	roiX2 := slotX + cardWidth/2 - int(5.0*scaleX)
-	roiY2 := slotY - int(25.0*scaleY)
+	roiX1 := slotX - cardWidth/2 + int(tc.scale(5))
+	roiY1 := barY - int(tc.scale(5))
+	roiX2 := slotX + cardWidth/2 - int(tc.scale(5))
+	roiY2 := slotY - int(tc.scale(25))
 
 	if roiX1 < 0 {
 		roiX1 = 0
@@ -364,8 +371,6 @@ func (tc *TroopCounter) DetectCount(screen gocv.Mat, slot *TrackedSlot, barY int
 	if screen.Empty() || slot == nil {
 		return 0
 	}
-	scaleX := float64(screen.Cols()) / 860.0
-	scaleY := float64(screen.Rows()) / 732.0
-	res := tc.detectSlotCount(screen, slot.X, slot.Y, barY, scaleX, scaleY)
+	res := tc.detectSlotCount(screen, slot.X, slot.Y, barY)
 	return res.Count
 }

@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -564,13 +565,13 @@ func (o *BootOrchestrator) screenSize(ctx context.Context) (int, int, error) {
 // recoverForScreenSize is the between-attempts recovery ladder for
 // screenSize. attempt is 1-based (the attempt that just failed).
 //
-//  1st failure: RetryTransport — close + reopen the ADB transport.
-//     Handles the stale-socket-after-BlueStacks-blip case (~50ms).
-//  2nd failure: ResetAdbServer — `adb kill-server` + start-server.
-//     Clears stale "localhost:5555 device" registrations that make
-//     every shell call return "ADB: closed" (~4s, drops ALL adb
-//     connections on this host — same tradeoff the connectADB
-//     mid-budget injection already accepts).
+//	1st failure: RetryTransport — close + reopen the ADB transport.
+//	   Handles the stale-socket-after-BlueStacks-blip case (~50ms).
+//	2nd failure: ResetAdbServer — `adb kill-server` + start-server.
+//	   Clears stale "localhost:5555 device" registrations that make
+//	   every shell call return "ADB: closed" (~4s, drops ALL adb
+//	   connections on this host — same tradeoff the connectADB
+//	   mid-budget injection already accepts).
 func (o *BootOrchestrator) recoverForScreenSize(attempt int) {
 	if attempt <= 1 {
 		o.logger.Warn().Msg("screen.size failed; reconnecting ADB transport before retry")
@@ -592,16 +593,37 @@ func (o *BootOrchestrator) recoverForScreenSize(attempt int) {
 	_ = o.client.Reconnect()
 }
 
+// screenSizeFromWmSize reads the display geometry from `wm size`.
+//
+// The override comes first because it is what the framebuffer is actually
+// rendering: after a runtime `wm size 1280x720` on an 860x732 instance the
+// command prints BOTH lines, and parsing the physical size first made the bot
+// calibrate for 860x732 while the game laid out at 1280x720 — every mapped tap
+// and probe was then placed for the wrong geometry. Only when no override is
+// set is the physical size the truth.
 func (o *BootOrchestrator) screenSizeFromWmSize(ctx context.Context) (int, int, error) {
 	out, err := o.runner.Shell(ctx, "wm size")
 	if err != nil {
 		return 0, 0, err
 	}
 	var w, h int
-	if _, err := fmt.Sscanf(out, "Physical size: %dx%d", &w, &h); err != nil {
-		if _, err := fmt.Sscanf(out, "Override size: %dx%d", &w, &h); err != nil {
-			return 0, 0, fmt.Errorf("parse wm size %q: %w", out, err)
+	if _, err := fmt.Sscanf(out, "Override size: %dx%d", &w, &h); err == nil {
+		return w, h, nil
+	}
+	// The override is not necessarily the first line of the output when the
+	// shell wrapper prefixed it (`getprop x; wm size`), so scan every line.
+	for _, line := range strings.Split(out, "\n") {
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "Override size: %dx%d", &w, &h); err == nil {
+			return w, h, nil
 		}
+	}
+	if _, err := fmt.Sscanf(out, "Physical size: %dx%d", &w, &h); err != nil {
+		for _, line := range strings.Split(out, "\n") {
+			if _, err := fmt.Sscanf(strings.TrimSpace(line), "Physical size: %dx%d", &w, &h); err == nil {
+				return w, h, nil
+			}
+		}
+		return 0, 0, fmt.Errorf("parse wm size %q: %w", out, err)
 	}
 	return w, h, nil
 }

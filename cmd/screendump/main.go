@@ -138,11 +138,15 @@ func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool, disp
 			}
 			fmt.Printf("  %-18s anchor=%s\n", rule.State.String(), anchorName(rule.Anchor))
 			for _, chk := range rule.Checks {
-				ex, ey := cal.MapX(chk.X, game.AnchorEdge), cal.MapY(chk.Y, game.AnchorEdge)
-				cx, cy := cal.MapX(chk.X, game.AnchorCenter), cal.MapY(chk.Y, game.AnchorCenter)
-				fmt.Printf("    ref(%3d,%3d) want RGB(%3d,%3d,%3d)±%-3d edge(%4d,%4d)%s centre(%4d,%4d)%s\n",
+				// hud = the rule's widget anchoring, per axis (what ClassifyState
+				// uses for a HUD rule); centre = the centred-overlay model. For an
+				// overlay rule the two agree, so the hud column is the informative
+				// one when they differ.
+				hx, hy := cal.Hud(chk.X, chk.Y)
+				cx, cy := cal.Centre(chk.X, chk.Y)
+				fmt.Printf("    ref(%3d,%3d) want RGB(%3d,%3d,%3d)±%-3d hud(%4d,%4d)%s centre(%4d,%4d)%s\n",
 					chk.X, chk.Y, chk.R, chk.G, chk.B, chk.Tolerance,
-					ex, ey, sampleNote(img, ex, ey, chk), cx, cy, sampleNote(img, cx, cy, chk))
+					hx, hy, sampleNote(img, hx, hy, chk), cx, cy, sampleNote(img, cx, cy, chk))
 			}
 		}
 	}

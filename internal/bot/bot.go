@@ -370,7 +370,9 @@ func (b *Bot) Start() error {
 			Msg("connected")
 	}
 
-	focusX, focusY := b.cal.ScaleRef(842, 345)
+	// Village content is centred on the viewport, so a focus tap on it follows
+	// the centre model (measured, docs/RESOLUTION.md).
+	focusX, focusY := b.cal.Centre(842, 345)
 	b.logger.Info().Int("x", focusX).Int("y", focusY).Msg("performing initial focus click")
 	b.client.Tap(focusX, focusY)
 	b.client.JitteredSleep(1 * time.Second)
@@ -710,7 +712,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 
 	if !b.zoomedOut.Load() {
 
-		pinX, pinY := b.cal.ScaleRef(60, 695)
+		pinX, pinY := b.cal.Hud(60, 695)
 		isVillage := state == game.StateMainVillage ||
 			state == game.StateArmyCamp ||
 			b.isOrange(screen, pinX, pinY) ||
@@ -793,10 +795,10 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 				case game.StateTapToContinue:
 					// Tap the "ТАР!" prompt text (ref 450,195). Verified live:
 					// this dismisses the collect splash into the game.
-					x, y = b.cal.ScaleRef(450, 195)
+					x, y = b.cal.Centre(450, 195)
 				case game.StateNewsSplash:
 					// Tap the green Continue button (ref 403,535).
-					x, y = b.cal.ScaleRef(403, 535)
+					x, y = b.cal.Centre(403, 535)
 				}
 				if err := b.client.TapRandomized(x, y); err != nil {
 					b.logger.Warn().Err(err).Msg("boot splash dismiss tap failed; will retry on next detection")
@@ -837,7 +839,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			go func() {
 				defer b.connLostDismissInFlight.Store(false)
 				time.Sleep(800 * time.Millisecond)
-				x, y := b.cal.ScaleRef(300, 478)
+				x, y := b.cal.Centre(300, 478)
 				if err := b.client.TapRandomized(x, y); err != nil {
 					b.logger.Warn().Err(err).Msg("connection-lost dismiss tap failed; will retry on next detection")
 					return
@@ -860,7 +862,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			go func() {
 				defer b.connLostDismissInFlight.Store(false)
 				time.Sleep(800 * time.Millisecond)
-				x, y := b.cal.ScaleRef(279, 429)
+				x, y := b.cal.Centre(279, 429)
 				if err := b.client.TapRandomized(x, y); err != nil {
 					b.logger.Warn().Err(err).Msg("quit-confirm cancel tap failed; will retry on next detection")
 					return
@@ -936,7 +938,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 }
 
 func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
-	pinX, pinY := b.cal.ScaleRef(60, 695)
+	pinX, pinY := b.cal.Hud(60, 695)
 	if b.isOrange(screen, pinX, pinY) {
 		b.logger.Debug().Msg("attack button confirmed via pinpoint color check")
 		return true
@@ -948,12 +950,9 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 	}
 
 	roi := image.Rect(0, 500, 300, 732)
-	physROI := image.Rect(
-		int(float64(roi.Min.X)*b.cal.ScaleX),
-		int(float64(roi.Min.Y)*b.cal.ScaleY),
-		int(float64(roi.Max.X)*b.cal.ScaleX),
-		int(float64(roi.Max.Y)*b.cal.ScaleY),
-	)
+	// The Attack! button is bottom-left HUD chrome, so the search window keeps
+	// its distance to the left and bottom edges.
+	physROI := b.cal.HudRect(roi)
 
 	matches, err := vision.MatchMultiScaleROICached(screen, tpl, "btn_attack", 0.2, 2.0, 5, threshold, physROI)
 	if err != nil || len(matches) == 0 {
@@ -1187,7 +1186,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				b.DumpDiagnostics("next_button_not_found", screen, map[string]interface{}{
 					"message": "forcing skip via hardcoded coordinates",
 				})
-				nextX, nextY := b.cal.ScaleRef(796, 565)
+				nextX, nextY := b.cal.Hud(796, 565)
 				b.client.TapRandomized(nextX, nextY)
 				b.recordActivity()
 			}
@@ -1444,8 +1443,8 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// reference point (set only on a real return home, not on a restart).
 	b.lastAttackEnd = time.Now()
 
-	sideX := int(537 * b.cal.ScaleX)
-	sideY := int(693 * b.cal.ScaleY)
+	// Empty village space next to the bottom bar; village content is centred.
+	sideX, sideY := b.cal.Centre(537, 693)
 	b.logger.Info().Msg("Tapping side area to dismiss potential post-attack popups...")
 	_ = b.client.Tap(sideX, sideY)
 	time.Sleep(1000 * time.Millisecond)
@@ -1615,7 +1614,7 @@ func (b *Bot) selectArmySlot() bool {
 	// card body sets it as the active army (verified live: slot 4 at
 	// y≈403 fired the "Recipe ... set as active army!" toast).
 	cardY := 227 + (slot-1)*54
-	tapX, tapY := b.cal.ScaleRef(430, cardY)
+	tapX, tapY := b.cal.Hud(430, cardY)
 
 	b.logger.Info().Int("army_slot", slot).Int("x", tapX).Int("y", tapY).Msg("selecting saved army recipe card")
 	if err := b.client.TapRandomized(tapX, tapY); err != nil {
@@ -1632,23 +1631,52 @@ func (b *Bot) selectArmySlot() bool {
 type Pinpoint struct {
 	X, Y int
 	Name string
+	// XA and YA declare which screen edge — or the axis centre — the point
+	// keeps its distance to, one anchor per axis. Measured, not inferred: the
+	// game anchors each widget per axis, so a single Anchor for both axes (or
+	// the classifier's band heuristic, which reads the widget's reference y)
+	// cannot express the layout. The attack menu is the case that broke 720p
+	// live: its buttons keep their left edge offset (ref x 158 -> 209) but are
+	// centred vertically (ref y 494 -> 530, where the bottom-edge model put
+	// them at 405 — 125 px above the button, so Find a Match was never
+	// clicked and the search never started). See docs/RESOLUTION.md.
+	//
+	// Verified live at 1280x720 with cmd/tplprobe and Apple Vision OCR on the
+	// same screen at both geometries.
+	XA, YA game.AxisAnchor
 }
 
+// villagePinpoints maps a button name to its reference-frame tap point and the
+// anchoring of each axis. Anchors marked "measured" were read off the live
+// 1280x720 layout; the rest keep the mapping that was verified at the reference
+// geometry (the identity) and are the mapping candidates to check first if a
+// non-reference run mis-taps.
 var villagePinpoints = map[string]Pinpoint{
-	"btn_attack":      {X: 64, Y: 666, Name: "Attack"},
-	"btn_find_match":  {X: 158, Y: 494, Name: "Find Match"},
-	"btn_battle":      {X: 731, Y: 537, Name: "Battle"},
-	"btn_army_arrow":  {X: 514, Y: 192, Name: "Army Arrow"},
-	"btn_army_1":      {X: 513, Y: 230, Name: "Army 1"},
-	"btn_next":        {X: 794, Y: 577, Name: "Next Match"},
-	"btn_return_home": {X: 431, Y: 581, Name: "Return Home"},
-	"btn_okay":        {X: 430, Y: 520, Name: "Okay"},
+	// measured: village bottom-left button, keeps its left and bottom offsets
+	"btn_attack": {X: 64, Y: 666, Name: "Attack", XA: game.AnchorLow, YA: game.AnchorHigh},
+	// measured: attack-menu button, left-anchored, vertically centred
+	"btn_find_match": {X: 158, Y: 494, Name: "Find Match", XA: game.AnchorLow, YA: game.AnchorMid},
+	// not yet measured at a non-reference geometry: the army bar's buttons are
+	// centre/centre (see the army-bar measurement in docs/RESOLUTION.md) and
+	// the two bottom-right buttons keep their bottom/right offsets.
+	"btn_battle":      {X: 731, Y: 537, Name: "Battle", XA: game.AnchorMid, YA: game.AnchorHigh},
+	"btn_army_arrow":  {X: 514, Y: 192, Name: "Army Arrow", XA: game.AnchorMid, YA: game.AnchorMid},
+	"btn_army_1":      {X: 513, Y: 230, Name: "Army 1", XA: game.AnchorMid, YA: game.AnchorMid},
+	"btn_next":        {X: 794, Y: 577, Name: "Next Match", XA: game.AnchorHigh, YA: game.AnchorHigh},
+	"btn_return_home": {X: 431, Y: 581, Name: "Return Home", XA: game.AnchorMid, YA: game.AnchorMid},
+	"btn_okay":        {X: 430, Y: 520, Name: "Okay", XA: game.AnchorMid, YA: game.AnchorMid},
+}
+
+// pinpointPoint maps a pinpoint's reference point onto the live frame using the
+// anchoring the pinpoint declares for each axis.
+func (b *Bot) pinpointPoint(pp Pinpoint) (int, int) {
+	return b.cal.Point2(pp.X, pp.Y, pp.XA, pp.YA)
 }
 
 func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 
 	if pp, ok := villagePinpoints[templateName]; ok {
-		px, py := b.cal.ScaleRef(pp.X, pp.Y)
+		px, py := b.pinpointPoint(pp)
 		b.logger.Info().Str("step", stepName).Msg("pinpoint match, clicking...")
 		// TapRandomized = Gaussian jitter + the 180-450ms human reaction
 		// delay, so the bot visibly hesitates before committing to each
@@ -1668,12 +1696,10 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 
 	roi := b.buttonROI(templateName)
 
-	physROI := image.Rect(
-		int(float64(roi.Min.X)*b.cal.ScaleX),
-		int(float64(roi.Min.Y)*b.cal.ScaleY),
-		int(float64(roi.Max.X)*b.cal.ScaleX),
-		int(float64(roi.Max.Y)*b.cal.ScaleY),
-	)
+	// A pinpoint's or template's reference ROI is HUD chrome (every entry in
+	// buttonROI is a screen-anchored button), so the search window follows the
+	// same anchors the tap does.
+	physROI := b.cal.HudRect(roi)
 
 	for retry := 0; retry < maxRetries; retry++ {
 		screen, err := b.client.CaptureToMat()
@@ -1690,7 +1716,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 		}
 
 		if templateName == "btn_battle" && retry == 0 {
-			altX, altY := b.cal.ScaleRef(525, 247)
+			altX, altY := b.cal.Hud(525, 247)
 			if b.isGreen(screen, altX, altY) {
 				screen.Close()
 				b.logger.Info().Str("step", stepName).Msg("secondary pinpoint match (upper battle), clicking...")
@@ -1743,7 +1769,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 	}
 
 	if pp, ok := villagePinpoints[templateName]; ok {
-		px, py := b.cal.ScaleRef(pp.X, pp.Y)
+		px, py := b.pinpointPoint(pp)
 		b.logger.Warn().Str("step", pp.Name).Msg("pinpoint color check and template match failed; executing blind tap fallback")
 		if err := b.client.TapRandomized(px, py); err == nil {
 			b.recordActivity()
@@ -1762,12 +1788,11 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 // genuine 0-star/0-loot result.
 func resultPanelHash(screen gocv.Mat, cal *game.Calibration) uint64 {
 	// Reference (860x732) region covering the stars and both loot
-	// columns; generous bounds tolerate small theme shifts.
-	ref := image.Rect(300, 180, 690, 470)
-	x0 := int(float64(ref.Min.X) * cal.ScaleX)
-	y0 := int(float64(ref.Min.Y) * cal.ScaleY)
-	x1 := int(float64(ref.Max.X) * cal.ScaleX)
-	y1 := int(float64(ref.Max.Y) * cal.ScaleY)
+	// columns; generous bounds tolerate small theme shifts. The result
+	// panel is a centred overlay, so its region is mapped around the
+	// viewport centre.
+	live := cal.CentreRect(image.Rect(300, 180, 690, 470))
+	x0, y0, x1, y1 := live.Min.X, live.Min.Y, live.Max.X, live.Max.Y
 	if x0 < 0 {
 		x0 = 0
 	}
@@ -1855,28 +1880,31 @@ func (b *Bot) dismissInterruptions() {
 		time.Sleep(400 * time.Millisecond)
 		b.client.Back()
 	case game.StateGemDialog, game.StateShieldInfo:
-		b.client.TapRandomized(175, 30)
+		// Close X on a centred dialog. Previously tapped at raw (175,30),
+		// which only worked at the reference geometry.
+		dx, dy := b.cal.Centre(175, 30)
+		b.client.TapRandomized(dx, dy)
 	case game.StateWelcomeBack:
 
-		ox, oy := b.cal.ScaleRef(430, 520)
+		ox, oy := b.cal.Centre(430, 520)
 		b.client.TapRandomized(ox, oy)
 	case game.StateChatOpen:
 		b.client.Back()
 	case game.StateTapToContinue:
 		// Post-boot "ТАР!" collect splash — tap the prompt text.
-		px, py := b.cal.ScaleRef(450, 195)
+		px, py := b.cal.Centre(450, 195)
 		b.client.TapRandomized(px, py)
 	case game.StateNewsSplash:
 		// Post-boot news splash — tap the green Continue button.
-		px, py := b.cal.ScaleRef(403, 535)
+		px, py := b.cal.Centre(403, 535)
 		b.client.TapRandomized(px, py)
 	case game.StateConnectionLost:
 		// Connection-lost dialog — tap TRY AGAIN to reconnect in place.
-		px, py := b.cal.ScaleRef(300, 478)
+		px, py := b.cal.Centre(300, 478)
 		b.client.TapRandomized(px, py)
 	case game.StateConfirmExit:
 		// Quit-confirm dialog — tap Cancel to stay in the game.
-		px, py := b.cal.ScaleRef(279, 429)
+		px, py := b.cal.Centre(279, 429)
 		b.client.TapRandomized(px, py)
 	}
 }
@@ -1887,7 +1915,7 @@ func (b *Bot) dismissInterruptions() {
 // close-animation; without it the next capture can race the menu's
 // fade-out and confuse the next template match.
 func (b *Bot) dismissSelection() {
-	tx, ty := b.cal.ScaleRef(50, 450)
+	tx, ty := b.cal.Centre(50, 450)
 	_ = b.client.Tap(tx, ty)
 	time.Sleep(500 * time.Millisecond)
 }

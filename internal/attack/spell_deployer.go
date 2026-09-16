@@ -218,7 +218,7 @@ func (sd *SpellDeployer) deployFourSides(unit strategy.Unit, _ *TrackedSlot, tar
 			// Deploy around spell target point
 			for j := 0; j < 4; j++ {
 				angle := float64(j) * 2.0 * math.Pi / 4.0
-				radius := 18.0 * sd.executor.cal.ScaleX
+				radius := sd.executor.cal.Length(18)
 				tx := targetPt.X + int(radius*math.Cos(angle))
 				ty := targetPt.Y + int(radius*math.Sin(angle))
 				jPt := sd.executor.addJitter(image.Pt(tx, ty), 6)
@@ -294,7 +294,7 @@ func (sd *SpellDeployer) deployPointSpell(unit strategy.Unit, slot *TrackedSlot,
 		var offset image.Point
 		if maxSpells > 1 {
 			angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
-			radius := 18.0 * sd.executor.cal.ScaleX
+			radius := sd.executor.cal.Length(18)
 			offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
 		}
 		pt := image.Pt(spellTarget.X+offset.X, spellTarget.Y+offset.Y)
@@ -562,7 +562,7 @@ func (sd *SpellDeployer) deployFormulaPoint(unit strategy.Unit, _ *TrackedSlot, 
 		var offset image.Point
 		if maxSpells > 1 {
 			angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
-			radius := 18.0 * sd.executor.cal.ScaleX
+			radius := sd.executor.cal.Length(18)
 			offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
 		}
 		pt := image.Pt(center.X+offset.X, center.Y+offset.Y)
