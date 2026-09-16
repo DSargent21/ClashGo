@@ -27,6 +27,7 @@ package bot
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -165,6 +166,11 @@ type BootOrchestrator struct {
 	policy *RecoveryPolicy
 	report *BootReport
 	logger zerolog.Logger
+
+	// screenRecover is the between-attempts recovery hook for
+	// screenSize. Defaults to recoverForScreenSize; tests override it
+	// to avoid touching a live adb-server.
+	screenRecover func(attempt int)
 }
 
 // NewBootOrchestrator wires the orchestrator. The client is the
@@ -503,26 +509,116 @@ func (o *BootOrchestrator) probeWithRecovery(ctx context.Context) (adb.ProbeResu
 	return adb.ProbeResult{}, errors.New("boot probe exhausted recovery attempts")
 }
 
-// screenSize fetches wm size. The shell call goes through the
-// context-aware wrapper with the per-call timeout so a hung device
-// can't stall this step past its budget.
+// screenSize fetches the display dimensions. The primary source is
+// `wm size`; when that shell call fails (a wedged WindowManager on
+// BlueStacks returns "ADB: closed" while SurfaceFlinger still serves
+// frames) we fall back to the live screencap, whose 12-byte header
+// carries the authoritative pixel dimensions the bot's calibration
+// needs anyway. Without the fallback a single flaky shell call aborts
+// the whole boot and the Start button looks dead.
 func (o *BootOrchestrator) screenSize(ctx context.Context) (int, int, error) {
+	recoverFn := o.screenRecover
+	if recoverFn == nil {
+		recoverFn = o.recoverForScreenSize
+	}
 	start := time.Now()
-	pctx, cancel := context.WithTimeout(ctx, o.cfg.AdbPerCallTimeout)
-	defer cancel()
-	out, err := o.runner.Shell(pctx, "wm size")
+	const maxAttempts = 3
+
+	var lastWmErr, lastCapErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		pctx, cancel := context.WithTimeout(ctx, o.cfg.AdbPerCallTimeout)
+		w, h, wmErr := o.screenSizeFromWmSize(pctx)
+		if wmErr == nil {
+			cancel()
+			o.report.AppendStep("screen.size", start, BootResultOK, fmt.Sprintf("%dx%d", w, h))
+			return w, h, nil
+		}
+
+		o.logger.Warn().Err(wmErr).Msg("wm size failed; falling back to screencap dimensions")
+		w, h, capErr := o.screenSizeFromScreencap(pctx)
+		cancel()
+		if capErr == nil {
+			o.report.AppendStep("screen.size", start, BootResultOK, fmt.Sprintf("%dx%d (screencap fallback)", w, h))
+			return w, h, nil
+		}
+
+		lastWmErr, lastCapErr = wmErr, capErr
+		if attempt == maxAttempts {
+			break
+		}
+		// Both sources failed on the same attempt. This is the
+		// "ADB: closed" failure mode: the adb.connect step opened a
+		// transport seconds earlier, but BlueStacks' ADB daemon has
+		// since wedged or the local adb-server holds a stale device
+		// entry. Retrying against the same socket just burns the
+		// budget — apply the cheap→destructive ladder between
+		// attempts instead.
+		recoverFn(attempt)
+	}
+
+	detail := fmt.Sprintf("wm size: %v; screencap: %v", lastWmErr, lastCapErr)
+	o.report.AppendStep("screen.size", start, BootResultError, detail)
+	return 0, 0, fmt.Errorf("screen size: wm size: %v; screencap: %w", lastWmErr, lastCapErr)
+}
+
+// recoverForScreenSize is the between-attempts recovery ladder for
+// screenSize. attempt is 1-based (the attempt that just failed).
+//
+//  1st failure: RetryTransport — close + reopen the ADB transport.
+//     Handles the stale-socket-after-BlueStacks-blip case (~50ms).
+//  2nd failure: ResetAdbServer — `adb kill-server` + start-server.
+//     Clears stale "localhost:5555 device" registrations that make
+//     every shell call return "ADB: closed" (~4s, drops ALL adb
+//     connections on this host — same tradeoff the connectADB
+//     mid-budget injection already accepts).
+func (o *BootOrchestrator) recoverForScreenSize(attempt int) {
+	if attempt <= 1 {
+		o.logger.Warn().Msg("screen.size failed; reconnecting ADB transport before retry")
+		o.report.MarkRecovery("RetryTransport")
+		if err := o.client.Reconnect(); err != nil {
+			o.logger.Warn().Err(err).Msg("screen.size transport reconnect failed; continuing ladder")
+		}
+		return
+	}
+	o.logger.Warn().Msg("screen.size failed again; resetting adb-server (drops ALL adb connections on this host) before retry")
+	o.report.MarkRecovery("ResetAdbServer")
+	sStart := time.Now()
+	if err := o.client.ResetAdbServer(); err != nil {
+		o.report.AppendStep("recovery.ResetAdbServer", sStart, BootResultError, err.Error())
+		o.logger.Warn().Err(err).Msg("screen.size adb-server reset failed; continuing ladder")
+	} else {
+		o.report.AppendStep("recovery.ResetAdbServer", sStart, BootResultOK, "adb-server reset before screen.size retry")
+	}
+	_ = o.client.Reconnect()
+}
+
+func (o *BootOrchestrator) screenSizeFromWmSize(ctx context.Context) (int, int, error) {
+	out, err := o.runner.Shell(ctx, "wm size")
 	if err != nil {
-		o.report.AppendStep("screen.size", start, BootResultError, err.Error())
 		return 0, 0, err
 	}
 	var w, h int
 	if _, err := fmt.Sscanf(out, "Physical size: %dx%d", &w, &h); err != nil {
 		if _, err := fmt.Sscanf(out, "Override size: %dx%d", &w, &h); err != nil {
-			o.report.AppendStep("screen.size", start, BootResultError, fmt.Sprintf("parse %q: %v", out, err))
 			return 0, 0, fmt.Errorf("parse wm size %q: %w", out, err)
 		}
 	}
-	o.report.AppendStep("screen.size", start, BootResultOK, fmt.Sprintf("%dx%d", w, h))
+	return w, h, nil
+}
+
+func (o *BootOrchestrator) screenSizeFromScreencap(ctx context.Context) (int, int, error) {
+	buf, err := o.runner.CaptureScreen(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(buf) < 12 {
+		return 0, 0, fmt.Errorf("screencap response too short (%d bytes)", len(buf))
+	}
+	w := int(binary.LittleEndian.Uint32(buf[0:4]))
+	h := int(binary.LittleEndian.Uint32(buf[4:8]))
+	if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+		return 0, 0, fmt.Errorf("screencap returned invalid dimensions %dx%d", w, h)
+	}
 	return w, h, nil
 }
 

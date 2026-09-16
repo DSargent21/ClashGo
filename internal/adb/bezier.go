@@ -9,18 +9,6 @@ import (
 	"time"
 )
 
-// easeInOut returns the smoothstep easing of t in [0,1]: slow start,
-// fast middle, slow end — the velocity profile of a real finger.
-func easeInOut(t float64) float64 {
-	if t <= 0 {
-		return 0
-	}
-	if t >= 1 {
-		return 1
-	}
-	return t * t * (3 - 2*t)
-}
-
 // swipePath returns `steps` points tracing a quadratic bezier curve from
 // p0 to p2 with control point p1. With p1 == the straight-line midpoint
 // the path degenerates to the p0→p2 segment (allowing unit tests to assert

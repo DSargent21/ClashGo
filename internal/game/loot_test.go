@@ -264,6 +264,87 @@ var victoryTestCases = []victoryTestCase{
 	},
 }
 
+// defeatTestCase is the regression fixture for the defeat screen that a
+// live 35% loss misparsed as "2⭐". The screenshot was sanitized (the
+// top strip with the opponent's player/clan names is blacked out); the
+// star band (y 140-260) and loot rows are untouched.
+//
+// A defeat screen still lists the attacker's own available loot in the
+// result panel (ground truth read off the fixture), so these values are
+// exact. Earlier parser revisions hallucinated wildly here: fixed slots
+// missed the digits and OCR'd background noise ("e780077", "de107" from
+// a row whose true value is 10735).
+
+// TestStarsFromOutcome pins CoC's star scoring rules (the authoritative
+// source for battle reports; result-screen art is only a fallback):
+// >=50% destruction = 1 star, Town Hall destroyed = +1, 100% = 3.
+func TestStarsFromOutcome(t *testing.T) {
+	cases := []struct {
+		pct         int
+		thDestroyed bool
+		want        int
+	}{
+		{0, false, 0},  // wipe-out
+		{35, false, 0}, // live defeat (35% loss)
+		{35, true, 1},  // TH sniped below 50%: still 1 star
+		{49, true, 1},
+		{50, false, 1}, // exactly the auto-end threshold, TH intact
+		{50, true, 2},  // 50% + TH destroyed
+		{74, false, 1},
+		{89, true, 2},
+		{99, true, 2},
+		{100, false, 3}, // 100% is always 3 stars
+		{100, true, 3},
+	}
+	for _, tc := range cases {
+		if got := StarsFromOutcome(tc.pct, tc.thDestroyed); got != tc.want {
+			t.Errorf("StarsFromOutcome(%d, %v) = %d, want %d", tc.pct, tc.thDestroyed, got, tc.want)
+		}
+	}
+}
+
+// defeatTestCase pins both the star count AND the loot values for the
+// defeat fixture (ground truth read off the sanitized screenshot).
+var defeatTestCases = []struct {
+	name      string
+	imgPath   string
+	wantStars int
+	loot      Resources
+}{
+	{
+		name:      "screen_defeat",
+		imgPath:   "testdata/screen_defeat.png",
+		wantStars: 0,
+		loot:      Resources{Gold: 1369137, Elixir: 780077, DarkElixir: 10735},
+	},
+}
+
+func TestBattleResultDefeat(t *testing.T) {
+	lr := newTestLootRecognizer(t)
+
+	for _, tc := range defeatTestCases {
+		t.Run(tc.name, func(t *testing.T) {
+			img := gocv.IMRead(tc.imgPath, gocv.IMReadColor)
+			if img.Empty() {
+				t.Fatalf("cannot read defeat fixture %s", tc.imgPath)
+			}
+			defer img.Close()
+
+			result, err := lr.ReadBattleResult(img)
+			if err != nil {
+				t.Fatalf("ReadBattleResult: %v", err)
+			}
+
+			if result.Stars != tc.wantStars {
+				t.Errorf("Stars = %d, want %d (defeat must never read as a win)", result.Stars, tc.wantStars)
+			}
+			if result.Loot != tc.loot {
+				t.Errorf("Loot = %+v, want %+v (defeat loot must be read exactly, not hallucinated)", result.Loot, tc.loot)
+			}
+		})
+	}
+}
+
 func TestLootVictory(t *testing.T) {
 	lr := newTestLootRecognizer(t)
 

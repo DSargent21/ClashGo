@@ -311,6 +311,13 @@ func (sm *SlotManager) applyManualLabelsFallback() {
 	if !ok {
 		return
 	}
+	sm.applyManualLabels(data)
+}
+
+// applyManualLabels fills unidentified slots from manual_labels.json data.
+// Split out from applyManualLabelsFallback so tests can feed crafted
+// configs without touching the on-disk assets.
+func (sm *SlotManager) applyManualLabels(data []byte) {
 	var lConf struct {
 		Slots []struct {
 			X    int    `json:"x"`
@@ -335,6 +342,34 @@ func (sm *SlotManager) applyManualLabelsFallback() {
 			continue
 		}
 		cleanName := strings.ToLower(strings.TrimSpace(label))
+
+		// A template match on a DIFFERENT slot wins over this stale
+		// manual label. manual_labels.json is calibrated on one army
+		// layout; reusing a name that template matching already
+		// assigned elsewhere would create a DUPLICATE identity. The
+		// duplicate then hijacks the strategy's unit lookup
+		// (unitIndex keeps the LAST assignment per name), so e.g.
+		// "grand warden" could resolve to the wrong card while the
+		// real hero slot never gets its main-phase deploy and the
+		// wrongly-labeled card is never swept (it looks deployed).
+		// Seen live with valk_spam: the stale "grand warden" label
+		// on the unidentified Dragon Duke slot stole the warden's
+		// deploy and left the Duke in the bar all battle.
+		duplicate := false
+		for _, other := range sm.slots {
+			if other != slot && strings.EqualFold(other.UnitName, cleanName) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			sm.logger.Warn().
+				Int("x", slot.X).
+				Str("fallback", cleanName).
+				Msg("skipping stale fallback label; template match already assigned this unit elsewhere")
+			continue
+		}
+
 		slot.UnitName = cleanName
 		slot.Confidence = 1.0
 		slot.State = SlotIdentified

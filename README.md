@@ -28,7 +28,13 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
   on-screen text — a terminal-only "eye view" for debugging without a
   GUI. See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
 - **Replayable attacks**: `make attack-record` records a deploy you perform on the emulator; `make attack-replay` re-fires that JSON on the device with classification + extras. Useful for sharing working attacks without re-engineering.
-  - In-app updater: New releases ship through GitHub Releases. Once a version is published, ClashGO's UI shows a banner; clicking it downloads + verifies (SHA256), then opens Finder so you can drag-replace. No new servers, no manual checks. Skip / later are honored.
+  - **In-app updater (auto-pop)**: New releases ship through GitHub
+    Releases. When a version is published, ClashGO **pops up the update
+    window on its own** (no click needed) offering one-click
+    *Update & Restart*: it downloads the zip, verifies the SHA256
+    against `latest.json`, swaps the running app in place, and relaunches.
+    No new servers, no manual checks. "Later" silences it for the session;
+    "Skip version" silences it permanently.
 
 ### 🛠️ How to use
 1. **Emulator**: Set your emulator (like BlueStacks) to **860x732** resolution and **160 DPI**.
@@ -84,12 +90,28 @@ always **BlueStacks**, not the bot.
 Updates are powered by GitHub Releases — no extra infrastructure.
 
 1. Bump `productVersion` in `wails.json` (e.g. `0.3.0-beta`).
-2. `make release VERSION=0.3.0-beta` — produces the zip, the DMG,
+2. Commit + push, then tag it:
+
+   ```sh
+   git tag v0.3.0-beta && git push origin v0.3.0-beta
+   ```
+
+   Pushing a `v*` tag runs the **Release** workflow
+   (`.github/workflows/release.yml`), which builds the macOS zip, the
+   DMG, and `latest.json` on a fresh runner and publishes them to a
+   GitHub Release automatically. No manual upload, no secrets — the
+   workflow uses GitHub's built-in `GITHUB_TOKEN`, and the app itself
+   checks the public GitHub API unauthenticated.
+3. Existing users get an auto-popping update window within 6h (or on
+   next launch) offering one-click *Update & Restart*.
+
+Manual fallback (no CI):
+
+1. `make release VERSION=0.3.0-beta` — produces the zip, the DMG,
    and `latest.json`.
-3. Publish a GitHub release tagged `v0.3.0-beta`, and attach:
+2. Publish a GitHub release tagged `v0.3.0-beta`, and attach:
    - `ClashGO-v0.3.0-beta-macOS.zip`
    - `latest.json`
-4. Existing users get a banner within 6h (or on next launch).
 
 ### 🤝 HELP WANTED (Porting to Windows)
 Right now, this is heavily tested on macOS. I'd love some help **porting/testing this for Windows**. If you're a dev and want to help me make this not-just-a-Mac-thing, open a PR or hit me up!

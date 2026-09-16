@@ -95,7 +95,16 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to start bot")
 	}
 
-	<-ctx.Done()
+	// Wait for either a shutdown signal or the bot's natural shutdown
+	// (attack cap reached — e.g. --once). Previously main() blocked
+	// forever on ctx.Done() after the bot finished its final attack,
+	// so a --once run hung with the process alive after "SESSION
+	// SUMMARY" was printed.
+	select {
+	case <-ctx.Done():
+	case <-b.Done():
+		log.Info().Msg("bot finished its session; shutting down")
+	}
 
 	log.Info().Msg("shutting down...")
 	b.Stop()

@@ -1,6 +1,12 @@
 name: "Valkyrie Earthquake Spam"
 description: "Spam Valkyries on all 4 sides, followed by Heroes/Siege and Earthquakes"
 target_edge: "Random"
+# The Valkyrie ring plus heroes secures the win well before the stall
+# timer would fire; end the battle as soon as destruction hits 50%.
+end_at_percent: 50
+# The Valkyrie loadout lives in the 4th saved-army recipe; arm it before
+# the battle instead of the default first recipe.
+army_slot: 4
 phases:
   - name: "Valkyrie Spam"
     units: [{ name: "Valkyrie", amount: "All" }]

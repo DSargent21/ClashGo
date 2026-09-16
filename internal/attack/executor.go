@@ -12,12 +12,42 @@ import (
 	"gocv.io/x/gocv"
 )
 
+// DeployBudget bounds the entire deploy phase (strategy phases + spell /
+// hero reconcile + sweep + verify) from the moment DeployDynamicV2 starts.
+// A CoC battle lasts 3 minutes from the first drop; every reconcile/sweep
+// loop below consults DeployBudgetExhausted so a slot whose "empty" check
+// keeps failing (observed live: a spent earthquake/spell card stuck in its
+// cooldown read as visually non-empty forever) can never keep firing taps
+// past the battle timer — the stuck-sweep symptom that burned minutes and
+// hundreds of taps after the battle was already over. The budget is ~2x the
+// longest legitimately-observed full deployment (~100s) so real attacks are
+// never cut short.
+const DeployBudget = 170 * time.Second
+
 // TapExecutor handles all tap operations, screen capture, and timing.
 type TapExecutor struct {
 	client      *adb.Client
 	cal         *game.Calibration
 	logger      zerolog.Logger
 	lineForward bool
+
+	// deployDeadline is when this battle's deploy budget runs out. Zero
+	// when no deploy is in progress (or the budget was never started).
+	// Set by StartDeployBudget on the attack goroutine; read by the same
+	// goroutine's reconcile loops, so no locking is needed.
+	deployDeadline time.Time
+
+	// slotResolver maps a lower-cased unit name to its TrackedSlot.
+	// The orchestrator wires it to SlotManager.GetSlot after the slot
+	// manager is built; deployers use it to pair a unit with its OCR'd
+	// count. nil is legal (lookup just returns no slot).
+	slotResolver func(unitName string) *TrackedSlot
+}
+
+// SetSlotResolver wires the unit-name -> slot lookup used by deployers
+// that need to correlate a unit with its slot (e.g. live OCR counts).
+func (t *TapExecutor) SetSlotResolver(fn func(unitName string) *TrackedSlot) {
+	t.slotResolver = fn
 }
 
 // NewTapExecutor creates a new tap executor.
@@ -32,6 +62,40 @@ func NewTapExecutor(client *adb.Client, cal *game.Calibration, logger zerolog.Lo
 // CaptureFresh captures a fresh screen from the device.
 func (t *TapExecutor) CaptureFresh() (gocv.Mat, error) {
 	return t.client.CaptureToMat()
+}
+
+// StartDeployBudget arms the deploy deadline at DeployBudget from now.
+// Call once per battle before any phase runs (DeployDynamicV2).
+func (t *TapExecutor) StartDeployBudget() {
+	t.deployDeadline = time.Now().Add(DeployBudget)
+}
+
+// StartDeployBudgetAt arms the deploy deadline at an explicit instant
+// (used by tests to simulate an already-expired budget).
+func (t *TapExecutor) StartDeployBudgetAt(deadline time.Time) {
+	t.deployDeadline = deadline
+}
+
+// DeployBudgetExhausted reports whether the deploy phase may keep firing
+// taps. It is the single abort check every reconcile/sweep/verify loop
+// consults between rounds: once true, remaining units are reported
+// undeployed and the bot moves on to the battle-end wait instead of
+// tapping into (or past) the battle timer.
+func (t *TapExecutor) DeployBudgetExhausted() bool {
+	return !t.deployDeadline.IsZero() && time.Now().After(t.deployDeadline)
+}
+
+// DeployBudgetRemaining returns the time left in the deploy budget (0
+// when exhausted or never armed).
+func (t *TapExecutor) DeployBudgetRemaining() time.Duration {
+	if t.deployDeadline.IsZero() {
+		return 0
+	}
+	rem := time.Until(t.deployDeadline)
+	if rem < 0 {
+		return 0
+	}
+	return rem
 }
 
 // TapSlot selects a slot with jitter for human-like behavior.

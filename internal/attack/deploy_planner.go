@@ -121,6 +121,12 @@ func (dp *DeployPlanner) planUnit(unit strategy.Unit, phase strategy.Phase) Unit
 	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 	isAbility := unit.Pattern == "Ability" || phase.Pattern == "Ability"
 
+	// Copy the phase-level offset into the unit so deployers (spells,
+	// FourSides EQ ring, etc.) can honor a phase pin like
+	// "offset: 130 # Deeper in for EQs" without each unit repeating it.
+	// Per-unit offset still wins at the deploy site.
+	unit.PhaseOffset = phase.Offset
+
 	plan := UnitPlan{
 		Unit:      unit,
 		IsSpell:   isSpellStatic(unitName),

@@ -144,6 +144,25 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
     return () => clearTimeout(t);
   }, [status?.state]);
 
+  // AUTO-POP: open the dialog the first time an update becomes
+  // available — either on launch (the initial GetUpdateStatus already
+  // reports one) or the moment a background poll flips `available` to
+  // true. We pop at most once per latest version so the 2s status
+  // ticker can't re-open a dialog the user already closed. The
+  // deliberate dismissals are "Later" (unmounts the whole banner via
+  // App-level updateDismissed) and "Skip version" (persisted on disk,
+  // which recants availability server-side). Small delay so the first
+  // paint settles before the modal slides in.
+  const autoPoppedVersion = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!status || !status.available) return;
+    if (autoPoppedVersion.current === status.latest_version) return;
+    autoPoppedVersion.current = status.latest_version;
+    const t = setTimeout(() => setOpen(true), 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.available, status?.latest_version]);
+
   if (!status) return null;
 
   // Restoring state renders a full-screen splash instead of the modal/pill.
