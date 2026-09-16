@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **`cmd/resprobe`** — measures how the CoC HUD and world scale between two
+  framebuffer geometries by template-matching a reference patch over a grid
+  of (scaleX, scaleY) pairs. It is the instrument behind
+  [`docs/RESOLUTION.md`](docs/RESOLUTION.md).
+- **`docs/RESOLUTION.md`** — the measured display-geometry law (world scales
+  *uniformly about the viewport centre* by the screen-diagonal ratio; the HUD
+  is edge-anchored at the same scale; density is irrelevant), why the current
+  single-affine reference model cannot survive an aspect change, and the
+  step-by-step migration plan for adopting a real 720p phone geometry.
+
+### Notes
+- Adopting `1280×720` requires the calibration work in
+  `docs/RESOLUTION.md` — a config flip alone misplaces every classifier pixel
+  anchor (measured live: `MainVillage` drops 2/7 → 1/7 passing anchors, score
+  260 → 160) and pushes the template scale outside the `0.9–1.1`
+  multi-scale window.
+
 ## [0.5.0-beta] - 2026-09-16
 
 ### Added
