@@ -34,11 +34,6 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
   - `navigator.go` — State-to-state navigation + interrupt handling
   - `recognizer.go` — ScreenHash, blur detection, contour-based element detection
   - `templates.go` — Template store with multi-scale matching
-- [x] **Training System** (`internal/training/train.go`)
-  - Army status reading (full army bar detection, slot counting)
-  - Troop training queue executor with configurable delays
-  - Resource reading (gold, elixir, dark elixir)
-  - WaitForFullArmy with polling
 - [x] **Attack System** (`internal/attack/attack.go`)
   - YAML strategy loading and parsing
   - Deploy order builder (troops grouped by slot)
@@ -50,7 +45,6 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
 - [x] **Bot Orchestrator** (`internal/bot/bot.go`)
   - Captures screen at 5Hz
   - Classifies state with 2-frame confirmation
-  - Automatically trains army when not full
   - Automatically searches for match and attacks when army ready
   - Stats tracking (attack count, uptime, health)
   - Graceful shutdown with signal handling
@@ -80,8 +74,7 @@ Port MyBot.run (Clash of Clans AutoIt bot) to Go for Apple Silicon Macs using Bl
 ### Attack Flow
 ```
 Main Village (5Hz capture loop)
-  ├── Army full? → No → Navigate to Army Camp → Train queue → Return
-  └── Army full? → Yes → Navigate to Battle
+  └── Army ready → Navigate to Battle
         → Find Match (tap search button)
         → Wait for battle state
         → Load CSV strategy
@@ -107,8 +100,7 @@ Client (public API: CaptureToMat, Tap, Swipe, Shell)
 Capture Loop (200ms ticker)
   └── Capture → Classify (pixel rules) → Confirm (2 frames) → Update State
         └── State change event → Check actions:
-              ├── MainVillage + !ArmyFull → Training flow
-              ├── MainVillage + ArmyFull → Attack flow
+              ├── MainVillage + Army ready → Attack flow
               ├── Splash states (TapToContinue / NewsSplash) → Auto-dismiss tap
               └── Interrupt states → Dismiss dialogs
 ```
@@ -178,7 +170,6 @@ ClashGO/
 │   │   ├── calibration.go           # Physical→reference (860×732) scaling
 │   │   ├── navigator.go / chestdismiss.go / loot.go / recognizer.go / templates.go
 │   │   └── *_test.go
-│   ├── training/                    # Army-camp reading + training queue
 │   ├── config/                      # Typed JSON config
 │   ├── paths/                       # Asset-path resolution
 │   ├── logger/                      # zerolog wiring

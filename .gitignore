@@ -26,7 +26,9 @@ internal/updater/skip_version.txt
 
 # Go
 vendor/
-go.sum
+# NOTE: go.sum is intentionally committed (reproducible CI builds).
+# The Release workflow builds from a fresh checkout on GitHub
+# Actions — without go.sum, `go build` fails with missing checksums.
 
 # Compiled Application Binaries (root & build/)
 ClashGO
@@ -90,6 +92,7 @@ logs/
 #   assets/templates/**/*.png          — gocv template matcher loads at runtime
 #   internal/game/testdata/screen_ocr.png     — Go test fixture (loot_test.go)
 #   internal/game/testdata/screen_victory.png — Go test fixture (loot_test.go)
+#   internal/game/testdata/screen_defeat.png  — defeat regression fixture (loot_test.go)
 #
 # If you add a new test fixture or grab-tool input, append it here explicitly
 # rather than dropping a PNG into those dirs — explicit list prevents an
@@ -103,6 +106,7 @@ logs/
 !**/assets/templates/**/*.png
 !internal/game/testdata/screen_ocr.png
 !internal/game/testdata/screen_victory.png
+!internal/game/testdata/screen_defeat.png
 !web/src/assets/images/clashgo-logo.png
 !build/appicon.png
 assets/templates/debug/

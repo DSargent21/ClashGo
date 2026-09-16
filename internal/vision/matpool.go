@@ -7,30 +7,31 @@ import (
 	"sync"
 )
 
+// matKey identifies a mat pool by its (type, rows, cols) triple. A struct
+// key avoids the per-call fmt.Sprintf allocation a string key incurred on
+// every Get/Put — the mat pool sits on the per-frame vision hot path.
+// (The previous implementation cast dimensions to a single rune, which
+// collapsed distinct dimensions into the same key; a struct key can't
+// collide that way either.)
+type matKey struct {
+	matType gocv.MatType
+	rows    int
+	cols    int
+}
+
 type MatPool struct {
-	pools map[string]*sync.Pool
+	pools map[matKey]*sync.Pool
 	mu    sync.Mutex
 }
 
 func NewMatPool() *MatPool {
 	return &MatPool{
-		pools: make(map[string]*sync.Pool),
+		pools: make(map[matKey]*sync.Pool),
 	}
 }
 
-// getPoolKey builds a collision-free key for a mat of the given size and type.
-// The previous implementation cast dimensions to a single rune
-// (string(rune(rows))), which collapsed distinct dimensions into the same
-// key (e.g. rows 100 and 256 both produced a 1-char string) and could panic
-// or corrupt data for dimensions larger than 0xFFFF. Dimensions are now
-// encoded numerically so every distinct (type, rows, cols) triple maps to a
-// unique key.
-func (p *MatPool) getPoolKey(rows, cols int, matType gocv.MatType) string {
-	return fmt.Sprintf("%d_%d_%d", matType, rows, cols)
-}
-
 func (p *MatPool) Get(rows, cols int, matType gocv.MatType) gocv.Mat {
-	key := p.getPoolKey(rows, cols, matType)
+	key := matKey{matType: matType, rows: rows, cols: cols}
 	p.mu.Lock()
 	pool, ok := p.pools[key]
 	if !ok {
@@ -54,7 +55,7 @@ func (p *MatPool) Put(mat gocv.Mat) {
 	if mat.Empty() {
 		return
 	}
-	key := p.getPoolKey(mat.Rows(), mat.Cols(), mat.Type())
+	key := matKey{matType: mat.Type(), rows: mat.Rows(), cols: mat.Cols()}
 	p.mu.Lock()
 	pool, ok := p.pools[key]
 	p.mu.Unlock()

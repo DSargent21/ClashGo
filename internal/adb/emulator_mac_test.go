@@ -96,13 +96,9 @@ func TestCandidatePortsCoversCommonPortRange(t *testing.T) {
 // wouldn't tell us this specific test is outdated — pin the
 // signature explicitly.
 func TestEnsureBlueStacksMacSignatureStable(t *testing.T) {
-	var fn func(width, height, dpi int) error
-	_ = fn
-	// The actual signature check is the type assertion below; if
-	// emulator_mac.go's EnsureBlueStacksMac changes arity or types,
-	// this line won't compile.
-	fn = (*Client)(nil).EnsureBlueStacksMac
-	if fn == nil {
-		t.Error("EnsureBlueStacksMac missing")
-	}
+	// Compile-time signature guard: if emulator_mac.go's
+	// EnsureBlueStacksMac changes arity or types, this assignment won't
+	// compile. A method value is never nil, so there is no runtime
+	// check to perform.
+	var _ func(width, height, dpi int) error = (*Client)(nil).EnsureBlueStacksMac
 }

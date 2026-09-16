@@ -1,0 +1,149 @@
+# Release — auto-publish ClashGO releases from tags.
+#
+# Pushing a tag like `v0.3.0-beta` triggers this workflow. It builds the
+# macOS zip + DMG + latest.json (the exact artifacts `make release`
+# produces locally) on a fresh macOS runner and publishes them to a
+# GitHub Release with the tag name as the version.
+#
+# Release notes come from CHANGELOG.md: the section headed
+# `## [<version>]` is extracted and used BOTH as the `notes` field in
+# latest.json (so the in-app auto-pop update window shows what's new)
+# and as the GitHub release body.
+#
+# Secrets: this workflow uses ONLY the built-in GITHUB_TOKEN (scoped to
+# `contents: write` below). No personal access token is embedded
+# anywhere — the released app itself talks to the public GitHub API
+# unauthenticated, so nothing secret ships to end users.
+#
+# To cut a release:
+#     git tag v0.3.0-beta && git push origin v0.3.0-beta
+# That's it — the release appears once the build finishes.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    # github.ref_name already includes the "v" prefix (e.g. v0.3.0-beta).
+    name: Build & publish ${{ github.ref_name }}
+    # NOTE: keep macos-latest. The explicit macos-26-arm64 label does
+    # NOT match a GitHub-hosted runner pool (jobs queue forever), and
+    # macos-latest currently resolves to the same macos-26 arm64 image
+    # the opencv@4/gocv pairing was verified against.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install OpenCV 4 (gocv build dependency)
+        # gocv v0.43.0 compiles against OpenCV 4.x — its cgo preamble runs
+        # `pkg-config --cflags opencv4`, and OpenCV 5 dropped the
+        # opencv4.pc file name. `brew install opencv` now yields 5.0.0,
+        # so we MUST pin the keg-only opencv@4 formula instead. The local
+        # dev env (sdk/cv-env) uses OpenCV 4.10 for the same reason.
+        run: |
+          brew install opencv@4
+          OPENCV_PC="$(brew --prefix opencv@4)/lib/pkgconfig"
+          echo "PKG_CONFIG_PATH=$OPENCV_PC" >> "$GITHUB_ENV"
+          # Fail fast with a clear message if pkg-config can't see it.
+          if ! PKG_CONFIG_PATH="$OPENCV_PC" pkg-config --modversion opencv4; then
+            echo "opencv4.pc not found under $OPENCV_PC" >&2
+            exit 1
+          fi
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Build release artifacts (zip + DMG + latest.json)
+        # Strip the leading "v" from the tag for VERSION. Extract the
+        # CHANGELOG section for this version into a notes file that is
+        # used for both latest.json and the GitHub release body.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES_FILE="$(mktemp)"
+          # Grab everything under "## [<version>]" until the next "## "
+          # heading (drop the heading line itself). Falls back to an
+          # empty file when the section is missing so the build never
+          # breaks on a fresh tag.
+          awk -v pat="## [$VERSION]" '
+            index($0, pat) == 1 { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          echo "NOTES_FILE=$NOTES_FILE" >> "$GITHUB_ENV"
+          echo "release notes ($(wc -l < "$NOTES_FILE" | tr -d ' ') lines):"
+          head -3 "$NOTES_FILE"
+          make release VERSION="$VERSION" NOTES_FILE="$NOTES_FILE"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ZIP="build/bin/ClashGO-v${VERSION}-macOS.zip"
+          DMG="build/bin/ClashGO.dmg"
+          MANIFEST="build/bin/latest.json"
+          for f in "$ZIP" "$DMG" "$MANIFEST"; do
+            if [[ ! -f "$f" ]]; then
+              echo "missing expected artifact: $f" >&2
+              exit 1
+            fi
+          done
+
+          # Reuse the same notes file the build step wrote, so the
+          # GitHub release body matches latest.json's notes field.
+          NOTES_FILE="${NOTES_FILE:-$(mktemp)}"
+          if [[ ! -s "$NOTES_FILE" ]]; then
+            echo "no changelog section for $GITHUB_REF_NAME — using generated notes" >&2
+          fi
+
+          # Idempotency: `gh release create` fails if the release already
+          # exists (workflow re-run, tag force-push). Delete-then-create
+          # makes re-runs safe.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME exists — recreating"
+            # Delete the release only, NOT the tag (--cleanup-tag would
+            # remove the ref this workflow was triggered by).
+            gh release delete "$GITHUB_REF_NAME" --yes
+          fi
+
+          # NOTE: deliberately NO --prerelease flag, even for -beta tags.
+          # The in-app updater resolves "latest" via GitHub's
+          # /releases/latest endpoint, which EXCLUDES prereleases — a
+          # prerelease-flagged beta would never be offered to users and
+          # would leave the older release marked "Latest". This project's
+          # convention (v0.1.0-beta / v0.2.0-beta) is to publish beta
+          # builds as regular releases so the update flow works.
+          gh release create "$GITHUB_REF_NAME" \
+            "$ZIP" \
+            "$DMG" \
+            "$MANIFEST" \
+            --title "ClashGO $GITHUB_REF_NAME" \
+            --notes-file "$NOTES_FILE"
+
+          echo "Release published: $GITHUB_REF_NAME"

@@ -332,10 +332,6 @@ These were surfaced by the audit but **not changed** in this commit — either
 the diff was too large for a single perf bundle, or the savings were
 sub-1% and not worth the change.
 
-- **`internal/game/loot.go`** — additional per-frame Mat allocations in
-  `colorCheck` / `isSlotEmpty` / `readRow`. Candidates for `vision.GetMat`
-  from the existing mat pool. Estimated savings: <1% CPU but a meaningful
-  reduction in GC pressure during loot OCR.
 - **`internal/bot/wall_upgrade.go`** — many `time.Sleep` calls in the
   asset-driven modal close path. Tightening these needs a per-ROI
   settle-budget pass to avoid breaking the existing recovery flow.
@@ -344,3 +340,10 @@ sub-1% and not worth the change.
   but further concurrency tuning could win another ~2% CPU during deploy.
 
 Future performance commits will tackle these in dedicated PRs.
+
+> **Update (shipped later):** the loot-OCR item originally listed here
+> (`internal/game/loot.go::readRow` and `internal/bot/bot.go::colorCheck`)
+> was applied in a follow-up — both now pool their per-frame Mats via
+> `vision.GetMat`/`vision.PutMat`. `isSlotEmpty` was already pooled through
+> the consolidated `slotActivity` helper, so it needed no change. Only the
+> two items above remain deferred.

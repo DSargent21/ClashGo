@@ -281,10 +281,6 @@ func (r *BootReport) SaveJSON(path string) error {
 // line. One per step, joined with " | " by JoinedStepSummary.
 func (s BootStep) StepSummary() string {
 	dur := s.Duration.Round(time.Millisecond)
-	detail := s.Detail
-	if detail == "" {
-		detail = string(s.Result)
-	}
 	return fmt.Sprintf("%s=%s/%s", s.Name, s.Result, dur)
 }
 

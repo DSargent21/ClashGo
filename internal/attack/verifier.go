@@ -76,6 +76,13 @@ func (v *Verifier) VerifyAll() int {
 
 	for attempt := 1; attempt <= v.config.MaxRetryAttempts; attempt++ {
 
+		// Battle-timer guard: verification redeploys are taps too — they
+		// must stop the moment the deploy budget is gone.
+		if v.executor.DeployBudgetExhausted() {
+			v.logger.Warn().Msg("verifier: deploy budget exhausted; stopping redeploy attempts")
+			break
+		}
+
 		if attempt == 1 {
 			v.executor.WaitForSettle(300 * time.Millisecond)
 		}

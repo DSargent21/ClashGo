@@ -140,13 +140,6 @@ var chestContinueMaxTaps = 3
 // hard to diagnose.
 var ChestSkipConfirmSettle = 800 * time.Millisecond
 
-// init seeds the global PRNG so the chest-dismiss taps land at a
-// different pixel each iteration. math/rand auto-seeds since Go 1.20
-// but we seed explicitly so the behavior is robust across toolchains.
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
-
 // LoadChestDismissConfig reads assets/chest_dismiss_roi.json.
 //
 // Returns (cfg, nil) on a valid file, (nil, nil) when the file is

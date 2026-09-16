@@ -37,9 +37,13 @@ func ResizeToHeight(src gocv.Mat, targetHeight int) gocv.Mat {
 }
 
 func MatchTemplate(screen, template gocv.Mat, threshold float32) ([]Match, error) {
-	// Standardize to multi-scale search to handle minor screen density differences.
-	// 0.8 to 1.2 at 5 steps is 6x faster and covers standard device scaling.
-	return MatchMultiScale(screen, template, 0.8, 1.2, 5, threshold)
+	// Single-scale match at 1.0. Callers that need density-scale tolerance use
+	// MatchMultiScale explicitly (with a named template so the scaled set is
+	// cached); blind 5-step escalation here cost 5 Resizes + 5 cgo matches
+	// per call on the frame hot path for callers whose inputs are already
+	// normalized to reference resolution (MatchTemplateRegion users resize
+	// the screen to ref dims before calling).
+	return MatchMultiScale(screen, template, 1.0, 1.0, 1, threshold)
 }
 
 func MatchTemplateBest(screen, template gocv.Mat, threshold float32) (image.Point, float64, error) {

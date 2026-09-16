@@ -18,22 +18,161 @@ type SpellDeployer struct {
 	pCfg     PrecisionConfig
 	formula  *formula.Formula
 	w, h     int
-	logger   zerolog.Logger
+	// slotCounts maps slot X -> live OCR'd spell count (from TroopCounter).
+	// When non-nil and the slot has a positive count, it takes precedence
+	// over the hardcoded default of 5 so an army carrying 2 EQ spells
+	// doesn't get 5 taps and an army carrying 11 rage spells doesn't get
+	// 5. Counts are best-effort: OCR may fail, in which case the legacy
+	// default applies.
+	slotCounts map[int]int
+	// troopCounter live-OCRs the count above a spell card. When set,
+	// VerifyAndReconcile can re-read the count after deployment and
+	// re-fire the difference until the slot is empty or retries run out.
+	troopCounter *TroopCounter
+	barY         int
+	logger       zerolog.Logger
 }
 
 // NewSpellDeployer creates a new spell deployer. formula may be nil;
 // when non-nil, a formula unit entry completely replaces the legacy
 // pCfg.SpellEdges{A,B} / pCfg.SpellTargets / isRage-special logic so
-// the user-pinned geometry wins.
+// the user-pinned geometry wins. slotCounts may be nil (legacy behavior:
+// Amount=="All" resolves to the default 5 taps).
 func NewSpellDeployer(executor *TapExecutor, pCfg PrecisionConfig, formula *formula.Formula, w, h int, logger zerolog.Logger) *SpellDeployer {
+	return NewSpellDeployerWithCounts(executor, pCfg, formula, w, h, nil, logger)
+}
+
+// NewSpellDeployerWithCounts is the count-aware constructor. counts is
+// the map returned by GetAllCounts(troopCounts): slot X -> detected
+// count for that card.
+func NewSpellDeployerWithCounts(executor *TapExecutor, pCfg PrecisionConfig, formula *formula.Formula, w, h int, counts map[int]int, logger zerolog.Logger) *SpellDeployer {
 	return &SpellDeployer{
-		executor: executor,
-		pCfg:     pCfg,
-		formula:  formula,
-		w:        w,
-		h:        h,
-		logger:   logger.With().Str("component", "spell_deployer").Logger(),
+		executor:   executor,
+		pCfg:       pCfg,
+		formula:    formula,
+		w:          w,
+		h:          h,
+		slotCounts: counts,
+		logger:     logger.With().Str("component", "spell_deployer").Logger(),
 	}
+}
+
+// SetCounter enables post-deploy verification. counter is the shared
+// TroopCounter already used by HeroManager/Sweeper; barY is the troop-bar
+// top so DetectCount samples the correct card-number ROI.
+func (sd *SpellDeployer) SetCounter(counter *TroopCounter, barY int) {
+	sd.troopCounter = counter
+	sd.barY = barY
+}
+
+// liveCountAndEmpty reads the current state of the spell's card using the
+// shared captureSlotLiveCount helper (one screencap → OCR count + visual
+// empty check). Returns (count, empty, ok); ok is false when capture or
+// OCR is unavailable — callers must treat "unknown" differently from
+// "confirmed empty".
+func (sd *SpellDeployer) liveCountAndEmpty(slot *TrackedSlot) (int, bool, bool) {
+	if sd.troopCounter == nil || sd.executor == nil {
+		return 0, false, false
+	}
+	count, empty := captureSlotLiveCount(sd.executor, sd.troopCounter, slot, sd.barY, sd.w, sd.h)
+	return count, empty, true
+}
+
+// VerifyAndReconcile re-reads the spell's slot state after deployment and
+// re-fires the difference along the same geometry until the slot is empty
+// or maxRounds is exhausted. Mirrors HeroManager's troop reconcile loop.
+// A slot is only "confirmed empty" when BOTH the OCR count reads 0 and
+// the visual empty check passes; a disagreement keeps reconciling.
+//
+// Returns (extra spells fired, slot confirmed empty). Only runs when a
+// counter was registered via SetCounter; otherwise (0, false).
+func (sd *SpellDeployer) VerifyAndReconcile(unit strategy.Unit, slot *TrackedSlot, targetEdge, phasePattern string, maxRounds int) (int, bool) {
+	if sd.troopCounter == nil || slot == nil || maxRounds <= 0 {
+		return 0, false
+	}
+
+	const reconcileSettleMs = 350 // CoC redraw of the card count after a drop
+
+	totalFired := 0
+	lastRemaining := -1
+	for round := 0; round < maxRounds; round++ {
+		// Battle-timer guard: a spent spell card whose cooldown reads as
+		// "still has charges" must not keep eating re-fire taps once the
+		// deploy budget is gone (observed live: rage/EQ reconcile loops).
+		if sd.executor.DeployBudgetExhausted() {
+			sd.logger.Warn().Str("unit", unit.Name).Msg("spell reconcile: deploy budget exhausted; stopping")
+			return totalFired, false
+		}
+		sd.executor.client.HumanSleep(reconcileSettleMs, 50)
+		remaining, empty, ok := sd.liveCountAndEmpty(slot)
+		if !ok {
+			sd.logger.Debug().
+				Str("unit", unit.Name).
+				Int("round", round+1).
+				Msg("reconcile: capture/OCR unavailable; stopping spell reconcile")
+			return totalFired, false
+		}
+		if remaining <= 0 && empty {
+			sd.logger.Info().
+				Str("unit", unit.Name).
+				Int("rounds", round+1).
+				Int("extra_fired", totalFired).
+				Msg("reconcile: spell slot confirmed empty")
+			return totalFired, true
+		}
+		if remaining <= 0 {
+			// OCR says 0 but the card still looks active (cursor
+			// highlight artifact). One more settle, then trust OCR.
+			sd.logger.Debug().
+				Str("unit", unit.Name).
+				Int("round", round+1).
+				Msg("reconcile: OCR empty but card visually active; treating as deployed")
+			return totalFired, true
+		}
+		// No-progress stop: a spell drop consumes its card almost
+		// instantly, so a POSITIVE count that repeats after a full
+		// fire+settle cycle means the drop isn't registering (or the
+		// card is in cooldown and OCR reads a stale/dimmed badge) —
+		// re-firing the same count again will read the same number and
+		// just wastes taps. Live: a 1-charge rage card read "1" every
+		// round and the old code re-fired it for the whole maxRounds
+		// budget. One repeat is tolerated (the first re-fire may be a
+		// genuine miss); a second identical read stops the loop.
+		if lastRemaining == remaining {
+			sd.logger.Warn().
+				Str("unit", unit.Name).
+				Int("round", round+1).
+				Int("remaining", remaining).
+				Int("extra_fired", totalFired).
+				Msg("spell reconcile: OCR count did not drop after re-fire; treating card as spent — stopping")
+			return totalFired, false
+		}
+		lastRemaining = remaining
+
+		sd.logger.Warn().
+			Str("unit", unit.Name).
+			Int("round", round+1).
+			Int("remaining", remaining).
+			Msg("reconcile: spells still on card; re-firing remainder")
+
+		// Re-select the slot so the cursor owns the spells again, then
+		// re-deploy with the unit's Amount pinned to the remaining count.
+		// The explicit count takes precedence over the OCR snapshot inside
+		// resolveSpellCount, so exactly `remaining` spells are re-fired.
+		sd.executor.TapSlot(slot, 8)
+		sd.executor.client.HumanSleep(150, 30)
+
+		re := unit
+		re.Amount = strconv.Itoa(remaining)
+		sd.DeploySpell(re, slot, targetEdge, phasePattern)
+		totalFired += remaining
+	}
+
+	sd.logger.Warn().
+		Str("unit", unit.Name).
+		Int("extra_fired", totalFired).
+		Msg("reconcile exhausted; some spells may remain undeployed")
+	return totalFired, false
 }
 
 // DeploySpell deploys a spell unit according to its pattern.
@@ -87,21 +226,35 @@ func (sd *SpellDeployer) deployFourSides(unit strategy.Unit, _ *TrackedSlot, tar
 				time.Sleep(50 * time.Millisecond)
 			}
 		} else {
-			// Legacy fallback to SpellEdgesB
+			// Legacy fallback chain: SpellEdgesB → SpellEdgesA → Edges.
+			// An edge with NO configured line at all is skipped — tapping
+			// the zero-value edge (0,0)→(0,0) lands every tap in the
+			// screen's top-left corner, which in CoC opens menus instead
+			// of deploying spells.
 			edge, ok := sd.pCfg.SpellEdgesB[edgeName]
 			if !ok {
 				edge, ok = sd.pCfg.SpellEdgesA[edgeName]
-				if !ok {
-					edge, _ = sd.pCfg.Edges[edgeName]
-				}
+			}
+			if !ok {
+				edge, ok = sd.pCfg.Edges[edgeName]
+			}
+			if !ok {
+				sd.logger.Warn().
+					Str("unit", unit.Name).
+					Str("edge", edgeName).
+					Msg("FourSides spell: no line configured for edge; skipping")
+				continue
 			}
 
 			p1, p2 := edge.P1, edge.P2
 
-			// Apply inward offset
+			// Apply inward offset. Per-unit offset wins; fall back to the
+			// phase-level offset (valk_spam pins "offset: 130 # Deeper in for
+			// EQs" on the PHASE, not the unit — dropping the fallback made
+			// the EQ ring land on the outer edge instead of deeper in).
 			off := unit.Offset
 			if off == 0 {
-				off = 0 // Phase offset handled elsewhere
+				off = unit.PhaseOffset
 			}
 			if off > 0 {
 				centerX, centerY := sd.w/2, sd.h/2
@@ -208,8 +361,12 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 
 	p1, p2 := edge.P1, edge.P2
 
-	// Apply offset
+	// Apply offset. Per-unit offset wins; fall back to the phase-level
+	// offset so valk_spam-style "deeper in for EQs" phase pins still work.
 	off := unit.Offset
+	if off == 0 {
+		off = unit.PhaseOffset
+	}
 	if off > 0 {
 		centerX, centerY := sd.w/2, sd.h/2
 		pct := float64(off)/150.0 + 0.12
@@ -304,13 +461,45 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 }
 
 // resolveSpellCount returns the number of spells to deploy.
+//
+// Precedence:
+//  1. Numeric Amount ("2", "3", ...) — the user explicitly pinned a count.
+//  2. Live OCR count for the spell's slot (from TroopCounter) — the army
+//     actually carries N of this spell, tap exactly N.
+//  3. Default 5 (legacy fallback when Amount is "All" and OCR failed).
 func (sd *SpellDeployer) resolveSpellCount(unit strategy.Unit) int {
 	if unit.Amount != "All" && unit.Amount != "" {
 		if val, err := strconv.Atoi(unit.Amount); err == nil {
 			return val
 		}
 	}
+	if sd.slotCounts != nil && sd.executor != nil {
+		if n, ok := sd.slotCounts[sd.executor.slotXFor(unit)]; ok && n > 0 {
+			sd.logger.Info().
+				Str("unit", unit.Name).
+				Int("ocr_count", n).
+				Msg("spell count resolved from live slot OCR")
+			return n
+		}
+	}
 	return 5 // Default fallback
+}
+
+// slotXFor resolves the slot X the planner assigned to this unit. It
+// mirrors DeployPlanner.planUnit's lookup (lower-cased name -> slot) so
+// the SpellDeployer can pair an Amount:"All" unit with its OCR count
+// without threading the *TrackedSlot through every call site. Returns 0
+// when the unit has no slot (count lookup then misses and the default
+// applies).
+func (te *TapExecutor) slotXFor(unit strategy.Unit) int {
+	if te.slotResolver == nil {
+		return 0
+	}
+	slot := te.slotResolver(strings.ToLower(strings.TrimSpace(unit.Name)))
+	if slot == nil {
+		return 0
+	}
+	return slot.X
 }
 
 // formulaEntry is a nil-safe wrapper for the deploy path. Returns

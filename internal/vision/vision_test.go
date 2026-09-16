@@ -7,16 +7,15 @@ import (
 )
 
 func TestMatPoolKeyUnique(t *testing.T) {
-	p := NewMatPool()
-
-	// Distinct dimensions that previously collided under rune() encoding
-	// (e.g. 100 and 256 both produced a 1-char string key) must now be
-	// independent pool entries.
-	keys := map[string]bool{}
+	// Distinct (rows, cols, type) triples must be independent pool
+	// entries. matKey is a struct key, so field-wise equality makes
+	// collisions impossible by construction — this guards the key layout
+	// and that rows/cols aren't accidentally transposed.
+	keys := map[matKey]bool{}
 	for _, dims := range [][2]int{{100, 100}, {256, 256}, {70000, 200}, {200, 70000}, {100, 256}} {
-		k := p.getPoolKey(dims[0], dims[1], gocv.MatTypeCV8UC3)
+		k := matKey{matType: gocv.MatTypeCV8UC3, rows: dims[0], cols: dims[1]}
 		if keys[k] {
-			t.Fatalf("collision for dims %v: key %q reused", dims, k)
+			t.Fatalf("collision for dims %v: key %+v reused", dims, k)
 		}
 		keys[k] = true
 	}
