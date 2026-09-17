@@ -1529,7 +1529,19 @@ func (b *Bot) clickSequence() bool {
 	// on the village behind it, and closed the menu again. Waiting for the
 	// button to *exist* is what makes the step safe.
 	if !b.cal.IsReferenceGeometry() {
-		if _, ok := b.pressPanelAction("Find Match", attackMenuActionRegion, 8*time.Second); !ok {
+		// The Attack tap is *verified*, not assumed: tapping a predicted point and
+		// trusting it is what killed the 1280x720 runs. See clearSwallowedTap for
+		// the measured reason a tap aimed at the village can land somewhere else.
+		_, menuUp := b.pressPanelAction("Find Match", attackMenuActionRegion, 8*time.Second)
+		if !menuUp {
+			b.logger.Warn().Msg("attack menu did not open after tapping Attack; clearing whatever swallowed " +
+				"the tap and retrying once")
+			b.clearSwallowedTap()
+			b.findAndClick("btn_attack", "Attack (retry)", 1)
+			b.client.JitteredSleep(700 * time.Millisecond)
+			_, menuUp = b.pressPanelAction("Find Match", attackMenuActionRegion, 8*time.Second)
+		}
+		if !menuUp {
 			b.logger.Warn().Msg("could not locate the attack menu's Find a Match button in the live frame")
 			if screen, err := b.client.CaptureToMat(); err == nil {
 				b.DumpDiagnostics("click_find_match_failed", screen, nil)
@@ -1672,6 +1684,31 @@ func (b *Bot) pressPanelAction(step string, region [4]float64, timeout time.Dura
 		}
 		b.client.JitteredSleep(300 * time.Millisecond)
 	}
+}
+
+// clearSwallowedTap removes whatever is covering the village after a tap that
+// did not do what it was aimed at.
+//
+// Measured live at 1280x720: the mandatory zoom-out pinch puts its two fingers a
+// quarter and three quarters of the way across the frame, and one of those
+// points lands on the Builder's Hut. CoC opens the hut's "Work for Hire!" dialog
+// roughly two seconds later, dimming the whole screen — the Attack! button face
+// drops from RGB(208,114,66) to RGB(104,57,33), an exact halving. A tap aimed at
+// the Attack button then goes into that dialog's scrim, the attack menu never
+// opens, and every later tap in the chain is swallowed with it, which is how the
+// 720p runs died before reaching a battle. Back closes it (verified live at both
+// dialogs the pinch can open); on an already-clear village Back instead opens
+// CoC's quit-confirm dialog, so dismissInterruptions runs afterwards to cancel
+// it. Safe either way — which is what lets this step exist without a scrim
+// detector. A brightness test could not replace it anyway: the attack menu dims
+// the village to almost the same mean as the popup (84.8 vs 82.5).
+func (b *Bot) clearSwallowedTap() {
+	if err := b.client.Back(); err != nil {
+		b.logger.Warn().Err(err).Msg("back to clear a dialog covering the village failed")
+	}
+	time.Sleep(900 * time.Millisecond)
+	b.dismissInterruptions()
+	time.Sleep(400 * time.Millisecond)
 }
 
 // attackMenuActionRegion is the window holding the attack menu's Find a Match

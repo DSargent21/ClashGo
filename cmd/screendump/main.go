@@ -10,15 +10,16 @@
 //   go run ./cmd/screendump -ocr               # also run Vision OCR
 //   go run ./cmd/screendump -watch -ocr        # live loop, refresh every 3s
 //   go run ./cmd/screendump -tap 64,666 -ocr   # tap, settle, then look
+//   go run ./cmd/screendump -pinch out -ocr    # zoom out, settle, then look
 //
 // The whole point is text: a text-only agent (or a terminal user) can
 // "see" what the emulator shows — state, layout, colors, and words.
 //
-// Live capture and -tap go through internal/adb, the same transport the bot
-// uses, rather than shelling out to the host adb binary. On BlueStacks the
-// WindowManager wedges (host `adb shell` answers "error: closed") and a second
-// attached device makes an unfiltered `adb exec-out` fail outright, so the
-// host binary is exactly the wrong way to look at the screen.
+// Live capture, -tap and -pinch go through internal/adb, the same transport
+// the bot uses, rather than shelling out to the host adb binary. On BlueStacks
+// the WindowManager wedges (host `adb shell` answers "error: closed") and a
+// second attached device makes an unfiltered `adb exec-out` fail outright, so
+// the host binary is exactly the wrong way to look at the screen.
 
 package main
 
@@ -50,7 +51,8 @@ func main() {
 	buttonsFrac := flag.String("buttons-frac", "0.5,0.5,1.0,1.0", "-buttons search window as fx0,fy0,fx1,fy1 fractions of the frame")
 	k := flag.Float64("k", 0, "override the derived display scale (0 = derive from the screen diagonal); see docs/RESOLUTION.md for how to measure it")
 	tap := flag.String("tap", "", "tap X,Y on the live device before capturing (drives the game by hand without the host adb binary)")
-	settle := flag.Duration("settle", 1500*time.Millisecond, "wait after -tap before capturing")
+	pinch := flag.String("pinch", "", "run the bot's native pinch gesture (out|in) before capturing")
+	settle := flag.Duration("settle", 1500*time.Millisecond, "wait after -tap/-pinch before capturing")
 	device := flag.String("device", "localhost:5555", "ADB device used for live capture and -tap")
 	flag.Parse()
 
@@ -60,8 +62,14 @@ func main() {
 		os.Exit(2)
 	}
 
+	doPinch, err := parsePinch(*pinch)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "-pinch: %v\n", err)
+		os.Exit(2)
+	}
+
 	var client *adb.Client
-	if *imgPath == "" || doTap {
+	if *imgPath == "" || doTap || doPinch != "" {
 		client = adb.NewClient(
 			adb.WithHost("127.0.0.1"),
 			adb.WithPort(5037),
@@ -71,7 +79,26 @@ func main() {
 		defer client.Close()
 	}
 
-	for {			runOnce(client, *imgPath, *doOCR, *save, *dumpAnchors, *buttons, *buttonsFrac, *k, doTap, tapX, tapY, *settle)
+	// Drives the gesture the bot itself performs before an attack (the mandatory
+	// zoom out), so a hand-run can reproduce the screens and side effects that
+	// gesture produces — see docs/RESOLUTION.md.
+	if doPinch != "" {
+		switch doPinch {
+		case "out":
+			err = client.ZoomOut()
+		case "in":
+			err = client.ZoomIn()
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pinch %s failed: %v\n", doPinch, err)
+		} else {
+			fmt.Printf("pinched %s; settling %s\n", doPinch, *settle)
+		}
+		time.Sleep(*settle)
+	}
+
+	for {
+		runOnce(client, *imgPath, *doOCR, *save, *dumpAnchors, *buttons, *buttonsFrac, *k, doTap, tapX, tapY, *settle)
 		if !*watch {
 			return
 		}
@@ -99,6 +126,20 @@ func parseFrac(s string) (float64, float64, float64, float64) {
 		v[i] = f
 	}
 	return v[0], v[1], v[2], v[3]
+}
+
+// parsePinch validates the -pinch flag. An empty flag means "do not pinch",
+// which is distinct from a malformed one for the same reason as -tap: a typo
+// must not silently degrade a scripted gesture-and-look into a plain look.
+func parsePinch(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return "", nil
+	case "out", "in":
+		return strings.ToLower(strings.TrimSpace(s)), nil
+	default:
+		return "", fmt.Errorf("want out|in (got %q)", s)
+	}
 }
 
 // parseTap splits the -tap flag into coordinates. An empty flag means "do not
