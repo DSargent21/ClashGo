@@ -370,13 +370,29 @@ func (c *Classifier) buildRules() {
 			State:    StateObstacleDialog,
 			Priority: 95,
 			Weight:   95,
-			Desc:     "blocking dialog",
-			Anchor:   AnchorCenter,
-			MinPass:  1,
+			Desc:     "blocking dialog (obstacle sheet: title band, body, action row)",
+			// A bottom sheet, not a centred overlay — see AnchorCenterBottom.
+			// The previous anchors were a light-gray body pixel, a near-white
+			// pixel at ref (272,11) that maps off the top of a wider frame, and a
+			// green button face; with the centre anchor the rule never fired at
+			// 1280x720, so the modal stayed open and swallowed every later tap.
+			// These three were measured by opening the dialog and resizing the
+			// device with it on screen, then keeping only points that are (a)
+			// identical at both geometries under this anchor, (b) locally uniform
+			// at both, and (c) at least 250 colour units from the same point on a
+			// clean village frame.
+			Anchor:  AnchorCenterBottom,
+			MinPass: 2,
 			Checks: []PixelCheck{
-				{324, 499, 0xCB, 0xCD, 0xD3, 15},
-				{272, 11, 0xFE, 0xFE, 0xED, 15},
-				{289, 515, 0x88, 0xD0, 0x39, 15},
+				// Pale-yellow glow strip behind the obstacle title
+				// (ref (435,543) = (255,255,183) at both geometries, exactly)
+				{435, 543, 0xFF, 0xFF, 0xB7, 40},
+				// Cream sheet body above the action row
+				// (ref (416,578) = (244,251,218) / 720p (238,237,219))
+				{416, 578, 0xF4, 0xFB, 0xDA, 40},
+				// Bright cyan accent on the sheet’s right side
+				// (ref (452,574) = (24,206,255) / 720p (26,198,255))
+				{452, 574, 0x18, 0xCE, 0xFF, 45},
 			},
 		},
 		{

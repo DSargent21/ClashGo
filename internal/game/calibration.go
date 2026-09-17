@@ -48,6 +48,19 @@ const (
 	// splash art) and anything authored against world/village coordinates.
 	// The point keeps its offset from the viewport centre and scales by k.
 	AnchorCenter
+	// AnchorCenterBottom is a bottom-sheet modal: horizontally centred, but
+	// vertically anchored to the bottom edge, so the sheet keeps its distance
+	// to the bottom of the screen and grows toward the top.
+	//
+	// Measured live by opening one obstacle dialog and resizing the device with
+	// it still on screen, which yields the same dialog at both geometries:
+	// its title band at ref (435,543) renders at 1280x720 (647,470), and
+	// x = 640 + (435-430)*k, y = 720 - (732-543)*k explains the whole sheet
+	// (title, REMOVE and Move buttons) while the centre model is 130 px off in
+	// y and the per-axis edge model 250 px. Modal dialogs that hang off the
+	// bottom edge are built this way; the centred overlays (result panel,
+	// splash chain, dialogs that sit mid-screen) are not.
+	AnchorCenterBottom
 )
 
 type Calibration struct {
@@ -325,10 +338,15 @@ func (c *Calibration) Hud(x, y int) (int, int) {
 // anchor declaration use this; call sites that know their context use Hud or
 // Centre directly.
 func (c *Calibration) AnchorPoint(x, y int, a Anchor) (int, int) {
-	if a == AnchorCenter {
+	switch a {
+	case AnchorCenter:
 		return c.Centre(x, y)
+	case AnchorCenterBottom:
+		// Centred horizontally, measured from the bottom edge vertically.
+		return c.X(x, AnchorMid), c.Y(y, AnchorHigh)
+	default:
+		return c.Hud(x, y)
 	}
-	return c.Hud(x, y)
 }
 
 // HudRect maps a reference rectangle on HUD chrome; the anchors are chosen from

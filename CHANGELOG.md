@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Live action-button location — overlay panels are found, not predicted**
+  (`internal/vision/findbutton.go`, `internal/bot/bot.go`). `FindActionButton`
+  locates a panel's primary button in the live frame (widest bright saturated
+  gold/green/blue blob with a button-like aspect and a solid fill inside a
+  caller-supplied window), so a 16:9 panel needs no per-geometry coordinates.
+  Measured on 21 live frames: the army sheet's Attack! face at `(728,536)` on
+  the 860×732 reference and `(1131,641)` at 1280×720, the reward dialog's Okay
+  at `(640,461)`, and nothing at all on village, army-camp, search and battle
+  frames. The pre-battle chain now runs as verified steps away from the
+  reference geometry: tap Attack, wait for the menu's located button and press
+  it, wait for the sheet's located button and press it — tapping only what the
+  frame shows. This replaces two failure modes measured live at 1280×720: a
+  panel that reflows (no anchor predicts it — the sheet's button is 180 px
+  below the mapped point) and a blind tap fired into a panel that is still
+  animating in, which landed on the village behind the menu and closed it
+  again, stalling every run.
+- **`cmd/screendump -buttons [-buttons-frac fx0,fy0,fx1,fy1]`** prints the
+  located primary button for a frame or a live capture, and **`-tap x,y
+  -settle <dur>`** drives the game by hand through the repo's own ADB transport
+  (live capture and taps no longer shell out to the host `adb` binary, which
+  fails outright when a second device is attached and cannot reach a wedged
+  BlueStacks WindowManager).
+
+### Added
 - **Display-geometry migration, phase 1 — resolution-independent calibration**
   (`internal/game/calibration.go`, `internal/game/classifier.go`).
   `Calibration` now carries the game's display scale `K` and maps reference
@@ -20,6 +44,9 @@ All notable changes to this project will be documented in this file.
   `ResizeToHeight(732)` is gone. `cmd/screendump -anchors` dumps every rule
   anchor under both models with the sampled colour and a hit/miss verdict —
   the verification instrument for the remaining phases.
+  See [`docs/RESOLUTION.md`](docs/RESOLUTION.md) for the measured evidence that
+  the HUD follows that model while overlay panels reflow, which is why the
+  pre-battle chain now locates its buttons instead of predicting them.
 - **`cmd/resprobe`** — measures how the CoC HUD and world scale between two
   framebuffer geometries by template-matching a reference patch over a grid
   of (scaleX, scaleY) pairs. It is the instrument behind

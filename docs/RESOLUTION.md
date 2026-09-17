@@ -347,6 +347,83 @@ scores 1.00). The flow works anyway because the pinpoints short-circuit the
 template path. Worth knowing before trusting a "template failed to match"
 result: for these particular assets that failure means nothing.
 
+### Overlay panels reflow — so they are located, not predicted
+
+The 2026-09-17 session settled why per-state anchor re-authoring does not scale,
+and what replaces it.
+
+**The village HUD obeys the anchor model; panels do not.** The HUD is authored
+per axis (edge or centre, scaled by `k`), and that holds — the village's own
+bottom row matches it at both geometries. But a *panel* is laid out by content
+and aspect ratio, so its widgets do not follow any per-axis law. Measured on the
+same screen at both geometries (Apple Vision OCR + colour-blob detection on live
+frames):
+
+| Element | 860×732 reference | 1280×720 | what the anchor model predicts |
+| --- | --- | --- | --- |
+| army sheet: Attack! face | `(728,536)` 144×28 | `(1130,641)` 238×47 | `(1039,462)` — 180 px off in y |
+| army sheet: tab row | `y 185` | `y 63` | no law fits (the sheet is taller at 16:9) |
+| attack menu: Find a Match | `(158,494)` (pinpoint) | `(219,534)` 290×92 | `(205,411)` — 120 px off in y |
+| reward dialog: Okay face | — | `(639,461)` 237×95 | `(640,560)` — 100 px off in y |
+
+Two consequences, both measured live rather than reasoned:
+
+* **`StateArmySelection` scores 200 at the reference and 0 at 1280×720** on the
+  same screen, because its probes are absolute reference coordinates. The bot
+  cannot even tell it is looking at the sheet at 16:9.
+* **A blind tap on an animating panel closes it again.** The 720p runs died
+  because the second tap of the pre-battle chain fired one second after the
+  first, while the attack menu was still animating in, landed on the village
+  behind it, and shut the menu. Every later tap then hit the village and the run
+  timed out. This is a race, not a geometry error, and it is invisible in the
+  logs — the step is logged as a success because a *predicted* coordinate was
+  tapped, not a widget.
+
+**What replaces it: `vision.FindActionButton`.** One rule — the widest bright
+saturated gold/green/blue blob with a button-like aspect and a solid fill,
+inside a caller-supplied window — locates a panel's primary button in the live
+frame at every geometry, with no per-geometry data:
+
+```bash
+cmd/screendump -buttons -buttons-frac 0.5,0.5,1,1     # army sheet window
+cmd/screendump -buttons -buttons-frac 0,0.55,0.38,0.9 # attack-menu window
+```
+
+Measured on 21 real frames across both geometries: it finds the army sheet's
+Attack! face at `(728,536)` (reference) and `(1131,641)` (720p), the reward
+dialog's Okay at `(640,461)`, and **no button at all** on village, army-camp,
+search and battle frames in either geometry. The window, not the width, chooses
+the control: the attack menu puts Find a Match (290 px, gold `(247,177,54)`, x
+17%) and Join Tournament (286 px, blue `(66,156,218)`, x 44%) side by side at
+the same height, so widest-wins cannot separate them.
+
+Two details that the live frames forced: the mask is "bright **and** strongly
+saturated" in one pass with the palette decided per blob from its own masked
+pixels (two per-palette range masks mis-classified the modal's green Okay as
+gold), and a *frame-relative* upper size bound is what rejects scenery — the
+closing pass chains bright grass, walls and storage roofs into one sprawling
+component that otherwise passes every lower bound (live 720p village: 1261×720,
+fill 0.59).
+
+`internal/bot` now runs the pre-battle chain as **verified steps** off the
+reference geometry: tap Attack, then wait for the menu's located button and
+press it, then wait for the sheet's located button and press it. It taps only
+what the frame shows; if a button cannot be found it says so and stops instead
+of tapping a predicted point. The reference geometry keeps the authored
+pinpoint path, which is verified 5/5.
+
+Still open, in the order that unblocks a full 720p run:
+
+1. the *post*-sheet states at 16:9 — `StateSearchMap`, `StateBattle`, the result
+   overlay — which the same treatment can fix (each is a panel with a locatable
+   button) but which have not yet been exercised on a live 720p panel;
+2. a first-tap-lost guard in the village path (live observation: with a builder
+   speech bubble up, the first tap dismisses the bubble and the menu does not
+   open — the verified menu step will wait out such a tap, but the Attack tap
+   itself is still single-shot);
+3. recipe selection (`army_slot > 1`) at a non-reference geometry, which needs
+   the sheet's recipe list located rather than predicted.
+
 ## Measuring
 
 `cmd/resprobe` is the instrument for all of the numbers above: it takes a

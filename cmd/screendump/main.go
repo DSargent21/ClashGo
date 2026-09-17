@@ -9,9 +9,16 @@
 //   go run ./cmd/screendump -img /tmp/x.png    # analyze a saved frame
 //   go run ./cmd/screendump -ocr               # also run Vision OCR
 //   go run ./cmd/screendump -watch -ocr        # live loop, refresh every 3s
+//   go run ./cmd/screendump -tap 64,666 -ocr   # tap, settle, then look
 //
 // The whole point is text: a text-only agent (or a terminal user) can
 // "see" what the emulator shows — state, layout, colors, and words.
+//
+// Live capture and -tap go through internal/adb, the same transport the bot
+// uses, rather than shelling out to the host adb binary. On BlueStacks the
+// WindowManager wedges (host `adb shell` answers "error: closed") and a second
+// attached device makes an unfiltered `adb exec-out` fail outright, so the
+// host binary is exactly the wrong way to look at the screen.
 
 package main
 
@@ -21,11 +28,14 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
@@ -36,11 +46,32 @@ func main() {
 	watch := flag.Bool("watch", false, "live loop: refresh every 3s until Ctrl-C")
 	save := flag.String("save", "", "copy the analyzed frame to this path")
 	dumpAnchors := flag.Bool("anchors", false, "dump every rule anchor under both geometry models (ref -> live coords + sampled RGB)")
+	buttons := flag.Bool("buttons", false, "locate the primary action button in the frame (vision.FindActionButton)")
+	buttonsFrac := flag.String("buttons-frac", "0.5,0.5,1.0,1.0", "-buttons search window as fx0,fy0,fx1,fy1 fractions of the frame")
 	k := flag.Float64("k", 0, "override the derived display scale (0 = derive from the screen diagonal); see docs/RESOLUTION.md for how to measure it")
+	tap := flag.String("tap", "", "tap X,Y on the live device before capturing (drives the game by hand without the host adb binary)")
+	settle := flag.Duration("settle", 1500*time.Millisecond, "wait after -tap before capturing")
+	device := flag.String("device", "localhost:5555", "ADB device used for live capture and -tap")
 	flag.Parse()
 
-	for {
-		runOnce(*imgPath, *doOCR, *save, *dumpAnchors, *k)
+	tapX, tapY, doTap, err := parseTap(*tap)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "-tap: %v\n", err)
+		os.Exit(2)
+	}
+
+	var client *adb.Client
+	if *imgPath == "" || doTap {
+		client = adb.NewClient(
+			adb.WithHost("127.0.0.1"),
+			adb.WithPort(5037),
+			adb.WithTimeout(30*time.Second),
+		)
+		client.DeviceID = *device
+		defer client.Close()
+	}
+
+	for {			runOnce(client, *imgPath, *doOCR, *save, *dumpAnchors, *buttons, *buttonsFrac, *k, doTap, tapX, tapY, *settle)
 		if !*watch {
 			return
 		}
@@ -48,7 +79,51 @@ func main() {
 	}
 }
 
-func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool, displayScale float64) {
+// parseFrac reads a "fx0,fy0,fx1,fy1" fraction window, falling back to the
+// lower-right half so a typo degrades to the documented default instead of
+// silently searching nothing.
+func parseFrac(s string) (float64, float64, float64, float64) {
+	const (
+		defX0, defY0, defX1, defY1 = 0.5, 0.5, 1.0, 1.0
+	)
+	parts := strings.Split(s, ",")
+	if len(parts) != 4 {
+		return defX0, defY0, defX1, defY1
+	}
+	var v [4]float64
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return defX0, defY0, defX1, defY1
+		}
+		v[i] = f
+	}
+	return v[0], v[1], v[2], v[3]
+}
+
+// parseTap splits the -tap flag into coordinates. An empty flag means "do not
+// tap", which is distinct from a malformed one: a typo must not silently turn a
+// scripted tap-and-look into a plain look.
+func parseTap(s string) (int, int, bool, error) {
+	if strings.TrimSpace(s) == "" {
+		return 0, 0, false, nil
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) != 2 {
+		return 0, 0, false, fmt.Errorf("want X,Y (got %q)", s)
+	}
+	x, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("bad X in %q", s)
+	}
+	y, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("bad Y in %q", s)
+	}
+	return x, y, true, nil
+}
+
+func runOnce(client *adb.Client, imgPath string, doOCR bool, savePath string, dumpAnchors, buttons bool, buttonsFrac string, displayScale float64, doTap bool, tapX, tapY int, settle time.Duration) {
 	img := gocv.Mat{}
 	if imgPath != "" {
 		img = gocv.IMRead(imgPath, gocv.IMReadColor)
@@ -57,17 +132,20 @@ func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool, disp
 			os.Exit(1)
 		}
 	} else {
-		out, err := exec.Command("adb", "exec-out", "screencap", "-p").Output()
+		if doTap {
+			if err := client.Tap(tapX, tapY); err != nil {
+				fmt.Fprintf(os.Stderr, "tap %d,%d: %v\n", tapX, tapY, err)
+				os.Exit(1)
+			}
+			fmt.Printf("tapped %d,%d; settling %s\n", tapX, tapY, settle)
+			time.Sleep(settle)
+		}
+		var err error
+		img, err = client.CaptureToMat()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "adb screencap: %v\n", err)
+			fmt.Fprintf(os.Stderr, "live capture: %v\n", err)
 			os.Exit(1)
 		}
-		tmp := "/tmp/screendump_live.png"
-		if err := os.WriteFile(tmp, out, 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "write tmp: %v\n", err)
-			os.Exit(1)
-		}
-		img = gocv.IMRead(tmp, gocv.IMReadColor)
 		if img.Empty() {
 			fmt.Fprintln(os.Stderr, "empty capture")
 			os.Exit(1)
@@ -123,11 +201,22 @@ func runOnce(imgPath string, doOCR bool, savePath string, dumpAnchors bool, disp
 		if rule.Template != "" {
 			marker += "T"
 		}
-		anchor := "edge"
-		if rule.Anchor == game.AnchorCenter {
-			anchor = "centre"
-		}
+		anchor := anchorName(rule.Anchor)
 		fmt.Printf("  %s %-18s pass=%d/%d minpass=%d (%s)\n", marker, rule.State.String(), passed, len(rule.Checks), rule.MinPass, anchor)
+	}
+
+	if buttons {
+		// The default window is the lower-right half: that is where the army
+		// sheet's action button sits at both measured geometries (ref
+		// (727,536), 720p (1130,641)) even though the panel around it reflows.
+		fx0, fy0, fx1, fy1 := parseFrac(buttonsFrac)
+		region := vision.FractionRect(img.Cols(), img.Rows(), fx0, fy0, fx1, fy1)
+		fmt.Printf("--- action button (region %v) ---\n", region)
+		if got, ok := vision.FindActionButton(img, region, vision.DefaultActionButtonConfig()); ok {
+			fmt.Printf("  %s\n", got.Describe())
+		} else {
+			fmt.Println("  none")
+		}
 	}
 
 	if dumpAnchors {
@@ -303,10 +392,14 @@ func colorDistance(r, g, b int, chk game.PixelCheck) float64 {
 }
 
 func anchorName(a game.Anchor) string {
-	if a == game.AnchorCenter {
+	switch a {
+	case game.AnchorCenter:
 		return "centre"
+	case game.AnchorCenterBottom:
+		return "centre/bottom"
+	default:
+		return "edge"
 	}
-	return "edge"
 }
 
 // sampleNote samples a mapped point and reports whether it satisfies the

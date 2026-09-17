@@ -1522,6 +1522,43 @@ func (b *Bot) clickSequence() bool {
 	}
 	b.client.JitteredSleep(500 * time.Millisecond)
 
+	// Find a Match. Off the reference geometry the attack menu reflows, so the
+	// button is located in the live frame rather than predicted — and that also
+	// removes the reason the old blind tap failed live at 1280x720: it fired one
+	// second after the Attack tap, while the menu was still animating in, landed
+	// on the village behind it, and closed the menu again. Waiting for the
+	// button to *exist* is what makes the step safe.
+	if !b.cal.IsReferenceGeometry() {
+		if _, ok := b.pressPanelAction("Find Match", attackMenuActionRegion, 8*time.Second); !ok {
+			b.logger.Warn().Msg("could not locate the attack menu's Find a Match button in the live frame")
+			if screen, err := b.client.CaptureToMat(); err == nil {
+				b.DumpDiagnostics("click_find_match_failed", screen, nil)
+				screen.Close()
+			}
+			return false
+		}
+		// The army sheet is already open on MY ARMY (the active army), so when no
+		// saved recipe has to be picked, its own action button starts the search.
+		if b.armySlot <= 1 {
+			if _, ok := b.pressPanelAction("Army Sheet Attack", sheetActionRegion, 8*time.Second); ok {
+				b.logger.Info().Msg("waiting for battle state (searching)...")
+				return b.waitForBattleState(60 * time.Second)
+			}
+			b.logger.Warn().
+				Int("screen_w", b.cal.PhysicalW).Int("screen_h", b.cal.PhysicalH).
+				Msg("could not locate the army sheet's action button in the live frame; not falling back " +
+					"to the authored pinpoints, which describe the reference layout (see docs/RESOLUTION.md)")
+			if screen, err := b.client.CaptureToMat(); err == nil {
+				b.DumpDiagnostics("sheet_action_not_found", screen, nil)
+				screen.Close()
+			}
+			return false
+		}
+		b.logger.Warn().Int("army_slot", b.armySlot).
+			Msg("selecting a saved recipe needs the sheet's recipe list, which is not mapped at this " +
+				"geometry; falling back to the authored pinpoints")
+	}
+
 	findMatchClicked := false
 	for attempt := 0; attempt < 3; attempt++ {
 		if b.findAndClick("btn_find_match", "Find Match", 1) {
@@ -1591,6 +1628,68 @@ func (b *Bot) clickSequence() bool {
 	b.logger.Info().Msg("waiting for battle state (searching)...")
 	return b.waitForBattleState(60 * time.Second)
 }
+
+// pressPanelAction waits for a panel's primary action button to appear inside a
+// frame-fraction window and presses it, returning the button it pressed.
+//
+// This is the verified-step primitive the pre-battle flow uses away from the
+// reference geometry. Two measured facts force it. First, panels reflow: the
+// army sheet's Attack! face is at (728,536) on the 860x732 reference and
+// (1131,641) at 1280x720 — 180 px apart in y, with no per-axis anchor that
+// reproduces both — while the authored pinpoint maps to (1039,462). Second, a
+// panel animates in: tapping a predicted point one second after opening the
+// attack menu landed on the village behind it and closed the menu again, which
+// is what sank the 720p runs. Waiting for the button to exist and tapping where
+// it actually is fixes both.
+//
+// The window, not the button's width, is what selects the right control: the
+// attack menu puts Find a Match (290 px, green, x 17% of the frame) and Join
+// Tournament (286 px, gold, x 44%) side by side at the same height, so
+// widest-wins cannot separate them — see attackMenuActionRegion.
+func (b *Bot) pressPanelAction(step string, region [4]float64, timeout time.Duration) (vision.ActionButton, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		screen, err := b.client.CaptureToMat()
+		if err == nil && !screen.Empty() {
+			win := vision.FractionRect(screen.Cols(), screen.Rows(), region[0], region[1], region[2], region[3])
+			btn, ok := vision.FindActionButton(screen, win, vision.DefaultActionButtonConfig())
+			screen.Close()
+			if ok {
+				b.logger.Info().
+					Str("step", step).
+					Str("button", btn.Describe()).
+					Msg("pressing the action button located in the live frame")
+				if err := b.client.TapRandomized(btn.Centre().X, btn.Centre().Y); err == nil {
+					time.Sleep(1200 * time.Millisecond)
+					return btn, true
+				}
+			}
+		} else if err == nil {
+			screen.Close()
+		}
+		if time.Now().After(deadline) {
+			return vision.ActionButton{}, false
+		}
+		b.client.JitteredSleep(300 * time.Millisecond)
+	}
+}
+
+// attackMenuActionRegion is the window holding the attack menu's Find a Match
+// button, as frame fractions: the left column, below the mode tabs. It is a
+// fraction of the frame rather than a reference coordinate because the menu
+// reflows, and it is narrow deliberately — the Join Tournament button beside it
+// is only 4 px narrower at 1280x720, so width cannot choose between them. The
+// menu's other controls (Battle, Ranked Battle) sit in the same column but at
+// y <= 0.5, above the window.
+var attackMenuActionRegion = [4]float64{0.0, 0.55, 0.38, 0.90}
+
+// sheetActionRegion is the window the bot searches for the army sheet's action
+// button, as frame fractions: the lower-right half, where that button sits at
+// both measured geometries — (728,536) on the 860x732 reference, (1131,641) at
+// 1280x720 — even though the panel around it reflows. Verified on live frames:
+// it finds exactly that button on the sheet and reports no button at all on
+// village, army-camp, search and battle frames, in either geometry.
+var sheetActionRegion = [4]float64{0.5, 0.5, 1.0, 1.0}
 
 // selectArmySlot clicks the saved-recipe card for b.armySlot in the
 // army-selection list opened by the Army Arrow. Each recipe card is a
