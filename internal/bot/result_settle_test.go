@@ -49,7 +49,7 @@ func loot(gold, elixir, de int) game.Resources {
 // also show the trap that a naive "two identical captures" rule falls into:
 // the loot rows sit complete and unchanging for five seconds while the
 // bonus column is still empty.
-func TestResultSettleWaitsForLateLeagueBonus(t *testing.T) {
+func TestResultSettleAcceptsStableResultAfterLateLeagueBonus(t *testing.T) {
 	final := game.BattleResult{
 		Stars: 2,
 		Loot:  loot(1126838, 1141592, 12788),
@@ -65,41 +65,94 @@ func TestResultSettleWaitsForLateLeagueBonus(t *testing.T) {
 		{"bonus still counting", 106, game.BattleResult{Stars: 2, Loot: loot(1126838, 1141592, 12788), Bonus: loot(0, 868, 275)}, 6 * time.Second},
 		{"bonus landed", 107, final, 8 * time.Second},
 		{"whole panel unchanged", 107, final, 9 * time.Second},
+		{"settled beyond minimum observation window", 107, final, 10 * time.Second},
 	}
 
 	_, accepted, got := runSettle(t, frames)
-	if accepted != len(frames)-1 {
-		t.Fatalf("accepted capture %d, want the last one (%d)", accepted, len(frames)-1)
+	wantAccepted := len(frames) - 1
+	if accepted != wantAccepted {
+		t.Fatalf("accepted capture %d, want the last one (%d)", accepted, wantAccepted)
 	}
 	if got != final {
 		t.Errorf("accepted %+v, want %+v", got, final)
 	}
 }
 
-// TestResultSettleWaitsForTheLateLeagueBonus pins rule (3) on its own: a win
-// whose read has stopped changing but shows no bonus is still an unfinished
-// panel, because CoC pays a league bonus on every battle with a star.
-func TestResultSettleWaitsForTheLateLeagueBonus(t *testing.T) {
+// TestResultSettleWaitsForCompleteLeagueBonus pins the league-bonus gate: a
+// win with no bonus, or with mismatched gold/elixir bonus, is unfinished or
+// misread even after the observation window.
+func TestResultSettleWaitsForCompleteLeagueBonus(t *testing.T) {
+	cases := []struct {
+		name  string
+		bonus game.Resources
+	}{
+		{"missing bonus", loot(0, 0, 0)},
+		{"gold and elixir bonus disagree", loot(312400, 278400, 2310)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			settle := newResultSettle(zerolog.Nop())
+			base := time.Date(2026, 9, 23, 11, 26, 37, 0, time.UTC)
+			win := game.BattleResult{
+				Stars: 2,
+				Loot:  loot(1126838, 1141592, 12788),
+				Bonus: tc.bonus,
+			}
+
+			// Eleven seconds of an unchanging but incomplete win: beyond the
+			// observation window it must still be rejected, not banked.
+			for i := 0; i < resultSettleAttempts; i++ {
+				got, ok := settle.observe(200, win, base.Add(time.Duration(i)*resultSettleAnimatingPause))
+				if ok {
+					t.Fatalf("capture %d accepted an incomplete league bonus: %+v", i, got)
+				}
+			}
+		})
+	}
+}
+
+func TestResultSettleAcceptsStableZeroStarLootWithoutBonus(t *testing.T) {
 	settle := newResultSettle(zerolog.Nop())
 	base := time.Date(2026, 9, 23, 11, 26, 37, 0, time.UTC)
-	win := game.BattleResult{Stars: 2, Loot: loot(1126838, 1141592, 12788)}
+	defeat := game.BattleResult{Loot: loot(648538, 499912, 2360)}
 
-	// Twelve seconds of an unchanging win with no bonus row: past the
-	// observation window, still not believable.
-	for i := 0; i < resultSettleAttempts-1; i++ {
-		if _, ok := settle.observe(200, win, base.Add(time.Duration(i)*time.Second)); ok {
-			t.Fatalf("capture %d accepted a win with no league bonus on it", i)
+	for i := 0; i < resultSettleAttempts; i++ {
+		got, ok := settle.observe(200, defeat, base.Add(time.Duration(i)*resultSettleAnimatingPause))
+		if ok {
+			if got != defeat {
+				t.Fatalf("accepted %+v, want %+v", got, defeat)
+			}
+			if time.Duration(i)*resultSettleAnimatingPause < resultPanelMinObserve {
+				t.Fatalf("accepted before observation window at capture %d", i)
+			}
+			return
 		}
 	}
+	t.Fatal("stable zero-star loot result was not accepted; defeat loot does not carry a league bonus")
+}
 
-	// The cap still returns the loot it did see, rather than nothing.
-	got, ok := settle.observe(200, win, base.Add(time.Duration(resultSettleAttempts)*time.Second))
-	if !ok {
-		t.Fatal("the final attempt must return the last read")
+func TestResultSettleAcceptsCompleteMatchingLeagueBonus(t *testing.T) {
+	settle := newResultSettle(zerolog.Nop())
+	base := time.Date(2026, 9, 23, 11, 26, 37, 0, time.UTC)
+	win := game.BattleResult{
+		Stars: 2,
+		Loot:  loot(1126838, 1141592, 12788),
+		Bonus: loot(312400, 312400, 2310),
 	}
-	if got.Loot != win.Loot {
-		t.Errorf("loot = %+v, want %+v", got.Loot, win.Loot)
+
+	for i := 0; i < resultSettleAttempts; i++ {
+		got, ok := settle.observe(200, win, base.Add(time.Duration(i)*resultSettleAnimatingPause))
+		if ok {
+			if got != win {
+				t.Fatalf("accepted %+v, want %+v", got, win)
+			}
+			if time.Duration(i)*resultSettleAnimatingPause < resultPanelMinObserve {
+				t.Fatalf("accepted before observation window at capture %d", i)
+			}
+			return
+		}
 	}
+	t.Fatal("complete, matching stable result was not accepted within the budget")
 }
 
 // TestResultSettleAcceptsStableZeroResult covers a genuine no-loot defeat,
@@ -112,8 +165,8 @@ func TestResultSettleAcceptsStableZeroResult(t *testing.T) {
 	zero := game.BattleResult{}
 
 	var acceptedAt time.Duration = -1
-	for i := 0; i <= int(resultPanelMinObserve/time.Second); i++ {
-		at := time.Duration(i) * time.Second
+	for i := 0; i <= int(resultPanelMinObserve/resultSettleAnimatingPause); i++ {
+		at := time.Duration(i) * resultSettleAnimatingPause
 		if _, ok := settle.observe(77, zero, base.Add(at)); ok {
 			acceptedAt = at
 			break
@@ -124,43 +177,77 @@ func TestResultSettleAcceptsStableZeroResult(t *testing.T) {
 	}
 }
 
-// TestResultSettleFallsBackToLastRead covers a panel that never stops
-// changing (adb jitter, or a themed shimmer). The caller gets the best read
-// seen instead of nothing, with a warning that it may be short.
-func TestResultSettleFallsBackToLastRead(t *testing.T) {
+// TestResultSettleRejectsUnstableRead covers a panel that never stops
+// changing (adb jitter, or a themed shimmer). A plausible but changing value
+// must not be persisted as a settled result.
+func TestResultSettleRejectsUnstableRead(t *testing.T) {
 	settle := newResultSettle(zerolog.Nop())
 	base := time.Date(2026, 9, 23, 11, 26, 37, 0, time.UTC)
 
-	var got game.BattleResult
-	var ok bool
 	for i := 0; i < resultSettleAttempts; i++ {
 		// A defeat, so the league-bonus guard is out of the picture: this
-		// test is about the read never holding still.
+		// test is about refusing a plausible value that never holds still.
 		res := game.BattleResult{Loot: loot(100*(i+1), 0, 0)}
-		got, ok = settle.observe(uint64(9000+i), res, base.Add(time.Duration(i)*time.Second))
-		if i < resultSettleAttempts-1 && ok {
-			t.Fatalf("attempt %d accepted a panel that never stopped changing", i)
+		got, ok := settle.observe(uint64(9000+i), res, base.Add(time.Duration(i)*time.Second))
+		if ok {
+			t.Fatalf("attempt %d accepted changing result %+v", i, got)
 		}
 	}
-
-	if !ok {
-		t.Fatal("the final attempt must return the last read rather than nothing")
+	if settle.reads != resultSettleAttempts {
+		t.Errorf("reads=%d, want exhausted budget of %d", settle.reads, resultSettleAttempts)
 	}
-	if want := 100 * resultSettleAttempts; got.Loot.Gold != want {
-		t.Errorf("gold = %d, want %d (the LAST read, not the first)", got.Loot.Gold, want)
+}
+
+func TestResultSettleRejectsRepeatedImplausibleResourceReads(t *testing.T) {
+	settle := newResultSettle(zerolog.Nop())
+	base := time.Date(2026, 9, 23, 11, 26, 37, 0, time.UTC)
+	bad := game.BattleResult{Stars: 2, Loot: loot(500_000, 400_000, 10_000), Bonus: loot(300_000, 300_000, 316_800)}
+
+	for i := 0; i < resultSettleAttempts; i++ {
+		got, done := settle.observe(uint64(i+1), bad, base.Add(time.Duration(i)*resultSettleAnimatingPause))
+		if done {
+			t.Fatalf("attempt %d accepted implausible OCR result %+v", i, got)
+		}
+	}
+	if settle.reads != resultSettleAttempts {
+		t.Fatalf("reads=%d, want exhausted attempts=%d", settle.reads, resultSettleAttempts)
+	}
+}
+
+func TestPlausibleBattleResultRejectsBadRanges(t *testing.T) {
+	cases := []struct {
+		name string
+		res  game.BattleResult
+		want bool
+	}{
+		{"normal result", game.BattleResult{Stars: 3, Loot: loot(2_000_000, 1_900_000, 21_000), Bonus: loot(320_000, 320_000, 2_400)}, true},
+		{"dark elixir bonus hallucination", game.BattleResult{Stars: 2, Loot: loot(650_000, 500_000, 2_300), Bonus: loot(280_000, 280_000, 316_800)}, false},
+		{"negative value", game.BattleResult{Loot: loot(-1, 0, 0)}, false},
+		{"too many stars", game.BattleResult{Stars: 4}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := plausibleBattleResult(tc.res); got != tc.want {
+				t.Errorf("plausibleBattleResult(%+v) = %v, want %v", tc.res, got, tc.want)
+			}
+		})
 	}
 }
 
 // TestResultSettleUnsettledZeroReadIsNotAccepted covers a panel that never
 // stops changing AND reads nothing: there is no read worth keeping, so the
 // caller must fall through to the destruction-rule star count.
-func TestResultSettleUnsettledZeroReadIsNotAccepted(t *testing.T) {
+func TestResultSettleRejectsUnsettledZeroRead(t *testing.T) {
 	settle := newResultSettle(zerolog.Nop())
 	base := time.Date(2026, 9, 23, 11, 26, 37, 0, time.UTC)
 
 	for i := 0; i < resultSettleAttempts; i++ {
-		if _, ok := settle.observe(uint64(4000+i), game.BattleResult{}, base.Add(time.Duration(i)*time.Second)); ok {
+		got, ok := settle.observe(uint64(4000+i), game.BattleResult{}, base.Add(time.Duration(i)*resultSettleAnimatingPause))
+		if i < resultSettleAttempts-1 && ok {
 			t.Fatalf("attempt %d accepted an unreadable, unstable panel", i)
+		}
+		if i == resultSettleAttempts-1 && ok {
+			t.Fatalf("final unreadable zero result was accepted as (%+v, %v); zero hash is no evidence of a settled result", got, ok)
 		}
 	}
 }
@@ -175,8 +262,9 @@ func TestResultSettleZeroHashIsNeverStable(t *testing.T) {
 	base := time.Date(2026, 9, 23, 11, 26, 37, 0, time.UTC)
 
 	for i := 0; i < resultSettleAttempts; i++ {
-		if _, ok := settle.observe(0, game.BattleResult{}, base.Add(time.Duration(i)*time.Second)); ok {
-			t.Fatalf("attempt %d accepted a degenerate panel hash as a painted, zero result", i)
+		got, ok := settle.observe(0, game.BattleResult{}, base.Add(time.Duration(i)*resultSettleAnimatingPause))
+		if ok {
+			t.Fatalf("attempt %d accepted a degenerate panel hash as a painted, zero result: %+v", i, got)
 		}
 	}
 }

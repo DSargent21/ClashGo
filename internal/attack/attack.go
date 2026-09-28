@@ -57,11 +57,29 @@ type Executor struct {
 
 	OnDukePick func(targetEdge string, chosenEdge string)
 
-	// heroWatch polls deployed heroes' HP strips during the battle-end wait
-	// and fires each unspent ability once (low HP, or proactively for the
-	// warden). Snapshotted at the end of DeployDynamicV2; nil when no battle
-	// deployed heroes or the watch already resolved.
-	heroWatch *HeroHPMonitor
+	// deployCtx scopes the currently running deployment. Deployment calls are
+	// synchronous on one attack goroutine; the client guard reads this only
+	// while that operation owns device input.
+	deployCtx   context.Context
+	deployGuard *deploymentGuard
+	tapExec     *TapExecutor
+
+	// runtimeCtx is the bot lifecycle context (nil for standalone tools).
+	runtimeCtx context.Context
+
+	// fullArmyRequired honors TrainingConfig.FullArmyBeforeAttack: when set,
+	// deployment refuses to start on POSITIVE evidence of an incomplete army
+	// (a strategy troop/spell card measurably reading zero). Absent counts
+	// never block — there is no full-army detector, so only proven gaps gate.
+	// False for standalone tools and tests (no config wiring).
+	fullArmyRequired bool
+
+	// heroWatch polls deployed heroes' HP strips (low HP, or proactively for
+	// the warden) and fires each unspent ability once. It is armed as heroes
+	// deploy, so both the deploy watcher and the battle-end wait can consume
+	// it; heroWatchMu guards it because those run on different goroutines.
+	heroWatchMu sync.Mutex
+	heroWatch   *HeroHPMonitor
 }
 
 // LastDestructionPercent returns the highest destruction percentage the
@@ -212,6 +230,72 @@ func (e *Executor) loadTemplates() {
 
 func (e *Executor) SetClassifier(fn func(gocv.Mat) (game.GameState, int)) {
 	e.classify = fn
+}
+
+// SetRuntimeContext records the bot lifecycle context so a Stop is observed by
+// the deployment guard even outside the client's own input paths. Pass nil for
+// standalone tools (background context).
+func (e *Executor) SetRuntimeContext(ctx context.Context) {
+	e.runtimeCtx = ctx
+}
+
+// SetFullArmyRequired enables the positive-evidence full-army gate at deploy
+// start (see the fullArmyRequired field for the exact semantics).
+func (e *Executor) SetFullArmyRequired(required bool) {
+	e.fullArmyRequired = required
+}
+
+func (e *Executor) runtimeContext() context.Context {
+	if e.runtimeCtx != nil {
+		return e.runtimeCtx
+	}
+	return context.Background()
+}
+
+// SetDeploymentContext binds deployment taps to the bot lifecycle and starts
+// fresh-frame battle-end monitoring. Clear it after deployment returns.
+func (e *Executor) SetDeploymentContext(ctx context.Context, taps *TapExecutor) func() {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	guard := newDeploymentGuard(ctx)
+	// The watcher's fresh frames double as the HP monitor's input during
+	// deployment: one capture serves battle-end detection and hero abilities.
+	guard.onBattleFrame = func(frame gocv.Mat) { e.pollHeroWatch(frame) }
+	e.deployCtx = ctx
+	e.deployGuard = guard
+	e.tapExec = taps
+	e.client.SetInputGuard(guard.Err)
+	watchCtx, cancel := context.WithCancel(ctx)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		e.watchDeployment(watchCtx, guard)
+	}()
+	return func() {
+		cancel()
+		<-watchDone // watcher no longer reads e.tapExec / heroWatch
+		e.client.SetInputGuard(nil)
+		e.deployGuard = nil
+		e.tapExec = nil
+		e.deployCtx = nil
+	}
+}
+
+func (e *Executor) deployCtxIsActive() bool {
+	return e.deployCtx != nil && e.deployCtx.Err() == nil
+}
+
+func (e *Executor) deploymentErr() error {
+	if e.deployCtx != nil {
+		if err := e.deployCtx.Err(); err != nil {
+			return err
+		}
+	}
+	if e.deployGuard != nil {
+		return e.deployGuard.Err()
+	}
+	return nil
 }
 
 // SetActiveStrategy records the strategy being executed so battle-end
@@ -1782,36 +1866,16 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			}
 			state, _ := e.classify(screen)
 
-		if state == game.StateBattleEnd || state == game.StateReturnHome {
-			screen.Close()
-			return true
-		}
-
-		// HP-triggered hero abilities: the deploy already spent the
-		// placement tap; this fires the remaining ability tap on low HP
-		// (or proactively for the warden). Reuses this tick's frame, so
-		// the watch costs no extra captures. See hero_hp.go.
-		if e.heroWatch != nil {
-			watch := e.heroWatch
-			now := time.Now()
-			watch.Poll(screen, e.cal, now, func(h *WatchedHero) {
-				y := h.SlotY
-				if h.Warden {
-					// Same card-tap point as the deploy path (see
-					// TapExecutor.fireSlotTap): the warden's icon sits
-					// above the card centre.
-					y -= int(e.cal.Length(25))
-				}
-				if err := e.client.TapFast(h.X, y, 4.0); err != nil {
-					e.logger.Warn().Err(err).Int("x", h.X).Msg("hero HP ability tap failed")
-				} else {
-					e.logger.Info().Int("x", h.X).Msg("hero ability fired on low HP")
-				}
-			})
-			if watch.AllDone() {
-				e.heroWatch = nil
+			if state == game.StateBattleEnd || state == game.StateReturnHome {
+				screen.Close()
+				return true
 			}
-		}
+
+			// HP-triggered hero abilities: the deploy already spent the
+			// placement tap; this fires the remaining ability tap on low HP
+			// (or proactively for the warden). Reuses this tick's frame, so
+			// the watch costs no extra captures. See hero_hp.go.
+			e.pollHeroWatch(screen)
 
 			// Per-strategy auto-end threshold from end_at_percent (0 = off).
 			endAtPct := 0

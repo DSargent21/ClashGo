@@ -167,12 +167,30 @@ func TestResolveSpellCount_DefaultFiveWithoutCounts(t *testing.T) {
 	}
 }
 
-func TestResolveSpellCount_ZeroOCRCountFallsBack(t *testing.T) {
-	// OCR present but read 0 (blurry frame) — must NOT tap 0 times.
+func TestResolveSpellCount_MeasuredZeroFiresNothing(t *testing.T) {
+	// A count present in the map is a MERGE-CONFIRMED measurement (an
+	// unreadable card is absent, never zero). A trusted zero means the card
+	// measurably carries nothing — firing the legacy 5 would cast five
+	// phantom spells at empty ground.
 	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, map[int]int{100: 0}, []*TrackedSlot{spellSlot("rage spell", 100)})
 	unit := strategy.Unit{Name: "Rage Spell", Amount: "All"}
-	if got := sd.resolveSpellCount(unit); got != 5 {
-		t.Fatalf("OCR count 0 resolved to %d taps, want fallback 5", got)
+	if got := sd.resolveSpellCount(unit); got != 0 {
+		t.Fatalf("measured-zero card resolved to %d taps, want 0 (trusted zero is evidence of an empty card)", got)
+	}
+}
+
+func TestResolveSpellCount_AuthoredCountClampedToMeasured(t *testing.T) {
+	// The strategy asks for 10 casts but the card measurably carries 4:
+	// firing 10 lands six casts with an empty card selected.
+	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, map[int]int{100: 4}, []*TrackedSlot{spellSlot("rage spell", 100)})
+	unit := strategy.Unit{Name: "Rage Spell", Amount: "10"}
+	if got := sd.resolveSpellCount(unit); got != 4 {
+		t.Fatalf("authored 10 with measured 4 resolved to %d taps, want 4", got)
+	}
+	// Authored below the measurement stays authored.
+	unit.Amount = "3"
+	if got := sd.resolveSpellCount(unit); got != 3 {
+		t.Fatalf("authored 3 with measured 4 resolved to %d taps, want 3", got)
 	}
 }
 

@@ -336,6 +336,10 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	}
 
 	attackExec := attack.NewExecutor(client, cal, &cfg.Attack, log.Logger)
+	// Honor full_army_before_attack with the positive-evidence gate only:
+	// deploy aborts when a strategy card measurably reads zero, never on
+	// unknown counts (see Executor.SetFullArmyRequired).
+	attackExec.SetFullArmyRequired(cfg.Training.FullArmyBeforeAttack)
 
 	var templates *game.TemplateStore
 	templates, err = game.NewTemplateStore(paths.Resolve("templates"))
@@ -361,6 +365,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	// Stop that cancels the boot also tears down a successfully-booted
 	// bot without waiting for the App-level bot.Cancel() to be called.
 	ctx, cancel := context.WithCancel(bootCtx)
+	client.SetInputContext(ctx)
 
 	b = &Bot{
 		client:            client,
@@ -1328,16 +1333,16 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		//
 		// Settle first, then parse. If the read comes back all-zero we
 		// cannot assume the animation is still running — a genuine 0%
-		// destruction loss reads exactly the same. The discriminator is
-		// frame stability: once two captures ~1s apart are pixel-identical
-		// in the result panel, the count-up finished and the (possibly
-		// zero) value is the true result. Every attempt overwrites
-		// last_battle_result.png with the freshest frame so the saved
-		// artifact matches the final parse.
+		// destruction loss reads exactly the same. Nonzero results require
+		// a complete, stable OCR read after the observed bonus-animation
+		// window; zero results additionally require a stable panel hash.
+		// Suspicious reads fail closed, while the final frame is retained
+		// for diagnosis.
 		//
 		// Which reads qualify is decided by resultSettle
-		// (internal/bot/result_settle.go): the panel must STOP CHANGING,
-		// not merely show a number. The old "any field non-zero" shortcut
+		// (internal/bot/result_settle.go): the full read must be stable and
+		// the bonus rows complete, not merely show a number. The old
+		// "any field non-zero" shortcut
 		// accepted the star emblem's paint frame — seconds before the loot
 		// and bonus counters ran — and locked in a 2-star victory as 0
 		// loot / 0 bonus.
@@ -1461,10 +1466,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				Int("destruction_pct", finalPct).
 				Msg("battle result processed")
 		} else {
-			// OCR failed after retries — still record the rules-derived
-			// star count when the wait measured destruction, so a battle
-			// is never reported as a 0-star defeat merely because the
-			// result panel misparsed.
+			// OCR failed or returned implausible resource values after retries.
+			// Do not persist partial loot/bonus as a successful parse; retain only
+			// independently measured destruction stars when available.
+			parsedResults = false
 			if finalPct > 0 {
 				battleStars = game.StarsFromOutcome(finalPct, b.attackExec.ThDestroyed())
 				b.logger.Error().
@@ -1759,11 +1764,23 @@ func (b *Bot) clickSequence() bool {
 		b.client.JitteredSleep(500 * time.Millisecond)
 	}
 	if !armyClicked {
-		b.logger.Warn().Int("army_slot", b.armySlot).Msg("army recipe card did not appear, continuing anyway")
 		if screen, err := b.client.CaptureToMat(); err == nil {
 			b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": b.armySlot})
 			screen.Close()
 		}
+		if b.armySlot > 1 {
+			// Fail closed: an explicitly requested saved recipe (slot > 1)
+			// that never selected means the battle would run with whatever
+			// army is currently active — silently wrong composition, a
+			// wasted attack. There is no positive "selected" evidence to
+			// check (the toast is transient and unmapped), so a tap that
+			// did not land after 3 attempts is enough to refuse.
+			b.logger.Error().
+				Int("army_slot", b.armySlot).
+				Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
+			return false
+		}
+		b.logger.Warn().Int("army_slot", b.armySlot).Msg("army recipe card did not appear, continuing anyway")
 	}
 	b.client.JitteredSleep(500 * time.Millisecond)
 

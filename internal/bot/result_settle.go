@@ -39,34 +39,37 @@ import (
 //
 // What is left is a read that is trusted for three separate reasons:
 //
-//	1. the panel has been observed for resultPanelMinObserve, which is
-//	   longer than a bonus column has ever taken to appear
-//	2. the full read — stars, loot rows AND bonus rows — repeated
-//	   unchanged across two captures
-//	3. a win shows a league bonus: CoC pays one on every battle with at
-//	   least one star, so a win reading zero bonus is an unfinished panel,
-//	   not a result
+//	1. the panel has been observed for resultPanelMinObserve, longer than
+//	   the latest measured bonus animation plus a safety margin
+//	2. the full read — stars, loot rows AND bonus rows — matched across
+//	   consecutive captures
+//	3. a win shows a complete league bonus: CoC pays one on every battle
+//	   with at least one star, and gold/elixir league bonuses are equal
+//	   amounts, so missing or mismatched rows are not final
 //
-// A genuine no-loot defeat reads zero forever, so it can never satisfy (2);
-// it is accepted instead on panel-pixel stillness held past the observation
-// window, which no count-up can fake.
+// A genuine no-loot defeat has no nonzero read to settle, so it is accepted
+// only on panel-pixel stillness held past the observation window, which no
+// count-up can fake.
 
 const (
-	// resultSettleAttempts caps how many times the panel is re-read. At the
-	// caller's cadence that observes the panel for roughly twelve seconds,
-	// against a battle that just ran for one to four minutes. The widest
-	// league-bonus delay measured live was 8 s, so the cap has room to keep
-	// reading past it rather than falling back to a read taken too soon.
-	resultSettleAttempts = 18
+	maxBattleLootGold        = 10_000_000
+	maxBattleLootElixir      = 10_000_000
+	maxBattleLootDarkElixir  = 100_000
+	maxLeagueBonusGold       = 1_000_000
+	maxLeagueBonusElixir     = 1_000_000
+	maxLeagueBonusDarkElixir = 100_000
 
-	// resultPanelMinObserve is how long the panel is watched before any read
-	// is believed. The league-bonus column has been measured landing 4.8 s
-	// after the first captured frame; the margin covers a slower device.
-	resultPanelMinObserve = 7 * time.Second
+	// resultSettleAttempts and resultPanelMinObserve must allow a result read
+	// beyond the latest measured bonus-count animation (8 s), then confirm it
+	// again. At 400 ms cadence this allows about 11 s of observation.
+	resultSettleAttempts = 28
+
+	// Never accept a stable-looking result before every bonus counter had time
+	// to animate. This exceeds the latest measured 8 s delay with 2 s margin.
+	resultPanelMinObserve = 10 * time.Second
 
 	// resultZeroStableCaptures is how many consecutive identical PANEL
-	// frames an all-zero read must show before it is believed: three frames
-	// either side of two stable intervals.
+	// frames an all-zero read must show before it is believed.
 	resultZeroStableCaptures = 3
 
 	// The pauses between settle attempts. They are named because the shortest
@@ -98,9 +101,6 @@ type resultSettle struct {
 
 	prevRead game.BattleResult
 	sameRead int // consecutive captures whose full read is identical
-
-	last     game.BattleResult
-	haveLast bool
 }
 
 func newResultSettle(log zerolog.Logger) *resultSettle {
@@ -110,13 +110,25 @@ func newResultSettle(log zerolog.Logger) *resultSettle {
 // keepResultFrame reports whether a settle attempt's frame should be written to
 // last_battle_result.png.
 //
-// The artifact exists to be looked at after the fact, so the frames worth
-// keeping are the one the accepted read came from, the one that explains a
-// parse failure, and — if the panel never settles — the last one captured.
-// Every other frame is an animating panel that the next attempt replaces.
-// Encoding them all cost a full-frame PNG encode and a disk write on each of up
-// to resultSettleAttempts passes, seconds apart, for a file that already had a
-// fresher copy by the time anyone could open it.
+// plausibleBattleResult rejects impossible OCR values before they can enter
+// session totals. Caps are deliberately generous: well above observed loot and
+// league bonuses, but below five/six-digit OCR shifts into the wrong resource.
+func plausibleBattleResult(res game.BattleResult) bool {
+	if res.Stars < 0 || res.Stars > 3 {
+		return false
+	}
+	return plausibleResource(res.Loot.Gold, maxBattleLootGold) &&
+		plausibleResource(res.Loot.Elixir, maxBattleLootElixir) &&
+		plausibleResource(res.Loot.DarkElixir, maxBattleLootDarkElixir) &&
+		plausibleResource(res.Bonus.Gold, maxLeagueBonusGold) &&
+		plausibleResource(res.Bonus.Elixir, maxLeagueBonusElixir) &&
+		plausibleResource(res.Bonus.DarkElixir, maxLeagueBonusDarkElixir)
+}
+
+func plausibleResource(value, max int) bool {
+	return value >= 0 && value <= max
+}
+
 func keepResultFrame(attempt, lastAttempt int, accepted, parseFailed bool) bool {
 	return accepted || parseFailed || attempt >= lastAttempt
 }
@@ -143,19 +155,22 @@ func (s *resultSettle) observe(hash uint64, res game.BattleResult, now time.Time
 	}
 	watched := now.Sub(s.first)
 
-	if !res.IsZero() {
-		s.last, s.haveLast = res, true
-	}
+	valid := plausibleBattleResult(res)
 
 	// Read stability: the same stars, loot and bonus on two captures in a
 	// row. This is what survives a translucent panel over a moving
 	// battlefield, where the pixels never hold still.
-	if s.reads > 1 && res == s.prevRead {
-		s.sameRead++
+
+	if valid {
+		if s.sameRead > 0 && res == s.prevRead {
+			s.sameRead++
+		} else {
+			s.sameRead = 1
+		}
+		s.prevRead = res
 	} else {
-		s.sameRead = 1
+		s.sameRead = 0
 	}
-	s.prevRead = res
 
 	// Panel-pixel stability, kept for the one case a read cannot settle: a
 	// genuine all-zero result, whose read is zero whether the panel has
@@ -169,30 +184,31 @@ func (s *resultSettle) observe(hash uint64, res game.BattleResult, now time.Time
 	}
 	s.prevHash, s.havePrev = hash, hash != 0
 
-	// A win that shows no league bonus yet is a panel still being written:
-	// the bonus column lands seconds after the loot rows and counts up.
-	bonusPending := res.Stars >= 1 && res.Bonus.Gold == 0
+	// A win that shows incomplete or mismatched league gold/elixir is a panel
+	// still being written (or a row-anchor OCR error): the two resource bonuses
+	// are the same league amount, while the count-up can expose partial values.
+	bonusPending := res.Stars >= 1 &&
+		(res.Bonus.Gold == 0 || res.Bonus.Elixir == 0 || res.Bonus.Gold != res.Bonus.Elixir)
 
 	switch {
-	case watched >= resultPanelMinObserve && !bonusPending && s.sameRead >= 2 && !res.IsZero():
+	case valid && watched >= resultPanelMinObserve && !bonusPending && s.sameRead >= 2 && !res.IsZero():
 		s.log.Debug().
 			Int("reads", s.reads).
 			Float64("watched_s", watched.Seconds()).
 			Msg("battle result accepted: stars, loot and bonus all stopped changing")
 		return res, true
-	case watched >= resultPanelMinObserve && s.stable >= resultZeroStableCaptures-1 && res.IsZero():
+	case valid && hash != 0 && watched >= resultPanelMinObserve && s.stable >= resultZeroStableCaptures-1 && res.IsZero():
 		s.log.Info().
 			Int("reads", s.reads).
 			Float64("watched_s", watched.Seconds()).
 			Msg("battle result accepted: panel froze and reads zero (real no-loot result)")
 		return res, true
-	case s.reads >= resultSettleAttempts && s.haveLast:
-		s.log.Warn().
+	case s.reads >= resultSettleAttempts:
+		s.log.Error().
 			Int("reads", s.reads).
-			Float64("watched_s", watched.Seconds()).
 			Bool("bonus_pending", bonusPending).
-			Msg("battle result never stopped changing; keeping the last non-empty read (loot or bonus may be short)")
-		return s.last, true
+			Msg("battle result OCR did not produce a plausible settled result; refusing to persist suspicious resource values")
+		return game.BattleResult{}, false
 	}
 	return res, false
 }

@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/adb"
@@ -79,6 +80,15 @@ type TapExecutor struct {
 	// manager is built; deployers use it to pair a unit with its OCR'd
 	// count. nil is legal (lookup just returns no slot).
 	slotResolver func(unitName string) *TrackedSlot
+
+	// lastNonHeroSlot lets deployment-time HP-triggered abilities restore the
+	// current troop selection before the next field tap. inputErr is the sticky
+	// first definite tap transport failure for this battle. Both are shared with
+	// the deployment watcher goroutine (which fires HP abilities), hence the
+	// mutex.
+	inputMu         sync.Mutex
+	lastNonHeroSlot *TrackedSlot
+	inputErr        error
 }
 
 // SetSlotResolver wires the unit-name -> slot lookup used by deployers
@@ -108,6 +118,67 @@ func (t *TapExecutor) StartDeployBudget() {
 	// The siege ledger is per-battle: last battle's machine is not on this
 	// field, and a stale point would quietly bend this battle's hero drops.
 	t.siegeGround, t.siegeGroundSet, t.siegeNudges, t.siegePlacements = image.Point{}, false, 0, 0
+	// Fresh battle, fresh transport verdict and selection state.
+	t.inputMu.Lock()
+	t.inputErr, t.lastNonHeroSlot = nil, nil
+	t.inputMu.Unlock()
+}
+
+// noteInput records a definite tap transport failure once per battle. It is
+// deliberately sticky: when a synchronous tap reports an error the deploy
+// cannot know whether a queued copy landed, so retrying means either blind
+// duplicate taps or silently skipping the unit — the orchestrator stops at
+// the next checkpoint instead.
+func (t *TapExecutor) noteInput(err error, what string) {
+	if err == nil {
+		return
+	}
+	t.inputMu.Lock()
+	first := t.inputErr == nil
+	if first {
+		t.inputErr = err
+	}
+	t.inputMu.Unlock()
+	if first {
+		t.logger.Error().Err(err).Str("tap", what).
+			Msg("definite tap transport failure; deploy stops at the next checkpoint (delivery uncertain, no blind retry)")
+	}
+}
+
+// InputErr returns the first definite tap transport failure observed this
+// battle, or nil.
+func (t *TapExecutor) InputErr() error {
+	t.inputMu.Lock()
+	defer t.inputMu.Unlock()
+	return t.inputErr
+}
+
+// TapField fires one raw field tap through the recording choke point, so
+// deployers that call the client directly (spell casts) feed the same
+// transport verdict as every other path.
+func (t *TapExecutor) TapField(x, y int, stdDev float64) error {
+	err := t.client.TapFast(x, y, stdDev)
+	t.noteInput(err, "field tap")
+	return err
+}
+
+// RestoreSelection re-selects the troop/spell card the deploy most recently
+// chose. Used after a hero-ability tap so the ability's card tap cannot leave
+// a hero selected while the next phase aims field taps at troop ground.
+func (t *TapExecutor) RestoreSelection() bool {
+	t.inputMu.Lock()
+	slot := t.lastNonHeroSlot
+	t.inputMu.Unlock()
+	if slot == nil {
+		return false
+	}
+	return t.TapFast_ok(slot.X, slot.Y)
+}
+
+func (t *TapExecutor) TapFast_ok(x, y int) bool {
+	err := t.client.TapFast(x, y, 2.0)
+	t.noteInput(err, "selection restore")
+	return err == nil
 }
 
 // StartDeployBudgetAt arms the deploy deadline at an explicit instant
@@ -230,7 +301,12 @@ func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) bool {
 	if !t.consumeHeroSpotTap(slot, "select") {
 		return false
 	}
-	t.fireSlotTap(slot, jitterPx)
+	t.noteInput(t.fireSlotTap(slot, jitterPx), "slot select")
+	if !isHeroCardSlot(slot) {
+		t.inputMu.Lock()
+		t.lastNonHeroSlot = slot
+		t.inputMu.Unlock()
+	}
 	return true
 }
 
@@ -256,7 +332,7 @@ func (t *TapExecutor) PlaceSiege(slot *TrackedSlot, pt image.Point, stdDev float
 			Msg("refusing a second siege placement tap: the machine is already on the field and a second tap destroys it")
 		return false
 	}
-	t.client.TapFast(pt.X, pt.Y, stdDev)
+	t.noteInput(t.client.TapFast(pt.X, pt.Y, stdDev), "siege placement")
 	// Record the machine's tile before anything else can tap the field, so every
 	// later placement path has the point it must stay clear of.
 	t.siegeGround, t.siegeGroundSet = pt, true
@@ -355,7 +431,7 @@ func (t *TapExecutor) avoidSiegeGroundXY(x, y int) (int, int) {
 // to be the last thing between the caller's aim and the wire.
 func (t *TapExecutor) TapUnitField(pt image.Point, stdDev float64) {
 	pt, _ = t.avoidSiegeGround(pt)
-	t.client.TapFast(pt.X, pt.Y, stdDev)
+	t.noteInput(t.client.TapFast(pt.X, pt.Y, stdDev), "unit field tap")
 }
 
 // RearmSlot re-selects a hero's card after a placement the game did not
@@ -381,13 +457,14 @@ func (t *TapExecutor) RearmSlot(slot *TrackedSlot) bool {
 		Int("x", slot.X).
 		Int("rearms", slot.SpotRearms).
 		Msg("re-arming the hero card: the previous placement was refused, which deselects the card, so re-tapping it is the only way the next field tap can land (no placement budget spent)")
-	t.fireSlotTap(slot, heroCardTapJitter)
+	t.noteInput(t.fireSlotTap(slot, heroCardTapJitter), "hero re-arm")
 	return true
 }
 
 // fireSlotTap sends the card tap itself. Shared by TapSlot and RearmSlot so the
-// two can never drift apart in jitter or coordinates.
-func (t *TapExecutor) fireSlotTap(slot *TrackedSlot, jitterPx int) {
+// two can never drift apart in jitter or coordinates. Returns the transport
+// error so callers can feed the sticky per-battle input verdict.
+func (t *TapExecutor) fireSlotTap(slot *TrackedSlot, jitterPx int) error {
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
 		ptY -= int(t.cal.Length(25))
@@ -398,7 +475,7 @@ func (t *TapExecutor) fireSlotTap(slot *TrackedSlot, jitterPx int) {
 		Int("y", jPt.Y).
 		Str("unit", slot.UnitName).
 		Msg("tapping slot")
-	t.client.TapFast(jPt.X, jPt.Y, 2.0)
+	return t.client.TapFast(jPt.X, jPt.Y, 2.0)
 }
 
 // TapDeployLine distributes taps along a line from p1 to p2.
@@ -429,16 +506,16 @@ func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int)
 			j1 := t.addJitter(points[i], jitterPx)
 			j2 := t.addJitter(points[i+1], jitterPx)
 			j3 := t.addJitter(points[i+2], jitterPx)
-			t.client.TapTriple(j1.X, j1.Y, 15.0, j2.X, j2.Y, 15.0, j3.X, j3.Y, 15.0)
+			t.noteInput(t.client.TapTriple(j1.X, j1.Y, 15.0, j2.X, j2.Y, 15.0, j3.X, j3.Y, 15.0), "deploy triple")
 			i += 3
 		} else if rem == 2 {
 			j1 := t.addJitter(points[i], jitterPx)
 			j2 := t.addJitter(points[i+1], jitterPx)
-			t.client.TapDual(j1.X, j1.Y, 15.0, j2.X, j2.Y, 15.0)
+			t.noteInput(t.client.TapDual(j1.X, j1.Y, 15.0, j2.X, j2.Y, 15.0), "deploy dual")
 			i += 2
 		} else {
 			j1 := t.addJitter(points[i], jitterPx)
-			t.client.TapFast(j1.X, j1.Y, 15.0)
+			t.noteInput(t.client.TapFast(j1.X, j1.Y, 15.0), "deploy single")
 			i += 1
 		}
 		t.sleepBetweenBatches()
@@ -454,16 +531,16 @@ func (t *TapExecutor) TapDeployPoint(pt image.Point, count int, jitterPx int) {
 			j1 := t.addJitter(pt, jitterPx)
 			j2 := t.addJitter(pt, jitterPx)
 			j3 := t.addJitter(pt, jitterPx)
-			t.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
+			t.noteInput(t.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0), "point triple")
 			i += 3
 		} else if rem == 2 {
 			j1 := t.addJitter(pt, jitterPx)
 			j2 := t.addJitter(pt, jitterPx)
-			t.client.TapDual(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0)
+			t.noteInput(t.client.TapDual(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0), "point dual")
 			i += 2
 		} else {
 			j1 := t.addJitter(pt, jitterPx)
-			t.client.TapFast(j1.X, j1.Y, 12.0)
+			t.noteInput(t.client.TapFast(j1.X, j1.Y, 12.0), "point single")
 			i += 1
 		}
 		t.sleepBetweenBatches()
@@ -497,7 +574,7 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 				j1 := t.addJitter(image.Pt(tx1, ty1), jitterPx)
 				j2 := t.addJitter(image.Pt(tx2, ty2), jitterPx)
 				j3 := t.addJitter(image.Pt(tx3, ty3), jitterPx)
-				t.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0)
+				t.noteInput(t.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0), "four-sides triple")
 			} else if rem == 2 {
 				pct1 := float64(i) / float64(steps-1)
 				pct2 := float64(i+1) / float64(steps-1)
@@ -505,12 +582,12 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 				tx2, ty2 := intLerp(p1, p2, pct2)
 				j1 := t.addJitter(image.Pt(tx1, ty1), jitterPx)
 				j2 := t.addJitter(image.Pt(tx2, ty2), jitterPx)
-				t.client.TapDual(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0)
+				t.noteInput(t.client.TapDual(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0), "four-sides dual")
 			} else {
 				pct := float64(i) / float64(steps-1)
 				tx, ty := intLerp(p1, p2, pct)
 				j1 := t.addJitter(image.Pt(tx, ty), jitterPx)
-				t.client.TapFast(j1.X, j1.Y, 12.0)
+				t.noteInput(t.client.TapFast(j1.X, j1.Y, 12.0), "four-sides single")
 			}
 			time.Sleep(45 * time.Millisecond)
 		}
@@ -536,7 +613,7 @@ func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) bool {
 		Int("y", ptY).
 		Str("unit", slot.UnitName).
 		Msg("tapping hero ability")
-	t.client.TapFast(slot.X, ptY, 4.0)
+	t.noteInput(t.client.TapFast(slot.X, ptY, 4.0), "hero ability")
 	return true
 }
 

@@ -414,7 +414,7 @@ says otherwise.
 | 1 | A fresh `rand.New(rand.NewSource(now))` (~4.9 KB state array) on **every tap and every jittered sleep** | `internal/adb/client.go` (10 sites), `transport.go`, `bezier.go`, `game/navigator.go` | ~25–50 KB/s of garbage during a battle; more in idle navigation | `TestGaussianOffsetDoesNotAllocate` (0 allocs/op) |
 | 2 | The BlueStacks adbd-wedge capture path allocated a **fresh frame buffer per capture** (~2.5 MB) just to prepend a 12-byte header | `internal/adb/transport.go::normalizeShellScreencap` | **2.5 MB/frame of garbage** → 0, on the path BlueStacks actually takes | `TestNormalizeShellScreencap*` (in-place, byte-exact) |
 | 3 | `ClassifyState` scored **all 22 rules every frame**, including full-frame 3-scale template matches, after the answer was already final | `internal/game/classifier.go` | **measured: 425 → 306 ms per classify** over the corpus mix (−28 %); up to −213 ms/frame where the winner is template-free | `TestEarlyExit*` (equivalence over 13 real frames), `BenchmarkClassify*` |
-| 4 | The settle loop **PNG-encoded and rewrote `last_battle_result.png` on every attempt** (up to 18×/battle, seconds apart) | `internal/bot/bot.go` (settle loop) | **measured: ~45 ms + ~2 MB per write** → 17 fewer per battle (≈0.75 s CPU, ≈34 MB of writes) | `TestKeepResultFrame` |
+| 4 | The settle loop **PNG-encoded and rewrote `last_battle_result.png` on every attempt** (up to 28×/battle, seconds apart) | `internal/bot/bot.go` (settle loop) | **measured: ~45 ms + ~2 MB per write** → up to 27 fewer per battle (≈1.2 s CPU, ≈54 MB of writes) | `TestKeepResultFrame` |
 | 5 | Tap-path debug logs formatted their arguments **even with debug logging off** | `internal/adb/client.go`, `bezier.go` | ~60 B/tap of boxing, ~4 taps/s | compile-checked (no device-free path reaches them) |
 
 Below: what changed and why, then the ranked list of what is left — including the
@@ -468,7 +468,7 @@ Three things this says that the earlier estimates did not:
 
 PNG writing, measured the same way (`gocv.IMWrite` on a 1280×720 capture):
 **~45 ms and ~2 MB per full-frame artifact**. The settle loop used to pay that up
-to 18 times per battle.
+to 28 times per battle.
 
 > Measurement caveat: these are wall-clock times in a benchmark, single-process,
 > with warm template caches and an idle machine. They are the right order of
@@ -554,15 +554,18 @@ no tie rule at all and returned whichever equal state it happened to place first
 
 ### 4. The battle-result artifact is written when it is worth writing
 
-The settle loop re-read the result panel up to 18 times to wait out the loot and
-league-bonus counters, and wrote `last_battle_result.png` on **every** attempt:
-a full-frame PNG encode plus a disk write, seconds apart, each overwriting the
-previous one — to end up with the frame the accepted read came from anyway. It
-now writes when the frame is the accepted read, when it is the evidence for a
-parse failure, or on the last attempt (a panel that never settles must still
-leave something to look at). `keepResultFrame` is a pure predicate so the
-policy is testable without a device; the write itself is best-effort and can
-never abort the result bookkeeping.
+The settle loop re-reads the result panel up to 28 times to wait out the loot and
+league-bonus counters, and writes `last_battle_result.png` only when the frame is
+accepted, parsing fails, or the attempt budget expires. Previously each
+capture incurred a full-frame PNG encode plus a disk write, seconds apart, each
+overwriting the previous one — to end up with the frame the accepted read came
+from anyway. It now holds the read for at least 10 seconds after the first
+capture, requires stable complete values, rejects mismatched league gold/elixir
+bonuses and resource values outside generous bounds, and fails closed when no
+credible read
+settles. `keepResultFrame` is a pure predicate so the artifact policy is testable
+without a device; the write itself is best-effort and can never abort result
+bookkeeping.
 
 ### 5. Tap-path debug logging costs nothing when it is off
 

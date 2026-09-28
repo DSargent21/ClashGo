@@ -2,9 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.6.0-beta] - 2026-09-28
 
 ### Fixed
+- **Battle loot and the league bonus are recorded only from a verified, settled
+  read; a suspicious parse is refused instead of banked**
+  (`internal/bot/result_settle.go`, `internal/bot/bot.go`). The result panel is
+  now watched for at least 10 s and a read is accepted only when every resource
+  is within generous per-resource bounds and the whole read repeats across
+  consecutive captures. A win whose league gold and elixir bonuses are missing
+  or unequal is an unfinished panel (or an OCR row shift), not a result, and is
+  never banked. The old "keep the last non-empty read" fallback is gone: when no
+  credible read settles inside the bounded 28-capture budget the attack is
+  recorded as unparsed, while the independently measured destruction-rule star
+  count is still kept, so an unreadable panel can no longer publish a
+  half-counted loot row. This closes the misparse that recorded an impossible
+  316,800 dark-elixir league bonus and the truncated reads that under-counted
+  loot and the bonus column.
+
+  Verified live 2026-09-28 (`--once`, one real 720p attack): the bonus column
+  was read as 0 and refused across 15 captures while it was still empty, caught
+  mid-count at 90,805, and was accepted only at `reads=20 watched_s=10.52`. The
+  accepted values — gold 691,355 / elixir 723,129 / DE 7,006 and bonus
+  288,000 / 288,000 / 2,160 — match an independent Apple Vision OCR of the saved
+  frame exactly, and the session totals counted the bonus
+  (979,355 = 691,355 + 288,000).
 - **The released DMG now launches. It never did.** `make build-gui` passed only
   the version/commit ldflags to `wails build`, so the app's OpenCV references had
   no `LC_RPATH` to resolve against and dyld aborted before `main()` —
@@ -61,8 +83,6 @@ All notable changes to this project will be documented in this file.
   DPI instead of the 1280x720 / 320 DPI device the bot runs on, and carried a
   stale version in its title. The Go module path still reads
   `github.com/Ducky705/ClashGO`; that rename is separate and untouched.
-
-## [0.6.0-beta] - 2026-09-27
 
 ### Fixed
 - **A siege machine is now placed with exactly one field tap, per battle, from
@@ -379,16 +399,16 @@ All notable changes to this project will be documented in this file.
   look the same" reads the five-second stretch where the loot is complete and
   the bonus column is not drawn yet.
 
-  `resultSettle` now owns the decision, with three independent reasons to
-  believe a read: the panel has been watched for 7 s (longer than a bonus
-  column has ever taken to appear), the full read — stars, loot AND bonus —
-  repeated unchanged across two captures, or (for a genuine all-zero defeat,
-  which can never satisfy the second) the panel pixels held still for three
-  captures. A win showing no league bonus is treated as an unfinished panel,
-  since CoC pays a bonus on every battle with a star. Panel-pixel stability is
-  no longer the only signal: the panel is translucent over a battlefield that
-  keeps animating, so its pixels never stop changing and the READ has to be
-  the thing that holds still.
+  `resultSettle` now waits at least 10 s (based on the longest measured
+  8-second bonus animation plus margin) and accepts only a plausible full read
+  that repeats across consecutive captures. League gold and elixir bonuses must
+  be present and equal; suspiciously large resource values are rejected rather
+  than credited. A genuine all-zero defeat is accepted only when panel pixels
+  stay still after the observation window. If no credible read settles within
+  the bounded 28-capture budget, the report is marked unparsed instead of
+  banking partial or implausible loot. Panel-pixel stability is not required
+  for nonzero reads because the translucent panel sits over an animated
+  battlefield.
 
   Live verification (run26, real 720p victory): held six captures with
   `bonus_gold=0`, caught the bonus mid-count at 84805, and accepted only once

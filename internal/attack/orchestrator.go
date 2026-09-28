@@ -44,6 +44,34 @@ const (
 	troopCountFrameSettle = 220 * time.Millisecond
 )
 
+// armyReadinessGap reports strategy troops/spells whose bar card has positive
+// evidence of being empty at deploy start: a MERGE-CONFIRMED zero count (an
+// unreadable card is absent from the counts map, never zero). Heroes, siege
+// machines and units with no slot on the bar are excluded — their cards do not
+// carry a trustworthy count badge, so silence there is not evidence.
+func armyReadinessGap(plans []PhasePlan, counts map[int]int, sm *SlotManager) []string {
+	if sm == nil {
+		return nil
+	}
+	var gap []string
+	seen := make(map[string]bool)
+	for _, plan := range plans {
+		for _, up := range plan.UnitPlans {
+			if up.Slot == nil || seen[up.Unit.Name] {
+				continue
+			}
+			if up.Slot.Category != "Troop" && up.Slot.Category != "Spell" {
+				continue
+			}
+			if n, ok := counts[up.Slot.X]; ok && n <= 0 {
+				seen[up.Unit.Name] = true
+				gap = append(gap, up.Unit.Name)
+			}
+		}
+	}
+	return gap
+}
+
 // DeployDynamicV2 deploys troops using dynamic red line detection.
 // No hardcoded precision_config.json needed - detects deployment boundary live.
 //
@@ -51,14 +79,18 @@ const (
 // the matching formula.json (loaded as <stem>_formula.json next to the
 // YAML). Pass "" to skip formula lookup entirely.
 func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat, strategyPath string) (int, error) {
+	// User Stop observed before any capture or tap.
+	if err := e.runtimeContext().Err(); err != nil {
+		return 0, err
+	}
 	w, h := screen.Cols(), screen.Rows()
 	targetEdge := s.TargetEdge
 
 	// Record the active strategy so the battle-end wait can honor
 	// per-strategy knobs (e.g. end_at_percent auto-end threshold).
 	e.activeStrategy = s
-	// A new battle owns a new HP watch; the snapshot at the end replaces it.
-	e.heroWatch = nil
+	// A new battle owns a new HP watch; heroes are re-tracked as they deploy.
+	e.clearHeroWatch()
 
 	// Pre-flight validation
 	if err := e.Validate(s); err != nil {
@@ -492,7 +524,13 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	slots := slotMgr.GetAllSlots()
 	countFrames := []gocv.Mat{screen}
 	for attempt := 0; attempt < troopCountExtraFrames; attempt++ {
+		if err := e.runtimeContext().Err(); err != nil {
+			return len(slotMgr.GetUndeployedSlots()), err
+		}
 		time.Sleep(troopCountFrameSettle)
+		if err := e.runtimeContext().Err(); err != nil {
+			return len(slotMgr.GetUndeployedSlots()), err
+		}
 		next, err := e.client.CaptureToMat()
 		if err != nil {
 			e.logger.Warn().Err(err).Int("captured", len(countFrames)).Msg("extra troop-bar capture failed; merging what was captured")
@@ -552,6 +590,13 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// live: the EQ-spell sweep kept re-firing for ~2 minutes after the
 	// battle had already ended because no wall-clock bound existed.
 	tapExec.StartDeployBudget()
+	// Arm the deployment guard: a fresh-frame watcher that (a) blocks all
+	// further device input once the bot is stopped or the battle-end overlay
+	// is confirmed twice, and (b) supplies the frames the hero HP monitor
+	// polls during the deploy. deferred teardown joins the watcher before the
+	// tap executor is released.
+	stopDeploy := e.SetDeploymentContext(e.runtimeContext(), tapExec)
+	defer stopDeploy()
 	// deployStart is the clock behind the DeployGoal line reported after the
 	// phase loop: the user's "all troops and spells in under seven seconds"
 	// window, measured rather than guessed. It is the first placement phase's
@@ -562,6 +607,18 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// 7. Plan phases
 	planner := NewDeployPlanner(slotMgr, pCfg, targetEdge, w, h, e.logger)
 	plans := planner.PlanDeployment(s)
+
+	// Full-army readiness, honored only on POSITIVE evidence: a strategy
+	// troop/spell whose card measurably reads zero on the settled multi-frame
+	// bar means the army is incomplete. Unknown counts never block — there is
+	// no detector for "full" yet, so claiming one would be a guess.
+	if e.fullArmyRequired {
+		if gap := armyReadinessGap(plans, countMap, slotMgr); len(gap) > 0 {
+			return 0, fmt.Errorf(
+				"army not full (training.full_army_before_attack): %s measurably empty on the troop bar; train before attacking",
+				strings.Join(gap, ", "))
+		}
+	}
 
 	// 8. Collect strategy unit names
 	strategyNames := GetStrategyUnitNames(s)
@@ -605,6 +662,10 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			}
 			if tapExec.DeployBudgetExhausted() {
 				e.logger.Warn().Msg("ability pass: deploy budget exhausted; stopping")
+				pendingAbilities = nil
+				return
+			}
+			if err := e.deploymentErr(); err != nil {
 				pendingAbilities = nil
 				return
 			}
@@ -663,6 +724,16 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	heroMgr.SetPinnedGround(userPinnedForTarget)
 
 	for _, plan := range plans {
+		if err := e.deploymentErr(); err != nil {
+			return len(slotMgr.GetUndeployedSlots()), err
+		}
+		// A definite tap transport failure is sticky: no retry can know
+		// whether the earlier tap landed, so the deploy stops at this
+		// checkpoint instead of firing duplicate or blind taps.
+		if err := tapExec.InputErr(); err != nil {
+			remaining := len(slotMgr.GetUndeployedSlots())
+			return remaining, fmt.Errorf("tap transport failed (%w); %d slots undeployed", err, remaining)
+		}
 		// Hard deploy-time stop: if the budget ran out mid-plan, abandon
 		// the remaining phases instead of tapping into the battle timer.
 		// The leftover slots are reported as undeployed so the attack
@@ -691,6 +762,9 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		spellDeployer.SetCounter(troopCounter, slotMgr.GetBarY())
 		spellDeployer.SetPinnedGround(userPinnedForTarget)
 		for _, up := range ResolveSpellTargets(plan) {
+			if err := e.deploymentErr(); err != nil {
+				return len(slotMgr.GetUndeployedSlots()), err
+			}
 			if up.Slot == nil {
 				continue
 			}
@@ -740,6 +814,9 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 
 		// Deploy troops
 		for _, up := range ResolveTroopTargets(plan) {
+			if err := e.deploymentErr(); err != nil {
+				return len(slotMgr.GetUndeployedSlots()), err
+			}
 			if up.Slot == nil {
 				continue
 			}
@@ -780,6 +857,9 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 
 		// Deploy siege
 		for _, up := range ResolveSiegeTargets(plan) {
+			if err := e.deploymentErr(); err != nil {
+				return len(slotMgr.GetUndeployedSlots()), err
+			}
 			if up.Slot == nil {
 				continue
 			}
@@ -816,6 +896,12 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			}
 			if len(heroUnits) > 0 {
 				heroMgr.DeployHeroes(heroUnits, screen)
+				// Heroes are eligible for HP-triggered abilities from the
+				// moment they land, not only after the whole deploy.
+				e.armHeroWatch(slotMgr)
+			}
+			if err := e.deploymentErr(); err != nil {
+				return len(slotMgr.GetUndeployedSlots()), err
 			}
 		}
 
@@ -863,6 +949,9 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		}
 		if pDelay > 0 {
 			time.Sleep(pDelay)
+			if err := e.deploymentErr(); err != nil {
+				return len(slotMgr.GetUndeployedSlots()), err
+			}
 		}
 		e.logger.Info().
 			Str("phase", plan.Phase.Name).
@@ -928,9 +1017,9 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// must never fail an otherwise-good attack.
 	e.dumpAttackEvidence(formulaPtr, targetEdge, w, h, remainingCount)
 
-	// Snapshot deployed heroes for the battle-end HP watch: abilities that
-	// are still unspent fire on low HP during the wait (see hero_hp.go).
-	e.snapshotHeroWatch(slotMgr)
+	// Catch any hero deployed outside the main hero phase (sweep recovery,
+	// event troops) so the battle-end wait can still fire its ability.
+	e.armHeroWatch(slotMgr)
 
 	return remainingCount, nil
 }
