@@ -60,6 +60,125 @@ func TestGetConfigDirNotProjectRoot(t *testing.T) {
 	}
 }
 
+// setTempUserConfigBase points os.UserConfigDir() at a throwaway directory so a
+// test can exercise the real resolution order without touching the user's own
+// config tree. os.UserConfigDir() reads $HOME on macOS and $XDG_CONFIG_HOME on
+// linux, so both are set.
+func setTempUserConfigBase(t *testing.T) (base string, home string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	base, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir: %v", err)
+	}
+	return base, home
+}
+
+// TestConfigDirIsOneTreeForEveryBinary is the regression test for the split that
+// cost a live session its display scale. The bundled app (wails dev runs one) and
+// the unbundled CLI used to resolve to different directories, so a pin written by
+// the CLI probe tools was invisible to the app: every app run fell back to the
+// geometry-derived scale (1.9% off at 1280x720), lost the troop-count label row,
+// and deployed on blind top-up batches. Config resolution must not depend on the
+// bundle layout, and must not end in a per-binary "dev" directory.
+func TestConfigDirIsOneTreeForEveryBinary(t *testing.T) {
+	resetForTest(t)
+	base, _ := setTempUserConfigBase(t)
+
+	got := resolveConfigDir()
+	want := filepath.Join(base, "ClashGO")
+	if filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("resolveConfigDir() = %s, want %s for every binary layout", got, want)
+	}
+	if filepath.Base(got) == "dev" {
+		t.Fatalf("resolveConfigDir() = %s: a per-binary tree again; a pinned device setting in one tree is invisible to the other", got)
+	}
+
+	// The escape hatch for genuinely separate installs still has to win.
+	other := t.TempDir()
+	t.Setenv("CLASHGO_CONFIG_DIR", other)
+	if got := resolveConfigDir(); filepath.Clean(got) != filepath.Clean(other) {
+		t.Fatalf("CLASHGO_CONFIG_DIR ignored: got %s, want %s", got, other)
+	}
+}
+
+// TestMigrateFromLegacyDevTreeAdoptsThePin covers the state that actually
+// existed on disk: the measured display scale pinned in the old per-binary tree's
+// config.json. Adoption is copy-not-move, so the old tree stays readable and a
+// user who wants to inspect or remove it can.
+func TestMigrateFromLegacyDevTreeAdoptsThePin(t *testing.T) {
+	resetForTest(t)
+	base, _ := setTempUserConfigBase(t)
+
+	configDir := filepath.Join(base, "ClashGO")
+	legacyDir := filepath.Join(configDir, "dev")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const pin = `{"device":{"display_scale":1.325,"width":1280,"height":720}}`
+	if err := os.WriteFile(filepath.Join(legacyDir, "config.json"), []byte(pin), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A second state file proves the whole tree is adopted, not just config.json.
+	if err := os.WriteFile(filepath.Join(legacyDir, "attack_history.json"), []byte(`[]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := GetConfigDir(); filepath.Clean(got) != filepath.Clean(configDir) {
+		t.Fatalf("GetConfigDir() = %s, want the unified tree %s", got, configDir)
+	}
+
+	for _, name := range []string{"config.json", "attack_history.json"} {
+		data, err := os.ReadFile(filepath.Join(configDir, name))
+		if err != nil {
+			t.Fatalf("%s was not adopted from the legacy dev tree: %v", name, err)
+		}
+		if name == "config.json" && string(data) != pin {
+			t.Errorf("adopted config.json = %s, want the pinned one %s", data, pin)
+		}
+		if _, err := os.Stat(filepath.Join(legacyDir, name)); err != nil {
+			t.Errorf("legacy copy of %s is gone; migration must be copy-not-move: %v", name, err)
+		}
+	}
+}
+
+// TestMigrateDoesNotOverwriteUnifiedTree: adoption is only for files the unified
+// tree does not have. A live file there belongs to the running app and must never
+// be replaced by an older tree's copy.
+func TestMigrateDoesNotOverwriteUnifiedTree(t *testing.T) {
+	resetForTest(t)
+	base, _ := setTempUserConfigBase(t)
+
+	configDir := filepath.Join(base, "ClashGO")
+	legacyDir := filepath.Join(configDir, "dev")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const live = `{"device":{"display_scale":1.4}}`
+	const stale = `{"device":{"display_scale":1.1}}`
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(live), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "config.json"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	GetConfigDir()
+
+	data, err := os.ReadFile(filepath.Join(configDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != live {
+		t.Fatalf("unified config.json was overwritten by the legacy tree: got %s, want %s", data, live)
+	}
+}
+
 // TestGetConfigDirOverride verifies CLASHGO_CONFIG_DIR wins over
 // every other resolution rule. This is the escape hatch tests and
 // portable installs depend on; a regression would silently send

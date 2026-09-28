@@ -90,21 +90,37 @@ def test_edrag_rush_formula_covers_both_spells():
         assert entry is not None, f"formula is missing '{name}' — the spell would fall back to unconfigured legacy edges"
 
 
+def _formula_lines(entry: dict) -> list[dict]:
+    """The sub-lines a spell entry fires along.
+
+    Rage ships as `"type": "lines"` — one entry carrying its sub-lines — since
+    the picker began writing the live frame (`pkg/formula/formula.go`, the
+    `lines` schema). A plain `line` entry is the single-sub-line form.
+    """
+    if entry.get("type") == "lines" or entry.get("lines"):
+        return entry["lines"]
+    return [entry]
+
+
 def test_edrag_rush_formula_spells_have_valid_geometry():
     f = _load_json("auto_edrag_rush_formula.json")
     for name in ("rage spell", "ice spell"):
         entry = f["units"][name]
-        assert entry["type"] == "line", f"{name}: expected a pinned line, got {entry['type']}"
-        p1, p2 = entry["p1"], entry["p2"]
-        length = math.hypot(p2["x"] - p1["x"], p2["y"] - p1["y"])
-        assert length > 20, (
-            f"{name}: pinned line is only {length:.0f}px long — spells would stack on one tile"
-        )
+        lines = _formula_lines(entry)
+        assert lines, f"{name}: entry carries no sub-line at all (type={entry.get('type')!r})"
+        for i, line in enumerate(lines):
+            length = math.hypot(
+                line["p2"]["x"] - line["p1"]["x"], line["p2"]["y"] - line["p1"]["y"]
+            )
+            assert length > 20, (
+                f"{name}[{i}]: pinned line is only {length:.0f}px long — "
+                f"spells would stack on one tile"
+            )
 
 
 def test_edrag_rush_inner_rage_line_pinned_deeper_than_outer():
-    """The _rage_inner line must sit closer to screen center than the rage
-    outer line, or the auto-split drops the 'deep' rage on top of the entry rage."""
+    """The inner rage sub-line must sit closer to screen center than the outer
+    one, or the auto-split drops the 'deep' rage on top of the entry rage."""
     f = _load_json("auto_edrag_rush_formula.json")
     screen = f["screen"]
     cx, cy = screen["w"] / 2, screen["h"] / 2
@@ -114,10 +130,18 @@ def test_edrag_rush_inner_rage_line_pinned_deeper_than_outer():
         my = (line["p1"]["y"] + line["p2"]["y"]) / 2
         return math.hypot(cx - mx, cy - my)
 
-    rage = f["units"]["rage spell"]
-    inner = f["units"]["_rage_inner"]
-    assert center_dist(inner) < center_dist(rage), (
-        "_rage_inner must be closer to the base center than the rage entry line"
+    units = f["units"]
+    if units.get("_rage_inner") is not None:
+        # Legacy helper entry: a separate `_rage_inner` line beside the rage one.
+        outer, inner = units["rage spell"], units["_rage_inner"]
+    else:
+        lines = _formula_lines(units["rage spell"])
+        assert len(lines) >= 2, (
+            "rage spell must carry an outer and an inner sub-line (the 3+2 split)"
+        )
+        outer, inner = lines[0], lines[1]
+    assert center_dist(inner) < center_dist(outer), (
+        "the inner rage sub-line must be closer to the base center than the outer one"
     )
 
 
@@ -210,12 +234,37 @@ def test_edrag_rush_spells_carry_amount_all():
 # ---------------------------------------------------------------------------
 
 
-def test_edrag_formula_screen_matches_reference_frame():
+def test_edrag_formula_declares_the_frame_its_points_are_authored_in():
+    """`screen` is the SOURCE geometry the deploy path projects from
+    (`Formula.ProjectUniform`), and the picker writes the live frame's own
+    pixels plus the frame it captured them on. A declaration that does not
+    describe those pixels — a reference-sized 860x732 header over live 1280x720
+    points — silently shifts every tap by tens of pixels, so the header must be
+    a real landscape frame and every authored point must fit inside it."""
     f = _load_json("auto_edrag_rush_formula.json")
-    assert f["screen"] == {"w": 860, "h": 732}, (
-        "formula must be authored on the 860x732 reference frame the "
-        "mirror/scale math expects"
+    w, h = f["screen"]["w"], f["screen"]["h"]
+    assert w > h, (
+        f"formula screen {w}x{h} is not a landscape live frame; the reference-"
+        "era 860x732 header must not be used over live-authored points"
     )
+
+    def _points(entry):
+        if entry.get("p"):
+            yield entry["p"], entry["p"]
+            return
+        for line in _formula_lines(entry):
+            yield line["p1"], line["p2"]
+
+    checked = 0
+    for name, entry in f["units"].items():
+        for p1, p2 in _points(entry):
+            for pt in (p1, p2):
+                assert 0 <= pt["x"] < w and 0 <= pt["y"] < h, (
+                    f"{name}: point {pt} lies outside the {w}x{h} frame the "
+                    "formula declares as its source geometry"
+                )
+                checked += 1
+    assert checked > 0, "formula declares no points at all"
 
 
 def test_no_spell_unit_lacks_both_formula_and_pattern_fallback():

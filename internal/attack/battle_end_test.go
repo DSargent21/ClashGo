@@ -318,6 +318,150 @@ func TestDestructionOCR_ResultScreensNeverSatisfyThreshold(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// stall_config coordinates are HUD chrome: they must be mapped through the
+// calibration, not by the raw physical/reference ratio.
+//
+// Both assertions below are live failures from the 2026-09-21 1280x720 attack
+// (frames kept in internal/game/testdata/corpus/):
+//   - percent_roi mapped to (1152,575)-(1234,599), ~50 px BELOW the damage
+//     digits, so destruction read 0 for a whole battle the game was showing as
+//     25% — which disabled the stall timer, every end_at_percent auto-end, and
+//     latched 0 destruction for the stars.
+//   - end_button mapped to (99,585), ~47 px below the red button and on the
+//     battlefield, while EndBattle *tapped* (89,538) — the mapped button. The
+//     stall branch therefore never saw a button it was about to tap and waited
+//     out its whole deadline (17:12 -> 18:03) instead of ending the battle.
+// ---------------------------------------------------------------------------
+
+func loadStallConfig(t testing.TB) StallConfig {
+	t.Helper()
+	for _, p := range []string{"../../assets/stall_config.json", "assets/stall_config.json"} {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var sCfg StallConfig
+		if err := jsonUnmarshalStall(raw, &sCfg); err != nil {
+			t.Fatalf("stall_config.json: %v", err)
+		}
+		return sCfg
+	}
+	t.Skip("stall_config.json not found from test cwd")
+	return StallConfig{}
+}
+
+// new720pCalibration is the device the bot runs on: 1280x720 with the pinned
+// display scale from the corpus manifest.
+func new720pCalibration() *game.Calibration {
+	cal := game.NewCalibration(1280, 720)
+	cal.Verified = true
+	cal.SetDisplayScale(1.325)
+	return cal
+}
+
+func TestStallPercentROI_IsMappedAsHudChrome(t *testing.T) {
+	sCfg := loadStallConfig(t)
+	cal := new720pCalibration()
+
+	got := cal.HudRect(sCfg.PercentROI)
+	want := image.Rect(1166, 525, 1239, 557)
+	if got != want {
+		t.Fatalf("percent_roi mapped to %v at 1280x720, want %v — the live damage percentage renders there", got, want)
+	}
+	// The mapping must be load-bearing: if it ever collapses to the raw
+	// physical/reference ratio the frame test below loses its meaning.
+	ratio := image.Rect(
+		int(float64(sCfg.PercentROI.Min.X)*1280.0/float64(sCfg.RefWidth)),
+		int(float64(sCfg.PercentROI.Min.Y)*720.0/float64(sCfg.RefHeight)),
+		int(float64(sCfg.PercentROI.Max.X)*1280.0/float64(sCfg.RefWidth)),
+		int(float64(sCfg.PercentROI.Max.Y)*720.0/float64(sCfg.RefHeight)),
+	)
+	if ratio == got {
+		t.Fatal("the per-axis mapping gives the same rect as the HUD mapping; this fixture can no longer tell them apart")
+	}
+}
+
+func TestStallPercentROI_ReadsLiveDestructionAt720p(t *testing.T) {
+	sCfg := loadStallConfig(t)
+	cal := new720pCalibration()
+	img := readFixture(t, "corpus/battle_mid_720p.png")
+	defer img.Close()
+
+	if img.Cols() != 1280 || img.Rows() != 720 {
+		t.Fatalf("fixture is %dx%d, want 1280x720", img.Cols(), img.Rows())
+	}
+
+	templateDir := "../../assets/templates"
+	if _, err := os.Stat(templateDir); os.IsNotExist(err) {
+		t.Skip("templates dir not found from test cwd")
+	}
+	ts, err := game.NewTemplateStore(templateDir)
+	if err != nil {
+		t.Fatalf("NewTemplateStore: %v", err)
+	}
+	if err := ts.LoadTemplates(); err != nil {
+		t.Fatalf("LoadTemplates: %v", err)
+	}
+	t.Cleanup(ts.Close)
+	lr := game.NewLootRecognizer(cal, ts, zerolog.Nop())
+	t.Cleanup(lr.Close)
+
+	// The frame's damage panel reads 16% — confirmed two independent ways: the
+	// project's own Apple-Vision OCR (see look -img ... -grep %) and a manual
+	// ASCII render of the glyphs.  16% is not a nice round number to test with,
+	// which is the point: it needs BOTH digits read, and the old reader returned
+	// 1 because only the `1` cleared its floor while the `6` scored under it.
+	if got := lr.ReadDestructionPercentage(img, cal.HudRect(sCfg.PercentROI)); got != 16 {
+		t.Errorf("destruction read %d%% from the mapped percent_roi %v, want 16%% — this is the read that was stuck at 0 for a whole live battle",
+			got, cal.HudRect(sCfg.PercentROI))
+	}
+
+	// The ratio mapping is the bug, not a detail: it scans the battlefield.
+	ratio := image.Rect(
+		int(float64(sCfg.PercentROI.Min.X)*1280.0/float64(sCfg.RefWidth)),
+		int(float64(sCfg.PercentROI.Min.Y)*720.0/float64(sCfg.RefHeight)),
+		int(float64(sCfg.PercentROI.Max.X)*1280.0/float64(sCfg.RefWidth)),
+		int(float64(sCfg.PercentROI.Max.Y)*720.0/float64(sCfg.RefHeight)),
+	)
+	if got := lr.ReadDestructionPercentage(img, ratio); got != 0 {
+		t.Logf("note: the per-axis roi %v now reads %d%%; it read 0 when it caused the live stall", ratio, got)
+	}
+}
+
+func TestEndButtonVisible_AgreesWithTheTapPointAt720p(t *testing.T) {
+	sCfg := loadStallConfig(t)
+	cal := new720pCalibration()
+	e := NewExecutor(newClosedTestClient(t), cal, minimalAttackConfig(), zerolog.Nop())
+
+	// What EndBattle taps must be what the probe checks. Measured live, these
+	// were 47 px apart on the y axis.
+	tapX, tapY := cal.AnchorPoint(sCfg.EndButton.X, sCfg.EndButton.Y, game.AnchorEdge)
+	if tapX != 89 || tapY != 538 {
+		t.Fatalf("end_button anchor maps to (%d,%d) at 1280x720, want (89,538)", tapX, tapY)
+	}
+
+	cases := []struct {
+		fixture string
+		want    bool
+		note    string
+	}{
+		{"corpus/battle_mid_720p.png", true, "mid-battle frame: the red END BATTLE / SURRENDER button is on screen"},
+		{"corpus/battle_deploy_720p.png", true, "pre-deploy battle frame carries the same button"},
+		{"corpus/village_720p.png", false, "village: red roofs sit where the button would be, and must not pass as one"},
+		{"corpus/result_overlay_720p.png", false, "result overlay: no battle controls, so a stall must never tap blind here"},
+		{"corpus/connection_lost_720p.png", false, "lost-connection dialog: the button is gone behind the panel"},
+	}
+	for _, tc := range cases {
+		img := readFixture(t, tc.fixture)
+		got := e.endButtonVisible(img, sCfg)
+		img.Close()
+		if got != tc.want {
+			t.Errorf("endButtonVisible(%s) = %v, want %v (%s)", tc.fixture, got, tc.want, tc.note)
+		}
+	}
+}
+
 func TestReadDestructionPercentage_EmptyROIIsZero(t *testing.T) {
 	lr := newFixtureLootRecognizer(t)
 	img := readFixture(t, "screen_defeat.png")

@@ -45,6 +45,16 @@ ifneq ($(OPENCV_LIBDIR),)
     GOTEST_LDFLAGS := -ldflags='-extldflags=-Wl,-rpath,$(OPENCV_LIBDIR)'
 endif
 
+# The CLI binary links the same @rpath dylibs, so it needs the same LC_RPATH —
+# without it `make build-cli` produces a binary that aborts at spawn with
+# "Library not loaded: @rpath/libopencv_gapi.410.dylib" and every probe/live
+# run in this repo is dead on arrival. Deliberately narrower than LDFLAGS:
+# the GUI bundle is packaged for other Macs and must NOT bake this machine's
+# lib path into it. Empty on CI, where keg-only linking already works.
+ifneq ($(OPENCV_LIBDIR),)
+    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR)
+endif
+
 .PHONY: all build build-cli build-gui clean release manifest test test-go test-py
 
 all: build-cli build-gui
@@ -79,7 +89,7 @@ endif
 build-cli:
 	@echo "Building CLI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
 
 # one-shot attack: capture screen, design placements per unit, deploy via
 # formula. No game restart, no bot search loop. Single command. Always
@@ -87,6 +97,59 @@ build-cli:
 # ./run_designed_attack.sh is fresh.
 attack-once: build-cli
 	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME)
+
+# 720p attack review: render the full plan (formula taps, spell lines,
+# army-bar slots, red zone) onto the live emulator frame WITHOUT tapping.
+# Run it BEFORE every real attack — it catches spells-in-corner, missing
+# bar units and broken count OCR before a battle is spent.
+.PHONY: attack-verify
+attack-verify: build-cli
+	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/attack_verify ./cmd/attack_verify
+	@$(BUILD_DIR)/attack_verify -save tmp/attack_verify_overlay.png
+
+# pick-coords: click the exact deploy points for each of the four sides on the
+# LIVE emulator frame, then save them to assets/precision_config.json. Serves a
+# picker on 127.0.0.1:8791 — open it in the Preview tab (or your browser) and
+# click the frame: no coordinates to type, no geometry to reason about.
+#
+# Saved pins are AUTHORITATIVE: for a pinned side the bot stops substituting the
+# strategy formula, and the strategy `offset` no longer pushes the line toward
+# the base. Place points in the outer ring (the shaded band) and they are
+# deployable on every base.
+#   make pick-coords
+#   make pick-coords ARGS="-addr 127.0.0.1:9000"
+.PHONY: pick-coords
+pick-coords:
+	@mkdir -p $(BUILD_DIR)
+	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/pick_coords ./cmd/pick_coords
+	@$(BUILD_DIR)/pick_coords $(ARGS)
+
+# see: the debugging agent's eyes on the emulator. Renders a frame as text
+# with a pixel-coordinate ruler plus everything the bot's own vision layer
+# perceives (state, action button, red zone, recognised text with boxes), and
+# keeps a rolling store of frames so a run that already happened can still be
+# reviewed. Never taps.
+#   make see                     # report on the live screen
+#   make see ARGS="look -img tmp/x.png -rect 580,585,130,50"
+#   make see ARGS="diff tmp/a.png tmp/b.png"
+#   make see ARGS="timeline"
+.PHONY: see
+see:
+	@mkdir -p $(BUILD_DIR)
+	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/see ./cmd/see
+	@$(BUILD_DIR)/see $(if $(ARGS),$(ARGS),look)
+
+# attack-report: read a finished run's log and say, per unit, what the deploy
+# phase actually established. The geometry harnesses answer "were the taps in
+# the band"; this answers "did the army deploy and did the spells land somewhere
+# useful", which is the question a bad attack really raises. Exits non-zero when
+# the log contradicts a success.
+#   make attack-report ARGS="-log tmp/live_attack/run.log"
+.PHONY: attack-report
+attack-report:
+	@mkdir -p $(BUILD_DIR)
+	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/attack_report ./cmd/attack_report
+	@$(BUILD_DIR)/attack_report $(ARGS)
 
 .PHONY: attack-once attack-once-cli auto-attack auto-attack-right auto-attack-left auto-attack-top auto-attack-bottom attack-record attack-replay attack-classify
 

@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/rand"
 	"strings"
-	"time"
 )
 
 // swipePath returns `steps` points tracing a quadratic bezier curve from
@@ -94,6 +93,9 @@ func clampInt(v, min, max int) int {
 // SwipeHuman (the existing randomized linear swipe) so navigation never
 // breaks on a device that doesn't support raw input injection.
 func (c *Client) SwipeBezier(x1, y1, x2, y2, ms int) error {
+	// A gesture under way is input, from the first sample of the sendevent
+	// stream: invalidate before anything can capture mid-gesture.
+	c.markInput()
 	if x1 == x2 && y1 == y2 {
 		// Zero-length gesture is a press-and-release at that point.
 		return c.Hold(x1, y1, ms)
@@ -107,13 +109,11 @@ func (c *Client) SwipeBezier(x1, y1, x2, y2, ms int) error {
 
 	w, h, err := c.ScreenSize()
 	if err != nil || w <= 0 || h <= 0 {
-		c.log.Debugf("SwipeBezier: screen size unavailable (%v); falling back to linear swipe", err)
+		if c.log.Debug() {
+			c.log.Debugf("SwipeBezier: screen size unavailable (%v); falling back to linear swipe", err)
+		}
 		return c.SwipeHuman(x1, y1, x2, y2, ms)
 	}
-
-	// Local seeded source (matches the codebase's rand convention) so the
-	// arc offset and sign vary per gesture on every toolchain.
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// BlueStacks Virtual Touch uses 0-32767 (same range PinchZoom relies on).
 	const touchMax = 32767
@@ -128,10 +128,10 @@ func (c *Client) SwipeBezier(x1, y1, x2, y2, ms int) error {
 	dx, dy := float64(x2-x1), float64(y2-y1)
 	l := math.Hypot(dx, dy)
 	sign := 1.0
-	if r.Float64() < 0.5 {
+	if rand.Float64() < 0.5 {
 		sign = -1
 	}
-	curve := 0.10 + r.Float64()*0.10
+	curve := 0.10 + rand.Float64()*0.10
 	// Perpendicular unit vector is (-dy/l, dx/l).
 	p1 := image.Point{
 		X: int(math.Round(float64(mid.X) + sign*curve*(-dy/l)*l)),
@@ -175,7 +175,9 @@ func (c *Client) SwipeBezier(x1, y1, x2, y2, ms int) error {
 	if _, err := c.Shell(batch.String()); err != nil {
 		// Never fail navigation on an input-injection quirk; degrade to the
 		// well-trodden linear path.
-		c.log.Debugf("SwipeBezier: sendevent stream failed (%v); falling back to linear swipe", err)
+		if c.log.Debug() {
+			c.log.Debugf("SwipeBezier: sendevent stream failed (%v); falling back to linear swipe", err)
+		}
 		return c.SwipeHuman(x1, y1, x2, y2, ms)
 	}
 	return nil

@@ -105,7 +105,10 @@ echo "===================================================================="
 # Split adb unreachable vs wrong focus so the WARN tells the truth.
 # Hard-stop on adb unreachable — every subsequent stage needs adb. Continue
 # on wrong-focus because the user may want to overlay anyway.
-if ! adb_out=$(adb -s "$DEVICE" shell dumpsys window 2>&1); then
+# Compound prefix works around the BlueStacks adbd wedge: bare one-shot
+# commands FAIL with "closed" (device-side adbd bug, survives adb
+# kill-server and reconnects); "getprop <x>; <cmd>" executes reliably.
+if ! adb_out=$(adb -s "$DEVICE" shell "getprop ro.build.type; dumpsys window" 2>&1); then
   echo "FATAL: adb shell failed on ${DEVICE}; no further stage can run." >&2
   echo "       Check: adb devices   adb -s ${DEVICE} reconnect" >&2
   exit 1
@@ -130,6 +133,15 @@ else
   echo "      formula will be saved to: ${FORMULA_PATH}"
 fi
 echo "===================================================================="
+
+# `go run` links the OpenCV dylibs but macOS aborts at spawn with
+# "Library not loaded: @rpath/libopencv_gapi.410.dylib" unless the lib
+# dir is baked into LC_RPATH (same reason build-cli uses CLI_OPENCV_LDFLAGS).
+# GOFLAGS is the only way to pass -ldflags through `go run`.
+OPENCV_LIBDIR="$(pkg-config --variable=libdir opencv4 2>/dev/null || true)"
+if [[ -n "$OPENCV_LIBDIR" ]]; then
+  export GOFLAGS="${GOFLAGS:-} -ldflags=-extldflags=-Wl,-rpath,$OPENCV_LIBDIR"
+fi
 
 declare -a design_args=(-screen "$SCREEN_PNG" -strategy "$STRATEGY" -out "$FORMULA_PATH")
 if [[ "$AUTO_MODE" == "true" ]]; then

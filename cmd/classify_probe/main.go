@@ -48,15 +48,8 @@ func main() {
 
 	fmt.Printf("image: %dx%d\n", img.Cols(), img.Rows())
 
-	cal := &game.Calibration{
-		PhysicalW:  img.Cols(),
-		PhysicalH:  img.Rows(),
-		ScaleX:     float64(img.Cols()) / float64(game.RefWidth),
-		ScaleY:     float64(img.Rows()) / float64(game.RefHeight),
-		MidOffsetY: (img.Rows() - game.RefHeight) / 2,
-		BottomOffY: img.Rows() - game.RefHeight,
-		Verified:   true,
-	}
+	cal := game.NewCalibration(img.Cols(), img.Rows())
+	cal.Verified = true
 
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).Level(zerolog.ErrorLevel)
 	classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), logger)
@@ -74,7 +67,7 @@ func main() {
 	for _, rule := range classifier.GetRules() {
 		passed := 0
 		for _, chk := range rule.Checks {
-			sx, sy := cal.ScaleRef(chk.X, chk.Y)
+			sx, sy := cal.Hud(chk.X, chk.Y)
 			if sx < 0 || sy < 0 || sx >= img.Cols() || sy >= img.Rows() {
 				continue
 			}

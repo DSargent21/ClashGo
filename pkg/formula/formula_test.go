@@ -105,6 +105,142 @@ func TestApplyScreenScale_ScalesAllGeometry(t *testing.T) {
 	}
 }
 
+// The deploy path projects authored coordinates onto the live screen with the
+// device's display scale about the frame centre. These tests pin the two
+// properties that make it the right model: the centre is invariant, and the
+// scale is the same on both axes (which is what the framebuffer-fill factors
+// this replaced got wrong, drifting authored taps 19-76 px at 1280x720).
+func TestProjectUniform_CentreIsInvariantAndScaleIsUniform(t *testing.T) {
+	f := &Formula{
+		Screen: ScreenSize{W: 860, H: 732},
+		Units: map[string]UnitEntry{
+			"centre": {Type: "point", P: &Point{X: 430, Y: 366}},
+			"right":  {Type: "point", P: &Point{X: 630, Y: 366}},
+			"below":  {Type: "point", P: &Point{X: 430, Y: 566}},
+		},
+	}
+	f.ProjectUniform(1.325, 860, 732, 1280, 720)
+
+	if got := f.Units["centre"].P; got.X != 640 || got.Y != 360 {
+		t.Errorf("the authored centre must land on the live centre, got %v", got)
+	}
+	// 200 px to the right of the authored centre, at k=1.325, is 265 px to the
+	// right of the live centre.
+	if got := f.Units["right"].P; got.X != 905 || got.Y != 360 {
+		t.Errorf("right probe projected to %v, want (905,360)", got)
+	}
+	if got := f.Units["below"].P; got.X != 640 || got.Y != 625 {
+		t.Errorf("below probe projected to %v, want (640,625)", got)
+	}
+
+	// Uniformity: equal authored offsets must stay equal after projection.
+	dx := f.Units["right"].P.X - f.Units["centre"].P.X
+	dy := f.Units["below"].P.Y - f.Units["centre"].P.Y
+	if dx != dy {
+		t.Errorf("projection is anisotropic: dx=%d dy=%d for equal authored offsets", dx, dy)
+	}
+}
+
+func TestProjectUniform_LeavesLiveSizedFormulasAlone(t *testing.T) {
+	// cmd/design_attack stamps formulas with the live screen size. Re-scaling
+	// those by the device's k would multiply them a second time.
+	f := &Formula{
+		Screen: ScreenSize{W: 1280, H: 720},
+		Units:  map[string]UnitEntry{"u": {Type: "point", P: &Point{X: 900, Y: 500}}},
+	}
+	f.ProjectUniform(1.325, 1280, 720, 1280, 720)
+	if got := f.Units["u"].P; got.X != 900 || got.Y != 500 {
+		t.Errorf("a live-sized formula must not be projected again: %v", got)
+	}
+}
+
+func TestProjectUniform_ScalesEveryGeometryAndRejectsDegenerateInput(t *testing.T) {
+	f := &Formula{
+		Screen: ScreenSize{W: 860, H: 732},
+		Units: map[string]UnitEntry{
+			"point": {Type: "point", P: &Point{X: 430, Y: 366}},
+			"line":  {Type: "line", P1: &Point{X: 430, Y: 366}, P2: &Point{X: 530, Y: 466}},
+			"lines": {Type: "lines", Lines: []LinePoint{{P1: Point{X: 430, Y: 366}, P2: Point{X: 330, Y: 266}}}},
+		},
+	}
+	f.ProjectUniform(2, 860, 732, 1280, 720)
+	if got := f.Units["line"].P2; got.X != 840 || got.Y != 560 {
+		t.Errorf("line.p2 projected to %v, want (840,560)", got)
+	}
+	if got := f.Units["lines"].Lines[0].P2; got.X != 440 || got.Y != 160 {
+		t.Errorf("lines[0].p2 projected to %v, want (440,160)", got)
+	}
+
+	var nilFormula *Formula
+	nilFormula.ProjectUniform(1.325, 860, 732, 1280, 720) // must not panic
+
+	degenerate := []struct {
+		name           string
+		k              float64
+		sw, sh, dw, dh int
+	}{
+		{"no scale", 0, 860, 732, 1280, 720},
+		{"negative scale", -1, 860, 732, 1280, 720},
+		{"no source width", 1.325, 0, 732, 1280, 720},
+		{"no destination width", 1.325, 860, 732, 0, 720},
+	}
+	for _, bad := range degenerate {
+		fresh := &Formula{Screen: ScreenSize{W: 860, H: 732},
+			Units: map[string]UnitEntry{"u": {Type: "point", P: &Point{X: 1, Y: 1}}}}
+		fresh.ProjectUniform(bad.k, bad.sw, bad.sh, bad.dw, bad.dh)
+		if got := fresh.Units["u"].P; got.X != 1 || got.Y != 1 {
+			t.Errorf("%s: degenerate projection mutated units: %v", bad.name, got)
+		}
+	}
+}
+
+// A correctly projected reference point can still land under the troop bar at
+// 720p: an authored y of 580 projects to 645 on a 720px screen, past the bar at
+// ~624, where a tap hits the HUD and the unit never deploys. Clamping keeps the
+// unit in play and reports the count so the caller can tell the reader to
+// re-author the point.
+func TestClampY_PullsPointsIntoTheBand(t *testing.T) {
+	f := &Formula{
+		Screen: ScreenSize{W: 860, H: 732},
+		Units: map[string]UnitEntry{
+			"below":  {Type: "point", P: &Point{X: 10, Y: 645}},
+			"inside": {Type: "point", P: &Point{X: 10, Y: 300}},
+			"line":   {Type: "line", P1: &Point{X: 0, Y: 700}, P2: &Point{X: 0, Y: 400}},
+			"lines":  {Type: "lines", Lines: []LinePoint{{P1: Point{X: 0, Y: 650}, P2: Point{X: 0, Y: 100}}}},
+		},
+	}
+	if got := f.ClampY(0, 612); got != 3 {
+		t.Errorf("ClampY reported %d clamped points, want 3", got)
+	}
+	if got := f.Units["below"].P; got.Y != 612 {
+		t.Errorf("below band: y=%d, want 612", got.Y)
+	}
+	if got := f.Units["inside"].P; got.Y != 300 {
+		t.Errorf("in band must not move: y=%d, want 300", got.Y)
+	}
+	if got := f.Units["line"].P1; got.Y != 612 {
+		t.Errorf("line.p1: y=%d, want 612", got.Y)
+	}
+	if got := f.Units["lines"].Lines[0].P1; got.Y != 612 {
+		t.Errorf("lines[0].p1: y=%d, want 612", got.Y)
+	}
+	// X must be untouched: the band is a horizontal cut, not a crop.
+	if got := f.Units["below"].P; got.X != 10 {
+		t.Errorf("clamping moved x: %d", got.X)
+	}
+
+	// A degenerate band must not collapse every point onto one row.
+	if got := f.ClampY(700, 600); got != 0 {
+		t.Errorf("degenerate band clamped %d points, want 0", got)
+	}
+	if got := f.Units["line"].P1; got.Y != 612 {
+		t.Errorf("degenerate band moved a point: y=%d", got.Y)
+	}
+
+	var nilFormula *Formula
+	nilFormula.ClampY(0, 100) // must not panic
+}
+
 func TestApplyScreenScale_DegenerateParamsNoPanic(t *testing.T) {
 	var f *Formula
 	f.ApplyScreenScale(0, 0, 0, 0) // nil receiver must not panic

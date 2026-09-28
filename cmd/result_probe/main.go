@@ -48,15 +48,8 @@ func main() {
 
 	fmt.Printf("image: %dx%d\n", img.Cols(), img.Rows())
 
-	cal := &game.Calibration{
-		PhysicalW:  img.Cols(),
-		PhysicalH:  img.Rows(),
-		ScaleX:     float64(img.Cols()) / float64(game.RefWidth),
-		ScaleY:     float64(img.Rows()) / float64(game.RefHeight),
-		MidOffsetY: (img.Rows() - game.RefHeight) / 2,
-		BottomOffY: img.Rows() - game.RefHeight,
-		Verified:   true,
-	}
+	cal := game.NewCalibration(img.Cols(), img.Rows())
+	cal.Verified = true
 
 	// Classify first so we know what state the bot sees in this frame.
 	classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), logger)
@@ -71,8 +64,7 @@ func main() {
 
 	fmt.Println("star points (ref -> physical, star-pixel count in 11x11 patch, >=5 counts):")
 	for _, pt := range starPointsRef {
-		sx := int(float64(pt.X) * cal.ScaleX)
-		sy := int(float64(pt.Y) * cal.ScaleY)
+		sx, sy := cal.Centre(pt.X, pt.Y)
 		r := image.Rect(sx-5, sy-5, sx+6, sy+6)
 		if r.Min.X < 0 {
 			r.Min.X = 0

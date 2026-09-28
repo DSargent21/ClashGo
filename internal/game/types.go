@@ -257,6 +257,14 @@ type StateRule struct {
 	Weight   int    // score boost when matched
 	Priority int    // higher = checked first
 	Desc     string
+	// Anchor says how this rule's colour probes follow a non-reference
+	// geometry. AnchorEdge (the zero value) is HUD chrome — buttons, bars,
+	// top-left resource icons — which keeps its distance to the nearest
+	// screen edge. AnchorCenter is for centred overlays (dialogs, splash
+	// art, the battle-result panel) and world/village coordinates, which
+	// keep their offset from the viewport centre. Both are the identity at
+	// the reference geometry.
+	Anchor Anchor
 }
 
 // ClassifierConfig holds detection parameters.

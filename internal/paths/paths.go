@@ -13,21 +13,37 @@
 //
 // Resolution order for GetConfigDir:
 //
-//  1. CLASHGO_CONFIG_DIR env var (tests, portable installs).
-//  2. macOS .app-style bundle → ~/Library/Application Support/ClashGO
-//     (covers both wails dev's build/bin/ClashGO.app and the production
-//     .app, since both ship Resources/assets — see isPackagedApp).
-//  3. non-mac dev           → $XDG_CONFIG_HOME/ClashGO/dev on linux
-//                              %APPDATA%/ClashGO/dev on windows
-//                              (os.UserConfigDir() picks the right base)
-//  4. fallback              → os.TempDir()/ClashGO/dev
+//  1. CLASHGO_CONFIG_DIR env var (tests, portable installs, two installs
+//     side by side — the only supported way to run two trees).
+//  2. os.UserConfigDir()/ClashGO on every platform: on macOS that is
+//     ~/Library/Application Support/ClashGO, on linux $XDG_CONFIG_HOME/ClashGO,
+//     on windows %APPDATA%/ClashGO.
+//  3. fallback → os.TempDir()/ClashGO
 //
-// Legacy compatibility: the first GetConfigDir() call runs a one-time
-// migration that copies known state files from the project's cwd into
-// the resolved directory. Copy-not-move — the legacy copy stays where
-// it was so manual recovery is trivial and a failed migration cannot
-// lose data. Re-runs are also harmless: sync.Once + os.OpenFile(O_EXCL)
-// ensure destination files are never truncated or overwritten.
+// ONE TREE PER USER, for both binaries the project ships. This used to split by
+// binary — a bundled .app (which is what `wails dev` runs: build/bin/ClashGO.app)
+// got <base>/ClashGO while the unbundled CLI got <base>/ClashGO/dev — and that
+// split quietly cost a live session its geometry: the display scale is a machine
+// property, tuned with the CLI probe tools (cmd/resprobe, cmd/screendump
+// -anchors) and pinned in config.json, so with the trees split the pin lived in
+// the CLI's file while every app run read a different one, fell back to the
+// geometry-derived scale measured 1.9% off at 1280x720, lost the troop-count
+// label row to that drift, and turned deploy verification into blind top-up
+// batches. A device setting cannot live in a per-binary tree.
+//
+// GetAssetsDir follows the same one-tree rule as GetConfigDir: a wails-dev build
+// reads the source assets/ tree it was built from rather than the stale copy the
+// app bundle happens to carry, so `make pick-coords` and the running bot always
+// agree about where the user's pins live. DescribeAssets reports which tree won
+// and which one was ignored, so a run can log the pin file it actually obeyed.
+//
+// Legacy compatibility: the first GetConfigDir() call runs a one-time migration
+// that copies known state files into the resolved directory from every tree in
+// legacyStateTrees (today: the old per-binary "dev" tree, and the project's cwd
+// as before). Copy-not-move — the legacy copy stays where it was so manual
+// recovery is trivial and a failed migration cannot lose data. Re-runs are also
+// harmless: sync.Once + os.OpenFile(O_EXCL) ensure destination files are never
+// truncated or overwritten.
 package paths
 
 import (
@@ -35,7 +51,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -87,11 +105,58 @@ func init() {
 	}
 }
 
+// assetsProvenance records HOW the last GetAssetsDir call resolved, so a run can
+// state which asset tree — and therefore which precision_config.json pin file —
+// it obeyed, and can name the copy it ignored. See DescribeAssets.
+type assetsProvenance struct {
+	dir        string
+	source     string
+	ignoredDir string
+}
+
+var lastAssets assetsProvenance
+
+// AssetsProvenance is what DescribeAssets reports.
+type AssetsProvenance struct {
+	// Dir is the asset tree in use.
+	Dir string
+	// Source says which rule picked Dir, in words.
+	Source string
+	// IgnoredDir is a second asset tree that was found but NOT used (today:
+	// the app bundle's own Resources/assets when a wails-dev tree outranks
+	// it). Empty when only one tree exists. When it is set, Dir and
+	// IgnoredDir are two different pin files and the run should say so.
+	IgnoredDir string
+}
+
+// DescribeAssets reports how GetAssetsDir resolved. Call it after any
+// GetAssetsDir call in the same process (it is set on every resolution).
+func DescribeAssets() AssetsProvenance {
+	return AssetsProvenance{Dir: lastAssets.dir, Source: lastAssets.source, IgnoredDir: lastAssets.ignoredDir}
+}
+
 // GetAssetsDir returns the absolute path to the assets directory,
 // honoring CLASHGO_ASSETS_DIR at call time so tests and portable
 // installs can override without rebuilding.
+//
+// ONE ASSET TREE, for the same reason GetConfigDir unified the state trees. The
+// app bundle carries a COPY of assets/, taken when the bundle was last built, so
+// a packaged app that reads its own copy attacks with whatever geometry was
+// pinned at that moment while cmd/pick_coords writes assets/precision_config.json
+// in the project tree and reports success. `wails dev` runs
+// build/bin/ClashGO.app, so the developer loop is exactly the case that hits it:
+// live 2026-09-27 the app spent a night attacking with pins from a bundle built
+// 2026-08-10 (its TopRight deploy line resolved to (1086,263)->(699,130) — the
+// bundle's edges scaled — while the pins the user had just drawn describe
+// (816,130)->(1086,251)), which put troops on refused ground, the siege and every
+// hero on one tile, and the spells on lines that were not the pinned ones.
+//
+// A wails-dev build output (an executable under .../build/bin) therefore uses the
+// source tree it was built from. An installed .app (anywhere else) still uses its
+// bundle, which is the only tree it ships with.
 func GetAssetsDir() string {
 	if override := os.Getenv("CLASHGO_ASSETS_DIR"); override != "" {
+		lastAssets = assetsProvenance{dir: override, source: "CLASHGO_ASSETS_DIR"}
 		return override
 	}
 
@@ -108,7 +173,24 @@ func GetAssetsDir() string {
 			// execPath is <bundle>/Contents/MacOS/ClashGO
 			contentsDir := filepath.Dir(filepath.Dir(execPath))
 			res := filepath.Join(contentsDir, "Resources", "assets")
-			if info, err := os.Stat(res); err == nil && info.IsDir() {
+			_, bundledOK := dirExists(res)
+			src, haveSrc := sourceAssetsTree(execPath)
+
+			if haveSrc && underBuildBin(filepath.Dir(execPath)) {
+				ignored := ""
+				if bundledOK {
+					ignored = res
+				}
+				lastAssets = assetsProvenance{
+					dir:        src,
+					source:     "source tree of this wails-dev build (the bundle's copy of assets/ is a build artifact)",
+					ignoredDir: ignored,
+				}
+				return src
+			}
+
+			if bundledOK {
+				lastAssets = assetsProvenance{dir: res, source: "app bundle Contents/Resources/assets", ignoredDir: src}
 				return res
 			}
 		}
@@ -116,9 +198,65 @@ func GetAssetsDir() string {
 
 	abs, err := filepath.Abs(assetsDir)
 	if err != nil {
+		lastAssets = assetsProvenance{dir: assetsDir, source: "project assets/ (cwd walk-up)"}
 		return assetsDir
 	}
+	lastAssets = assetsProvenance{dir: abs, source: "project assets/ (cwd walk-up)"}
 	return abs
+}
+
+// sourceAssetsTree walks up from the running executable looking for a project
+// asset tree: a directory holding assets/strategies, the marker that separates a
+// source checkout from an installed bundle. Returns the assets dir and whether it
+// was found. The walk stops at the filesystem root so a stray /assets can never
+// be picked up.
+func sourceAssetsTree(execPath string) (string, bool) {
+	dir := filepath.Dir(execPath)
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+		cand := filepath.Join(dir, "assets")
+		if _, ok := dirExists(filepath.Join(cand, "strategies")); ok {
+			return cand, true
+		}
+	}
+}
+
+// underBuildBin reports whether dir lies inside a .../build/bin output tree,
+// which is what `wails dev` and `make` build into. That layout is the marker for
+// "this process is a development build of the project, not an installed app".
+func underBuildBin(dir string) bool {
+	parts := strings.Split(filepath.ToSlash(dir), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "build" && parts[i+1] == "bin" {
+			return true
+		}
+	}
+	return false
+}
+
+// FileAge reports how long ago path was last modified, and whether it could be
+// read at all. Deploy logging uses it to say exactly which pin file a run obeyed
+// and how stale it is — a run that names its geometry's mtime can no longer be
+// silently attacking with last month's pins.
+func FileAge(path string) (time.Duration, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	return time.Since(info.ModTime()), true
+}
+
+// dirExists is os.Stat + IsDir, the shape every probe above wants.
+func dirExists(path string) (os.FileInfo, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return nil, false
+	}
+	return info, true
 }
 
 // GetConfigDir returns the absolute path to the dir used for writable
@@ -137,44 +275,49 @@ func GetConfigDir() string {
 	return abs
 }
 
-// resolveConfigDir picks the base directory for writable state,
-// honoring the OS-appropriate defaults and the production .app
-// heuristic. Reads CLASHGO_CONFIG_DIR fresh each call so tests using
-// t.Setenv still redirect. NEVER returns "." (the project root) —
-// doing so would put state files in the wails dev watch tree and
-// trigger spurious rebuilds that kill the active bot session.
+// resolveConfigDir picks the base directory for writable state. The same
+// answer for both binaries (see the package doc): <os.UserConfigDir()>/ClashGO,
+// which on macOS is the path the packaged app has always used, so unifying the
+// trees moves no existing app state.
+//
+// Reads CLASHGO_CONFIG_DIR fresh each call so tests using t.Setenv still
+// redirect. NEVER returns "." (the project root) — doing so would put state files
+// in the wails dev watch tree and trigger spurious rebuilds that kill the active
+// bot session.
+//
+// os.UserConfigDir handles mac/linux/windows correctly AND any sandbox case
+// where raw ~/Library does not work.
 func resolveConfigDir() string {
 	if override := os.Getenv("CLASHGO_CONFIG_DIR"); override != "" {
 		return ensureDir(override)
 	}
 
-	// Production-style macOS bundle layout: run from `*/MacOS/`
-	// with a `Resources/assets` sibling. This covers the production
-	// `.app` AND wails dev's `build/bin/ClashGO.app`, both of which
-	// ship `Resources/assets`. Either way the destination is
-	// `~/Library/Application Support/ClashGO`, which is outside the
-	// project tree and never triggers wails dev's rebuild watcher.
-	// (Note: this means a darwin dev session and a darwin production
-	// install of the same user share one state dir on macOS. Users
-	// who need strict separation can set CLASHGO_CONFIG_DIR.)
-	if runtime.GOOS == "darwin" && isPackagedApp() {
-		if home, err := os.UserHomeDir(); err == nil && home != "" {
-			return ensureDir(filepath.Join(home, "Library", "Application Support", "ClashGO"))
-		}
-	}
-
-	// os.UserConfigDir handles mac/linux/windows correctly AND any
-	// sandbox case where raw ~/Library does not work. We pin the
-	// returned basename with our app name + "/dev" so concurrent
-	// prod + dev installs of the same binary on a dev workstation
-	// write into separate directories.
 	base, err := os.UserConfigDir()
 	if err != nil || base == "" {
 		base = os.TempDir()
 	}
 
-	dir := filepath.Join(base, "ClashGO", "dev")
-	return ensureDir(dir)
+	return ensureDir(filepath.Join(base, "ClashGO"))
+}
+
+// legacyStateTrees returns the additional trees older versions wrote state into,
+// most-recently-used first.
+//
+//  1. <configDir>/dev — the per-binary tree the unbundled CLI used while the
+//     trees were split. This is the one that matters: it held the config.json
+//     whose device block carries the measured display scale, and a pin the app
+//     cannot see is precisely the bug the unification fixes.
+//  2. "." — the cwd, where pre-config-dir versions wrote state files directly
+//     into the project tree.
+//
+// Order is significant because migration copies at most once per file: the first
+// tree that can supply a name wins, and the dev tree is the newer of the two.
+func legacyStateTrees(configDir string) []string {
+	trees := make([]string, 0, 2)
+	if configDir != "" {
+		trees = append(trees, filepath.Join(configDir, "dev"))
+	}
+	return append(trees, ".")
 }
 
 // isPackagedApp returns true when the currently-running executable
@@ -208,33 +351,40 @@ func ensureDir(dir string) string {
 	return dir
 }
 
-// migrateLegacyState best-effort-copies each known legacy state file
-// from the process's cwd to the resolved config dir, only when the
-// source exists and the destination does not. Copy-not-move is
-// deliberate — losing a single file mid-migration (e.g. disk full,
-// permission on dst) would be quiet and unrecoverable if we used
-// os.Rename. The legacy files are .gitignore'd so leaving them in
-// place is harmless if the user wants to inspect or remove them.
-//
-// Short-circuits if cwd and configDir resolve to the same absolute
-// path so test fixtures and overrides don't self-trigger.
+// migrateLegacyState best-effort-copies each known legacy state file from every
+// tree in legacyStateTrees into the resolved config dir, only when the source
+// exists and the destination does not. Copy-not-move is deliberate — losing a
+// single file mid-migration (e.g. disk full, permission on dst) would be quiet
+// and unrecoverable if we used os.Rename. The legacy files are .gitignore'd (and
+// the dev tree is left in place) so nothing vanishes for a user who wants to
+// inspect or remove it.
 func migrateLegacyState(configDir string) {
-	cwd, err := filepath.Abs(".")
-	if err != nil || cwd == "" {
+	if configDir == "" {
 		return
 	}
 	absDst, err := filepath.Abs(configDir)
 	if err != nil || absDst == "" {
 		return
 	}
-	if cwd == absDst {
-		// Same physical dir — nothing to migrate (covers the case
-		// where CLASHGO_CONFIG_DIR is set to "." or tests run in cwd).
+
+	for _, tree := range legacyStateTrees(configDir) {
+		migrateStateFromTree(absDst, tree)
+	}
+}
+
+// migrateStateFromTree copies the known state files from one legacy tree into
+// absDst. Short-circuits when the source resolves to the destination itself, so
+// test fixtures and CLASHGO_CONFIG_DIR="." overrides don't self-trigger.
+func migrateStateFromTree(absDst, tree string) {
+	srcDir, err := filepath.Abs(tree)
+	if err != nil || srcDir == "" || srcDir == absDst {
+		// Same physical dir — nothing to migrate. Covers
+		// CLASHGO_CONFIG_DIR="." and tests running in cwd.
 		return
 	}
 
 	for _, name := range legacyStateFiles {
-		src := filepath.Join(cwd, name)
+		src := filepath.Join(srcDir, name)
 		srcInfo, err := os.Stat(src)
 		if err != nil {
 			continue
@@ -243,6 +393,7 @@ func migrateLegacyState(configDir string) {
 			continue
 		}
 		dst := filepath.Join(absDst, name)
+
 		if _, err := os.Stat(dst); err == nil {
 			// Destination already populated. If the user has been
 			// actively writing through GetConfigDir() they have a

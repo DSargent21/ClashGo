@@ -57,6 +57,11 @@ type Client struct {
 	jitterDelays    bool
 	maxJitterPixels float64
 	jitterFraction  float64
+
+	// frames coalesces captures that land close together, so several consumers
+	// looking at the same screen ask the emulator once (capturecache.go). Off
+	// until a caller opts in with WithCaptureCache.
+	frames *captureCache
 }
 
 // EnablePersistentShell activates the persistent adb shell pipe for the
@@ -117,6 +122,7 @@ func NewClient(opts ...Option) *Client {
 		jitterDelays:    true,
 		maxJitterPixels: 2.0,
 		jitterFraction:  0.15,
+		frames:          newCaptureCache(0),
 	}
 	for _, o := range opts {
 		o(c)
@@ -350,8 +356,20 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 			return emptyMat(), err
 		}
 	}
-		transport := c.transport
+	transport := c.transport
 	c.mu.Unlock()
+
+	// Another consumer captured this same screen moments ago and the bot has not
+	// touched the device since: hand back that frame rather than spend a guest
+	// `screencap` process (and 2.5 MB of guest memory traffic) on a second copy
+	// of the same picture. See capturecache.go for the input barrier that keeps
+	// this from serving a pre-tap frame to a post-tap check.
+	cached, coalesced := c.frames.lookup()
+	if coalesced {
+		return cached, nil
+	}
+	// A miss still hands back an allocated Mat header, which is ours to release.
+	cached.Close()
 
 	bufPtr, n, err := transport.CaptureScreenPooled()
 	if err != nil {
@@ -407,6 +425,7 @@ func (c *Client) CaptureToMat() (gocv.Mat, error) {
 		return emptyMat(), err
 	}
 
+	c.frames.store(imgBGR)
 	c.health.RecordSuccess(time.Since(start))
 	return imgBGR, nil
 }
@@ -420,13 +439,13 @@ func (c *Client) Tap(x, y int) error {
 	var stdDev float64
 	if c.jitterTaps {
 		stdDev = c.maxJitterPixels
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
-		ox := int(r.NormFloat64() * stdDev)
-		oy := int(r.NormFloat64() * stdDev)
+		ox, oy := gaussianOffset(stdDev)
 		actualX += ox
 		actualY += oy
 	}
-	c.log.Debugf("ADB TAP: (%d, %d) actual: (%d, %d)", x, y, actualX, actualY)
+	if c.log.Debug() {
+		c.log.Debugf("ADB TAP: (%d, %d) actual: (%d, %d)", x, y, actualX, actualY)
+	}
 	err := c.routeTap("input tap", actualX, actualY, false)
 	c.fireTapHook(TapEvent{Type: "tap", X: x, Y: y, ActualX: actualX, ActualY: actualY, StdDev: stdDev, Error: errStr(err)})
 	return err
@@ -441,13 +460,13 @@ func (c *Client) TapAsync(x, y int) error {
 	var stdDev float64
 	if c.jitterTaps {
 		stdDev = c.maxJitterPixels
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
-		ox := int(r.NormFloat64() * stdDev)
-		oy := int(r.NormFloat64() * stdDev)
+		ox, oy := gaussianOffset(stdDev)
 		actualX += ox
 		actualY += oy
 	}
-	c.log.Debugf("ADB TAP-ASYNC: (%d, %d) actual: (%d, %d)", x, y, actualX, actualY)
+	if c.log.Debug() {
+		c.log.Debugf("ADB TAP-ASYNC: (%d, %d) actual: (%d, %d)", x, y, actualX, actualY)
+	}
 	err := c.routeTap("input tap", actualX, actualY, true)
 	c.fireTapHook(TapEvent{Type: "tap_async", X: x, Y: y, ActualX: actualX, ActualY: actualY, StdDev: stdDev, Error: errStr(err)})
 	return err
@@ -456,6 +475,10 @@ func (c *Client) TapAsync(x, y int) error {
 // routeTap is the shared router for Tap/TapAsync/TapFast through either
 // the persistent pipe (when alive) or the legacy transport.Exec fallback.
 func (c *Client) routeTap(cmd string, x, y int, async bool) error {
+	// Every tap variant funnels through here (and through tapLocked on the pipe
+	// fallback), so this is the one place that has to invalidate the capture
+	// cache for all of them.
+	c.markInput()
 	if p := c.currentPipe(); p != nil {
 		full := fmt.Sprintf("%s %d %d", cmd, x, y)
 		if async {
@@ -510,9 +533,7 @@ func (c *Client) tapLocked(x, y int) error {
 // from per-call transport.Exec). Falls back to legacy transport.Exec if
 // the pipe is disabled or broken.
 func (c *Client) TapFast(x, y int, stdDev float64) error {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ox := int(r.NormFloat64() * stdDev)
-	oy := int(r.NormFloat64() * stdDev)
+	ox, oy := gaussianOffset(stdDev)
 	c.mu.Lock()
 	err := c.routeTap("input tap", x+ox, y+oy, false)
 	c.mu.Unlock()
@@ -522,9 +543,7 @@ func (c *Client) TapFast(x, y int, stdDev float64) error {
 
 // TapFastAsync is fire-and-forget with jitter; preferred in hot loops.
 func (c *Client) TapFastAsync(x, y int, stdDev float64) error {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ox := int(r.NormFloat64() * stdDev)
-	oy := int(r.NormFloat64() * stdDev)
+	ox, oy := gaussianOffset(stdDev)
 	err := c.routeTap("input tap", x+ox, y+oy, true)
 	c.fireTapHook(TapEvent{Type: "tap_fast_async", X: x, Y: y, ActualX: x + ox, ActualY: y + oy, StdDev: stdDev, Error: errStr(err)})
 	return err
@@ -545,15 +564,16 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 		}
 	}
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ox1 := int(r.NormFloat64() * stdDev1)
-	oy1 := int(r.NormFloat64() * stdDev1)
+	// Two independent draws from the package generator. The old code seeded
+	// two sources with now and now+71ns to decorrelate them; consecutive
+	// draws from one stream are already independent, and the per-call
+	// sources cost a ~4.9 KB allocation each.
+	ox1, oy1 := gaussianOffset(stdDev1)
+	ox2, oy2 := gaussianOffset(stdDev2)
 
-	r2 := rand.New(rand.NewSource(time.Now().UnixNano() + 71))
-	ox2 := int(r2.NormFloat64() * stdDev2)
-	oy2 := int(r2.NormFloat64() * stdDev2)
-
-	c.log.Debugf("ADB DUAL TAP (sequential): (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
+	if c.log.Debug() {
+		c.log.Debugf("ADB DUAL TAP (sequential): (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2)
+	}
 	err1 := c.routeTap("input tap", x1+ox1, y1+oy1, false)
 	c.fireTapHook(TapEvent{Type: "tap_dual_1", X: x1, Y: y1, ActualX: x1 + ox1, ActualY: y1 + oy1, StdDev: stdDev1, Error: errStr(err1)})
 	if err1 != nil {
@@ -581,19 +601,15 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 		}
 	}
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ox1 := int(r.NormFloat64() * stdDev1)
-	oy1 := int(r.NormFloat64() * stdDev1)
+	// Three independent draws; see TapDual for why the +71/+142ns seeded
+	// sibling sources were removed.
+	ox1, oy1 := gaussianOffset(stdDev1)
+	ox2, oy2 := gaussianOffset(stdDev2)
+	ox3, oy3 := gaussianOffset(stdDev3)
 
-	r2 := rand.New(rand.NewSource(time.Now().UnixNano() + 71))
-	ox2 := int(r2.NormFloat64() * stdDev2)
-	oy2 := int(r2.NormFloat64() * stdDev2)
-
-	r3 := rand.New(rand.NewSource(time.Now().UnixNano() + 142))
-	ox3 := int(r3.NormFloat64() * stdDev3)
-	oy3 := int(r3.NormFloat64() * stdDev3)
-
-	c.log.Debugf("ADB TRIPLE TAP (sequential): (%d, %d), (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
+	if c.log.Debug() {
+		c.log.Debugf("ADB TRIPLE TAP (sequential): (%d, %d), (%d, %d), (%d, %d)", x1+ox1, y1+oy1, x2+ox2, y2+oy2, x3+ox3, y3+oy3)
+	}
 	err1 := c.routeTap("input tap", x1+ox1, y1+oy1, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_1", X: x1, Y: y1, ActualX: x1 + ox1, ActualY: y1 + oy1, StdDev: stdDev1, Error: errStr(err1)})
 	if err1 != nil {
@@ -628,12 +644,11 @@ func (c *Client) TapHuman(x, y int, stdDev float64) error {
 	// stay fast and organic.
 	c.HumanSleep(250, 70)
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	if r.Float64() < 0.2 {
+	if rand.Float64() < 0.2 {
 		// Gaussian-spread the target, then hold 60-130ms.
-		ax := x + int(r.NormFloat64()*stdDev)
-		ay := y + int(r.NormFloat64()*stdDev)
-		holdMs := 60 + r.Intn(71)
+		ox, oy := gaussianOffset(stdDev)
+		holdMs := 60 + rand.Intn(71)
+		ax, ay := x+ox, y+oy
 		return c.Swipe(ax, ay, ax, ay, holdMs)
 	}
 	return c.TapFast(x, y, stdDev)
@@ -643,7 +658,26 @@ func (c *Client) TapRandomized(x, y int) error {
 	return c.TapHuman(x, y, 3.5)
 }
 
+// gaussianOffset returns a pixel jitter offset: two independent draws from a
+// Gaussian centred on zero with the given standard deviation. A standard
+// deviation of zero or less means "no jitter" and draws nothing.
+//
+// It draws from the package-level generator instead of a per-call
+// rand.New(rand.NewSource(now)). NewSource allocates a 607-word (~4.9 KB)
+// state array on every call, and the bot taps several times a second for the
+// length of a session — that is garbage generated on the input hot path for
+// a number nobody keeps. The top-level functions are also documented as safe
+// for concurrent use, which the per-call sources only were by accident (each
+// call happened to own its own).
+func gaussianOffset(stdDev float64) (int, int) {
+	if stdDev <= 0 {
+		return 0, 0
+	}
+	return int(rand.NormFloat64() * stdDev), int(rand.NormFloat64() * stdDev)
+}
+
 func (c *Client) Swipe(x1, y1, x2, y2 int, ms int) error {
+	c.markInput()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -666,22 +700,20 @@ func (c *Client) Swipe(x1, y1, x2, y2 int, ms int) error {
 // SwipeHuman simulates a human swipe by adding a slight curve and variable speed.
 func (c *Client) SwipeHuman(x1, y1, x2, y2, ms int) error {
 	// For simplicity in standard ADB, we use the basic swipe but randomize the points and duration
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Randomize start and end points slightly
-	ox1, oy1 := int(r.NormFloat64()*5), int(r.NormFloat64()*5)
-	ox2, oy2 := int(r.NormFloat64()*5), int(r.NormFloat64()*5)
+	ox1, oy1 := gaussianOffset(5)
+	ox2, oy2 := gaussianOffset(5)
 
 	// Randomize duration (+/- 15%)
-	duration := int(float64(ms) * (0.85 + r.Float64()*0.3))
+	duration := int(float64(ms) * (0.85 + rand.Float64()*0.3))
 
 	return c.Swipe(x1+ox1, y1+oy1, x2+ox2, y2+oy2, duration)
 }
 
 // HumanSleep pauses execution for a duration based on a Gaussian distribution.
 func (c *Client) HumanSleep(baseMs, stdDevMs int) {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ms := baseMs + int(r.NormFloat64()*float64(stdDevMs))
+	ms := baseMs + int(rand.NormFloat64()*float64(stdDevMs))
 	if ms < 10 {
 		ms = 10 // Minimum floor
 	}
@@ -694,9 +726,8 @@ func (c *Client) JitteredSleep(d time.Duration) {
 		time.Sleep(d)
 		return
 	}
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	stdDev := float64(d) * c.jitterFraction
-	jitter := time.Duration(r.NormFloat64() * stdDev)
+	jitter := time.Duration(rand.NormFloat64() * stdDev)
 	finalD := d + jitter
 	if finalD < 5*time.Millisecond {
 		finalD = 5 * time.Millisecond
@@ -709,6 +740,7 @@ func (c *Client) Hold(x, y int, ms int) error {
 }
 
 func (c *Client) Text(text string) error {
+	c.markInput()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -730,6 +762,8 @@ func (c *Client) Text(text string) error {
 }
 
 func (c *Client) KeyEvent(code int) error {
+	// Back/Home/Enter/Delete all arrive here.
+	c.markInput()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -998,13 +1032,22 @@ func (c *Client) ScreenSize() (int, int, error) {
 		return 0, 0, err
 	}
 
+	// An override wins: after a runtime `wm size WxH` the command prints both
+	// lines, and the override is what the framebuffer renders. Reading the
+	// physical size first made the bot calibrate for the wrong geometry — see
+	// docs/RESOLUTION.md.
 	var w, h int
-	if _, err := fmt.Sscanf(out, "Physical size: %dx%d", &w, &h); err != nil {
-		if _, err := fmt.Sscanf(out, "Override size: %dx%d", &w, &h); err != nil {
-			return 0, 0, fmt.Errorf("parse wm size: %w", err)
+	for _, line := range strings.Split(out, "\n") {
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "Override size: %dx%d", &w, &h); err == nil {
+			return w, h, nil
 		}
 	}
-	return w, h, nil
+	for _, line := range strings.Split(out, "\n") {
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "Physical size: %dx%d", &w, &h); err == nil {
+			return w, h, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("parse wm size: no size line in %q", strings.TrimSpace(out))
 }
 
 func (c *Client) ScreenCapPng(path string) error {
@@ -1106,6 +1149,9 @@ func (c *Client) IsConnected() bool {
 }
 
 func (c *Client) ForceStop(pkg string) error {
+	// The app is about to be killed: whatever a cached frame shows is about to
+	// stop being true.
+	c.markInput()
 	if err := c.EnsureConnected(); err != nil {
 		return err
 	}
@@ -1125,6 +1171,7 @@ func (c *Client) ForceStop(pkg string) error {
 // default) for each leg so a wedged shutdown cannot stall the
 // recovery beyond that budget.
 func (c *Client) SoftResetAndroid() error {
+	c.markInput()
 	if err := c.EnsureConnected(); err != nil {
 		return err
 	}
@@ -1200,6 +1247,7 @@ func (c *Client) ResetAdbServer() error {
 }
 
 func (c *Client) StartApp(pkg string) error {
+	c.markInput()
 	if err := c.EnsureConnected(); err != nil {
 		return err
 	}

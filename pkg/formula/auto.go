@@ -1,11 +1,12 @@
 package formula
 
 import (
+	"image"
+	"math"
 	"strings"
 
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog/log"
-	"image"
 )
 
 // AutoPickFor builds a *Formula for every unit in the strategy using
@@ -221,9 +222,17 @@ func lerpPoint(a, b image.Point, t float64) image.Point {
 // lands correctly on a different live resolution. Does NOT scale
 // Count, Jitter, or Type. No-op when src dims are zero.
 //
-// Callers should pass formulaPtr.Screen.W/H as the source dims (the
-// dimensions the formula was authored against) and the live screen
-// dims as the destination.
+// Deprecated: this is the legacy "stretch to fill the framebuffer" model, and
+// it is wrong for the game these formulas are authored against. CoC renders at
+// a single uniform display scale about the viewport centre (docs/RESOLUTION.md
+// item 1, verified live for HUD chrome at k=1.325 with 720p icon positions
+// matching mapped predictions within 3 px). Between 860x732 and 1280x720 this
+// function's factors are 1.4884 horizontally and 0.9836 vertically — a 34%
+// anisotropy that moves an authored deploy point by 19-76 px, one to two
+// village tiles, onto the wrong building. Use ProjectUniform with the
+// calibration's display scale for anything that lands on the game world; this
+// entry point survives only for the corner-mirror path in cmd/design_attack,
+// which scales between two buffers of the same device.
 func (f *Formula) ApplyScreenScale(srcW, srcH, dstW, dstH int) {
 	if f == nil || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
 		return
@@ -248,4 +257,160 @@ func scalePoint(p *Point, sX, sY float64) {
 	}
 	p.X = int(float64(p.X) * sX)
 	p.Y = int(float64(p.Y) * sY)
+}
+
+// ProjectUniform projects every coordinate from a formula authored on the
+// src frame onto a live dst frame using a single display scale k about the two
+// frames' centres: dst_centre + (p - src_centre) * k.
+//
+// This is the model the game actually renders with, which is why it takes k as
+// an argument instead of deriving a ratio from the frame sizes: the display
+// scale is a property of the device (device.display_scale, measured with
+// cmd/resprobe), not of how many pixels the framebuffer happens to have. The
+// same uniform scale applies on both axes, so a shape keeps its aspect, which
+// is exactly what ApplyScreenScale's per-axis factors break.
+//
+// Coordinates are NOT clamped: a point that projects off-screen is a deploy
+// point the bot cannot tap, and the caller is expected to report that rather
+// than silently pin it to the frame edge.
+//
+// No-op when the formula is already in live coordinates (src == dst) or when
+// any dimension or k is non-positive. The src == dst guard matters: formulas
+// written by cmd/design_attack carry the live screen size, and re-scaling them
+// by the device's k would multiply them for a second time.
+func (f *Formula) ProjectUniform(k float64, srcW, srcH, dstW, dstH int) {
+	if f == nil || k <= 0 || math.IsNaN(k) || math.IsInf(k, 0) {
+		return
+	}
+	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
+		return
+	}
+	if srcW == dstW && srcH == dstH {
+		return
+	}
+	for name, e := range f.Units {
+		projectPoint(e.P, k, srcW, srcH, dstW, dstH)
+		projectPoint(e.P1, k, srcW, srcH, dstW, dstH)
+		projectPoint(e.P2, k, srcW, srcH, dstW, dstH)
+		for i := range e.Lines {
+			projectPoint(&e.Lines[i].P1, k, srcW, srcH, dstW, dstH)
+			projectPoint(&e.Lines[i].P2, k, srcW, srcH, dstW, dstH)
+		}
+		f.Units[name] = e
+	}
+}
+
+// PushOutOfZone walks every coordinate radially away from (cx, cy) while
+// `blocked` reports it sits in an area that cannot take a tap, and returns how
+// many coordinates moved.
+//
+// It exists for the red deployment line. The band clamp above answers "is this
+// point under the HUD", which is a frame-edge question; the red line is a
+// shape in the middle of the frame — the game refuses a tap inside it with
+// "You cannot deploy troops on the Red area!" and the unit stays in the bar.
+// A user-pinned formula bypasses the red-zone-aware dynamic deploy line
+// entirely, so a pinned line drawn inside the red boundary deploys nothing, and
+// nothing in the log says why: the taps succeed, the game ignores them.
+//
+// Direction is radial from the zone's centre because that is the direction of
+// the deployable strip on every edge, and stepping by whole tiles keeps the
+// moved point on the geometry the user was aiming at rather than nudging it a
+// few pixels inside the same rejected area. A point that cannot escape within
+// maxSteps is left alone and counted as unmoved — silently relocating it across
+// the village would be a worse lie than the refused tap.
+func (f *Formula) PushOutOfZone(blocked func(x, y int) bool, cx, cy, step, maxSteps int) int {
+	if f == nil || blocked == nil || step <= 0 || maxSteps <= 0 {
+		return 0
+	}
+	moved := 0
+	push := func(p *Point) {
+		if p == nil || !blocked(p.X, p.Y) {
+			return
+		}
+		dx := float64(p.X - cx)
+		dy := float64(p.Y - cy)
+		norm := math.Hypot(dx, dy)
+		if norm < 1 {
+			// A point on the centre has no radial direction; the safe
+			// convention is straight outward along +x toward the right
+			// edge, matching the dominant deploy side.
+			dx, dy, norm = 1, 0, 1
+		}
+		ux, uy := dx/norm, dy/norm
+		x, y := p.X, p.Y
+		for i := 1; i <= maxSteps; i++ {
+			nx := p.X + int(ux*float64(step*i))
+			ny := p.Y + int(uy*float64(step*i))
+			if nx == x && ny == y {
+				continue
+			}
+			if !blocked(nx, ny) {
+				p.X, p.Y = nx, ny
+				moved++
+				return
+			}
+		}
+	}
+	for name, e := range f.Units {
+		push(e.P)
+		push(e.P1)
+		push(e.P2)
+		for i := range e.Lines {
+			push(&e.Lines[i].P1)
+			push(&e.Lines[i].P2)
+		}
+		f.Units[name] = e
+	}
+	return moved
+}
+
+// ClampY pulls every coordinate's Y into [minY, maxY] and reports how many
+// points moved. It exists because a formula authored on the reference geometry
+// can project below the live deployable band even when the projection itself is
+// correct: at 1280x720 the village view is shorter in reference terms, so an
+// authored y of 580 lands at 645 on a 720px screen — under the troop bar at 624.
+// Tapping there hits the HUD and the unit never deploys, which is the
+// "it didn't use all the troops" failure; clamping keeps the unit in play at a
+// slightly different spot instead. The count is returned so the caller can say
+// so out loud, because the durable fix is re-authoring the point.
+//
+// A degenerate band (maxY <= minY) is ignored rather than collapsing every
+// point onto one row.
+func (f *Formula) ClampY(minY, maxY int) int {
+	if f == nil || maxY <= minY {
+		return 0
+	}
+	clamped := 0
+	clampPoint := func(p *Point) {
+		if p == nil {
+			return
+		}
+		switch {
+		case p.Y < minY:
+			p.Y = minY
+			clamped++
+		case p.Y > maxY:
+			p.Y = maxY
+			clamped++
+		}
+	}
+	for name, e := range f.Units {
+		clampPoint(e.P)
+		clampPoint(e.P1)
+		clampPoint(e.P2)
+		for i := range e.Lines {
+			clampPoint(&e.Lines[i].P1)
+			clampPoint(&e.Lines[i].P2)
+		}
+		f.Units[name] = e
+	}
+	return clamped
+}
+
+func projectPoint(p *Point, k float64, srcW, srcH, dstW, dstH int) {
+	if p == nil {
+		return
+	}
+	p.X = int(math.Round(float64(dstW)/2 + (float64(p.X)-float64(srcW)/2)*k))
+	p.Y = int(math.Round(float64(dstH)/2 + (float64(p.Y)-float64(srcH)/2)*k))
 }

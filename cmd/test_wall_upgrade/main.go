@@ -132,15 +132,8 @@ func main() {
 		fmt.Printf("\n❌ ScreenSize: %v\n", err)
 		os.Exit(1)
 	}
-	cal := &game.Calibration{
-		PhysicalW:  w,
-		PhysicalH:  h,
-		ScaleX:     float64(w) / float64(game.RefWidth),
-		ScaleY:     float64(h) / float64(game.RefHeight),
-		MidOffsetY: (h - game.RefHeight) / 2,
-		BottomOffY: h - game.RefHeight,
-		Verified:   true,
-	}
+	cal := game.NewCalibration(w, h)
+	cal.Verified = true
 	ts, err := game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
 		fmt.Printf("\n❌ NewTemplateStore: %v\n", err)
@@ -518,7 +511,7 @@ func statusSymbol(ok bool) string {
 // dismissHelper mirrors Bot.dismissSelection — taps a neutral
 // bottom-left area to clear any active selection menus.
 func dismissHelper(client *adb.Client, cal *game.Calibration, logger zerolog.Logger) {
-	x, y := cal.ScaleRef(50, 450)
+	x, y := cal.Centre(50, 450)
 	_ = client.Tap(x, y)
 	time.Sleep(500 * time.Millisecond)
 	logger.Debug().Int("x", x).Int("y", y).Msg("dismiss tap")

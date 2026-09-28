@@ -1,5 +1,27 @@
 export namespace adb {
 	
+	export class CaptureCacheStats {
+	    ttl_ms: number;
+	    enabled: boolean;
+	    hits: number;
+	    misses: number;
+	    invalidated: number;
+	    expired: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CaptureCacheStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ttl_ms = source["ttl_ms"];
+	        this.enabled = source["enabled"];
+	        this.hits = source["hits"];
+	        this.misses = source["misses"];
+	        this.invalidated = source["invalidated"];
+	        this.expired = source["expired"];
+	    }
+	}
 	export class Health {
 	    // Go type: time
 	    last_capture: any;
@@ -100,6 +122,12 @@ export namespace bot {
 	    adb_health: adb.Health;
 	    cpu_time_sec: number;
 	    cpu_cores: number;
+	    classify_ran: number;
+	    classify_reused: number;
+	    last_frame_change_pct: number;
+	    classify_gate_enabled: boolean;
+	    classify_threshold_pct: number;
+	    capture_cache: adb.CaptureCacheStats;
 	
 	    static createFrom(source: any = {}) {
 	        return new BotStats(source);
@@ -120,6 +148,12 @@ export namespace bot {
 	        this.adb_health = this.convertValues(source["adb_health"], adb.Health);
 	        this.cpu_time_sec = source["cpu_time_sec"];
 	        this.cpu_cores = source["cpu_cores"];
+	        this.classify_ran = source["classify_ran"];
+	        this.classify_reused = source["classify_reused"];
+	        this.last_frame_change_pct = source["last_frame_change_pct"];
+	        this.classify_gate_enabled = source["classify_gate_enabled"];
+	        this.classify_threshold_pct = source["classify_threshold_pct"];
+	        this.capture_cache = this.convertValues(source["capture_cache"], adb.CaptureCacheStats);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -214,6 +248,28 @@ export namespace config {
 		    }
 		    return a;
 		}
+	}
+	export class PerformanceConfig {
+	    skip_unchanged_classify: boolean;
+	    classify_change_threshold: number;
+	    classify_max_stale_sec: number;
+	    coalesce_captures: boolean;
+	    tune_guest_animations: boolean;
+	    capture_cache_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PerformanceConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.skip_unchanged_classify = source["skip_unchanged_classify"];
+	        this.classify_change_threshold = source["classify_change_threshold"];
+	        this.classify_max_stale_sec = source["classify_max_stale_sec"];
+	        this.coalesce_captures = source["coalesce_captures"];
+	        this.tune_guest_animations = source["tune_guest_animations"];
+	        this.capture_cache_ms = source["capture_cache_ms"];
+	    }
 	}
 	export class DebugConfig {
 	    capture_debug: boolean;
@@ -341,6 +397,7 @@ export namespace config {
 	    dpi: number;
 	    restart_on_startup: boolean;
 	    disable_chest_dismissal: boolean;
+	    display_scale: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new DeviceConfig(source);
@@ -359,6 +416,7 @@ export namespace config {
 	        this.dpi = source["dpi"];
 	        this.restart_on_startup = source["restart_on_startup"];
 	        this.disable_chest_dismissal = source["disable_chest_dismissal"];
+	        this.display_scale = source["display_scale"];
 	    }
 	}
 	export class BotConfig {
@@ -368,6 +426,7 @@ export namespace config {
 	    search: SearchConfig;
 	    upgrade: UpgradeConfig;
 	    debug: DebugConfig;
+	    performance: PerformanceConfig;
 	
 	    static createFrom(source: any = {}) {
 	        return new BotConfig(source);
@@ -381,6 +440,7 @@ export namespace config {
 	        this.search = this.convertValues(source["search"], SearchConfig);
 	        this.upgrade = this.convertValues(source["upgrade"], UpgradeConfig);
 	        this.debug = this.convertValues(source["debug"], DebugConfig);
+	        this.performance = this.convertValues(source["performance"], PerformanceConfig);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -401,6 +461,7 @@ export namespace config {
 		    return a;
 		}
 	}
+	
 	
 	
 	

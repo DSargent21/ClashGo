@@ -94,15 +94,19 @@ func TestClassify_ConnectionLostDialogDetected(t *testing.T) {
 }
 
 // TestClassify_BattleEndStillDetected pins the tightened BattleEnd rule:
-// MinPass 2 over the real result-panel anchors (sampled live at 12:30) so
-// genuine result screens are still recognized after the fix.
+// MinPass 2 over the result-panel anchors, so genuine result screens are still
+// recognized after the fix. The anchors below are the ones re-measured on a live
+// defeat overlay (2026-09-16); the previous pair (a white header and a light
+// blue-gray sub-band at x=430) read the dimmed battlefield instead and the rule
+// never fired, which hung the battle-end wait after every battle.
 func TestClassify_BattleEndStillDetected(t *testing.T) {
 	c := newChestClassifier(t)
 
 	m := stuckVillageFrame()
 	defer m.Close()
-	setRGB(m, 430, 240, 0xF1, 0xCB, 0x53) // gold star/bonus band
-	setRGB(m, 430, 120, 0xF7, 0xFD, 0xFE) // white header above the stars
+	setRGB(m, 300, 240, 0xED, 0xCE, 0x5E) // gold star/bonus band, left flank
+	setRGB(m, 560, 240, 0xF0, 0xD4, 0x70) // gold band, right flank
+	setRGB(m, 431, 600, 0x6C, 0xBB, 0x1F) // RETURN HOME button face
 
 	if state, _ := c.ClassifyState(m); state != StateBattleEnd {
 		t.Fatalf("expected StateBattleEnd, got %s", state)

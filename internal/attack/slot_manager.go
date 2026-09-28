@@ -52,6 +52,35 @@ type TrackedSlot struct {
 	LastTapAt       time.Time `json:"last_tap_at"`
 	IsEmpty         bool      `json:"is_empty"`
 	FallbackLabeled bool      `json:"fallback_labeled"` // name came from stale manual_labels.json, not a template match
+
+	// SpotTaps counts how many times the bot has tapped this slot's CARD
+	// (not the field). A hero card is capped at maxHeroSpotTaps: one tap
+	// selects/places the hero and one more activates its ability. Every
+	// deploy path shares this one counter (main drop, sweep, verifier,
+	// ability pass) so no combination of retries can ever exceed the cap.
+	SpotTaps int `json:"spot_taps"`
+
+	// SpotRearms counts REPLACEMENT card taps made after a placement the game
+	// refused (which deselects the card). Bounded by maxHeroRearms; kept apart
+	// from SpotTaps so a re-arm can never steal the ability's tap.
+	SpotRearms int `json:"spot_rearms"`
+
+	// DeployedAt stamps when the slot reached SlotDeployed (zero when never).
+	// The battle-end HP watch uses it for the warden's proactive ability
+	// timing; see internal/attack/hero_hp.go.
+	DeployedAt time.Time `json:"deployed_at"`
+
+	// SiegePlaced records that this battle's siege machine has already taken
+	// the ONE field tap that places it (see TapExecutor.PlaceSiege).
+	//
+	// A siege machine is not a troop card: it leaves the bar on the FIRST tap,
+	// and every tap after that lands on the machine now standing on the field,
+	// which destroys it (user-reported). A flag on the slot — rather than a
+	// convention each call site keeps — is what makes "exactly one placement
+	// tap" true no matter which path (main phase, sweep, event pass, verifier)
+	// gets there first: every one of them checks it, and the field-tap choke
+	// point refuses to fire a second time.
+	SiegePlaced bool `json:"siege_placed"`
 }
 
 // SlotManager handles slot detection, classification, identity resolution, and state tracking.
@@ -63,28 +92,43 @@ type SlotManager struct {
 	h         int
 	slotY     int
 	barY      int
-	logger    zerolog.Logger
+	// fallbackAssigned records spell units routed through unnamed spell
+	// slots (see GetSlot), so two strategy spells never share one card.
+	fallbackAssigned map[int]string
+
+	// scale converts reference pixel distances (slot spacing, margins) to live
+	// pixels: the display scale, applied to both axes.
+	scale  func(float64) float64
+	logger zerolog.Logger
 }
 
 // NewSlotManager detects active slots, resolves identities via template matching + manual labels.
 func NewSlotManager(
 	screen gocv.Mat,
+	cal *game.Calibration,
 	pCfg PrecisionConfig,
 	w, h, mBarY int,
 	templates map[string]gocv.Mat,
 	classify func(gocv.Mat) (game.GameState, int),
 	logger zerolog.Logger,
 ) *SlotManager {
-	sm := &SlotManager{
-		unitIndex: make(map[string]*TrackedSlot),
-		xIndex:    make(map[int]*TrackedSlot),
-		w:         w,
-		h:         h,
-		barY:      mBarY,
-		logger:    logger.With().Str("component", "slot_manager").Logger(),
+	scale := func(px float64) float64 { return px }
+	if cal != nil {
+		scale = cal.Length
 	}
+	sm := &SlotManager{
+		unitIndex:        make(map[string]*TrackedSlot),
+		xIndex:           make(map[int]*TrackedSlot),
+		fallbackAssigned: make(map[int]string),
+		w:                w,
+		h:                h,
+		barY:             mBarY,
+		scale:            scale,
+		logger:           logger.With().Str("component", "slot_manager").Logger(),
+	}
+	_ = screen
 
-	sm.slotY = mBarY + int(38.0*float64(h)/float64(pCfg.Height))
+	sm.slotY = mBarY + int(sm.scale(38))
 	if data, ok := readConfigJSON("manual_slots.json"); ok {
 		var mConf struct {
 			SlotY      int `json:"slot_y"`
@@ -122,6 +166,17 @@ func NewSlotManager(
 }
 
 // detectActiveSlots finds all non-empty X positions on the troop bar.
+//
+// `manual_slots.json`'s `slot_xs` are LIVE-frame card CENTRES, one per card
+// position left to right, consumed here verbatim — no scaling. That is worth
+// stating because the values in the file are the whole geometry contract: the
+// list it replaces was authored in the 860-wide reference frame (pitch 73 against
+// a live pitch of ~100) and was then used as live pixels anyway, so its anchors
+// drifted up to 45px off the cards and two of them landed on the same card. They
+// are measured from real 1280x720 battle frames now: card bodies are 88px wide on
+// a ~100px pitch, the first at x 93, and each entry below is a body centre
+// cross-checked against that card's count badge (which the game draws
+// right-aligned inside the card, 1-5px in from its right edge).
 func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
 
 	if data, ok := readConfigJSON("manual_slots.json"); ok {
@@ -142,9 +197,12 @@ func (sm *SlotManager) detectActiveSlots(screen gocv.Mat) []int {
 	}
 
 	sm.logger.Info().Msg("manual calibration missing, falling back to grid detection")
-	scaleX := float64(sm.w) / 860.0
-	step := int(75.0 * scaleX)
-	startX := int(40.0 * scaleX)
+	// Slot spacing and the first slot's offset are lengths: they grow with the
+	// display scale, not with a per-axis framebuffer ratio (which is 1.49 x at
+	// 1280x720 against a measured 1.325 and would drift a whole slot by the end
+	// of the bar).
+	step := int(sm.scale(75))
+	startX := int(sm.scale(40))
 	var activeXs []int
 	for x := startX; x < sm.w-20; x += step {
 		if !isSlotEmptyStatic(screen, x, sm.slotY, sm.w, sm.h) {
@@ -259,12 +317,11 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 		}
 	}
 	if firstSpellX == 9999 {
-		firstSpellX = lastHeroX + int(70.0*float64(sm.w)/860.0)
+		firstSpellX = lastHeroX + int(sm.scale(70))
 	}
 
-	scaleX := float64(sm.w) / 860.0
-	heroMargin := int(30.0 * scaleX)
-	spellMargin := int(30.0 * scaleX)
+	heroMargin := int(sm.scale(30))
+	spellMargin := int(sm.scale(30))
 
 	for _, slot := range sm.slots {
 
@@ -298,7 +355,7 @@ func (sm *SlotManager) applyPositionalClassification(activeXs []int) {
 
 	if len(sm.slots) > 0 {
 		lastSlot := sm.slots[len(sm.slots)-1]
-		if lastSlot.Category == "Spell" && lastSlot.X > sm.w-int(100.0*float64(sm.w)/860.0) {
+		if lastSlot.Category == "Spell" && lastSlot.X > sm.w-int(sm.scale(100)) {
 			lastSlot.Category = "CC"
 			sm.logger.Info().Int("x", lastSlot.X).Msg("classified last slot as CC")
 		}
@@ -416,7 +473,47 @@ func (sm *SlotManager) findClosestSlot(x int, tolerancePct float64) *TrackedSlot
 
 // GetSlot returns the tracked slot for a unit name (case-insensitive).
 func (sm *SlotManager) GetSlot(unitName string) *TrackedSlot {
-	return sm.unitIndex[strings.ToLower(unitName)]
+	n := strings.ToLower(strings.TrimSpace(unitName))
+	if slot, ok := sm.unitIndex[n]; ok {
+		return slot
+	}
+	return sm.fallbackSpellSlot(n)
+}
+
+// fallbackSpellSlot returns an unnamed spell-category slot for a strategy
+// spell the classifier could not identify. Live failure this fixes
+// (valk_run6): the earthquake card template-matched nothing, so the spell
+// plan resolved no slot, the Earthquakes phase deployed NOTHING and the
+// spells were cast only by the sweep — after the hero abilities, on the
+// generic red-zone line, re-fired 5 times. A spell in the spell region of
+// the bar can only be a spell, so the fallback is safe; troops/heroes are
+// NOT eligible (a wrong fallback there double-deploys real units). Each
+// fallback assignment is recorded so two spell units never share a card.
+func (sm *SlotManager) fallbackSpellSlot(unitName string) *TrackedSlot {
+	if !isSpellStatic(unitName) {
+		return nil
+	}
+	for _, slot := range sm.slots {
+		if slot.Category != "Spell" || slot.UnitName != "" {
+			continue
+		}
+		if prev, taken := sm.fallbackAssigned[slot.X]; taken {
+			if prev == unitName {
+				return slot
+			}
+			continue
+		}
+		if sm.fallbackAssigned == nil {
+			sm.fallbackAssigned = make(map[int]string)
+		}
+		sm.fallbackAssigned[slot.X] = unitName
+		sm.logger.Info().
+			Str("unit", unitName).
+			Int("x", slot.X).
+			Msg("spell not identified on bar; deploying through unnamed spell slot fallback")
+		return slot
+	}
+	return nil
 }
 
 // GetAllSlots returns all tracked slots.
@@ -478,6 +575,14 @@ func (sm *SlotManager) GetEventTroops(strategyUnitNames []string) []*TrackedSlot
 		if slot.State == SlotDeployed || slot.State == SlotFailed {
 			continue
 		}
+		if slot.SiegePlaced {
+			// The siege machine already took its one placement tap. Treating it
+			// as an undeployed bonus card is what fires the taps that destroy it:
+			// the card never drains (siege cards keep a cooldown silhouette), so
+			// without this check the event pass re-deploys the machine that is
+			// already on the field.
+			continue
+		}
 		if slot.FallbackLabeled {
 			// Stale label — treat as event troop regardless of what the
 			// label claims (hero/spell/siege all possible).
@@ -508,6 +613,7 @@ func (sm *SlotManager) RecordAttempt(unitName string, success bool) {
 
 	if success {
 		slot.State = SlotDeployed
+		slot.DeployedAt = time.Now()
 	}
 }
 
@@ -518,6 +624,7 @@ func (sm *SlotManager) MarkDeployed(unitName string) {
 		return
 	}
 	slot.State = SlotDeployed
+	slot.DeployedAt = time.Now()
 	slot.IsEmpty = true
 }
 
@@ -530,6 +637,7 @@ func (sm *SlotManager) MarkSlotDeployed(slot *TrackedSlot) {
 		return
 	}
 	slot.State = SlotDeployed
+	slot.DeployedAt = time.Now()
 	slot.IsEmpty = true
 }
 
@@ -579,10 +687,12 @@ func slotActivity(screen gocv.Mat, x, y, screenW, sizeHint int) float64 {
 		return 0
 	}
 
-	scaleX := float64(screenW) / 860.0
 	size := sizeHint
 	if size <= 0 {
-		size = int(25.0 * scaleX)
+		size = SlotProbeSize(screenW)
+		if size <= 0 {
+			return 0
+		}
 	}
 	region := image.Rect(x-size, y-size, x+size, y+size)
 	if region.Min.X < 0 {
@@ -642,6 +752,23 @@ func slotActivity(screen gocv.Mat, x, y, screenW, sizeHint int) float64 {
 		return 0
 	}
 	return float64(activePixels) / float64(total)
+}
+
+// SlotProbeSize is the half-width in pixels of the square region slotActivity
+// samples around a slot centre at a given screen width (25px at the 860px
+// reference layout, scaled by the screen width otherwise).
+//
+// Exported so the hero/sweep/verify failure logs can report the exact geometry
+// they measured. That matters because the hero "deployed?" test is a delta on
+// this region's activity ratio: if the square does not actually cover the card
+// (wrong centre, or a size that spills onto neighbouring slots and the bar
+// chrome), the delta is noise and a hero that deployed fine fails its own
+// check — which is what makes the bot fire an extra retry tap.
+func SlotProbeSize(screenW int) int {
+	if screenW <= 0 {
+		return 0
+	}
+	return int(25.0 * float64(screenW) / 860.0)
 }
 
 // isSlotEmptyStatic checks if a slot region is empty (no active content).

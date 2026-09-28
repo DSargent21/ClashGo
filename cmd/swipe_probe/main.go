@@ -92,7 +92,8 @@ func main() {
 	if *mode == "idlepan" {
 		// Exercise the REAL production method through a Navigator built
 		// exactly like the bot's (minus templates/classifier).
-		cal := &game.Calibration{PhysicalW: w, PhysicalH: h, ScaleX: float64(w) / float64(game.RefWidth), ScaleY: float64(h) / float64(game.RefHeight), Verified: true}
+		cal := game.NewCalibration(w, h)
+		cal.Verified = true
 		g := game.NewStateGraph()
 		nav := game.NewNavigator(c, cal, g, func(gocv.Mat) (game.GameState, int) { return game.StateMainVillage, 100 }, zerolog.Nop())
 		for i := 1; i <= 2; i++ {

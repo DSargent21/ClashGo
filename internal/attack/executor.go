@@ -2,6 +2,7 @@ package attack
 
 import (
 	"image"
+	"math"
 	"math/rand"
 	"strings"
 	"time"
@@ -24,12 +25,48 @@ import (
 // never cut short.
 const DeployBudget = 170 * time.Second
 
+// DeployGoal is the wall-clock target for the placement phases themselves
+// (troops, siege, heroes, spells — from the first phase's first tap to the last
+// spell cast), as opposed to DeployBudget, which is the hard stop that keeps a
+// stuck slot from tapping past the battle timer. It exists so the run states its
+// own number: every phase logs its elapsed time against this goal, and the
+// window is reported whether or not it is met, because the only way to move a
+// wall clock is to measure it.
+const DeployGoal = 7 * time.Second
+
+// siegeClearanceRef is the radius, in reference px, of the no-tap zone around a
+// siege machine this battle already placed. Reference geometry is 860x732 across
+// a field a bit over 40 tiles wide, so ~1 tile is ~20 ref px and 44 ref px is a
+// little over two tiles: far enough that no later placement tap can land on the
+// machine, close enough that the heroes still drop beside it and tank for it.
+const siegeClearanceRef = 44
+
 // TapExecutor handles all tap operations, screen capture, and timing.
 type TapExecutor struct {
 	client      *adb.Client
 	cal         *game.Calibration
 	logger      zerolog.Logger
 	lineForward bool
+
+	// siegeGround is the screen point of the siege machine this battle has
+	// already placed, recorded by PlaceSiege. Every later UNIT placement tap is
+	// moved clear of it (see avoidSiegeGround): the machine stands on the ground
+	// the heroes are told to use, and tapping that tile again destroys it. This
+	// is the state behind the "it taps the siege machine twice" report — live
+	// 2026-09-27 the machine landed on the pinned hero point (954,183) and all
+	// three heroes then fired their field taps at that exact tile, two of them
+	// refused by the game and retried 50 px away.
+	siegeGround    image.Point
+	siegeGroundSet bool
+
+	// siegeNudges counts how many placement taps this battle had to move off
+	// the machine's tile, so a run can report the protection working.
+	siegeNudges int
+
+	// siegePlacements is how many siege machines this battle has placed. It
+	// must be 0 or 1 for a normal run; the deploy summary reports it so a
+	// second placement can never hide in a 40 MB log.
+	siegePlacements int
 
 	// deployDeadline is when this battle's deploy budget runs out. Zero
 	// when no deploy is in progress (or the budget was never started).
@@ -68,6 +105,9 @@ func (t *TapExecutor) CaptureFresh() (gocv.Mat, error) {
 // Call once per battle before any phase runs (DeployDynamicV2).
 func (t *TapExecutor) StartDeployBudget() {
 	t.deployDeadline = time.Now().Add(DeployBudget)
+	// The siege ledger is per-battle: last battle's machine is not on this
+	// field, and a stale point would quietly bend this battle's hero drops.
+	t.siegeGround, t.siegeGroundSet, t.siegeNudges, t.siegePlacements = image.Point{}, false, 0, 0
 }
 
 // StartDeployBudgetAt arms the deploy deadline at an explicit instant
@@ -98,12 +138,259 @@ func (t *TapExecutor) DeployBudgetRemaining() time.Duration {
 	return rem
 }
 
-// TapSlot selects a slot with jitter for human-like behavior.
-func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) {
+// maxHeroSpotTaps is the hard ceiling on how many times the bot may tap a
+// hero's CARD per battle: one tap places the hero, one more activates its
+// ability. Never more. A tapped card is the only way to drop or trigger a
+// hero, so an uncapped retry/sweep/verify pass is exactly the "it keeps
+// tapping the Archer Queen even after the ability was used" symptom.
+const maxHeroSpotTaps = 2
 
+// The single hero placement sequence, shared by the hero phase and the sweep.
+// They had drifted into two near-identical copies (card-tap jitter 8 vs 4,
+// post-drop settle 350ms vs 300ms); the sweep's copy placed both heroes on its
+// first candidate in every battle while the hero phase's copy failed on every
+// ground it was given, so one of them was demonstrably wrong and nothing said
+// which. Both callers now use these.
+const (
+	heroCardTapJitter = 4
+	heroArmSettleMs   = 150
+	heroDropSettleMs  = 300
+)
+
+// maxHeroRearms is how many REPLACEMENT arm taps a hero may take when the game
+// did not register the previous placement attempt.
+//
+// A refused placement DESELECTS the card. Measured live 2026-09-27 (BottomLeft,
+// recorder frames): the card arms at ~48/255 brightness, the refused field tap
+// returns it to ~86, and the sweep's identical arm+drop 8 s later arms it again
+// (94) and places the hero. The comment this replaces claimed the game keeps the
+// card selected after a refusal, so the retry ladder fired its field taps at an
+// UNSELECTED card — which is why all eight hero drops on the four pinned sides
+// failed at every ground they were given, including points that bracketed the
+// sweep's successful one.
+//
+// A re-arm is not a second placement tap: the game never received the first one
+// as a card selection. It therefore does not consume the slot's placement
+// budget, which is what keeps the 2-tap contract (one placement, one ability,
+// never spam) intact. The physical ceiling per hero is
+// maxHeroSpotTaps + maxHeroRearms.
+const maxHeroRearms = 1
+
+// isHeroCardSlot reports whether a slot is a real hero card the cap applies
+// to. Fallback-labeled "heroes" are bonus troops wearing a stale manual
+// label and are tapped like troops.
+func isHeroCardSlot(slot *TrackedSlot) bool {
+	return slot != nil && slot.Category == "Hero" && !slot.FallbackLabeled
+}
+
+// consumeHeroSpotTap returns true when the slot still has a hero-card tap
+// left and burns one. Non-hero slots are always allowed and never counted.
+func (t *TapExecutor) consumeHeroSpotTap(slot *TrackedSlot, what string) bool {
+	if !isHeroCardSlot(slot) {
+		return true
+	}
+	if slot.SpotTaps >= maxHeroSpotTaps {
+		t.logger.Warn().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Int("spot_taps", slot.SpotTaps).
+			Str("attempted", what).
+			Msg("hero card tap budget exhausted (max 2: place + ability); refusing to tap the hero again")
+		return false
+	}
+	slot.SpotTaps++
+	return true
+}
+
+// HeroSpotTapBudgetLeft reports whether the hero slot may still take a card
+// tap. Non-hero slots always report true.
+func (t *TapExecutor) HeroSpotTapBudgetLeft(slot *TrackedSlot) bool {
+	if !isHeroCardSlot(slot) {
+		return true
+	}
+	return slot.SpotTaps < maxHeroSpotTaps
+}
+
+// TapSlot selects a slot with jitter for human-like behavior. It returns
+// false (and fires nothing) when the slot is a hero card whose 2-tap budget
+// is already spent, so callers can skip their follow-up field tap instead of
+// firing at empty ground.
+//
+// A siege slot that has already placed its machine is refused for the same
+// reason: re-selecting its card is the first half of a re-deploy, and the field
+// tap that would follow destroys the machine (see TrackedSlot.SiegePlaced).
+func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) bool {
+	if slot != nil && slot.SiegePlaced {
+		t.logger.Warn().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Msg("refusing to tap the siege card again: its one placement tap is spent and re-selecting it is how a second field tap gets fired")
+		return false
+	}
+	if !t.consumeHeroSpotTap(slot, "select") {
+		return false
+	}
+	t.fireSlotTap(slot, jitterPx)
+	return true
+}
+
+// PlaceSiege fires the ONE field tap that drops a siege machine, or refuses to
+// fire at all.
+//
+// This is the only function any deploy path may use to place a siege machine.
+// A siege leaves the bar on its first field tap; a second tap lands on the
+// machine that is already standing there and destroys it, so the count of
+// placement taps per battle must be exactly one no matter how many phases,
+// sweeps and verifier retries look at the slot afterwards. Putting the tap and
+// the bookkeeping in one function is what makes that checkable: every caller
+// gets the same answer, and a path that tries again is refused rather than
+// trusted to remember.
+//
+// Returns true when the placement tap was fired.
+func (t *TapExecutor) PlaceSiege(slot *TrackedSlot, pt image.Point, stdDev float64) bool {
+	if slot != nil && slot.SiegePlaced {
+		t.logger.Warn().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Interface("pt", pt).
+			Msg("refusing a second siege placement tap: the machine is already on the field and a second tap destroys it")
+		return false
+	}
+	t.client.TapFast(pt.X, pt.Y, stdDev)
+	// Record the machine's tile before anything else can tap the field, so every
+	// later placement path has the point it must stay clear of.
+	t.siegeGround, t.siegeGroundSet = pt, true
+	t.siegePlacements++
+	if slot != nil {
+		slot.SiegePlaced = true
+	}
+	return true
+}
+
+// SiegeGround returns the tile of the siege machine this battle has placed.
+func (t *TapExecutor) SiegeGround() (image.Point, bool) {
+	return t.siegeGround, t.siegeGroundSet
+}
+
+// SiegeNudges reports how many placement taps were moved off the machine's tile.
+func (t *TapExecutor) SiegeNudges() int { return t.siegeNudges }
+
+// SiegePlacements reports how many siege machines were placed this battle. Any
+// value above 1 is a bug the run must be able to see.
+func (t *TapExecutor) SiegePlacements() int { return t.siegePlacements }
+
+// avoidSiegeGround moves a placement point off the tile the siege machine
+// occupies, and reports whether it had to move it.
+//
+// This is the siege-safety invariant, not a policy that each deploy path
+// remembers to apply: a siege machine that is already on the field is destroyed
+// by a second placement tap on its tile, so NO field tap that follows the siege
+// may land there — not the heroes on the shared hero point, not a sweep retry,
+// not a verifier pass. The point is moved along the direction it already lies in,
+// so a hero that wanted the machine's tile lands the nearest clear ground beside
+// it and still tanks for it.
+func (t *TapExecutor) avoidSiegeGround(pt image.Point) (image.Point, bool) {
+	if !t.siegeGroundSet {
+		return pt, false
+	}
+	clearance := int(t.cal.Length(siegeClearanceRef))
+	if clearance < 1 {
+		clearance = siegeClearanceRef
+	}
+	dx, dy := pt.X-t.siegeGround.X, pt.Y-t.siegeGround.Y
+	if d2 := dx*dx + dy*dy; d2 >= clearance*clearance {
+		return pt, false
+	}
+
+	d := math.Sqrt(float64(dx*dx + dy*dy))
+	ux, uy := 1.0, 0.0
+	if d >= 1 {
+		ux, uy = float64(dx)/d, float64(dy)/d
+	}
+	step := float64(clearance) * 1.15
+	moved := image.Pt(
+		t.siegeGround.X+int(math.Round(ux*step)),
+		t.siegeGround.Y+int(math.Round(uy*step)),
+	)
+	t.siegeNudges++
+	t.logger.Warn().
+		Interface("was", pt).
+		Interface("siege_ground", t.siegeGround).
+		Interface("moved_to", moved).
+		Int("clearance_px", clearance).
+		Int("nudges", t.siegeNudges).
+		Msg("placement tap was aimed at the tile the siege machine already occupies; moved clear of it (tapping it again destroys the machine)")
+	return moved, true
+}
+
+// clearsSiege reports whether pt is far enough from the placed siege machine to
+// be usable placement ground. Selection code uses it to keep the machine's tile
+// out of a candidate list; avoidSiegeGround is the tap-time backstop for anything
+// that slips through.
+func (t *TapExecutor) clearsSiege(pt image.Point) bool {
+	if !t.siegeGroundSet {
+		return true
+	}
+	clearance := int(t.cal.Length(siegeClearanceRef))
+	if clearance < 1 {
+		clearance = siegeClearanceRef
+	}
+	dx, dy := pt.X-t.siegeGround.X, pt.Y-t.siegeGround.Y
+	return dx*dx+dy*dy >= clearance*clearance
+}
+
+// avoidSiegeGroundXY is avoidSiegeGround for the batched tap loops, which work
+// in raw coordinates rather than points.
+func (t *TapExecutor) avoidSiegeGroundXY(x, y int) (int, int) {
+	moved, _ := t.avoidSiegeGround(image.Pt(x, y))
+	return moved.X, moved.Y
+}
+
+// TapUnitField fires ONE unit placement tap on the field, moved clear of any
+// siege machine already standing there.
+//
+// Every single-tap placement path goes through here (hero drops, hero field-tap
+// retries, sweep hero taps), so the siege tile is protected in one place rather
+// than in each caller. Jitter belongs OUTSIDE this call: the clearance check has
+// to be the last thing between the caller's aim and the wire.
+func (t *TapExecutor) TapUnitField(pt image.Point, stdDev float64) {
+	pt, _ = t.avoidSiegeGround(pt)
+	t.client.TapFast(pt.X, pt.Y, stdDev)
+}
+
+// RearmSlot re-selects a hero's card after a placement the game did not
+// register, so the next field tap is aimed at a SELECTED card. See maxHeroRearms
+// for the measurement that makes this necessary. It deliberately does not consume
+// the placement budget: nothing was placed, so the hero still has one placement
+// and one ability to spend.
+func (t *TapExecutor) RearmSlot(slot *TrackedSlot) bool {
+	if !isHeroCardSlot(slot) {
+		return false
+	}
+	if slot.SpotRearms >= maxHeroRearms {
+		t.logger.Debug().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Int("rearms", slot.SpotRearms).
+			Msg("hero re-arm budget spent; not tapping the card again")
+		return false
+	}
+	slot.SpotRearms++
+	t.logger.Info().
+		Str("unit", slot.UnitName).
+		Int("x", slot.X).
+		Int("rearms", slot.SpotRearms).
+		Msg("re-arming the hero card: the previous placement was refused, which deselects the card, so re-tapping it is the only way the next field tap can land (no placement budget spent)")
+	t.fireSlotTap(slot, heroCardTapJitter)
+	return true
+}
+
+// fireSlotTap sends the card tap itself. Shared by TapSlot and RearmSlot so the
+// two can never drift apart in jitter or coordinates.
+func (t *TapExecutor) fireSlotTap(slot *TrackedSlot, jitterPx int) {
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
-		ptY -= int(25.0 * t.cal.ScaleY)
+		ptY -= int(t.cal.Length(25))
 	}
 	jPt := t.addJitter(image.Pt(slot.X, ptY), jitterPx)
 	t.logger.Debug().
@@ -124,6 +411,15 @@ func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int)
 	if !t.lineForward {
 		for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
 			points[i], points[j] = points[j], points[i]
+		}
+	}
+
+	// A sweep re-firing troops after the siege phase walks the same line, and the
+	// pinned line can run straight through the machine's tile. Move any point that
+	// would land on it before batching, so the protection costs no extra tap.
+	for i, pt := range points {
+		if moved, ok := t.avoidSiegeGround(pt); ok {
+			points[i] = moved
 		}
 	}
 
@@ -151,6 +447,7 @@ func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int)
 
 // TapDeployPoint clusters taps around a single point.
 func (t *TapExecutor) TapDeployPoint(pt image.Point, count int, jitterPx int) {
+	pt, _ = t.avoidSiegeGround(pt)
 	for i := 0; i < count; {
 		rem := count - i
 		if rem >= 3 {
@@ -221,12 +518,18 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 	time.Sleep(120 * time.Millisecond)
 }
 
-// TapHeroAbility taps a hero slot for ability activation.
-func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
+// TapHeroAbility taps a hero slot for ability activation. It shares the same
+// 2-tap card budget as placement, so a hero that already spent both taps
+// (place + ability, or a placement retry) is never tapped a third time.
+// Returns false when the budget is spent and no tap was fired.
+func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) bool {
+	if !t.consumeHeroSpotTap(slot, "ability") {
+		return false
+	}
 
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
-		ptY -= int(25.0 * t.cal.ScaleY)
+		ptY -= int(t.cal.Length(25))
 	}
 	t.logger.Info().
 		Int("x", slot.X).
@@ -234,6 +537,7 @@ func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
 		Str("unit", slot.UnitName).
 		Msg("tapping hero ability")
 	t.client.TapFast(slot.X, ptY, 4.0)
+	return true
 }
 
 // WaitForSettle waits for deployment to settle.
@@ -266,8 +570,8 @@ func (t *TapExecutor) addJitter(pt image.Point, maxPixels int) image.Point {
 	if maxPixels <= 0 {
 		return pt
 	}
-	jx := int(float64(maxPixels) * t.cal.ScaleX)
-	jy := int(float64(maxPixels) * t.cal.ScaleY)
+	jx := int(t.cal.Length(float64(maxPixels)))
+	jy := jx
 	if jx <= 0 {
 		jx = 1
 	}

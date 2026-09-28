@@ -6,10 +6,11 @@
 //     tap, one verify capture. The fastest and most deterministic
 //     path; only enabled when both button rects are configured.
 //
-//  2. FALLBACK (bounded tap-scan loop): tap a uniformly-random point
-//     inside the chest's tap zone (tap_roi, alternating with
-//     tap_roi_alt if configured), capture+classify, repeat until
-//     the classifier sees a non-chest state OR the bound expires.
+//  2. FALLBACK (bounded tap-scan loop): tap the centre of the chest's
+//     tap zone (tap_roi, alternating with tap_roi_alt if configured),
+//     capture+classify, repeat until the classifier sees a non-chest
+//     state OR the bound expires. The centre, not a random point in the
+//     zone: see chestRectTarget.
 //
 // Bounds (defense-in-depth):
 //   - MaxChestDismissLoops = 15      hard iteration ceiling
@@ -37,7 +38,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
-	"math/rand"
 	"os"
 	"time"
 
@@ -194,18 +194,19 @@ func (r *Rectangle) isValid() bool {
 	return true
 }
 
-// randomPointInRect returns a uniformly-random integer point inside
-// the rectangle. Defensive against degenerate geometry.
-func randomPointInRect(r Rectangle) (int, int) {
-	if r.X2 <= r.X1 {
+// chestRectTarget returns the target point inside a configured chest rect.
+//
+// It is the rect's CENTRE, deliberately, where this used to be a uniformly-random
+// point: a random point inside a user-picked rect is still a random tap, it made
+// every chest dismissal a different gesture (so a failure could not be reproduced
+// from the log), and the same randomness was doing the work of a shrug where the
+// centre is simply the rect the user drew. Authoring still decides WHERE (the rect
+// is the picker's output); the code no longer picks a spot inside it.
+func chestRectTarget(r Rectangle) (int, int) {
+	if r.X2 <= r.X1 || r.Y2 <= r.Y1 {
 		return r.X1, r.Y1
 	}
-	if r.Y2 <= r.Y1 {
-		return r.X1, r.Y1
-	}
-	x := r.X1 + rand.Intn(r.X2-r.X1+1)
-	y := r.Y1 + rand.Intn(r.Y2-r.Y1+1)
-	return x, y
+	return r.CenterX(), r.CenterY()
 }
 
 // LoadContinueButtonConfig reads assets/continue_button.json.
@@ -362,9 +363,10 @@ func (n *Navigator) dismissChestRewardWithCfg(cfg *ChestROISchema, continueRect 
 // success. Failures bubble up immediately so the bot doesn't burn
 // extra wall-clock on a clearly-broken Skip config.
 func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
-	// 1. tap Skip (uniform-random within the configured rect).
-	sx, sy := randomPointInRect(*cfg.SkipButton)
-	skipX, skipY := n.cal.ScaleRef(sx, sy)
+	// 1. tap Skip (the centre of the configured rect).
+	sx, sy := chestRectTarget(*cfg.SkipButton)
+	// Chest flow buttons are on centred overlays (docs/RESOLUTION.md).
+	skipX, skipY := n.cal.Centre(sx, sy)
 	if err := n.client.TapRandomized(skipX, skipY); err != nil {
 		n.logger.Warn().Err(err).Msg("chest: Skip tap failed; continuing")
 	}
@@ -373,8 +375,8 @@ func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
 	time.Sleep(ChestSkipConfirmSettle)
 
 	// 3. tap Confirm Yes.
-	cx, cy := randomPointInRect(*cfg.ConfirmYesButton)
-	confirmX, confirmY := n.cal.ScaleRef(cx, cy)
+	cx, cy := chestRectTarget(*cfg.ConfirmYesButton)
+	confirmX, confirmY := n.cal.Centre(cx, cy)
 	if err := n.client.TapRandomized(confirmX, confirmY); err != nil {
 		n.logger.Warn().Err(err).Msg("chest: Confirm tap failed; continuing")
 	}
@@ -410,7 +412,7 @@ func (n *Navigator) tryChestSkipFlow(cfg *ChestROISchema) error {
 //     bottom half of the screen and tap the matched point. No manual rect
 //     needed and survives art swaps — the preferred path.
 //  2. Else fall back to the configured `continue_button.json` rect
-//     (assets/continue_button.json), tapped uniformly-random inside.
+//     (assets/continue_button.json), tapped at its centre.
 //  3. If neither is available, assume this event has no Continue overlay
 //     and return nil (success) without tapping.
 //
@@ -469,8 +471,8 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 	// before tapping and verifies afterwards.
 	for attempt := 0; attempt < chestContinueMaxTaps; attempt++ {
 		time.Sleep(ChestAnimSettle)
-		rx, ry := randomPointInRect(*continueRect)
-		cx, cy := n.cal.ScaleRef(rx, ry)
+		rx, ry := chestRectTarget(*continueRect)
+		cx, cy := n.cal.Centre(rx, ry)
 		if err := n.client.TapRandomized(cx, cy); err != nil {
 			n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
 		}
@@ -603,11 +605,11 @@ func (n *Navigator) chestTapScanLoop(cfg *ChestROISchema, maxIter int) error {
 			active = cfg.TapROI
 		}
 		// Center of the active zone — hammer chests need repeated
-		// hits on the box itself, not scattered random points.
-		cxRef, cyRef := (active.X1+active.X2)/2, (active.Y1+active.Y2)/2
+		// hits on the box itself, not scattered points.
+		cxRef, cyRef := chestRectTarget(*active)
 
 		for t := 0; t < hammer; t++ {
-			sx, sy := n.cal.ScaleRef(cxRef, cyRef)
+			sx, sy := n.cal.Centre(cxRef, cyRef)
 			if err := n.client.TapRandomized(sx, sy); err != nil {
 				n.logger.Warn().Err(err).Int("iter", i).Int("hammer", t).
 					Msg("chest hammer tap failed; continuing")

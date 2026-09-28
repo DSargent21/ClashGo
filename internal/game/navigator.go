@@ -33,6 +33,12 @@ type Navigator struct {
 	// and let the bot's stuck-watchdog / restart-game ladder take over.
 	chestCascadeCount int
 
+	// classifier is what DismissOverlay verifies an overlay against before it
+	// moves it (see dismiss.go). Wired once at bot startup via SetClassifier;
+	// nil means the navigator refuses to dismiss an overlay, which is the safe
+	// direction — no evidence, no input.
+	classifier *Classifier
+
 	// disableChestDismissal is the runtime kill-switch for the chest
 	// recovery flow. When true, DismissChestReward returns nil
 	// immediately on any chest state, allowing the bot's other ladders
@@ -58,6 +64,14 @@ func NewNavigator(client Device, cal *Calibration, graph *StateGraph, classify f
 
 func (n *Navigator) SetTemplates(ts *TemplateStore) {
 	n.templates = ts
+}
+
+// SetClassifier supplies the classifier whose rules DismissOverlay verifies an
+// overlay's control against (dismiss.go). Wire it once at startup, before the
+// capture loop can see an overlay: with no classifier the navigator will not
+// dismiss anything, rather than tapping a predicted point.
+func (n *Navigator) SetClassifier(cl *Classifier) {
+	n.classifier = cl
 }
 
 // SetDisableChestDismissal flips the runtime kill-switch for the
@@ -161,16 +175,17 @@ func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 		}
 
 		switch state {
-		case StateObstacleDialog:
-			n.dismissObstacle()
-		case StateGemDialog:
-			n.dismissGemDialog()
-		case StateWelcomeBack:
-			n.dismissWelcomeBack()
-		case StateShieldInfo:
-			n.dismissShieldInfo()
-		case StateChatOpen:
-			n.client.Back()
+		case StateObstacleDialog, StateGemDialog, StateWelcomeBack, StateShieldInfo, StateChatOpen:
+			// One evidence-gated path for every overlay (dismiss.go). No input is
+			// fired unless the state is still on the frame AND the control it
+			// moves (a verified probe, a located button, or Back) is where the
+			// action expects it. A refusal is an error, so the caller escalates to
+			// the stuck-watchdog ladder rather than sweeping the screen.
+			if !DismissOverlay(n.client, n.cal, n.classifier, state, n.templates, n.logger) {
+				n.logger.Warn().Str("state", state.String()).
+					Msg("overlay not dismissed from verified evidence; escalating")
+				return fmt.Errorf("overlay %s not dismissed (no verified evidence)", state)
+			}
 		case StateChestReward:
 			// Cascade guard: only ONE chest-dismiss attempt per
 			// handleInterruptions invocation. If the chest is STILL
@@ -197,57 +212,6 @@ func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 	return fmt.Errorf("too many nested interruptions")
 }
 
-func (n *Navigator) dismissObstacle() {
-	candidates := []image.Point{
-		{X: 400, Y: 300},
-		{X: 430, Y: 430},
-		{X: 400, Y: 500},
-		{X: 500, Y: 430},
-	}
-	for _, pt := range candidates {
-		sx, sy := n.cal.ScaleRef(pt.X, pt.Y)
-		n.client.TapRandomized(sx, sy)
-		time.Sleep(500 * time.Millisecond)
-	}
-	n.client.Back()
-}
-
-func (n *Navigator) dismissWelcomeBack() {
-	if n.templates != nil {
-		tpl, ok := n.templates.Get("btn_okay")
-		if ok {
-			norm, physScale, err := n.captureNormalized()
-			if err == nil {
-				defer norm.Close()
-				// The button is usually in the lower half of the screen
-				searchRect := image.Rect(200, 350, 660, 650)
-				pt, conf, err := vision.MatchTemplateRegion(norm, tpl, searchRect, 0.6)
-				if err == nil && conf > 0.6 {
-					ax := int(float64(pt.X) * physScale)
-					ay := int(float64(pt.Y) * physScale)
-					n.client.Tap(ax, ay)
-					time.Sleep(1000 * time.Millisecond)
-					return
-				}
-			}
-		}
-	}
-	// Fallback to center-ish tap
-	sx, sy := n.cal.ScaleRef(430, 520)
-	n.client.TapRandomized(sx, sy)
-	time.Sleep(1000 * time.Millisecond)
-}
-
-func (n *Navigator) dismissGemDialog() {
-	n.client.TapRandomized(175, 30)
-	time.Sleep(300 * time.Millisecond)
-}
-
-func (n *Navigator) dismissShieldInfo() {
-	n.client.TapRandomized(175, 30)
-	time.Sleep(300 * time.Millisecond)
-}
-
 // IdlePan performs a small, randomized camera pan and back — the kind of
 // micro-movement a real player's hand makes while waiting on their
 // village. Each leg rides a bezier arc (SwipeBezier) with a human
@@ -265,26 +229,27 @@ func (n *Navigator) IdlePan() {
 	}
 	cx, cy := w/2, h/2
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	// Pan distance: 15-30% of screen width, mostly horizontal with an
-	// occasional small vertical nudge for organic drift.
-	dx := int(float64(w) * (0.15 + r.Float64()*0.15))
-	if r.Float64() < 0.5 {
+	// occasional small vertical nudge for organic drift. Drawn from the
+	// package generator: a per-call rand.New(rand.NewSource(now)) allocates a
+	// ~4.9 KB state array for four numbers.
+	dx := int(float64(w) * (0.15 + rand.Float64()*0.15))
+	if rand.Float64() < 0.5 {
 		dx = -dx
 	}
-	dy := int(float64(h) * r.Float64() * 0.04)
-	if r.Float64() < 0.5 {
+	dy := int(float64(h) * rand.Float64() * 0.04)
+	if rand.Float64() < 0.5 {
 		dy = -dy
 	}
 
-	panMs := 280 + r.Intn(120) // 280-400ms per leg
+	panMs := 280 + rand.Intn(120) // 280-400ms per leg
 	x1, y1 := cx-dx/2, cy-dy/2
 	x2, y2 := cx+dx/2, cy+dy/2
 
 	// Out: deliberate drag away.
 	_ = n.client.SwipeBezier(x1, y1, x2, y2, panMs)
 	// Micro-pause at the far end — eyes on the base, thumb hovering.
-	time.Sleep(time.Duration(180+r.Intn(121)) * time.Millisecond)
+	time.Sleep(time.Duration(180+rand.Intn(121)) * time.Millisecond)
 	// Back: along a fresh randomized arc.
 	_ = n.client.SwipeBezier(x2, y2, x1, y1, panMs)
 }
@@ -313,16 +278,20 @@ func (n *Navigator) ZoomIn() {
 	}
 }
 
+// PinchAtScaled runs a pinch whose four reference points are on the game world
+// (village zoom), which is centred content.
 func (n *Navigator) PinchAtScaled(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {
-	sx1, sy1 := n.cal.ScaleRef(x1, y1)
-	sx2, sy2 := n.cal.ScaleRef(x2, y2)
-	sx3, sy3 := n.cal.ScaleRef(x3, y3)
-	sx4, sy4 := n.cal.ScaleRef(x4, y4)
+	sx1, sy1 := n.cal.Centre(x1, y1)
+	sx2, sy2 := n.cal.Centre(x2, y2)
+	sx3, sy3 := n.cal.Centre(x3, y3)
+	sx4, sy4 := n.cal.Centre(x4, y4)
 	return n.client.Pinch(sx1, sy1, sx2, sy2, sx3, sy3, sx4, sy4, ms)
 }
 
+// TapAtScaled taps a reference coordinate on HUD chrome. Callers with world or
+// overlay coordinates should map through Centre instead.
 func (n *Navigator) TapAtScaled(x, y int) error {
-	sx, sy := n.cal.ScaleRef(x, y)
+	sx, sy := n.cal.Hud(x, y)
 	return n.client.Tap(sx, sy)
 }
 
@@ -373,12 +342,17 @@ func (n *Navigator) NavigateToMainVillage(ctx *GameContext) bool {
 		from, to GameState
 		action   TransitionAction
 		x, y     int
+		anchor   Anchor
 	}{
-		{StateBattle, StateBattleEnd, ActionTap, 34, 588},
-		{StateBattleEnd, StateReturnHome, ActionTap, 430, 566},
-		{StateReturnHome, StateMainVillage, ActionTap, 430, 566},
-		{StateArmyCamp, StateMainVillage, ActionBack, 0, 0},
-		{StateSettings, StateMainVillage, ActionBack, 0, 0},
+		// End Battle is bottom-left HUD chrome; Return Home sits on the centred
+		// battle-result panel. Measured at 1280x720: the bottom-left HUD keeps
+		// its bottom margin (the Attack! label lands at y 669 of 720), while a
+		// centred anchor there would put the button 191 px too low.
+		{StateBattle, StateBattleEnd, ActionTap, 34, 588, AnchorEdge},
+		{StateBattleEnd, StateReturnHome, ActionTap, 430, 566, AnchorCenter},
+		{StateReturnHome, StateMainVillage, ActionTap, 430, 566, AnchorCenter},
+		{StateArmyCamp, StateMainVillage, ActionBack, 0, 0, AnchorEdge},
+		{StateSettings, StateMainVillage, ActionBack, 0, 0, AnchorEdge},
 	}
 
 	for _, step := range seq {
@@ -386,7 +360,9 @@ func (n *Navigator) NavigateToMainVillage(ctx *GameContext) bool {
 			if step.action == ActionBack {
 				n.client.Back()
 			} else {
-				sx, sy := n.cal.ScaleRef(step.x, step.y)
+				// Both tap steps in the sequence are on centred screens: the End
+				// Battle button (battle HUD) and the result panel's Return Home.
+				sx, sy := n.cal.AnchorPoint(step.x, step.y, step.anchor)
 				n.client.Tap(sx, sy)
 			}
 			time.Sleep(1500 * time.Millisecond)
@@ -403,7 +379,7 @@ func (n *Navigator) NavigateToBattle(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateMainVillage {
-		ax, ay := n.cal.ScaleRef(60, 548)
+		ax, ay := n.cal.Hud(60, 548)
 
 		// Try to find the battle button via template matching
 		if n.templates != nil {
@@ -412,7 +388,10 @@ func (n *Navigator) NavigateToBattle(ctx *GameContext) bool {
 				screen, err := n.client.CaptureToMat()
 				if err == nil {
 					defer screen.Close()
-					matches, err := vision.MatchMultiScale(screen, tpl, 0.9*n.cal.ScaleY, 1.1*n.cal.ScaleY, 3, 0.6)
+					// Templates are captured at display scale 1.0, so sweep around the
+					// live display scale, not a per-axis ratio.
+					k := n.cal.DisplayScale()
+					matches, err := vision.MatchMultiScale(screen, tpl, 0.9*k, 1.1*k, 3, 0.6)
 					if err == nil && len(matches) > 0 {
 						sort.Slice(matches, func(i, j int) bool {
 							return matches[i].Confidence > matches[j].Confidence
@@ -437,7 +416,7 @@ func (n *Navigator) NavigateToArmyCamp(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateMainVillage {
-		ax, ay := n.cal.ScaleRef(40, 525)
+		ax, ay := n.cal.Hud(40, 525)
 		n.client.Tap(ax, ay)
 		time.Sleep(1500 * time.Millisecond)
 		return true
@@ -456,7 +435,7 @@ func (n *Navigator) captureNormalized() (gocv.Mat, float64, error) {
 		return gocv.Mat{}, 0, fmt.Errorf("empty capture")
 	}
 
-	norm := vision.ResizeToHeight(raw, 732)
+	norm := vision.ResizeToHeight(raw, RefHeight)
 	physScale := float64(raw.Rows()) / 732.0
 	raw.Close()
 
@@ -470,7 +449,7 @@ func (n *Navigator) NavigateToFindMatch(ctx *GameContext) bool {
 
 	// If we are in Main Village, first click Battle to open the menu
 	if ctx.State == StateMainVillage {
-		ax, ay := n.cal.ScaleRef(60, 548)
+		ax, ay := n.cal.Hud(60, 548)
 		n.client.Tap(ax, ay)
 		time.Sleep(1500 * time.Millisecond)
 		// Update state to check if we are in the menu
@@ -513,8 +492,9 @@ func (n *Navigator) NavigateToFindMatch(ctx *GameContext) bool {
 		}
 	}
 
-	// Fallback to scaled coordinates for the yellow "Find a Match" button
-	ax, ay := n.cal.ScaleRef(150, 540)
+	// Fallback coordinates for the yellow "Find a Match" button: bottom-stack
+	// HUD chrome on the search screen.
+	ax, ay := n.cal.Hud(150, 540)
 	n.logger.Info().
 		Int("ax", ax).
 		Int("ay", ay).
@@ -553,7 +533,7 @@ func (n *Navigator) NavigateToBuilderBase(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateMainVillage {
-		bx, by := n.cal.ScaleRef(830, 16)
+		bx, by := n.cal.Hud(830, 16)
 		n.client.Tap(bx, by)
 		time.Sleep(2000 * time.Millisecond)
 		return true
@@ -568,7 +548,7 @@ func (n *Navigator) NavigateToMainVillageFromBB(ctx *GameContext) bool {
 	}
 
 	if ctx.State == StateBuilderBase {
-		bx, by := n.cal.ScaleRef(830, 16)
+		bx, by := n.cal.Hud(830, 16)
 		n.client.Tap(bx, by)
 		time.Sleep(2000 * time.Millisecond)
 		return true
