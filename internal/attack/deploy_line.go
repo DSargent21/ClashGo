@@ -7,14 +7,23 @@ import (
 )
 
 const (
-	standoff    = 80
-	margin      = 30
-	yTopMin     = 110
-	yBotPad     = 80
-	xMinPad     = 60
-	linePoints  = 15
-	lineSpacing = 35
+	standoff = 80
+	margin   = 30
+	yTopMin  = 110
+	yBotPad  = 80
+	xMinPad  = 60
+	// bandTopInset keeps a clamped point clear of the HUD's last row.
+	bandTopInset = 20
+	linePoints   = 15
+	lineSpacing  = 35
 )
+
+// YTopMin is the top of the deployable band: the deploy line never places a
+// point above it, because the resource HUD occupies the rows above. Exported so
+// the tools that render or verify a plan (cmd/attack_verify) and the formula
+// clamp share one definition of the band instead of each keeping its own
+// percentage of the screen.
+func YTopMin() int { return yTopMin }
 
 // DeployLine represents a calculated deployment line.
 type DeployLine struct {
@@ -22,6 +31,49 @@ type DeployLine struct {
 	Side    string
 	Anchor  image.Point
 	Outside bool
+}
+
+// ClampToDeployBand pulls a coordinate back into the strip of field a tap can
+// actually reach.
+//
+// The top resource HUD (loot counters, battle clock, settings) covers roughly
+// the first yTopMin rows, and the troop bar begins at uiCutoff. A tap on either
+// is consumed by the chrome instead of deploying, so a pinned point up there is
+// never what the user meant: they aimed at the field and the picker recorded a
+// spot under the overlay. Left alone it is silently thrown away, which is how a
+// pinned side can produce a battle where nothing deploys.
+//
+// Only y is touched. The left/right pads are a placement preference rather than
+// a UI boundary, and a line hugging the screen edge is a legitimate plan.
+func ClampToDeployBand(p image.Point, uiCutoff int) image.Point {
+	if uiCutoff > 0 && p.Y > uiCutoff {
+		p.Y = uiCutoff
+	}
+	if top := BandTop(); p.Y < top {
+		p.Y = top
+	}
+	return p
+}
+
+// UICutoff is the first row of the game's own chrome at the bottom of the frame
+// (the troop bar). Everything above it is field; a tap below it is given to the
+// bar instead of the battlefield. One definition, shared by the red-line
+// detector, the band clamp and the hero ground ladder, because a disagreement
+// here is what puts a tap on the UI.
+func UICutoff(h int) int { return int(float64(h) * 0.85) }
+
+// BandTop is the first row a tap reliably reaches. yTopMin is the codebase's
+// definition of where the resource HUD ends, but the HUD's last row lands a few
+// pixels below that, so the field really starts at yTopMin + bandTopInset. The
+// picker warns against the same number, so what the tool calls safe is exactly
+// what the bot leaves alone.
+func BandTop() int { return yTopMin + bandTopInset }
+
+// ClampEdgeToDeployBand applies ClampToDeployBand to both endpoints of a pin.
+func ClampEdgeToDeployBand(e ManualEdge, uiCutoff int) ManualEdge {
+	e.P1 = ClampToDeployBand(e.P1, uiCutoff)
+	e.P2 = ClampToDeployBand(e.P2, uiCutoff)
+	return e
 }
 
 // DeployLineCalculator computes deployment lines dynamically.

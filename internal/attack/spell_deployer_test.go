@@ -338,14 +338,49 @@ func TestDeployPointSpell_RingAroundTarget(t *testing.T) {
 	if len(taps) != 5 {
 		t.Fatalf("got %d taps, want 5", len(taps))
 	}
+	// The radius is no longer a constant. It is whatever radius puts
+	// neighbouring casts a minimum spacing apart, so the bound is that radius
+	// plus the worst-case per-axis jitter. The hardcoded 18 that used to sit
+	// here put 5 casts 28 px apart — inside one cast's own reach.
+	jitter := 6
+	radius := sd.castRingRadius(5, sd.ringChord(jitter))
 	for i, pt := range taps {
-		if d := math.Hypot(float64(pt.X-500), float64(pt.Y-400)); d > 18+6+1 {
-			t.Errorf("tap %d at %v is %.1fpx from target (ring radius 18 + jitter 6)", i, pt, d)
+		if d := math.Hypot(float64(pt.X-500), float64(pt.Y-400)); d > radius+float64(jitter)*math.Sqrt2+1 {
+			t.Errorf("tap %d at %v is %.1fpx from target (ring radius %.0f + jitter %d per axis)", i, pt, d, radius, jitter)
 		}
 	}
 	// Ring taps must not all stack on the center point.
 	if spread(taps) < 12 {
 		t.Error("ring taps clustered at center — ring offsets were not applied")
+	}
+	assertRingClearsSpacing(t, taps, sd)
+}
+
+// assertRingClearsSpacing checks the invariant every cast ring exists to
+// honour: no two of its casts land on the same ground. The bar comes from
+// attacklog, so the deployer and the tool that grades it share one number.
+//
+// The 2 px of slack is the worst case the arithmetic cannot rule out: jitter is
+// drawn per axis and moves two neighbours toward each other by up to 2·√2·j,
+// and each integer tap coordinate truncates toward zero by up to 1 px. The ring
+// is sized for exactly that much loss, so anything materially below the bar is a
+// real defect rather than a bad draw.
+func assertRingClearsSpacing(t *testing.T, taps []image.Point, sd *SpellDeployer) {
+	t.Helper()
+	if len(taps) < 2 {
+		return
+	}
+	bar := sd.minCastSpacing()
+	closest, a, b := math.Inf(1), image.Point{}, image.Point{}
+	for i := 0; i < len(taps); i++ {
+		for j := i + 1; j < len(taps); j++ {
+			if d := math.Hypot(float64(taps[i].X-taps[j].X), float64(taps[i].Y-taps[j].Y)); d < closest {
+				closest, a, b = d, taps[i], taps[j]
+			}
+		}
+	}
+	if closest < bar-2 {
+		t.Errorf("closest cast pair is %.1fpx (%v, %v), under the %.0fpx same-ground bar: these casts cover the same area", closest, a, b, bar)
 	}
 }
 
@@ -371,19 +406,36 @@ func TestFormulaLine_RageAutoSplit_OuterAndInnerLines(t *testing.T) {
 		t.Fatalf("got %d taps, want 5 (3 outer + 2 inner)", len(taps))
 	}
 	outerP1, outerP2 := image.Pt(453, 535), image.Pt(678, 363)
+	// The two sub-lines must not overlap AT THE CASTS — the same bar the
+	// cast-level guard (ensureInnerCastsClearOuter) enforces. A live 720p run
+	// drew the two sub-lines a fixed 35px apart against a 100px cast reach, so
+	// an outer and an inner Rage cast landed 31px apart and the attack report
+	// called the line OVERLAPPED; the guard now also clears the jitter it
+	// applies per tap, so the auto-derived line sits slightly deeper than the
+	// nominal spacing. Formula jitter here is 3.
+	minStep := sd.minCastSpacing()
 	nearOuter, nearInner := 0, 0
+	outerCasts := taps[:3]
 	for _, pt := range taps {
 		dOuter := distToSegment(pt, outerP1, outerP2)
-		if dOuter <= 8 {
+		switch {
+		case dOuter <= 8:
 			nearOuter++
-		} else {
-			// Inner line: must be INWARD (toward center) of the outer line.
+		default:
+			// Inner cast: must be INWARD (toward center) of the outer line
+			// and clear every outer cast — with jitter margin, since taps are
+			// jittered after placement.
 			dInner := signedInwardDistance(pt, outerP1, outerP2, image.Pt(430, 366))
-			if dInner > 45 {
-				t.Errorf("tap at %v is neither on the outer line (%.1fpx) nor near the inner offset (~35px: %.1fpx)", pt, dOuter, dInner)
-			} else {
-				nearInner++
+			if dInner < minStep {
+				t.Errorf("inner tap at %v is only %.1fpx inward (outer line %.1fpx away); must clear the %.1fpx cast spacing so the two sub-lines do not overlap", pt, dInner, dOuter, minStep)
+				continue
 			}
+			for _, oc := range outerCasts {
+				if d := dist(pt, oc); d < minStep/2 {
+					t.Errorf("inner tap %v is %.1fpx from outer tap %v, under the %.1fpx same-ground bar — the sub-lines must not overlap at the casts", pt, d, oc, minStep/2)
+				}
+			}
+			nearInner++
 		}
 	}
 	if nearOuter != 3 || nearInner != 2 {
@@ -417,11 +469,135 @@ func TestFormulaLine_RageSplit_UsesUserPinnedInnerLine(t *testing.T) {
 	}
 }
 
+// A rotated pinned inner line can clear the midpoint bar and still converge at
+// its far end — the exact defect a live 720p run measured (run16, 2026-09-22):
+// outer cast (505,517) vs inner cast (512,501), 17 px apart, after the old
+// midpoint-only guard had pushed the inner line to a 56 px midpoint clearance.
+// Midpoint distance bounds cast distance only when the lines are parallel, and
+// a user-pinned `_rage_inner` is authored free-hand — nothing preserves
+// parallelism. This fixture reproduces the convergence directly: the inner
+// line's midpoint sits ~60 px from the outer line (clear of the ~50 px chord)
+// while its far-end cast pair sits ~43 px apart (inside it).
+func TestEnsureInnerCastsClearOuter_RotatedInnerLineConvergingAtEnd(t *testing.T) {
+	outer1, outer2 := image.Pt(453, 535), image.Pt(678, 363)
+	inner1, inner2 := image.Pt(471, 472), image.Pt(579, 418)
+
+	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, &formula.Formula{Screen: formula.ScreenSize{W: 860, H: 732}}, nil, []*TrackedSlot{spellSlot("rage spell", 100)})
+	chord := sd.ringChord(0)
+	if chord <= 0 {
+		t.Fatalf("ringChord(0) = %v, want > 0", chord)
+	}
+
+	// The fixture must reproduce the failure before the guard may fix it:
+	// midpoint clear of the chord, casts not.
+	midOuter := image.Pt((outer1.X+outer2.X)/2, (outer1.Y+outer2.Y)/2)
+	midInner := image.Pt((inner1.X+inner2.X)/2, (inner1.Y+inner2.Y)/2)
+	if midDist := dist(midInner, midOuter); midDist < chord {
+		t.Fatalf("fixture: midpoint distance %.1f is already under the %.1f chord — adjust the fixture", midDist, chord)
+	}
+	outerCasts := sd.distributeAlong(outer1, outer2, rageOuterCount(5), 0)
+	worst := math.Inf(1)
+	for _, ic := range sd.distributeAlong(inner1, inner2, 2, 0) {
+		for _, oc := range outerCasts {
+			if d := dist(ic, oc); d < worst {
+				worst = d
+			}
+		}
+	}
+	if worst >= chord {
+		t.Fatalf("fixture: closest cast pair %.1f already clears the %.1f chord — it no longer reproduces the convergence defect", worst, chord)
+	}
+
+	got1, got2, pushed := sd.ensureInnerCastsClearOuter(outer1, outer2, inner1, inner2, 2, 0)
+	if !pushed {
+		t.Fatal("guard did not move a rotated inner line whose casts sit inside one cast spacing of the outer casts")
+	}
+	for _, ic := range sd.distributeAlong(got1, got2, 2, 0) {
+		for _, oc := range outerCasts {
+			if d := dist(ic, oc); d < chord-0.5 {
+				t.Errorf("inner cast %v is %.1f px from outer cast %v, want >= %.1f — the guard must separate the lines at cast level, not midpoint level", ic, d, oc, chord)
+			}
+		}
+	}
+}
+
+// End to end: the same rotated pinned inner line deployed through DeploySpell
+// must leave no outer/inner cast pair closer than half a cast spacing — the
+// report's own "not stacked" bar.
+func TestFormulaLine_RageRotatedPinnedInnerEndsStayApart(t *testing.T) {
+	f := &formula.Formula{
+		Screen: formula.ScreenSize{W: 860, H: 732},
+		Units: map[string]formula.UnitEntry{
+			"rage spell":  {Type: "line", P1: &formula.Point{X: 453, Y: 535}, P2: &formula.Point{X: 678, Y: 363}, Jitter: 3},
+			"_rage_inner": {Type: "line", P1: &formula.Point{X: 471, Y: 472}, P2: &formula.Point{X: 579, Y: 418}, Jitter: 3},
+		},
+	}
+	sd, tl := newSpellTestHarness(t, PrecisionConfig{}, f, nil, []*TrackedSlot{spellSlot("rage spell", 100)})
+	unit := strategy.Unit{Name: "Rage Spell", Amount: "All"} // 3 outer + 2 inner
+
+	if !sd.DeploySpell(unit, spellSlot("rage spell", 100), "BottomRight", "Line") {
+		t.Fatal("deploy failed")
+	}
+	taps := tl.fieldTaps()
+	if len(taps) != 5 {
+		t.Fatalf("got %d taps, want 5 (3 outer + 2 inner)", len(taps))
+	}
+	outer, inner := taps[:3], taps[3:]
+	minStep := sd.minCastSpacing()
+	for _, in := range inner {
+		for _, out := range outer {
+			if d := dist(in, out); d < minStep/2 {
+				t.Errorf("inner tap %v is %.1f px from outer tap %v, want >= %.1f — a rotated pinned inner line whose ends converge must be pushed apart at cast level", in, d, out, minStep/2)
+			}
+		}
+	}
+}
+
+// A user-pinned `_rage_inner` that lands almost on the outer line must be
+// pushed apart. The pinned line is authored in reference space; projected and
+// clamped into the live deploy band it landed 10 px from the outer line on a
+// real 720p run while one cast covers 100 px, so four of the five Rage casts
+// shared ground.
+func TestFormulaLine_RagePinnedInnerTooCloseIsPushedApart(t *testing.T) {
+	outerP1, outerP2 := image.Pt(453, 535), image.Pt(678, 363)
+	f := &formula.Formula{
+		Screen: formula.ScreenSize{W: 860, H: 732},
+		Units: map[string]formula.UnitEntry{
+			"rage spell":  {Type: "line", P1: &formula.Point{X: outerP1.X, Y: outerP1.Y}, P2: &formula.Point{X: outerP2.X, Y: outerP2.Y}, Jitter: 3},
+			"_rage_inner": {Type: "line", P1: &formula.Point{X: 455, Y: 530}, P2: &formula.Point{X: 676, Y: 360}, Jitter: 3},
+		},
+	}
+	sd, tl := newSpellTestHarness(t, PrecisionConfig{}, f, nil, []*TrackedSlot{spellSlot("rage spell", 100)})
+	unit := strategy.Unit{Name: "Rage Spell", Amount: "All"} // 3 outer + 2 inner
+
+	if !sd.DeploySpell(unit, spellSlot("rage spell", 100), "BottomRight", "Line") {
+		t.Fatal("deploy failed")
+	}
+	taps := tl.fieldTaps()
+	if len(taps) != 5 {
+		t.Fatalf("got %d taps, want 5 (3 outer + 2 inner)", len(taps))
+	}
+	outer, inner := taps[:3], taps[3:]
+	// Half a cast spacing is the report's own "not stacked" bar. Taps are
+	// jittered after placement, so the exact nominal spacing is not asserted
+	// here — only that the two sub-lines are genuinely apart.
+	minStep := sd.minCastSpacing()
+	for _, in := range inner {
+		for _, out := range outer {
+			if d := dist(in, out); d < minStep/2 {
+				t.Errorf("inner tap %v is %.1f px from outer tap %v, want >= %.1f — a pinned inner line that lands on the outer one must be pushed apart", in, d, out, minStep/2)
+			}
+		}
+	}
+}
+
+// A non-rage spell whose line is long enough for its casts must deploy every
+// cast ON that line — it must not be split the way rage is.
 func TestFormulaLine_NonRageStaysOnSingleLine(t *testing.T) {
 	f := &formula.Formula{
 		Screen: formula.ScreenSize{W: 860, H: 732},
 		Units: map[string]formula.UnitEntry{
-			"ice spell": {Type: "line", P1: &formula.Point{X: 480, Y: 429}, P2: &formula.Point{X: 537, Y: 391}, Jitter: 3},
+			"ice spell": {Type: "line", P1: &formula.Point{X: 340, Y: 520}, P2: &formula.Point{X: 700, Y: 300}, Jitter: 3},
 		},
 	}
 	sd, tl := newSpellTestHarness(t, PrecisionConfig{}, f, nil, []*TrackedSlot{spellSlot("ice spell", 60)})
@@ -430,10 +606,99 @@ func TestFormulaLine_NonRageStaysOnSingleLine(t *testing.T) {
 	if !sd.DeploySpell(unit, spellSlot("ice spell", 60), "BottomRight", "Line") {
 		t.Fatal("deploy failed")
 	}
-	lineP1, lineP2 := image.Pt(480, 429), image.Pt(537, 391)
-	for i, pt := range tl.fieldTaps() {
+	lineP1, lineP2 := image.Pt(340, 520), image.Pt(700, 300)
+	taps := tl.fieldTaps()
+	if len(taps) != 5 {
+		t.Fatalf("got %d taps, want 5", len(taps))
+	}
+	for i, pt := range taps {
 		if d := distToSegment(pt, lineP1, lineP2); d > 12 {
 			t.Errorf("tap %d at %v is %.1fpx off the pinned ice line — non-rage spells must not be split", i, pt, d)
+		}
+	}
+}
+
+// …but a non-rage line too short to hold its casts is a different situation:
+// the choice is between stacking casts on one spot and spreading them over the
+// ground the line points at. Stacking is what the run did, so the deployer now
+// spreads, and says so in the log.
+func TestFormulaLine_NonRageShortLineSpreadsInsteadOfStacking(t *testing.T) {
+	f := &formula.Formula{
+		Screen: formula.ScreenSize{W: 860, H: 732},
+		Units: map[string]formula.UnitEntry{
+			"ice spell": {Type: "line", P1: &formula.Point{X: 480, Y: 429}, P2: &formula.Point{X: 537, Y: 391}, Jitter: 3},
+		},
+	}
+	sd, tl := newSpellTestHarness(t, PrecisionConfig{}, f, nil, []*TrackedSlot{spellSlot("ice spell", 60)})
+	unit := strategy.Unit{Name: "Ice Spell", Amount: "All"}
+
+	if !sd.DeploySpell(unit, spellSlot("ice spell", 60), "BottomRight", "Line") {
+		t.Fatal("deploy failed")
+	}
+	taps := tl.fieldTaps()
+	if len(taps) != 5 {
+		t.Fatalf("got %d taps, want 5 (a cast left in the bar is a cast not deployed)", len(taps))
+	}
+	minStep := sd.minCastSpacing()
+	// Jitter is applied after the spread, so the exact bound is enforced on the
+	// deterministic path (TestDistributeAlong_ShortLineDoesNotStackCasts). Here
+	// the bar is "not stacked": the defect this replaced put the closest pair
+	// 11 px apart against a 37.7 px minimum.
+	for i := range taps {
+		for j := i + 1; j < len(taps); j++ {
+			d := dist(taps[i], taps[j])
+			if d < minStep/2 {
+				t.Errorf("taps %d and %d at %v/%v are %.1f px apart, want >= half of the %.1f px minimum",
+					i, j, taps[i], taps[j], d, minStep)
+			}
+		}
+	}
+}
+
+func dist(a, b image.Point) float64 {
+	return math.Hypot(float64(a.X-b.X), float64(a.Y-b.Y))
+}
+
+// A reconcile re-fire must land on new ground. Live symptom this pins down: an
+// ice spell deployed 13 casts across two passes whose closest pair was 4 px —
+// the first pass covered its ring, the next passes cast onto the same ring, and
+// every freeze after the first was spent on ground already frozen.
+func TestFormulaLine_RefireDisplacesInsteadOfRestacking(t *testing.T) {
+	f := &formula.Formula{
+		Screen: formula.ScreenSize{W: 860, H: 732},
+		Units: map[string]formula.UnitEntry{
+			"ice spell": {Type: "line", P1: &formula.Point{X: 480, Y: 429}, P2: &formula.Point{X: 537, Y: 391}, Jitter: 0},
+		},
+	}
+	sd, tl := newSpellTestHarness(t, PrecisionConfig{}, f, nil, []*TrackedSlot{spellSlot("ice spell", 60)})
+	unit := strategy.Unit{Name: "Ice Spell", Amount: "All"}
+
+	if !sd.DeploySpell(unit, spellSlot("ice spell", 60), "BottomRight", "Line") {
+		t.Fatal("first deploy failed")
+	}
+	firstPass := append([]image.Point(nil), tl.fieldTaps()...)
+	if len(firstPass) == 0 {
+		t.Fatal("first pass fired no taps")
+	}
+
+	// Same geometry, one reconcile pass later.
+	sd.firePass = 1
+	if !sd.DeploySpell(unit, spellSlot("ice spell", 60), "BottomRight", "Line") {
+		t.Fatal("re-fire failed")
+	}
+	sd.firePass = 0
+	secondPass := tl.fieldTaps()[len(firstPass):]
+	if len(secondPass) == 0 {
+		t.Fatal("re-fire fired no taps")
+	}
+
+	minStep := sd.minCastSpacing()
+	for i, a := range secondPass {
+		for j, b := range firstPass {
+			if d := dist(a, b); d < minStep {
+				t.Errorf("re-fire tap %d at %v is %.1f px from first-pass tap %d at %v, want >= %.1f — a re-fire must not cast onto ground the first pass covered",
+					i, a, d, j, b, minStep)
+			}
 		}
 	}
 }
@@ -504,11 +769,52 @@ func TestFormulaPoint_RingAroundPinnedPoint(t *testing.T) {
 	if len(taps) != 3 {
 		t.Fatalf("got %d taps, want 3", len(taps))
 	}
+	jitter := 5
+	radius := sd.castRingRadius(3, sd.ringChord(jitter))
 	for i, pt := range taps {
-		if d := math.Hypot(float64(pt.X-636), float64(pt.Y-510)); d > 18+6+1 {
-			t.Errorf("tap %d at %v is %.1fpx from the pinned point", i, pt, d)
+		if d := math.Hypot(float64(pt.X-636), float64(pt.Y-510)); d > radius+float64(jitter)*math.Sqrt2+1 {
+			t.Errorf("tap %d at %v is %.1fpx from the pinned point (ring radius %.0f + jitter %d per axis)", i, pt, d, radius, jitter)
 		}
 	}
+	assertRingClearsSpacing(t, taps, sd)
+}
+
+// The empty-ring defect, pinned from the live run that exposed it. An Ice Spell
+// card carrying 8 casts whose authored line is shorter than 8 spacings falls back
+// to a ring — and the ring radius was capped at 45 reference px, below the 63 that
+// 8 casts need to sit a minimum spacing apart. The measured closest pair was
+// 41 px against a 50 px bar, so all 8 freezes landed on ground another already
+// covered: one freeze cast eight times.
+//
+// This is white-box on purpose. The cap and the chord relation are the two halves
+// that disagreed, so the test states the relation the radius must satisfy rather
+// than a magic radius that happens to be big enough today.
+func TestRingFallback_ShortLineOfEightCastsCoversDistinctGround(t *testing.T) {
+	// 91px ice line: the shipped geometry measured in the run this rule came from.
+	f := &formula.Formula{
+		Screen: formula.ScreenSize{W: 860, H: 732},
+		Units: map[string]formula.UnitEntry{
+			"ice spell": {Type: "line", P1: &formula.Point{X: 520, Y: 300}, P2: &formula.Point{X: 611, Y: 300}, Jitter: 6},
+		},
+	}
+	sd, tl := newSpellTestHarness(t, PrecisionConfig{}, f, nil, []*TrackedSlot{spellSlot("ice spell", 60)})
+	unit := strategy.Unit{Name: "Ice Spell", Amount: "8"}
+
+	if !sd.DeploySpell(unit, spellSlot("ice spell", 60), "BottomRight", "Line") {
+		t.Fatal("formula line deploy failed")
+	}
+	taps := tl.fieldTaps()
+	if len(taps) != 8 {
+		t.Fatalf("got %d taps, want 8", len(taps))
+	}
+
+	// The radius the chord relation asks for, and the ceiling that used to clamp
+	// it, so a future ceiling cannot quietly reintroduce the overlap.
+	exact := (sd.ringChord(6) + ringRoundPadPx) / (2 * math.Sin(math.Pi/8))
+	if ceiling := sd.executor.cal.Length(maxCastRingRadiusRef); ceiling < exact {
+		t.Fatalf("the cast-ring ceiling is %.0fpx but 8 casts at a %.0fpx chord need %.0fpx: the ceiling is clamping a correctly-spaced ring into overlap", ceiling, sd.ringChord(6), exact)
+	}
+	assertRingClearsSpacing(t, taps, sd)
 }
 
 // ---------------------------------------------------------------------------
@@ -761,27 +1067,161 @@ func TestPhaseOffsetFallback_PerUnitOffsetWinsOverPhase(t *testing.T) {
 
 func TestDistributeAlong_EndpointsAndSpread(t *testing.T) {
 	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, nil, nil)
-	p1, p2 := image.Pt(0, 0), image.Pt(100, 0)
+	// A line long enough to carry 5 casts at the minimum spacing keeps the
+	// original even spread: pct 0.22 … 0.78 of the segment.
+	p1, p2 := image.Pt(0, 0), image.Pt(500, 0)
 
 	pts := sd.distributeAlong(p1, p2, 5, 0) // jitter 0 → exact points
 	if len(pts) != 5 {
 		t.Fatalf("got %d points, want 5", len(pts))
 	}
-	// pct = 0.22 … 0.78 evenly spaced.
 	wantPcts := []float64{0.22, 0.36, 0.50, 0.64, 0.78}
 	for i, wp := range wantPcts {
-		wantX := int(100 * wp)
+		wantX := int(500 * wp)
 		if math.Abs(float64(pts[i].X-wantX)) > 1 {
 			t.Errorf("point %d: x=%d, want ~%d", i, pts[i].X, wantX)
 		}
 	}
 }
 
-func TestDistributeAlong_SingleCountReturnsP1(t *testing.T) {
+// A line too short for its cast count must not stack its casts on the same
+// spot. This is the regression test for the defect that cost a real run five
+// Ice Spells: the ice line is 68.5 px against a 5-cast count, and splitting it
+// into five equal taps put the closest pair 11 px apart — one freeze landed
+// five times, and the same shape would do it to any short formula line.
+func TestDistributeAlong_ShortLineDoesNotStackCasts(t *testing.T) {
 	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, nil, nil)
-	pts := sd.distributeAlong(image.Pt(12, 34), image.Pt(99, 99), 1, 0)
-	if len(pts) != 1 || pts[0] != (image.Point{X: 12, Y: 34}) {
-		t.Fatalf("single-count distribution = %v, want [(12,34)]", pts)
+	minStep := sd.minCastSpacing()
+	if minStep <= 0 {
+		t.Fatalf("minCastSpacing() = %v, want a positive constraint", minStep)
+	}
+
+	// The shipped ice line, in reference px (it is 68.5 px long).
+	p1, p2 := image.Pt(480, 429), image.Pt(537, 391)
+	pts := sd.distributeAlong(p1, p2, 5, 0)
+	if len(pts) != 5 {
+		t.Fatalf("got %d points, want 5", len(pts))
+	}
+
+	for i := range pts {
+		for j := i + 1; j < len(pts); j++ {
+			d := dist(pts[i], pts[j])
+			if d < minStep-0.5 { // 0.5 px slack for the integer tap coordinates
+				t.Errorf("casts %d and %d are %.1f px apart, want >= %.1f (stacked casts waste cards)",
+					i, j, d, minStep)
+			}
+		}
+	}
+
+	// …and they stay anchored to the geometry the user drew: the cluster may
+	// not wander off to some other part of the village.
+	mid := image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2)
+	maxR := sd.executor.cal.Length(maxCastRingRadiusRef) + 1
+	for i, pt := range pts {
+		if d := dist(pt, mid); d > maxR {
+			t.Errorf("cast %d at %v is %.1f px from the line midpoint, want <= %.0f", i, pt, d, maxR)
+		}
+	}
+}
+
+// A two-cast line has no spacing problem to solve: it must keep the ordinary
+// even spread, so a common "2 rage on this line" formula is untouched.
+func TestDistributeAlong_TwoCastsOnShortLineStillSpread(t *testing.T) {
+	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, nil, nil)
+	pts := sd.distributeAlong(image.Pt(480, 429), image.Pt(537, 391), 2, 0)
+	if len(pts) != 2 {
+		t.Fatalf("got %d points, want 2", len(pts))
+	}
+	p1, p2 := image.Pt(480, 429), image.Pt(537, 391)
+	for i, pct := range []float64{0.22, 0.78} {
+		want := image.Pt(
+			int(float64(p1.X)+float64(p2.X-p1.X)*pct),
+			int(float64(p1.Y)+float64(p2.Y-p1.Y)*pct),
+		)
+		if pts[i] != want {
+			t.Fatalf("two-cast distribution point %d = %v, want the line's %.2f point %v", i, pts[i], pct, want)
+		}
+	}
+}
+
+// TestDistributeAlong_SingleCountCastsAtLineCentre pins the rule that stopped
+// the ice/freeze spell being tapped onto the troop bar.
+//
+// A line's ENDPOINTS are the least trustworthy points on it: they are what the
+// projection clamp and the red-line push displace first. Live 2026-09-25 (run7,
+// BottomRight) the ice spell's line came out as p1=(751,611) — the bar's own card
+// row — the single cast fired at (751,614) and CoC handed that tap to the bar
+// instead of casting it. The card kept its one charge through two attempts
+// (`reconcile: spells still on card; re-firing remainder` → `OCR count did not
+// drop after re-fire`), the post-deploy frame still read `x1` (OCR-confirmed),
+// and the run reported Deploy Health SUCCESS. One cast means the line's centre.
+func TestDistributeAlong_SingleCountCastsAtLineCentre(t *testing.T) {
+	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, nil, nil)
+
+	p1, p2 := image.Pt(751, 611), image.Pt(960, 530)
+	pts := sd.distributeAlong(p1, p2, 1, 0)
+	if len(pts) != 1 {
+		t.Fatalf("single-count distribution = %v, want exactly one cast", pts)
+	}
+	centre := image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2)
+	if pts[0] != centre {
+		t.Errorf("single cast = %v, want the line's centre %v", pts[0], centre)
+	}
+	if pts[0].Y >= p1.Y {
+		t.Errorf("single cast y=%d must sit above the displaced endpoint y=%d, or the tap goes to the bar", pts[0].Y, p1.Y)
+	}
+
+	// A re-fire still has to land on fresh ground rather than the same spot.
+	if sd.minCastSpacing() > 0 {
+		sd.firePass = 1
+		again := sd.distributeAlong(p1, p2, 1, 0)
+		sd.firePass = 0
+		if again[0] == pts[0] {
+			t.Errorf("a re-fire cast onto the identical point %v; it must be displaced one cast spacing", again[0])
+		}
+	}
+}
+
+// TestCastPointDeployable: the gate every spell tap passes through. A tap that
+// leaves the screen deploys nothing (live 2026-09-25: a TopLeft sweep line
+// projected to x=-11 and sent 18 taps off-screen), a tap above YTopMin is behind
+// the top HUD, and a tap on the bar is handed to the card row instead of casting.
+func TestCastPointDeployable(t *testing.T) {
+	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, nil, nil) // 860x732, no counter
+
+	// Without a counter the bar's top is the deploy band's own bottom (0.85·h).
+	barTop := sd.spellBarTop()
+	if barTop <= 0 || barTop >= sd.h {
+		t.Fatalf("harness bar top = %d, want a bound inside the %dpx screen", barTop, sd.h)
+	}
+	cases := []struct {
+		name string
+		pt   image.Point
+		want bool
+	}{
+		{"mid-field", image.Pt(400, 300), true},
+		{"just above the bar", image.Pt(400, barTop-1), true},
+		{"on the bar", image.Pt(400, barTop), false},
+		{"under the bar", image.Pt(400, 700), false},
+		{"behind the top HUD", image.Pt(400, YTopMin()-1), false},
+		{"at the top of the band", image.Pt(400, YTopMin()), true},
+		{"off the left edge", image.Pt(-1, 300), false},
+		{"off the right edge", image.Pt(860, 300), false},
+		{"off the top edge", image.Pt(400, -20), false},
+		{"off the bottom edge", image.Pt(400, 732), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sd.castPointDeployable(tc.pt); got != tc.want {
+				t.Errorf("castPointDeployable(%v) = %v, want %v", tc.pt, got, tc.want)
+			}
+		})
+	}
+
+	// With the count reader wired, the bar's top is the counter's own bar_y.
+	sd.SetCounter(nil, barTop)
+	if sd.castPointDeployable(image.Pt(400, barTop)) {
+		t.Error("the counter's bar_y must bound the field the same way")
 	}
 }
 

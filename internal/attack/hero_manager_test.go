@@ -6,9 +6,9 @@ import (
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 )
 
-// TestResolveLiveTapCount_LiveWinsOverDetected: when liveCount > 0, the
-// live OCR value drives the tap count (after the +1 pad when >= 6).
-// detectedCount, amount, and the heuristic default are all ignored.
+// TestResolveLiveTapCount_LiveWinsOverDetected: when the live read is
+// trustworthy and > 0, the live count drives the tap count (after the +1 pad
+// when >= 6). detectedCount, amount, and the blind batch are all ignored.
 func TestResolveLiveTapCount_LiveWinsOverDetected(t *testing.T) {
 	hm := &HeroManager{} // no executor / slotManager / logger needed for this pure helper
 
@@ -27,7 +27,7 @@ func TestResolveLiveTapCount_LiveWinsOverDetected(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon"}, nil, c.live, c.cached)
+			got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon"}, nil, c.live, true, c.cached)
 			if got != c.want {
 				t.Errorf("resolveLiveTapCount(live=%d, cached=%d) = %d, want %d",
 					c.live, c.cached, got, c.want)
@@ -36,7 +36,7 @@ func TestResolveLiveTapCount_LiveWinsOverDetected(t *testing.T) {
 	}
 }
 
-// TestResolveLiveTapCount_DetectedFallback: when liveCount==0, the
+// TestResolveLiveTapCount_DetectedFallback: when no count could be read, the
 // detectedCount from the orchestrator-start OCR drives the tap count.
 // This is the fallback path used when the bot is constructed without
 // a TroopCounter (legacy tests, offline replay, etc.).
@@ -46,23 +46,43 @@ func TestResolveLiveTapCount_DetectedFallback(t *testing.T) {
 		cached int
 		want   int
 	}{
-		{0, 8}, // both fail → heuristic default 8 (reconcile corrects under-firing)
-		{3, 3}, // small count, no pad
-		{6, 7}, // pad floor
+		{0, blindBatchTaps}, // both fail → bounded blind batch (reconcile drains the card)
+		{3, 3},              // small count, no pad
+		{6, 7},              // pad floor
 		{10, 11},
 		{20, 21},
 	}
 	for _, c := range cases {
-		got := hm.resolveLiveTapCount(strategy.Unit{Name: "Electro Dragon", Amount: "All"}, nil, 0, c.cached)
+		got := hm.resolveLiveTapCount(strategy.Unit{Name: "Electro Dragon", Amount: "All"}, nil, 0, false, c.cached)
 		if got != c.want {
 			t.Errorf("resolveLiveTapCount(live=0, cached=%d) = %d, want %d", c.cached, got, c.want)
 		}
 	}
 }
 
-// TestResolveLiveTapCount_AmountFallback: when both live and detected
-// are 0, parse the YAML amount. "All" / "" falls through to the
-// heuristic default 8 (and the reconcile loop catches under-firing).
+// TestResolveLiveTapCount_UntrustedLiveCountIsNotUsed is the anti-fabrication
+// contract: a count that came back with trusted=false is "unknown", and the
+// resolver must fall through to a real source (the detected count, then the
+// strategy amount) rather than tap a number nobody measured. The old reader
+// returned 0 untrusted on every slot of every frame, which is how the deploy
+// path ended up firing a bare heuristic 8 and leaving troops behind.
+func TestResolveLiveTapCount_UntrustedLiveCountIsNotUsed(t *testing.T) {
+	hm := &HeroManager{}
+	got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon", Amount: "12"}, nil, 0, false, 0)
+	if got != 12 {
+		t.Fatalf("an untrusted read must fall through to the strategy amount (12), got %d", got)
+	}
+
+	got = hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon", Amount: "All"}, nil, 0, false, 7)
+	if got != 8 {
+		t.Fatalf("an untrusted read must fall through to the detected count 7 (+1 pad), got %d", got)
+	}
+}
+
+// TestResolveLiveTapCount_AmountFallback: when no count was read and none was
+// cached, parse the YAML amount — the army the user configured, which is a real
+// number. "All" / "" states no number at all and falls through to the bounded
+// blind batch, which the reconcile loop then drives against the visual check.
 func TestResolveLiveTapCount_AmountFallback(t *testing.T) {
 	hm := &HeroManager{}
 	cases := []struct {
@@ -71,11 +91,11 @@ func TestResolveLiveTapCount_AmountFallback(t *testing.T) {
 	}{
 		{"3", 3},
 		{"12", 12},
-		{"All", 8}, // heuristic default
-		{"", 8},    // empty amount -> heuristic default
+		{"All", blindBatchTaps}, // no number stated → blind batch
+		{"", blindBatchTaps},    // empty amount → blind batch
 	}
 	for _, c := range cases {
-		got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon", Amount: c.amount}, nil, 0, 0)
+		got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon", Amount: c.amount}, nil, 0, false, 0)
 		if got != c.want {
 			t.Errorf("resolveLiveTapCount(amount=%q) = %d, want %d", c.amount, got, c.want)
 		}
@@ -84,12 +104,12 @@ func TestResolveLiveTapCount_AmountFallback(t *testing.T) {
 
 // TestResolveLiveTapCount_NeverZero: even when ALL inputs are wrong
 // (no live OCR, no detected, no amount, empty strategy.Unit), the
-// resolver returns at least the heuristic default (8) so the bot
+// resolver returns at least the bounded blind batch so the bot
 // always fires SOME taps. Returning 0 would skip the main pass and
-// leave all troops in the slot when OCR was completely broken.
+// leave all troops in the slot.
 func TestResolveLiveTapCount_NeverZero(t *testing.T) {
 	hm := &HeroManager{}
-	got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon"}, nil, 0, 0)
+	got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon"}, nil, 0, false, 0)
 	if got < 1 {
 		t.Fatalf("resolveLiveTapCount must never return <1 (got %d) so the bot never skips the main pass", got)
 	}

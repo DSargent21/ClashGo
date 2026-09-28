@@ -91,6 +91,11 @@ type Health struct {
 	LastError        string    `json:"last_error"`
 }
 
+// Capture coalescing has its own counters rather than a field here, so that the
+// meaning of CapturesTotal and AvgCaptureMs stays "what a real device capture
+// cost": a request answered from the cache was not a capture and must not move
+// those numbers. Callers read them with Client.CaptureCache().
+
 func (h *Health) RecordSuccess(d time.Duration) {
 	h.LastCapture = time.Now()
 	ms := d.Seconds() * 1000

@@ -4,13 +4,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"math/rand"
 	"strings"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/game"
+	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/pkg/formula"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"gocv.io/x/gocv"
+)
+
+// saveTroopBarFrame writes the full frame the count reader used to path.
+// It exists because a count read that fails live leaves nothing behind to
+// debug: the bar animates, the battle starts, and the frame that decided the
+// deploy is gone. The whole frame is kept, not a crop, so the saved pixels can
+// be replayed through the reader itself (DetectCounts on the file) and through
+// `see look -img`, which is the only way a live miss becomes a reproducible one.
+func saveTroopBarFrame(frame gocv.Mat, path string) bool {
+	if frame.Empty() || path == "" {
+		return false
+	}
+	return gocv.IMWrite(path, frame)
+}
+
+const (
+	// troopCountExtraFrames is how many extra captures the troop-bar read takes
+	// beyond the frame the caller already holds. It is the whole point of
+	// DetectCountsMerged: a card mid-animation carries no readable label, and a
+	// second look a beat later does.
+	troopCountExtraFrames = 2
+
+	// troopCountFrameSettle is the pause between those captures. It has to be
+	// long enough for the bar's fade-in to move (the frames must differ) and
+	// short enough that it never delays the first drop by anything a player would
+	// notice: three frames land inside half a second.
+	troopCountFrameSettle = 220 * time.Millisecond
 )
 
 // DeployDynamicV2 deploys troops using dynamic red line detection.
@@ -59,7 +89,7 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 
 	// 1. Detect red zone (deployment boundary)
 	redDetector := NewRedLineDetector(e.logger)
-	uiCutoff := int(float64(h) * 0.85) // above troop bar
+	uiCutoff := UICutoff(h) // the troop bar starts here (see deploy_line.go)
 	redZone := redDetector.Detect(screen, uiCutoff)
 
 	// 2. Load precision config FIRST so we can detect user-pinned coords
@@ -103,6 +133,54 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 				}
 			}
 		}
+		// Backstop for pinned points that sit under the game's chrome. The top
+		// resource HUD and the troop bar are not field: a tap there is eaten by
+		// the UI, so the unit is silently lost. `make pick-coords` warns about
+		// these, but a second can be enough to lose a tap to a stray pixel, and
+		// losing the whole deploy phase to one is never the intent. Clamping only
+		// moves the point back onto the field - the direction of the line, and
+		// the user's choice of side, are preserved.
+		pinsAdjusted := 0
+		fixEdge := func(m map[string]ManualEdge) {
+			for k, v := range m {
+				c := ClampEdgeToDeployBand(v, uiCutoff)
+				if c.P1 != v.P1 {
+					pinsAdjusted++
+				}
+				if c.P2 != v.P2 {
+					pinsAdjusted++
+				}
+				m[k] = c
+			}
+		}
+		fixEdge(pCfg.Edges)
+		fixEdge(pCfg.SpellEdgesA)
+		fixEdge(pCfg.SpellEdgesB)
+		if pCfg.Sides != nil {
+			fixEdge(pCfg.Sides)
+		}
+		for k, v := range pCfg.HeroTargets {
+			c := ClampToDeployBand(v, uiCutoff)
+			if c != v {
+				pinsAdjusted++
+			}
+			pCfg.HeroTargets[k] = c
+		}
+		for k, v := range pCfg.SpellTargets {
+			c := ClampToDeployBand(v, uiCutoff)
+			if c != v {
+				pinsAdjusted++
+			}
+			pCfg.SpellTargets[k] = c
+		}
+		if pinsAdjusted > 0 {
+			e.logger.Warn().
+				Int("adjusted", pinsAdjusted).
+				Int("band_top", BandTop()).
+				Int("band_bottom", uiCutoff).
+				Msg("pinned points sat under the game's HUD or troop bar; clamped onto the field so those taps are not thrown away")
+		}
+
 		mBarY = int(float64(pCfg.BarY) * scaleY)
 		if mBarY > int(float64(h)*0.92) {
 			mBarY = int(float64(h) * 0.92)
@@ -159,47 +237,111 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		e.logger.Warn().Err(ferr).Str("strategy_path", strategyPath).Msg("formula found but failed to parse")
 	}
 	if hasFormula {
-		// Per-corner override (if present) wins over the mirror. The
-		// user may have authored explicit coords for this corner via
-		// `cmd/design_attack -corner BL` (which writes to
-		// formula.corner_overrides.BL). This is more accurate than
-		// reflecting the BR default — different base geometries have
-		// different red-line positions on each side, and a mirror
-		// across a non-symmetric base puts the line either too close
-		// to the new side's red line (overlap) or too far from it.
-		usedOverride := false
-		if formulaPtr.CornerOverrides != nil {
-			if cornerUnits, ok := formulaPtr.CornerOverrides[targetEdge]; ok {
-				// Merge: per-corner overrides win per-unit. Typical
-				// override is PARTIAL — only the units that differ
-				// from the mirrored BR default. Units not in the
-				// override fall through to formula.units so the
-				// user only re-pins the units that actually need it.
-				merged := make(map[string]formula.UnitEntry, len(formulaPtr.Units)+len(cornerUnits))
-				for k, v := range formulaPtr.Units {
-					merged[k] = v
-				}
-				for k, v := range cornerUnits {
-					merged[k] = v
-				}
-				formulaPtr.Units = merged
-				usedOverride = true
-			}
+		// Resolve this corner's units (override, else mirror). Kept in one
+		// function because anything that predicts what the bot will tap has to
+		// apply the same precedence — the deploy-geometry gate in
+		// deploy_geometry_test.go uses it for exactly that reason, and the
+		// first version of that gate mirrored every corner, which described a
+		// path this bot never takes: the shipped formula carries authored
+		// overrides for all four corners.
+		if applyCornerUnits(formulaPtr, targetEdge) {
+			e.logger.Info().
+				Str("edge", targetEdge).
+				Int("units", len(formulaPtr.Units)).
+				Msg("formula corner override applied (no mirror)")
 		}
-		if !usedOverride {
-			// No explicit override for this corner: mirror the BR
-			// default (formula.units) around the formula's authored
-			// 860×732 reference frame. This is the simpler
-			// replacement for the previous FourSides pattern: the
-			// user authors ONE attack in cmd/design_attack, the
-			// orchestrator mirrors it per-corner.
-			formulaPtr.MirrorForCorner(targetEdge)
-		}
-		// Scale (the merged or mirrored units) to the live screen.
-		// Doing mirror-before-scale keeps formula.Screen.W/H
+		// Project (the merged or mirrored units) onto the live screen.
+		// Doing mirror-before-projection keeps formula.Screen.W/H
 		// meaningful as the formula's intent reference and avoids
 		// "which center do we reflect around" ambiguity.
-		formulaPtr.ApplyScreenScale(formulaPtr.Screen.W, formulaPtr.Screen.H, w, h)
+		//
+		// The projection is the game's own world law: one uniform display
+		// scale k about the viewport centre, NOT a per-axis stretch to fill
+		// the framebuffer. At 1280x720 the framebuffer ratio is 1.4884
+		// horizontally against 0.9836 vertically (-34% aspect drift), and
+		// applying it put every authored deploy point 19-76 px — one to two
+		// village tiles — off its building. k comes from the calibration, so
+		// the deploy geometry and the classifier share one measurement.
+		k := e.cal.DisplayScale()
+		formulaPtr.ProjectUniform(k, formulaPtr.Screen.W, formulaPtr.Screen.H, w, h)
+		law := "uniform display scale about the viewport centre"
+		switch {
+		case formulaPtr.Screen.W == w && formulaPtr.Screen.H == h:
+			law = "none (the formula carries the live screen size)"
+		case formulaPtr.Screen.W != game.RefWidth || formulaPtr.Screen.H != game.RefHeight:
+			// The reference-geometry projection is only meaningful from the
+			// reference frame: a formula authored on some other device's
+			// geometry carries no record of that device's scale, so the
+			// result is a guess and must not pass silently.
+			law = "uniform display scale about the viewport centre (GUESS: the formula was authored at neither the reference nor the live geometry)"
+			e.logger.Warn().
+				Int("authored_w", formulaPtr.Screen.W).
+				Int("authored_h", formulaPtr.Screen.H).
+				Int("ref_w", game.RefWidth).
+				Int("ref_h", game.RefHeight).
+				Msg("formula was not authored at the reference geometry or the live one; re-author it, the projection cannot be trusted")
+		}
+		// A correctly projected reference point can still land outside the band
+		// the deploy path is willing to tap, at BOTH edges, because the world
+		// scales uniformly about the centre while the HUD is edge-anchored:
+		// at 1280x720 an authored y of 581 projects to 645 on a 720px screen
+		// (past the troop bar, so the tap hits the bar and the unit never
+		// deploys), and an authored y of 176 projects to 108 (behind the top
+		// resource HUD). Measured on the shipped auto_edrag_rush formula: three
+		// of its units project outside the band at this geometry, two below and
+		// one above — the "it didn't use all the troops" report.
+		//
+		// Clamp into the band the rest of this function already uses — the same
+		// [yTopMin, uiCutoff] range DeployLineCalculator refuses to place line
+		// points outside — and say so, because the durable fix is re-authoring
+		// the point, not moving the tap.
+		if clamped := formulaPtr.ClampY(yTopMin, uiCutoff); clamped > 0 {
+			e.logger.Warn().
+				Int("points_clamped", clamped).
+				Int("band_top", yTopMin).
+				Int("band_bottom", uiCutoff).
+				Msg("formula points projected outside the deployable band (behind the top HUD or under the troop bar) and were clamped into it; re-author them at the target geometry")
+		}
+
+		// …and push out of the red line. The band clamp answers a frame-edge
+		// question; the red line is a shape in the middle of the frame, and a
+		// tap inside it is refused by the game ("You cannot deploy troops on
+		// the Red area!") while the bot's tap call still reports success. A
+		// live 720p run with a pinned bottom-left line showed that banner for
+		// the whole deploy phase: every tap landed, none deployed.
+		if redZone.Valid && len(redZone.Polygon) >= 3 {
+			cx, cy := redZone.Centre()
+			// One village tile per step. CoC's village is ~44 tiles across the
+			// reference width, so a tile is ~19.5 reference px; the point walks
+			// outward in whole tiles (up to 24 of them) until it clears the red
+			// line, which keeps the moved tap on the same axis the user aimed
+			// along instead of nudging it a few pixels inside the same zone.
+			step := int(e.cal.Length(19.5))
+			if moved := formulaPtr.PushOutOfZone(redZone.Inside, cx, cy, step, 24); moved > 0 {
+				e.logger.Warn().
+					Int("points_moved", moved).
+					Int("zone_centre_x", cx).
+					Int("zone_centre_y", cy).
+					Int("step_px", step).
+					Msg("formula points projected INSIDE the red deployment line (the game refuses taps there); pushed radially outward to the nearest free step — re-author them outside the red line at the target geometry")
+			}
+		} else if !redZone.Valid {
+			e.logger.Warn().Msg("no plausible red deployment boundary in this frame; formula points are used as authored (the red-line check is skipped rather than run against terrain)")
+		}
+
+		// The push walks radially in whole tiles and knows nothing about the
+		// deployable band, so it can leave a point above the top resource HUD or
+		// under the troop bar — a tap that hits chrome, which is exactly what the
+		// band clamp above exists to prevent. Re-clamp and say so: a point that
+		// had to be pulled back means the red-line push and the band disagree,
+		// and the reader needs to know the tap is not where the push put it.
+		if reclamped := formulaPtr.ClampY(yTopMin, uiCutoff); reclamped > 0 {
+			e.logger.Warn().
+				Int("points_reclamped", reclamped).
+				Int("band_top", yTopMin).
+				Int("band_bottom", uiCutoff).
+				Msg("red-line push moved formula points out of the deployable band (behind the top HUD or under the troop bar); pulled them back into it")
+		}
 		e.logger.Info().
 			Str("strategy", s.Name).
 			Int("units", len(formulaPtr.Units)).
@@ -207,6 +349,8 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			Int("formula_h", formulaPtr.Screen.H).
 			Int("screen_w", w).
 			Int("screen_h", h).
+			Float64("display_scale", k).
+			Str("projection", law).
 			Msg("formula.json loaded; per-unit explicit coordinates will override edge-based deploy")
 	}
 
@@ -238,17 +382,130 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		deployLine = pinnedLine
 	}
 
+	// 3c. When the strategy carries a formula, the line this battle actually
+	//     deploys on is the formula's own troop ground — not the corner pin and
+	//     not the red-zone box line. Publish that instead of the pin, because
+	//     the two disagreed and the log described the wrong one: run15
+	//     reported "active deploy line line_start={136,404} line_end={446,554}"
+	//     while every troop, spell and hero tap went to x=192 between y=144 and
+	//     y=576. A deploy line the reader cannot match to the taps is worse than
+	//     no line at all, and it is also the fallback ground the sweep and hero
+	//     paths use when their own formula lookup misses — where a diagonal
+	//     across the middle of the base is the last thing that should stand in
+	//     for the ground the troops just deployed on.
+	// A USER PIN outranks the strategy formula once and for all. The pins in
+	// precision_config.json are placed by a human looking at the battle screen
+	// (cmd/pick_coords), which is the only source of geometry in this system that
+	// knows where the game actually accepts a drop — the red-line detector has
+	// been wrong in both directions and the formula is a one-off authoring pass.
+	// Substituting the formula here is exactly what made pinning feel useless:
+	// the log said "user-pinned deploy line" and every tap went to the formula's
+	// ground instead.
+	if hasFormula && !userPinnedForTarget {
+		if fl, ok := formulaGroundLine(formulaPtr, s, targetEdge); ok {
+			if len(deployLine.Points) >= 2 {
+				e.logger.Info().
+					Str("configured_side", deployLine.Side).
+					Interface("configured_start", deployLine.Points[0]).
+					Interface("configured_end", deployLine.Points[len(deployLine.Points)-1]).
+					Interface("formula_start", fl.Points[0]).
+					Interface("formula_end", fl.Points[len(fl.Points)-1]).
+					Msg("configured deploy line is not the line the taps use; adopting the strategy formula's own troop ground")
+			}
+			deployLine = fl
+		}
+	} else if userPinnedForTarget && hasFormula {
+		e.logger.Info().
+			Str("side", targetEdge).
+			Interface("pinned_start", deployLine.Points[0]).
+			Interface("pinned_end", deployLine.Points[len(deployLine.Points)-1]).
+			Msg("using the USER-PINNED deploy line for every troop, hero and sweep tap (strategy formula not substituted for this side)")
+	}
+
+	// The ground the hero path and the sweep will drop on. Logged once per
+	// battle because it is the difference between a drop the game accepts and
+	// one it silently refuses: run10 dropped both heroes on the pinned edge
+	// line's midpoint, 150px inland of the line every troop and spell had just
+	// deployed along, and the game refused all of them.
+	if len(deployLine.Points) > 0 {
+		e.logger.Info().
+			Str("side", deployLine.Side).
+			Interface("line_start", deployLine.Points[0]).
+			Interface("line_end", deployLine.Points[len(deployLine.Points)-1]).
+			Int("line_points", len(deployLine.Points)).
+			Bool("pinned", userPinnedForTarget).
+			Bool("red_zone_valid", redZone.Valid).
+			Int("red_zone_polygon", len(redZone.Polygon)).
+			Msg("active deploy line for this battle")
+	}
+
 	// 4. Initialize SlotManager
 	slotMgr := NewSlotManager(screen, e.cal, pCfg, w, h, mBarY, e.templates, e.classify, e.logger)
 	if len(slotMgr.GetAllSlots()) == 0 {
 		return 0, fmt.Errorf("no active slots detected")
 	}
 
-	// 5. Detect troop counts
+	// 5. Detect troop counts.
+	//
+	// Read the bar over several frames, not one. The bar animates in at the
+	// start of a battle and a card caught mid-animation can carry no glyph the
+	// reader can find at all: a live 720p run read ONE of ten cards on the
+	// frame the deploy started from (`readable=7 slots=10`, six of them measured
+	// zeros for cards that had 9, 13 and 21 troops on them once the same bar had
+	// settled), while four of six labels read cleanly on a saved frame a second
+	// later. The count is stable until the first drop, so extra captures here are
+	// free — the battle timer starts at the first drop, not at the first capture.
+	//
+	// Deliberately unconditional: a heuristic that only re-reads when the first
+	// frame "looks bad" has to recognise a bad frame from the same pixels that
+	// made it bad. Two extra captures cost a few hundred milliseconds of a
+	// three-minute battle.
 	troopCounter := NewTroopCounter(e.cal, pCfg.Width, pCfg.Height, e.logger)
-	troopCounts := troopCounter.DetectCounts(screen, slotMgr.GetAllSlots(), mBarY)
+	slots := slotMgr.GetAllSlots()
+	countFrames := []gocv.Mat{screen}
+	for attempt := 0; attempt < troopCountExtraFrames; attempt++ {
+		time.Sleep(troopCountFrameSettle)
+		next, err := e.client.CaptureToMat()
+		if err != nil {
+			e.logger.Warn().Err(err).Int("captured", len(countFrames)).Msg("extra troop-bar capture failed; merging what was captured")
+			break
+		}
+		if next.Empty() {
+			next.Close()
+			break
+		}
+		countFrames = append(countFrames, next)
+	}
+	defer func() {
+		// screen is the caller's; only the extras are ours to release.
+		for _, extra := range countFrames[1:] {
+			extra.Close()
+		}
+	}()
+
+	troopCounts := troopCounter.DetectCountsMerged(countFrames, slots, mBarY)
 	countMap := GetAllCounts(troopCounts)
-	e.logger.Info().Interface("counts", countMap).Msg("detected troop counts")
+	e.logger.Info().
+		Interface("counts", countMap).
+		Int("frames", len(countFrames)).
+		Msg("detected troop counts")
+
+	// When the merged read still cannot settle every card, the pixels are the
+	// only thing that can explain why, and the frame is gone a second later. Save
+	// the bar region of the last (most settled) capture next to the other
+	// evidence artifacts, so a live failure can be diagnosed with
+	// `see look -img <file>` or by eye instead of re-running the attack and
+	// hoping. One small PNG per attack, overwritten each time.
+	if readable, total := ReadableCounts(troopCounts); readable < total {
+		last := countFrames[len(countFrames)-1]
+		if saveTroopBarFrame(last, paths.ResolveConfig("last_troop_bar.png")) {
+			e.logger.Warn().
+				Int("readable", readable).
+				Int("slots", total).
+				Int("frames", len(countFrames)).
+				Msg("troop bar not fully resolved; saved the frame the reader used to last_troop_bar.png")
+		}
+	}
 	// troopCounter is threaded below to NewHeroManager / NewSweeper /
 	// NewVerifier so they can live-OCR per-slot counts at deploy time
 	// and reconcile until the slot is truly empty (fixes the
@@ -276,6 +533,101 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	strategyNames := GetStrategyUnitNames(s)
 
 	// 9. Execute each phase
+	//
+	// pendingAbilities collects ability unit plans from ANY phase (both
+	// a dedicated "Abilities" phase and pattern:Ability units declared
+	// inline inside the Heroes phase — auto_edrag_rush uses the latter
+	// shape). They are fired only when an explicit "Abilities" phase is
+	// reached, or after the last phase — never mid-deploy. Tapping the
+	// hero icon a second time re-selects the hero's card, which poisons
+	// the next slot-selection tap until that card is deployed or
+	// deselected; deferring the pass keeps it from eating the next
+	// unit's selection (valk_run6: abilities fired 60ms after the hero
+	// drops and the EQ phase then tapped the siege slot instead of the
+	// earthquake card).
+	var pendingAbilities []UnitPlan
+	fireAbilities := func() {
+		if len(pendingAbilities) == 0 {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+		for _, up := range pendingAbilities {
+			if up.Slot == nil {
+				continue
+			}
+			// Only activate a hero that actually DEPLOYED. Tapping the
+			// hero icon while its card is still on the bar re-SELECTS the
+			// card, and marking it deployed here would hide it from the
+			// sweep — the exact bug class this pass was built to avoid
+			// (live, 21:03 run: BK's drop verify failed twice, the pass
+			// tapped + marked it deployed and the sweep skipped it).
+			if up.Slot.State != SlotDeployed {
+				e.logger.Warn().
+					Str("unit", up.Unit.Name).
+					Int("x", up.Slot.X).
+					Str("state", up.Slot.State.String()).
+					Msg("ability pass: hero not confirmed deployed; skipping ability (sweep owns the retry)")
+				continue
+			}
+			if tapExec.DeployBudgetExhausted() {
+				e.logger.Warn().Msg("ability pass: deploy budget exhausted; stopping")
+				pendingAbilities = nil
+				return
+			}
+			if !tapExec.TapHeroAbility(up.Slot) {
+				// The card's 2-tap budget was spent on placement (e.g. a sweep
+				// recovery tap): the hero is not re-tapped.
+				e.logger.Warn().
+					Str("unit", up.Unit.Name).
+					Int("x", up.Slot.X).
+					Msg("ability pass: hero card tap budget exhausted; skipping ability")
+				continue
+			}
+			e.logger.Info().
+				Str("unit", up.Unit.Name).
+				Int("x", up.Slot.X).
+				Msg("hero ability activated (deferred ability pass)")
+			// 250ms between hero-icon taps: the 60ms of the old
+			// bulk loop outpaced CoC's ability activation animation,
+			// so later activations in the loop silently no-opped.
+			tapExec.HumanSleep(250, 40)
+		}
+		pendingAbilities = nil
+	}
+
+	// The hero manager is created ONCE per battle, not per phase. It carries the
+	// ground the troop passes recorded (see HeroManager.troopGround) and the
+	// per-hero 2-tap bookkeeping the phases share; a per-phase instance threw
+	// both away — live run14 the hero phase ran with troop_ground_points=0 for
+	// exactly that reason.
+	heroMgr := NewHeroManager(tapExec, slotMgr, pCfg, targetEdge, w, h, formulaPtr, troopCounter, deployLine, e.logger)
+	// Bridge: when HeroManager's resolveHeroTarget fires for the Dragon Duke,
+	// route the event through Executor.OnDukePick so a single observer (live
+	// bot's NDJSON writer, debug_test's recorder) sees BOTH the legacy
+	// adjacent-corner random pick and the new "follow the chosen edge"
+	// behavior. chosen == target in the new path — Duke falls through to the
+	// chosen edge with a random point along it.
+	heroMgr.OnDukeDeployed = func(target string) {
+		if e.OnDukePick != nil {
+			e.OnDukePick(target, target)
+		}
+	}
+	// Ability activation is owned by the dedicated "Abilities" phase below,
+	// which runs AFTER the spell phases (strategy YAML order is the user's
+	// intent). The old always-on auto-activation inside DeployHeroes fired the
+	// abilities ~60ms after the heroes dropped and BEFORE the spell phase: the
+	// tap re-selected the hero's card, and the next slot-selection tap then
+	// landed on the still-highlighted hero icon — live, that burned an ability
+	// and tapped the siege machine's slot instead of the earthquake card
+	// (valk_run6, 15:11:39).
+	heroMgr.SetActivateAbility(false)
+	// Hero drops are filtered against this battle's red line: the active
+	// deployLine can be the user's pinned reference-geometry edge (which no
+	// other code path validates), and dropping a hero on that ground was
+	// live-refused for the whole hero phase in run10.
+	heroMgr.SetRedZone(redZone)
+	heroMgr.SetPinnedGround(userPinnedForTarget)
+
 	for _, plan := range plans {
 		// Hard deploy-time stop: if the budget ran out mid-plan, abandon
 		// the remaining phases instead of tapping into the battle timer.
@@ -302,6 +654,7 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		// on one card; the edrag rush carries 11 rage on another).
 		spellDeployer := NewSpellDeployerWithCounts(tapExec, pCfg, formulaPtr, w, h, countMap, e.logger)
 		spellDeployer.SetCounter(troopCounter, slotMgr.GetBarY())
+		spellDeployer.SetPinnedGround(userPinnedForTarget)
 		for _, up := range ResolveSpellTargets(plan) {
 			if up.Slot == nil {
 				continue
@@ -351,19 +704,6 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		}
 
 		// Deploy troops
-		heroMgr := NewHeroManager(tapExec, slotMgr, pCfg, targetEdge, w, h, formulaPtr, troopCounter, e.logger)
-		// Bridge: when HeroManager's resolveHeroTarget fires for the
-		// Dragon Duke, route the event through Executor.OnDukePick so a
-		// single observer (live bot's NDJSON writer, debug_test's
-		// recorder) sees BOTH the legacy adjacent-corner random pick and
-		// the new "follow the chosen edge" behavior. chosen == target in
-		// the new path — Duke falls through to the chosen edge with a
-		// random point along it.
-		heroMgr.OnDukeDeployed = func(target string) {
-			if e.OnDukePick != nil {
-				e.OnDukePick(target, target)
-			}
-		}
 		for _, up := range ResolveTroopTargets(plan) {
 			if up.Slot == nil {
 				continue
@@ -435,6 +775,14 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			}
 		}
 
+		// Collect this phase's ability plans; fire them only when the
+		// strategy explicitly reaches an "Abilities" phase (valk_spam
+		// shape), so spells authored before it still go first.
+		pendingAbilities = append(pendingAbilities, ResolveAbilityTargets(plan)...)
+		if strings.EqualFold(strings.TrimSpace(plan.Phase.Name), "Abilities") || plan.Phase.Pattern == "Ability" {
+			fireAbilities()
+		}
+
 		// Phase delay defaults tightened: Heroes/Siege used to sit at
 		// 500ms post-phase, which compounded with each hero's 800ms settle
 		// inside hero_manager.go to produce a >1.5s wall-clock gap between
@@ -474,19 +822,136 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		}
 	}
 
+	// Abilities declared inline (e.g. auto_edrag_rush's pattern:Ability
+	// units inside the Heroes phase, with a Spells phase after) never hit
+	// an "Abilities" phase — fire whatever is still pending here, after
+	// every deploy phase, so spells still go first.
+	fireAbilities()
+
 	// 10. Sweep remaining. Pass formulaPtr so the sweep path honors
 	// user-pinned _event_troop / _event_spell coords the same way
 	// DeployHeroes / DeployTroops already do. Without this the bot
 	// silently dropped event troops on the dynamically-detected
 	// red-zone line, ignoring the user's pin entirely.
 	sweeper := NewSweeper(tapExec, slotMgr, pCfg, deployLine, w, h, formulaPtr, troopCounter, s.EventTroopsAutoDeployEnabled(), e.logger)
+	sweeper.SetRedZone(redZone)
+	sweeper.SetPinnedGround(userPinnedForTarget)
 	sweeper.Sweep(strategyNames, countMap)
 
 	// 11. Verify
 	verifier := NewVerifier(tapExec, slotMgr, pCfg, targetEdge, w, h, DefaultVerifyConfig(), troopCounter, e.logger)
+	verifier.SetRedZone(redZone)
 	remainingCount := verifier.VerifyAll()
 
+	// 12. Evidence capture: save a post-deploy annotated screenshot so every
+	// real attack can be reviewed afterwards (did spells land on the formula
+	// lines? did every card drain?). Passes the formula the deploy path used —
+	// corner-resolved, projected, clamped — so the picture shows the taps that
+	// were fired and not a re-derivation of them. Best-effort: a capture failure
+	// must never fail an otherwise-good attack.
+	e.dumpAttackEvidence(formulaPtr, targetEdge, w, h, remainingCount)
+
 	return remainingCount, nil
+}
+
+// dumpAttackEvidence saves last_attack_overview.png (the raw post-deploy
+// frame) plus last_attack_taps.png (the same frame annotated with every
+// planned formula tap point for the corner actually attacked) under the
+// config dir. Skipped silently when a fresh capture isn't possible.
+//
+// It annotates the formula the DEPLOY PATH actually used — the one passed in,
+// already corner-resolved, projected at the live display scale and clamped —
+// rather than reloading the file and re-deriving it. That is not an
+// optimisation: this function used to reload the formula, re-apply the corner
+// override, re-project with the legacy per-axis ApplyScreenScale, and judge the
+// result against a third band of its own (6%..78% of the height). Measured on a
+// real 720p attack, those points sat up to 76 px from the taps that were fired,
+// so the artifact a human reviews after a bad attack showed taps that never
+// happened, in a geometry the bot does not run, and reported
+// "taps_outside_band=0" for points that were inside the top HUD. Evidence that
+// disagrees with the run is worse than no evidence.
+func (e *Executor) dumpAttackEvidence(f *formula.Formula, targetEdge string, w, h, remaining int) {
+	tapExec := NewTapExecutor(e.client, e.cal, e.logger)
+	capture, err := tapExec.CaptureFresh()
+	if err != nil {
+		e.logger.Warn().Err(err).Msg("evidence capture: could not grab post-deploy frame")
+		return
+	}
+	defer capture.Close()
+
+	if ok := gocv.IMWrite(paths.ResolveConfig("last_attack_overview.png"), capture); !ok {
+		e.logger.Warn().Msg("evidence capture: IMWrite overview failed")
+	}
+
+	if f == nil {
+		return
+	}
+
+	annotated := capture.Clone()
+	defer annotated.Close()
+	// The deploy path's own band, not a percentage invented here: the same
+	// [yTopMin, uiCutoff] the formula clamp and DeployLineCalculator use.
+	bandTop, bandBottom := yTopMin, int(float64(h)*0.85)
+	inBand, outside := 0, 0
+	for name, entry := range f.Units {
+		if strings.HasPrefix(name, "_") {
+			continue
+		}
+		c := color.RGBA{255, 255, 255, 255}
+		switch {
+		case strings.Contains(strings.ToLower(name), "spell"):
+			c = color.RGBA{255, 0, 255, 255}
+		case strings.Contains(strings.ToLower(name), "king") || strings.Contains(strings.ToLower(name), "queen"):
+			c = color.RGBA{0, 255, 0, 255}
+		}
+		for _, pt := range formulaEntryPoints(entry) {
+			if pt.Y < bandTop || pt.Y > bandBottom {
+				// After the clamp this should be impossible; ring it anyway,
+				// because a point that gets here is a tap on the HUD.
+				outside++
+				gocv.Circle(&annotated, pt, 14, color.RGBA{0, 0, 255, 255}, 3)
+			} else {
+				inBand++
+			}
+			gocv.Circle(&annotated, pt, 5, c, 2)
+		}
+	}
+	// The band is drawn too, so a reader can see which side of the line a tap is
+	// on instead of taking the count on trust.
+	gocv.Rectangle(&annotated, image.Rect(0, bandTop, w, bandBottom), color.RGBA{0, 128, 255, 255}, 1)
+	gocv.PutText(&annotated,
+		fmt.Sprintf("edge=%s k=%.3f band y=%d..%d taps_in_band=%d outside_band=%d remaining=%d",
+			targetEdge, e.cal.DisplayScale(), bandTop, bandBottom, inBand, outside, remaining),
+		image.Pt(10, 20), gocv.FontHersheySimplex, 0.5, color.RGBA{0, 255, 255, 255}, 1)
+	if ok := gocv.IMWrite(paths.ResolveConfig("last_attack_taps.png"), annotated); !ok {
+		e.logger.Warn().Msg("evidence capture: IMWrite taps failed")
+	}
+	e.logger.Info().
+		Str("edge", targetEdge).
+		Float64("display_scale", e.cal.DisplayScale()).
+		Int("band_top", bandTop).
+		Int("band_bottom", bandBottom).
+		Int("taps_in_band", inBand).
+		Int("taps_outside_band", outside).
+		Int("remaining", remaining).
+		Msg("evidence capture: saved last_attack_overview.png + last_attack_taps.png")
+}
+
+// formulaEntryPoints flattens a UnitEntry into the tap points the deploy
+// path would fire (shared by the evidence annotator).
+func formulaEntryPoints(e formula.UnitEntry) []image.Point {
+	var pts []image.Point
+	switch {
+	case e.IsPoint() && e.P != nil:
+		pts = append(pts, e.P.Image())
+	case e.IsLine() && e.P1 != nil && e.P2 != nil:
+		pts = append(pts, e.P1.Image(), e.P2.Image())
+	case e.IsLines():
+		for _, lp := range e.Lines {
+			pts = append(pts, lp.P1.Image(), lp.P2.Image())
+		}
+	}
+	return pts
 }
 
 // ---- pinned-line helpers --------------------------------------------------
@@ -549,23 +1014,90 @@ func cornerToSide(targetEdge string) string {
 // `targetEdge` so downstream consumers (Sweep, SpellLine) see a stable
 // identifier instead of an inferred compass direction.
 func manualEdgeToDeployLine(edge ManualEdge, targetEdge string, n int) DeployLine {
+	return lineFromPoints(edge.P1, edge.P2, targetEdge, n)
+}
+
+// lineFromPoints interpolates a deploy line between two points. It is the one
+// place the bot turns a pair of coordinates into the point list every consumer
+// reads, so a pinned edge and a formula-derived ground cannot drift apart in
+// spacing or anchor convention.
+func lineFromPoints(p1, p2 image.Point, side string, n int) DeployLine {
 	if n < 2 {
-		n = 15
+		n = linePoints
 	}
 	pts := make([]image.Point, n)
 	for i := 0; i < n; i++ {
 		t := float64(i) / float64(n-1)
 		pts[i] = image.Pt(
-			edge.P1.X+int(t*float64(edge.P2.X-edge.P1.X)),
-			edge.P1.Y+int(t*float64(edge.P2.Y-edge.P1.Y)),
+			p1.X+int(t*float64(p2.X-p1.X)),
+			p1.Y+int(t*float64(p2.Y-p1.Y)),
 		)
 	}
 	return DeployLine{
 		Points:  pts,
-		Side:    targetEdge,
+		Side:    side,
 		Anchor:  pts[len(pts)/2],
 		Outside: true,
 	}
+}
+
+// formulaGroundLine derives the deploy line from the strategy formula entry of
+// the FIRST troop unit the strategy deploys.
+//
+// First troop, not every unit: the troop phase runs first and a strategy
+// deploys its troops along one side, so that unit's entry is the authored
+// statement of where this battle's ground is. Spells, heroes and the siege
+// machine all have their own entries and their own (different) intent, so
+// folding them in would average away the line instead of reporting it.
+//
+// Returns ok=false when there is no formula, no troop unit, or the entry is a
+// point rather than a line — a point is a legitimate plan, but it is not a
+// deploy LINE and must not be published as one.
+func formulaGroundLine(f *formula.Formula, s *strategy.DynamicStrategy, corner string) (DeployLine, bool) {
+	if f == nil || s == nil {
+		return DeployLine{}, false
+	}
+	for _, phase := range s.Phases {
+		for _, unit := range phase.Units {
+			name := strings.ToLower(strings.TrimSpace(unit.Name))
+			if unit.Pattern == "Ability" || phase.Pattern == "Ability" {
+				continue
+			}
+			if isSpellStatic(name) || isHeroStatic(name) || isSiegeStatic(name) {
+				continue
+			}
+			entry, ok := f.LookUp(name)
+			if !ok {
+				continue
+			}
+			p1, p2, have := entryEndpoints(entry, 0)
+			if !have || p1 == p2 {
+				return DeployLine{}, false
+			}
+			return lineFromPoints(p1, p2, corner, linePoints), true
+		}
+	}
+	return DeployLine{}, false
+}
+
+// entryEndpoints returns the endpoints of a formula entry's idx'th segment.
+// Point entries yield the same point twice; entries with no coordinates yield
+// have=false so a caller can fall through instead of deploying at (0,0).
+func entryEndpoints(entry formula.UnitEntry, idx int) (image.Point, image.Point, bool) {
+	switch {
+	case entry.IsPoint() && entry.P != nil:
+		p := entry.P.Image()
+		return p, p, true
+	case entry.IsLine() && entry.P1 != nil && entry.P2 != nil:
+		return entry.P1.Image(), entry.P2.Image(), true
+	case entry.IsLines() && idx < len(entry.Lines):
+		// LinePoint carries coordinates by value, so "present" is decided by
+		// the entry actually listing a segment at this index, not by a nil
+		// check.
+		lp := entry.Lines[idx]
+		return lp.P1.Image(), lp.P2.Image(), true
+	}
+	return image.Point{}, image.Point{}, false
 }
 
 // applyCornerOverride is the orchestrator corner-mirror step. It exists
@@ -591,6 +1123,41 @@ func manualEdgeToDeployLine(edge ManualEdge, targetEdge string, n int) DeployLin
 // When the user did NOT pin the target, the legacy "clobber all 4
 // corners with the dynamic red-zone line" path is preserved so an
 // unpinned attack still has a sensible fallback.
+// applyCornerUnits resolves which unit coordinates apply to a corner, and
+// reports whether an authored override was used. Per-corner override (if
+// present) wins over the mirror: the user may have authored explicit coords for
+// this corner via `cmd/design_attack -corner BL` (which writes to
+// formula.corner_overrides.BL). That is more accurate than reflecting the BR
+// default, because different base geometries have different red-line positions
+// on each side, and a mirror across a non-symmetric base puts the line either
+// too close to the new side's red line (overlap) or too far from it.
+//
+// The merge is per-unit, and a typical override is PARTIAL: only the units that
+// differ from the mirrored default are re-pinned, and the rest fall through to
+// formula.units.
+//
+// When there is no override the BR default is mirrored around the formula's
+// authored 860×732 frame — the replacement for the older FourSides pattern, so
+// the user authors ONE attack and the orchestrator mirrors it per corner.
+func applyCornerUnits(f *formula.Formula, corner string) bool {
+	if f == nil {
+		return false
+	}
+	if cornerUnits, ok := f.CornerOverrides[corner]; ok {
+		merged := make(map[string]formula.UnitEntry, len(f.Units)+len(cornerUnits))
+		for k, v := range f.Units {
+			merged[k] = v
+		}
+		for k, v := range cornerUnits {
+			merged[k] = v
+		}
+		f.Units = merged
+		return true
+	}
+	f.MirrorForCorner(corner)
+	return false
+}
+
 func applyCornerOverride(pCfg *PrecisionConfig, deployLine DeployLine, redZoneValid bool, targetEdge string) {
 	if !redZoneValid || len(deployLine.Points) < 2 {
 		return

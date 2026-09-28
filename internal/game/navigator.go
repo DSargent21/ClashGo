@@ -268,26 +268,27 @@ func (n *Navigator) IdlePan() {
 	}
 	cx, cy := w/2, h/2
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	// Pan distance: 15-30% of screen width, mostly horizontal with an
-	// occasional small vertical nudge for organic drift.
-	dx := int(float64(w) * (0.15 + r.Float64()*0.15))
-	if r.Float64() < 0.5 {
+	// occasional small vertical nudge for organic drift. Drawn from the
+	// package generator: a per-call rand.New(rand.NewSource(now)) allocates a
+	// ~4.9 KB state array for four numbers.
+	dx := int(float64(w) * (0.15 + rand.Float64()*0.15))
+	if rand.Float64() < 0.5 {
 		dx = -dx
 	}
-	dy := int(float64(h) * r.Float64() * 0.04)
-	if r.Float64() < 0.5 {
+	dy := int(float64(h) * rand.Float64() * 0.04)
+	if rand.Float64() < 0.5 {
 		dy = -dy
 	}
 
-	panMs := 280 + r.Intn(120) // 280-400ms per leg
+	panMs := 280 + rand.Intn(120) // 280-400ms per leg
 	x1, y1 := cx-dx/2, cy-dy/2
 	x2, y2 := cx+dx/2, cy+dy/2
 
 	// Out: deliberate drag away.
 	_ = n.client.SwipeBezier(x1, y1, x2, y2, panMs)
 	// Micro-pause at the far end — eyes on the base, thumb hovering.
-	time.Sleep(time.Duration(180+r.Intn(121)) * time.Millisecond)
+	time.Sleep(time.Duration(180+rand.Intn(121)) * time.Millisecond)
 	// Back: along a fresh randomized arc.
 	_ = n.client.SwipeBezier(x2, y2, x1, y1, panMs)
 }

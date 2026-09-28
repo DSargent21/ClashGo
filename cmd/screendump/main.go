@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/adb"
+	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/internal/vision"
@@ -49,12 +50,34 @@ func main() {
 	dumpAnchors := flag.Bool("anchors", false, "dump every rule anchor under both geometry models (ref -> live coords + sampled RGB)")
 	buttons := flag.Bool("buttons", false, "locate the primary action button in the frame (vision.FindActionButton)")
 	buttonsFrac := flag.String("buttons-frac", "0.5,0.5,1.0,1.0", "-buttons search window as fx0,fy0,fx1,fy1 fractions of the frame")
-	k := flag.Float64("k", 0, "override the derived display scale (0 = derive from the screen diagonal); see docs/RESOLUTION.md for how to measure it")
+	k := flag.Float64("k", 0, "override the display scale (0 = the scale the bot pins in device.display_scale, as the bot runs it); see docs/RESOLUTION.md for how to measure it")
+	derive := flag.Bool("derive", false, "use the scale derived from the screen diagonal instead of the pinned one — the pre-pin behaviour, and what reproduces the derived-vs-pinned contrast in docs/RESOLUTION.md")
 	tap := flag.String("tap", "", "tap X,Y on the live device before capturing (drives the game by hand without the host adb binary)")
 	pinch := flag.String("pinch", "", "run the bot's native pinch gesture (out|in) before capturing")
 	settle := flag.Duration("settle", 1500*time.Millisecond, "wait after -tap/-pinch before capturing")
 	device := flag.String("device", "localhost:5555", "ADB device used for live capture and -tap")
 	flag.Parse()
+
+	// This is the measurement instrument, but its classifier verdict still has
+	// to describe the geometry the bot runs: the derived diagonal ratio is 2%
+	// off the pinned value at 1280x720 (1.3004 against 1.325), which is the
+	// difference between Battle and Unknown on real frames — see
+	// internal/game/testdata/corpus.json. -derive restores the old derivation
+	// for the comparison in docs/RESOLUTION.md.
+	displayScale, scaleSource, departsFromBot := config.ResolveDisplayScale(*k)
+	if *derive {
+		displayScale = 0
+		if pinned, _ := config.PinnedDisplayScale(); pinned > 0 {
+			scaleSource = fmt.Sprintf("-derive: derived from the screen diagonal; the bot runs the pinned %.4f", pinned)
+			departsFromBot = true
+		} else {
+			scaleSource = "-derive: derived from the screen diagonal, as the bot does too (nothing is pinned)"
+			departsFromBot = false
+		}
+	}
+	if departsFromBot {
+		fmt.Printf("WARNING: the bot does not run this geometry — %s\n", scaleSource)
+	}
 
 	tapX, tapY, doTap, err := parseTap(*tap)
 	if err != nil {
@@ -98,7 +121,7 @@ func main() {
 	}
 
 	for {
-		runOnce(client, *imgPath, *doOCR, *save, *dumpAnchors, *buttons, *buttonsFrac, *k, doTap, tapX, tapY, *settle)
+		runOnce(client, *imgPath, *doOCR, *save, *dumpAnchors, *buttons, *buttonsFrac, displayScale, scaleSource, doTap, tapX, tapY, *settle)
 		if !*watch {
 			return
 		}
@@ -164,7 +187,7 @@ func parseTap(s string) (int, int, bool, error) {
 	return x, y, true, nil
 }
 
-func runOnce(client *adb.Client, imgPath string, doOCR bool, savePath string, dumpAnchors, buttons bool, buttonsFrac string, displayScale float64, doTap bool, tapX, tapY int, settle time.Duration) {
+func runOnce(client *adb.Client, imgPath string, doOCR bool, savePath string, dumpAnchors, buttons bool, buttonsFrac string, displayScale float64, scaleSource string, doTap bool, tapX, tapY int, settle time.Duration) {
 	img := gocv.Mat{}
 	if imgPath != "" {
 		img = gocv.IMRead(imgPath, gocv.IMReadColor)
@@ -205,6 +228,10 @@ func runOnce(client *adb.Client, imgPath string, doOCR bool, savePath string, du
 	if displayScale > 0 {
 		cal.SetDisplayScale(displayScale)
 	}
+	// Printed after the frame is read, because the effective scale is only
+	// known once the screen size is: with nothing pinned, the calibration
+	// derives it, and that derived value is what -derive exposes.
+	fmt.Printf("display scale k=%.4f (%s)\n", cal.DisplayScale(), scaleSource)
 
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, NoColor: true}).Level(zerolog.ErrorLevel)
 	classifier := game.NewClassifier(cal, game.DefaultClassifierConfig(), logger)

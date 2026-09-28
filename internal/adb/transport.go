@@ -365,7 +365,17 @@ func (t *Transport) CaptureScreenPooled() (*[]byte, int, error) {
 	return bufPtr, total, nil
 }
 
+// ReturnBuffer hands a pooled capture buffer back. The slice is restored to
+// its full capacity first: a caller may be returning a resliced view (the
+// wedge-path normalize does), while the capture loop treats a pooled buffer's
+// LENGTH as its writable extent — handing back a short view would make the
+// next capture read into a truncated buffer and then "grow" it from that
+// smaller base.
 func ReturnBuffer(bufPtr *[]byte) {
+	if bufPtr == nil || cap(*bufPtr) == 0 {
+		return
+	}
+	*bufPtr = (*bufPtr)[:cap(*bufPtr)]
 	bufferPool.Put(bufPtr)
 }
 
@@ -397,7 +407,7 @@ func (t *Transport) captureViaShellLocked() (*[]byte, int, error) {
 			if err == io.EOF {
 				break
 			}
-			bufferPool.Put(bufPtr)
+			ReturnBuffer(bufPtr)
 			return nil, 0, err
 		}
 		if total == len(buf) {
@@ -407,24 +417,39 @@ func (t *Transport) captureViaShellLocked() (*[]byte, int, error) {
 			*bufPtr = buf
 		}
 	}
-	bufferPool.Put(bufPtr)
-	return normalizeShellScreencap(buf[:total])
+	// The frame is normalized IN PLACE inside the buffer this capture already
+	// read into, so ownership of that pooled buffer passes to the returned
+	// frame: the caller releases it with ReturnBuffer, never here.
+	return normalizeShellScreencap(bufPtr, total)
 }
 
-// normalizeShellScreencap converts the raw output of
-// `shell:...screencap` (line-prefixed by the wedge workaround, 16-byte
-// header: w, h, format, colorspace) into the 12-byte-header layout
-// (w, h, format) that CaptureToMat / the boot probe expect. Returns a
-// freshly allocated buffer — the pooled input is the caller's to
-// release. Any layout that does not match the expected shape errors
-// out rather than producing a corrupt frame.
-func normalizeShellScreencap(data []byte) (*[]byte, int, error) {
+// normalizeShellScreencap rewrites the raw output of `shell:...screencap`
+// (line-prefixed by the wedge workaround, 16-byte header: w, h, format,
+// colorspace) into the 12-byte-header layout (w, h, format) that CaptureToMat
+// and the boot probe expect.
+//
+// It normalizes IN the pooled buffer the capture already read into: the frame
+// is moved down to the buffer's start, which costs one overlapping memmove and
+// no allocation. The BlueStacks adbd wedge routes every capture down this path,
+// and the previous implementation allocated a fresh frame buffer per capture
+// (~2.5 MB at 860x732) purely to prepend a header — several megabytes of
+// garbage per second on the capture loop, for the length of a session.
+//
+// On success the buffer now holds the frame and the caller owns it (release it
+// with ReturnBuffer). Any layout that does not match the expected shape returns
+// an error with the buffer untouched, rather than producing a corrupt frame.
+func normalizeShellScreencap(bufPtr *[]byte, total int) (*[]byte, int, error) {
+	if bufPtr == nil || total <= 0 || total > cap(*bufPtr) {
+		return nil, 0, fmt.Errorf("screencap via shell: invalid capture buffer (total=%d)", total)
+	}
+	buf := (*bufPtr)[:total]
+
 	// Drop the "<prop value>\n" prefix line.
-	idx := bytes.IndexByte(data, '\n')
+	idx := bytes.IndexByte(buf, '\n')
 	if idx < 0 {
 		return nil, 0, errors.New("screencap via shell: missing prefix line")
 	}
-	payload := data[idx+1:]
+	payload := buf[idx+1:]
 	if len(payload) < 16 {
 		return nil, 0, fmt.Errorf("screencap via shell: payload too short (%d bytes)", len(payload))
 	}
@@ -437,11 +462,24 @@ func normalizeShellScreencap(data []byte) (*[]byte, int, error) {
 	if len(pixels) < w*h*4 {
 		return nil, 0, fmt.Errorf("screencap via shell: incomplete frame: got %d, want %d", len(pixels), w*h*4)
 	}
-	out := make([]byte, 12+len(pixels))
+	pixels = pixels[:w*h*4]
+
+	// The device's header is exactly 4 bytes longer than the one consumers
+	// read (it carries a colorspace field), so dropping those 4 bytes and
+	// moving the frame to the buffer start converts one layout into the other
+	// in place. copy() is memmove — the ranges overlap.
+	n := 12 + len(pixels)
+	out := buf[:n]
+	copy(out[12:], pixels)
 	binary.LittleEndian.PutUint32(out[0:4], uint32(w))
 	binary.LittleEndian.PutUint32(out[4:8], uint32(h))
-	copy(out[12:], pixels)
-	return &out, len(out), nil
+	// out[8:12] is the format field. No consumer reads it, and the direct path
+	// passes the device's raw value through, so zero it here to keep the two
+	// capture paths handing callers identical headers.
+	out[8], out[9], out[10], out[11] = 0, 0, 0, 0
+
+	*bufPtr = out
+	return bufPtr, n, nil
 }
 
 func (t *Transport) CaptureScreen() ([]byte, error) {
@@ -454,10 +492,9 @@ func (t *Transport) Tap(x, y int) error {
 }
 
 func (t *Transport) TapRandomized(x, y int) error {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	ox := r.Intn(11) - 5
-	oy := r.Intn(11) - 5
-	time.Sleep(time.Duration(50+r.Intn(151)) * time.Millisecond)
+	ox := rand.Intn(11) - 5
+	oy := rand.Intn(11) - 5
+	time.Sleep(time.Duration(50+rand.Intn(151)) * time.Millisecond)
 	return t.Tap(x+ox, y+oy)
 }
 

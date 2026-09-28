@@ -98,9 +98,121 @@ func (t *TapExecutor) DeployBudgetRemaining() time.Duration {
 	return rem
 }
 
-// TapSlot selects a slot with jitter for human-like behavior.
-func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) {
+// maxHeroSpotTaps is the hard ceiling on how many times the bot may tap a
+// hero's CARD per battle: one tap places the hero, one more activates its
+// ability. Never more. A tapped card is the only way to drop or trigger a
+// hero, so an uncapped retry/sweep/verify pass is exactly the "it keeps
+// tapping the Archer Queen even after the ability was used" symptom.
+const maxHeroSpotTaps = 2
 
+// The single hero placement sequence, shared by the hero phase and the sweep.
+// They had drifted into two near-identical copies (card-tap jitter 8 vs 4,
+// post-drop settle 350ms vs 300ms); the sweep's copy placed both heroes on its
+// first candidate in every battle while the hero phase's copy failed on every
+// ground it was given, so one of them was demonstrably wrong and nothing said
+// which. Both callers now use these.
+const (
+	heroCardTapJitter = 4
+	heroArmSettleMs   = 150
+	heroDropSettleMs  = 300
+)
+
+// maxHeroRearms is how many REPLACEMENT arm taps a hero may take when the game
+// did not register the previous placement attempt.
+//
+// A refused placement DESELECTS the card. Measured live 2026-09-27 (BottomLeft,
+// recorder frames): the card arms at ~48/255 brightness, the refused field tap
+// returns it to ~86, and the sweep's identical arm+drop 8 s later arms it again
+// (94) and places the hero. The comment this replaces claimed the game keeps the
+// card selected after a refusal, so the retry ladder fired its field taps at an
+// UNSELECTED card — which is why all eight hero drops on the four pinned sides
+// failed at every ground they were given, including points that bracketed the
+// sweep's successful one.
+//
+// A re-arm is not a second placement tap: the game never received the first one
+// as a card selection. It therefore does not consume the slot's placement
+// budget, which is what keeps the 2-tap contract (one placement, one ability,
+// never spam) intact. The physical ceiling per hero is
+// maxHeroSpotTaps + maxHeroRearms.
+const maxHeroRearms = 1
+
+// isHeroCardSlot reports whether a slot is a real hero card the cap applies
+// to. Fallback-labeled "heroes" are bonus troops wearing a stale manual
+// label and are tapped like troops.
+func isHeroCardSlot(slot *TrackedSlot) bool {
+	return slot != nil && slot.Category == "Hero" && !slot.FallbackLabeled
+}
+
+// consumeHeroSpotTap returns true when the slot still has a hero-card tap
+// left and burns one. Non-hero slots are always allowed and never counted.
+func (t *TapExecutor) consumeHeroSpotTap(slot *TrackedSlot, what string) bool {
+	if !isHeroCardSlot(slot) {
+		return true
+	}
+	if slot.SpotTaps >= maxHeroSpotTaps {
+		t.logger.Warn().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Int("spot_taps", slot.SpotTaps).
+			Str("attempted", what).
+			Msg("hero card tap budget exhausted (max 2: place + ability); refusing to tap the hero again")
+		return false
+	}
+	slot.SpotTaps++
+	return true
+}
+
+// HeroSpotTapBudgetLeft reports whether the hero slot may still take a card
+// tap. Non-hero slots always report true.
+func (t *TapExecutor) HeroSpotTapBudgetLeft(slot *TrackedSlot) bool {
+	if !isHeroCardSlot(slot) {
+		return true
+	}
+	return slot.SpotTaps < maxHeroSpotTaps
+}
+
+// TapSlot selects a slot with jitter for human-like behavior. It returns
+// false (and fires nothing) when the slot is a hero card whose 2-tap budget
+// is already spent, so callers can skip their follow-up field tap instead of
+// firing at empty ground.
+func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) bool {
+	if !t.consumeHeroSpotTap(slot, "select") {
+		return false
+	}
+	t.fireSlotTap(slot, jitterPx)
+	return true
+}
+
+// RearmSlot re-selects a hero's card after a placement the game did not
+// register, so the next field tap is aimed at a SELECTED card. See maxHeroRearms
+// for the measurement that makes this necessary. It deliberately does not consume
+// the placement budget: nothing was placed, so the hero still has one placement
+// and one ability to spend.
+func (t *TapExecutor) RearmSlot(slot *TrackedSlot) bool {
+	if !isHeroCardSlot(slot) {
+		return false
+	}
+	if slot.SpotRearms >= maxHeroRearms {
+		t.logger.Debug().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Int("rearms", slot.SpotRearms).
+			Msg("hero re-arm budget spent; not tapping the card again")
+		return false
+	}
+	slot.SpotRearms++
+	t.logger.Info().
+		Str("unit", slot.UnitName).
+		Int("x", slot.X).
+		Int("rearms", slot.SpotRearms).
+		Msg("re-arming the hero card: the previous placement was refused, which deselects the card, so re-tapping it is the only way the next field tap can land (no placement budget spent)")
+	t.fireSlotTap(slot, heroCardTapJitter)
+	return true
+}
+
+// fireSlotTap sends the card tap itself. Shared by TapSlot and RearmSlot so the
+// two can never drift apart in jitter or coordinates.
+func (t *TapExecutor) fireSlotTap(slot *TrackedSlot, jitterPx int) {
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
 		ptY -= int(t.cal.Length(25))
@@ -221,8 +333,14 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 	time.Sleep(120 * time.Millisecond)
 }
 
-// TapHeroAbility taps a hero slot for ability activation.
-func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
+// TapHeroAbility taps a hero slot for ability activation. It shares the same
+// 2-tap card budget as placement, so a hero that already spent both taps
+// (place + ability, or a placement retry) is never tapped a third time.
+// Returns false when the budget is spent and no tap was fired.
+func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) bool {
+	if !t.consumeHeroSpotTap(slot, "ability") {
+		return false
+	}
 
 	ptY := slot.Y
 	if strings.Contains(strings.ToLower(slot.UnitName), "warden") {
@@ -234,6 +352,7 @@ func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) {
 		Str("unit", slot.UnitName).
 		Msg("tapping hero ability")
 	t.client.TapFast(slot.X, ptY, 4.0)
+	return true
 }
 
 // WaitForSettle waits for deployment to settle.

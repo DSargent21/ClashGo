@@ -193,6 +193,17 @@ func ResolveSpellTargets(plan PhasePlan) []UnitPlan {
 	return spells
 }
 
+// ResolveAbilityTargets returns ability units from a phase plan.
+func ResolveAbilityTargets(plan PhasePlan) []UnitPlan {
+	var abilities []UnitPlan
+	for _, up := range plan.UnitPlans {
+		if up.IsAbility {
+			abilities = append(abilities, up)
+		}
+	}
+	return abilities
+}
+
 // ResolveTroopTargets returns non-hero, non-spell, non-ability, non-siege
 // units from a phase plan.
 //

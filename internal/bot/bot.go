@@ -37,6 +37,10 @@ type Bot struct {
 
 	classify func(gocv.Mat) (game.GameState, int)
 
+	// classifyGate decides whether the capture loop's frame needs the classifier
+	// at all (see classifygate.go). nil means "classify every frame".
+	classifyGate *classifyGate
+
 	attackExec *attack.Executor
 
 	ctx    context.Context
@@ -75,6 +79,10 @@ type Bot struct {
 	cpuSampler    *cpuSampler
 
 	dukePicksFile *os.File
+	// tapTrace, when non-nil, is the CLASHGO_TAP_TRACE sink: every tap the adb
+	// client fires is appended to its file as NDJSON for post-run tap-count
+	// audits. nil in every normal run.
+	tapTrace *adb.TapTrace
 	// armySlot is the 1-based saved-army recipe the strategy wants armed
 	// before attacking (strategy YAML army_slot; default 1). Loaded once
 	// at construction so clickSequence can select it before the strategy
@@ -114,8 +122,33 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		adb.WithJitterDelays(cfg.Debug.JitterDelays),
 		adb.WithMaxJitterPixels(cfg.Debug.MaxJitterPixels),
 		adb.WithJitterFraction(cfg.Debug.JitterFraction),
+		// Share one device capture between consumers reading the same screen. A
+		// capture is a guest `screencap` process, i.e. emulator work, and during
+		// a battle the frame loop, the deploy verifier and the battle-end watcher
+		// all read the same screen; see internal/adb/capturecache.go for the input
+		// barrier that keeps a post-tap check from seeing a pre-tap frame.
+		adb.WithCaptureCache(cfg.Performance.CaptureCacheTTL()),
 	)
 	client.DeviceID = cfg.Device.DeviceID
+
+	// CLASHGO_TAP_TRACE=<path> records every tap the client fires to an NDJSON
+	// file (one adb.TapEvent per line). The structured attack logs say which
+	// unit the bot meant to drop and whether its own verification passed; this
+	// says what actually reached the device, in order with timestamps — the
+	// only way to answer "is it spam-tapping the hero/siege slot?". Off unless
+	// the env var names a path, so normal runs install no hook at all.
+	var tapTrace *adb.TapTrace
+	if tracePath := os.Getenv("CLASHGO_TAP_TRACE"); tracePath != "" {
+		if tr, terr := adb.NewTapTrace(tracePath); terr != nil {
+			log.Warn().Err(terr).Str("path", tracePath).
+				Msg("tap trace requested but the file could not be opened; continuing without a tap trace")
+		} else {
+			tapTrace = tr
+			client.SetTapHook(tr.Record)
+			log.Info().Str("path", tracePath).
+				Msg("tap trace enabled: every tap is appended as NDJSON (CLASHGO_TAP_TRACE)")
+		}
+	}
 
 	// If any step below fails before the client is handed to the Bot,
 	// release the transport so a subsequent StartBot starts clean.
@@ -193,6 +226,29 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 				Msg("non-reference display geometry without a pinned display scale: the derived scale measured 1.9% off at " +
 					"1280x720, which loses single-pixel probes. Measure the live scale with cmd/resprobe and set device.display_scale, " +
 					"or run at 860x732. See docs/RESOLUTION.md.")
+		}
+	}
+
+	// Zero the guest's Android animation scales before the game starts, so the
+	// app picks them up on this launch. This is the one emulator lever in
+	// docs/PERFORMANCE.md the bot can pull itself: animated transitions are
+	// per-frame guest GPU and CPU work that the bot — reading the screen at 4 Hz
+	// and tapping at human pace — can never use, and they are also the reason a
+	// frame can be caught half-drawn. Best effort in every direction: a device
+	// that refuses the writes boots and runs exactly as it would have, and a
+	// device that already reads zero skips the round trips.
+	if cfg.Performance.TuneGuestAnimations {
+		switch {
+		case client.AnimationsAlreadyZeroed():
+			log.Info().Msg("guest animation scales already zeroed; skipping")
+		default:
+			applied, terr := client.TuneGuestAnimations()
+			if terr != nil {
+				log.Warn().Err(terr).Int("applied", applied).
+					Msg("could not zero every guest animation scale; continuing (this is an optimisation, not a precondition)")
+			} else {
+				log.Info().Int("applied", applied).Msg("zeroed guest animation scales (less guest GPU/CPU work per transition)")
+			}
 		}
 	}
 
@@ -289,6 +345,8 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		stuckTimeout:      35 * time.Second,
 		cpuSampler:        newCPUSampler(),
 		dukePicksFile:     dukePicksFile,
+		tapTrace:          tapTrace,
+		classifyGate:      newClassifyGate(cfg.Performance),
 	}
 
 	// Resolve the strategy's declared army slot once at boot so the
@@ -386,8 +444,12 @@ func (b *Bot) Stop() {
 	b.client.Close()
 	globalAsyncWriter.Close()
 	vision.CloseTemplateCache()
+	b.classifyGate.close()
 	if b.dukePicksFile != nil {
 		_ = b.dukePicksFile.Close()
+	}
+	if b.tapTrace != nil {
+		_ = b.tapTrace.Close()
 	}
 }
 
@@ -510,6 +572,25 @@ func (b *Bot) captureLoop() {
 			}()
 		}
 	}
+}
+
+// classifyFrame returns the state for a captured frame, letting the classify
+// gate reuse the previous verdict when the screen has not moved enough to
+// matter (see classifygate.go). Only the capture loop goes through it: the
+// attack sequence classifies the specific frames it captured, where reusing a
+// cached verdict would be answering a question nobody asked.
+func (b *Bot) classifyFrame(screen gocv.Mat) (game.GameState, int) {
+	if b.classifyGate == nil {
+		return b.classify(screen)
+	}
+	state, score, reused := b.classifyGate.classifyFor(screen, b.classify)
+	if reused {
+		b.logger.Trace().
+			Str("state", state.String()).
+			Float64("changed_pct", b.classifyGate.stats().LastChangePct).
+			Msg("frame unchanged; reusing previous classification")
+	}
+	return state, score
 }
 
 // recordActivity marks the bot as having taken a meaningful action.
@@ -694,6 +775,24 @@ func (b *Bot) recoverEmulator() {
 	b.restartGame()
 }
 
+// connectionLostTryAgain returns the live tap point for the lost-connection
+// dialog's TRY AGAIN button.
+//
+// The dialog's panel is drawn at a fixed pixel size rather than scaling with
+// the display scale k, so the reference measurement does not survive a
+// geometry change the way HUD chrome does: at 1280x720 the reference point
+// (ref 300,478) maps to live (468,508), which is 34 px below the button — the
+// dialog renders ~240 live px tall where the k map predicts ~348. The 720p
+// coordinate is measured off the live dialog (ref 303,451 -> live (472,473),
+// a glyph stroke inside the TRY AGAIN label); see
+// corpus/connection_lost_720p.png and the StateConnectionLost rule.
+func (b *Bot) connectionLostTryAgain() (int, int) {
+	if b.cal.IsReferenceGeometry() {
+		return b.cal.Centre(300, 478)
+	}
+	return b.cal.Centre(303, 451)
+}
+
 func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, captureMs time.Duration) {
 	if err != nil {
 		gc.RecordCaptureError()
@@ -706,7 +805,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
-	state, score := b.classify(screen)
+	state, score := b.classifyFrame(screen)
 
 	gc.UpdateScreen(screen, captureMs)
 
@@ -828,8 +927,9 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	// RETURN HOME button satisfied that rule's template-only match —
 	// and the bot tapped result-screen coordinates forever (observed
 	// live: 18:26 boot → 18:28 ReturnHome fallback → 18:33 emergency
-	// restart loop). Tapping TRY AGAIN (ref 300,478) makes the game
-	// reconnect in place. Like the splash dismissal below, activity is
+	// restart loop). Tapping TRY AGAIN (see connectionLostTryAgain for the
+	// per-geometry coordinate) makes the game reconnect in place. Like the
+	// splash dismissal below, activity is
 	// deliberately NOT recorded: the adb tap reports success even when
 	// the dialog survives, and the stuck-watchdog must still fire if
 	// reconnect keeps failing.
@@ -839,7 +939,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			go func() {
 				defer b.connLostDismissInFlight.Store(false)
 				time.Sleep(800 * time.Millisecond)
-				x, y := b.cal.Centre(300, 478)
+				x, y := b.connectionLostTryAgain()
 				if err := b.client.TapRandomized(x, y); err != nil {
 					b.logger.Warn().Err(err).Msg("connection-lost dismiss tap failed; will retry on next detection")
 					return
@@ -984,25 +1084,15 @@ func (b *Bot) isOrange(screen gocv.Mat, x, y int) bool {
 }
 
 // buttonROI returns the normalized (reference-resolution) region of interest
-// for a known UI button template. Centralized here so the wait-for-button and
-// find-and-click paths share one definition and cannot drift apart.
+// for a known UI button template. The table lives in the game package so the
+// classifier's template search and this click path share one definition and
+// cannot drift apart; a template with no authored window searches the whole
+// reference frame, which is the historical behaviour.
 func (b *Bot) buttonROI(templateName string) image.Rectangle {
-	switch templateName {
-	case "btn_attack":
-		return image.Rect(0, 500, 300, 732)
-	case "btn_find_match":
-		return image.Rect(50, 400, 400, 600)
-	case "btn_battle":
-		return image.Rect(300, 150, 860, 732)
-	case "btn_army_arrow":
-		return image.Rect(350, 100, 700, 300)
-	case "btn_army_1":
-		return image.Rect(400, 150, 650, 350)
-	case "btn_next":
-		return image.Rect(600, 450, 860, 732)
-	default:
-		return image.Rect(0, 0, 860, 732)
+	if r, ok := game.ButtonROIBounds(templateName); ok {
+		return r
 	}
+	return game.ReferenceFrame()
 }
 
 func (b *Bot) templateMatch(screen gocv.Mat, name string, threshold float32) bool {
@@ -1222,6 +1312,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		// zero) value is the true result. Every attempt overwrites
 		// last_battle_result.png with the freshest frame so the saved
 		// artifact matches the final parse.
+		//
+		// Which reads qualify is decided by resultSettle
+		// (internal/bot/result_settle.go): the panel must STOP CHANGING,
+		// not merely show a number. The old "any field non-zero" shortcut
+		// accepted the star emblem's paint frame — seconds before the loot
+		// and bonus counters ran — and locked in a 2-star victory as 0
+		// loot / 0 bonus.
 		b.client.JitteredSleep(1800 * time.Millisecond)
 
 		// Authoritative star signal: the destruction percentage the battle
@@ -1235,44 +1332,56 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 		var parsedResult game.BattleResult
 		parsedOK := false
-		prevHash := uint64(0)
-		for attempt := 0; attempt < 3 && !parsedOK; attempt++ {
+		for settle, attempt := newResultSettle(b.logger), 0; attempt < resultSettleAttempts && !parsedOK; attempt++ {
 			resultScreen, err := b.client.CaptureToMat()
 			if err != nil {
 				b.logger.Warn().Err(err).Msg("battle result capture failed; retrying")
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(resultSettleCapturePause)
 				continue
 			}
-			gocv.IMWrite(paths.ResolveConfig("last_battle_result.png"), resultScreen)
-			b.logger.Info().Msg("saved battle result screenshot to last_battle_result.png")
 
 			lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
 			res, rerr := lootRec.ReadBattleResult(resultScreen)
 			hash := resultPanelHash(resultScreen, b.cal)
+
+			var accepted game.BattleResult
+			settled := false
+			if rerr == nil {
+				accepted, settled = settle.observe(hash, res, time.Now())
+			}
+
+			// Save the artifact only for a frame worth keeping: the read that was
+			// accepted, the frame that explains a parse failure, or the last
+			// attempt (so a panel that never settled still leaves evidence).
+			// Writing every attempt meant a full-frame PNG encode plus a disk
+			// write on each of up to resultSettleAttempts passes, seconds apart,
+			// for a file each one overwrote.
+			if keepResultFrame(attempt, resultSettleAttempts-1, settled, rerr != nil) {
+				b.saveResultFrame(resultScreen)
+			}
+
 			resultScreen.Close()
 			lootRec.Close()
 
 			if rerr != nil {
 				b.logger.Warn().Err(rerr).Msg("battle result parse error; retrying")
-				time.Sleep(800 * time.Millisecond)
+				time.Sleep(resultSettleParsePause)
 				continue
 			}
 
-			settled := hash != 0 && hash == prevHash
-			if res.Stars > 0 || res.Loot.Gold > 0 || res.Loot.Elixir > 0 || res.Loot.DarkElixir > 0 || settled {
-				parsedResult = res
+			if settled {
+				parsedResult = accepted
 				parsedOK = true
-				if settled {
-					b.logger.Debug().Msg("battle result accepted: result panel stable across captures")
-				} else {
-					b.logger.Debug().Msg("battle result accepted (non-empty read)")
-				}
 				break
 			}
 
-			prevHash = hash
-			b.logger.Warn().Int("attempt", attempt).Msg("battle result read empty and panel still changing; overlay animating, retrying...")
-			time.Sleep(1000 * time.Millisecond)
+			b.logger.Warn().
+				Int("attempt", attempt).
+				Int("stars", res.Stars).
+				Int("gold", res.Loot.Gold).
+				Int("bonus_gold", res.Bonus.Gold).
+				Msg("battle result panel still animating; waiting for the loot and bonus counters to stop, retrying...")
+			time.Sleep(resultSettleAnimatingPause)
 		}
 
 		if parsedOK {
@@ -2036,7 +2145,7 @@ func (b *Bot) dismissInterruptions() {
 		b.client.TapRandomized(px, py)
 	case game.StateConnectionLost:
 		// Connection-lost dialog — tap TRY AGAIN to reconnect in place.
-		px, py := b.cal.Centre(300, 478)
+		px, py := b.connectionLostTryAgain()
 		b.client.TapRandomized(px, py)
 	case game.StateConfirmExit:
 		// Quit-confirm dialog — tap Cancel to stay in the game.
@@ -2193,7 +2302,7 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 }
 
 func (b *Bot) Stats() BotStats {
-	return BotStats{
+	s := BotStats{
 		AttacksCompleted: b.attackCount.Load(),
 		SearchSkips:      b.skipsCount.Load(),
 		TotalGold:        b.totalGold.Load(),
@@ -2208,6 +2317,20 @@ func (b *Bot) Stats() BotStats {
 		CPUTimeSec:       CPUTime().Seconds(),
 		CPUCores:         b.cpuSampler.Usage(),
 	}
+	// The gate's numbers are how a user confirms the optimisation is working on
+	// their machine: classify_reused climbing while last_frame_change_pct sits
+	// under the threshold means it is; classify_reused stuck at 0 means the
+	// threshold is below this device's animation floor and can be raised.
+	if g := b.classifyGate; g != nil {
+		gs := g.stats()
+		s.ClassifyRan = gs.Classifies
+		s.ClassifyReused = gs.Reused
+		s.LastFrameChangePct = gs.LastChangePct
+		s.ClassifyGateEnabled = gs.Enabled
+		s.ClassifyThresholdPct = gs.Threshold
+	}
+	s.CaptureCache = b.client.CaptureCache()
+	return s
 }
 
 type BotStats struct {
@@ -2226,6 +2349,23 @@ type BotStats struct {
 	CPUTimeSec float64 `json:"cpu_time_sec"`
 
 	CPUCores float64 `json:"cpu_cores"`
+
+	// Classify-gate observability (see classifygate.go): how many frames were
+	// classified, how many reused the previous verdict, and how much the last
+	// frame changed. These are how a user verifies the setting on their device.
+	ClassifyRan          int64   `json:"classify_ran"`
+	ClassifyReused       int64   `json:"classify_reused"`
+	LastFrameChangePct   float64 `json:"last_frame_change_pct"`
+	ClassifyGateEnabled  bool    `json:"classify_gate_enabled"`
+	ClassifyThresholdPct float64 `json:"classify_threshold_pct"`
+
+	// Capture-cache observability (see internal/adb/capturecache.go): captures
+	// the emulator was not asked to take because another consumer had just read
+	// the same screen, and how many requests the input barrier refused (a frame
+	// older than the bot's last tap must never answer a post-tap check). Hits
+	// climbing means the emulator is doing less; hits at zero with the cache
+	// enabled means nothing captures concurrently on this workload.
+	CaptureCache adb.CaptureCacheStats `json:"capture_cache"`
 }
 
 type AttackReport struct {

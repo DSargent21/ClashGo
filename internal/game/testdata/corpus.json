@@ -1,0 +1,72 @@
+{
+  "comment": "Real frames captured from the emulator, with the state the bot must report for each. Consumed by internal/game/corpus_test.go, which explains why these exist and what a mismatch means. Always keep the files in sync with the corpus/ directory: a fixture nobody asserts on is dead weight.",
+  "display_scale": 1.325,
+  "scale_comment": "The scale the bot pins in device.display_scale for this device. It applies only to the 1280x720 fixtures: the 860x732 reference frames are their own identity geometry, and pinning a scale onto them would resize the reference template PNGs during the template sweep and break every template-gated rule. The scale is per-fixture load-bearing: at 1280x720 the calibration's derived diagonal ratio is 1.3004, 2% away, which moves a mapped probe by up to 30px and flips three of the battle fixtures between their correct state and Unknown.",
+  "frames": [
+    {
+      "file": "corpus/village_720p.png",
+      "state": "MainVillage",
+      "note": "The village, the state the bot spends most of its time in and the one the whole pre-battle chain has to recognise. Live-verified at this geometry: the two top-right storage probes read (1240,46) and (1240,127) against mapped (1241,46) and (1241,124), which is also the measurement that showed the vertical scale here is 1.325 rather than the 0.9836 the legacy formula path used."
+    },
+    {
+      "file": "corpus/village_alt_720p.png",
+      "state": "MainVillage",
+      "note": "A village frame from a later session, kept alongside the first so a rule cannot be tuned to one capture's exact scenery: the two differ in buildings, camera offset and time of day."
+    },
+    {
+      "file": "corpus/boot_logo_720p.png",
+      "state": "Logo",
+      "note": "The CoC castle logo, which sits static for one to three minutes while the session connects. It must read as Logo rather than the village: an unrecognised boot screen used to make the stuck-watchdog force-restart the game in a loop."
+    },
+    {
+      "file": "corpus/battle_pre_deploy_720p.png",
+      "state": "Battle",
+      "note": "Pre-deploy battle view: 'Battle ends in' countdown (2:08), Available Loot panel, End Battle button, troop bar. The attack timer is already running, so Battle is the correct state; this frame is the one that exposed the display-scale trap, because it reads FindMatch when the derived scale is used instead of the pinned one."
+    },
+    {
+      "file": "corpus/battle_deploy_720p.png",
+      "state": "Battle",
+      "note": "Second pre-deploy battle view from a different raid (2:39 countdown, another clan). Kept alongside the first because both flip state under the wrong scale, so a harness regression cannot hide in a single fixture."
+    },
+    {
+      "file": "corpus/battle_post_deploy_720p.png",
+      "state": "Battle",
+      "note": "Captured by the orchestrator's post-deploy evidence capture during a real attack: army deployed, battle still running. This is the frame the bot writes next to its tap overlay, so it is the frame a human reviews after a bad attack."
+    },
+    {
+      "file": "corpus/battle_mid_720p.png",
+      "state": "Battle",
+      "note": "Mid-battle frame (battle clock at 2:13, damage panel reading 25%, army fighting) taken during the 17:08 live attack. Unlike the three pre-deploy frames this one carries the bottom-right damage panel, which is what the stall timer reads: the panel's percent_roi was mapped by the raw physical/reference ratio and landed 50 px BELOW the digits, so this frame's destruction read as 0 for the whole battle while the game displayed 25%."
+    },
+    {
+      "file": "corpus/connection_lost_720p.png",
+      "state": "ConnectionLost",
+      "note": "The in-game lost-connection dialog (TRY AGAIN) over a dimmed battle HUD, captured at the 18:03 battle-end timeout. It classified as Unknown because the rule's reference probes were measured on a dialog that does not scale with k; the wait loop then sat out its full deadline on a battle whose result could never arrive. This is also the frame the TRY AGAIN tap coordinate is measured from."
+    },
+    {
+      "file": "corpus/result_overlay_720p.png",
+      "state": "BattleEnd",
+      "note": "Victory overlay (70% damage, RETURN HOME). The battle-end wait returns on exactly this state, so a regression here wedges a session on the results screen instead of returning home."
+    },
+    {
+      "file": "corpus/village_star_bonus_720p.png",
+      "state": "NewsSplash",
+      "note": "Star Bonus reward popup over the dimmed village. It must read as a dismissable splash rather than the village itself: the bot has to tap through it, and it is dimmed enough that every bright village probe reads ~69% of its expected value."
+    },
+    {
+      "file": "screen_victory.png",
+      "state": "BattleEnd",
+      "note": "The reference-geometry (860x732) victory overlay that loot.go's recognition fixtures also use, with a DIFFERENT reward-row layout from the 720p capture above. Both must classify: overlay panels reflow with their content, so no single affine law maps their internals, and the fixes have to hold at both geometries."
+    },
+    {
+      "file": "screen_defeat.png",
+      "state": "BattleEnd",
+      "note": "Reference-geometry defeat overlay. Guards the reference path, which is the geometry the 5/5-attack live run was validated at, against changes made for 16:9."
+    },
+    {
+      "file": "screen_ocr.png",
+      "state": "Battle",
+      "note": "Reference-geometry battle frame, also used by the loot OCR fixtures. The reference Battle rule carries authored MinPass 1 (the escalation to 2 probes applies only off the reference geometry), so this fixture pins that the reference bar still fires."
+    }
+  ]
+}

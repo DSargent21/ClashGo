@@ -1,6 +1,7 @@
 package attack
 
 import (
+	"image"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -36,6 +37,7 @@ type Verifier struct {
 	w, h         int
 	config       VerifyConfig
 	troopCounter *TroopCounter
+	zone         RedZone
 	logger       zerolog.Logger
 }
 
@@ -116,12 +118,20 @@ func (v *Verifier) VerifyAll() int {
 }
 
 // checkRemainingSlots identifies slots that still have content.
+//
+// Hero slots ARE included: a hero whose main drop AND sweep retry both
+// failed used to vanish from the report (live, valk_run6: Grand Warden
+// failed both and the verifier still announced "all units successfully
+// deployed" because checkRemainingSlots filtered the Hero category out).
+// Heroes get their own retryDeploy branch below instead of the troop
+// tap-spam, so including them here is safe and makes the returned count
+// tell the truth.
 func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 	var remaining []*TrackedSlot
 
 	for _, slot := range v.slotManager.GetAllSlots() {
 
-		if slot.State == SlotDeployed || slot.State == SlotFailed {
+		if slot.State == SlotDeployed {
 			continue
 		}
 
@@ -133,6 +143,23 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 		}
 
 		if ratio < v.config.AbilityThreshold {
+			if slot.Category == "Hero" {
+				// A hero card in cooldown silhouette reads far below the
+				// ability-icon band — live run5 2026-09-26: the Barbarian King
+				// the main pass deployed (post_ratio 0.67 right after the
+				// displaced retry) had cooled to <0.4 by verify time, was
+				// skipped here at Debug level, and the log never recorded its
+				// deployment anywhere. Silence is the failure mode attack_report
+				// reads as UNVERIFIED, so a cooled hero is confirmed, logged,
+				// and marked deployed.
+				v.logger.Info().
+					Int("x", slot.X).
+					Float64("ratio", ratio).
+					Str("unit", slot.UnitName).
+					Msg("hero retry: slot shows cooldown silhouette; deployed")
+				v.slotManager.MarkDeployed(slot.UnitName)
+				continue
+			}
 			v.logger.Debug().
 				Int("x", slot.X).
 				Float64("ratio", ratio).
@@ -141,7 +168,24 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 			continue
 		}
 
-		if slot.Category == "Troop" || slot.Category == "Spell" || slot.Category == "CC" || slot.Category == "Event" {
+		// A slot the sweep gave up on is NOT a deployed slot, and skipping it
+		// here is what let a run with troops still on the bar report
+		// "Deploy Health: SUCCESS (100% Deployed)": the card had been marked
+		// failed (or written off as spent) by the sweep, so the verifier never
+		// looked at it again and the surviving troops counted as nothing. A
+		// failed slot that still shows content is exactly the case this count
+		// exists to report, and the retry pass below gets another chance at it.
+		if slot.State == SlotFailed {
+			v.logger.Warn().
+				Int("x", slot.X).
+				Str("unit", slot.UnitName).
+				Float64("ratio", ratio).
+				Msg("slot was reported failed but still shows content; counting it as undeployed")
+			remaining = append(remaining, slot)
+			continue
+		}
+
+		if slot.Category == "Troop" || slot.Category == "Spell" || slot.Category == "CC" || slot.Category == "Event" || slot.Category == "Hero" {
 			remaining = append(remaining, slot)
 		}
 	}
@@ -165,6 +209,15 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 	const retryBatches = 2
 
+	// Heroes get the hero-shaped retry: one tight tap cluster on the
+	// deploy line, delta-verified — never the troop triple-tap spam,
+	// which spreads a single hero across the whole line (the exact
+	// misuse the sweeper's deployHeroSlotOnce docs call out).
+	if v.isHeroShapedRetry(slot) {
+		v.retryHeroSlot(slot)
+		return
+	}
+
 	edge, ok := v.pCfg.Edges[v.targetEdge]
 	if !ok {
 		v.logger.Warn().Str("unit", slot.UnitName).Msg("retry: no edge configured; marking failed")
@@ -175,20 +228,25 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 	p1, p2 := scaled.P1, scaled.P2
 
 	for batch := 0; batch < retryBatches; batch++ {
-		live, empty := v.verifierLiveCount(slot)
-		if live <= 0 && empty {
+		live, trusted, empty := v.verifierLiveCount(slot)
+		// "Empty" needs the count read and the visual check to agree, or the
+		// visual check alone when no card in the bar is readable. A blind zero
+		// must not be able to mark a slot deployed.
+		if empty && (!trusted || live <= 0) {
 			v.logger.Info().
 				Int("x", slot.X).
 				Str("unit", slot.UnitName).
 				Int("batch", batch).
+				Bool("count_read_trusted", trusted).
 				Msg("retry: slot already empty on fresh capture; marking deployed")
 			v.slotManager.MarkDeployed(slot.UnitName)
 			return
 		}
 		count := live
-		if count <= 0 {
-
-			count = 8
+		if !trusted || count <= 0 {
+			// No measured count: fire a bounded blind batch, never a
+			// fabricated number. The reconcile below is what drains the card.
+			count = blindBatchTaps
 		} else if count >= 6 {
 			count++
 		}
@@ -224,13 +282,14 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 		}
 
 		v.executor.HumanSleep(150, 30)
-		liveAfter, emptyAfter := v.verifierLiveCount(slot)
-		if liveAfter <= 0 && emptyAfter {
+		liveAfter, trustedAfter, emptyAfter := v.verifierLiveCount(slot)
+		if emptyAfter && (!trustedAfter || liveAfter <= 0) {
 			v.logger.Info().
 				Int("x", slot.X).
 				Str("unit", slot.UnitName).
 				Int("batch", batch).
 				Int("fired", count).
+				Bool("count_read_trusted", trustedAfter).
 				Msg("retry: reconciled slot empty; deploy complete")
 			v.slotManager.MarkDeployed(slot.UnitName)
 			return
@@ -245,10 +304,127 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 	v.slotManager.MarkFailed(slot.UnitName)
 }
 
+// isHeroShapedRetry reports whether a slot takes the single-hero retry
+// path. A fallback-labeled "hero" is a bonus troop wearing a stale manual
+// label — it must go through the troop retry like the sweeper treats it.
+func (v *Verifier) isHeroShapedRetry(slot *TrackedSlot) bool {
+	return slot.Category == "Hero" && !slot.FallbackLabeled
+}
+
+// retryHeroSlot re-drops a hero the verifier found still on the bar,
+// mirroring deploySingleHero / deployHeroSlotOnce: select the slot, drop a
+// tight cluster of 3 jittered taps on a random deploy-line point, settle,
+// then delta-verify (pre captured BEFORE the selection tap so the
+// highlight does not poison the baseline).
+func (v *Verifier) retryHeroSlot(slot *TrackedSlot) {
+	if len(deployLinePoints(v)) == 0 {
+		// No deploy line available (no red zone, no pin): the drop below
+		// still fires at the screen centre so the hero gets an attempt,
+		// but it cannot be delta-verified meaningfully against a line.
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("hero retry: no deploy line; firing centre drop")
+	}
+
+	// 2-tap ceiling: never tap a hero card a third time. If the budget is
+	// spent the hero was already given its placement and ability taps, and a
+	// further tap can only re-select the card.
+	if !v.executor.HeroSpotTapBudgetLeft(slot) {
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("hero retry: card tap budget exhausted (place + ability already used); leaving the slot as-is")
+		return
+	}
+
+	preRatio, capturedPre := v.executor.CaptureSettledSlotRatio(v.w, slot)
+
+	pt := heroRetryPoint(v)
+	if !v.executor.TapSlot(slot, 4) {
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("hero retry: card tap budget exhausted; not firing the drop")
+		return
+	}
+	v.executor.HumanSleep(150, 30)
+
+	// Single tap — one tap deploys a hero; extra taps are bot-signature.
+	j1 := v.executor.addJitter(pt, 3)
+	v.executor.client.TapFast(j1.X, j1.Y, 12.0)
+
+	v.executor.HumanSleep(300, 40)
+
+	postRatio, capturedPost := v.executor.CaptureSettledSlotRatio(v.w, slot)
+	if !capturedPost {
+		v.logger.Info().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("hero retry: capture unavailable; trusting tap")
+		v.slotManager.MarkDeployed(slot.UnitName)
+		return
+	}
+
+	if heroPlaced(preRatio, postRatio, true) {
+		v.logger.Info().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Float64("pre_ratio", preRatio).
+			Float64("post_ratio", postRatio).
+			Msg("hero retry: visibly transitioned to cooldown; deployed")
+		v.slotManager.MarkDeployed(slot.UnitName)
+		return
+	}
+
+	v.logger.Warn().
+		Int("x", slot.X).
+		Int("slot_y", slot.Y).
+		Int("screen_w", v.w).
+		Int("probe_half", SlotProbeSize(v.w)).
+		Str("unit", slot.UnitName).
+		Float64("pre_ratio", preRatio).
+		Float64("post_ratio", postRatio).
+		Bool("captured_pre", capturedPre).
+		Msg("hero retry did not visibly transition; keeping the failure in the report")
+	v.slotManager.MarkFailed(slot.UnitName)
+}
+
+// SetRedZone wires the battle's detected red no-deploy line so a verifier hero
+// retry aims at ground the game accepts (see hero_ground.go). A zero-value zone
+// is legal and means "unchecked".
+func (v *Verifier) SetRedZone(z RedZone) {
+	v.zone = z
+}
+
+// heroRetryPoint picks the ground the verifier's hero retry drops on: the
+// zone-filtered deploy line (the same contract as the sweeper's hero retry),
+// falling back to the screen centre when no line is available.
+func heroRetryPoint(v *Verifier) image.Point {
+	if cands := heroGroundCandidates(deployLinePoints(v), v.h, v.zone); len(cands) > 0 {
+		return cands[0]
+	}
+	return image.Pt(v.w/2, v.h/2)
+}
+
+// deployLinePoints resolves the battle's deploy line for the verifier.
+// The verifier does not carry a DeployLine; the sweeper's line lives on
+// the sweeper. Instead the verifier reconstructs the same ground from the
+// pCfg edge (the same ScaleEdge source retryDeploy already uses).
+func deployLinePoints(v *Verifier) []image.Point {
+	edge, ok := v.pCfg.Edges[v.targetEdge]
+	if !ok {
+		return nil
+	}
+	scaled := ScaleEdge(edge, v.pCfg.Width, v.pCfg.Height, v.w, v.h)
+	return []image.Point{scaled.P1, scaled.P2}
+}
+
 // verifierLiveCount is a thin shim to the shared captureSlotLiveCount
 // helper in live_count.go. Same semantics as HeroManager / Sweeper's
 // shims so the reconcile contract is identical across phases.
-func (v *Verifier) verifierLiveCount(slot *TrackedSlot) (int, bool) {
+// Returns (count, trusted, visuallyEmpty).
+func (v *Verifier) verifierLiveCount(slot *TrackedSlot) (int, bool, bool) {
 	return captureSlotLiveCount(
 		v.executor,
 		v.troopCounter,

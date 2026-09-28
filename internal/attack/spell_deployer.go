@@ -7,10 +7,49 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/attacklog"
 	"github.com/Ducky705/ClashGO/pkg/formula"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
 )
+
+// minCastSpacingRef is how far apart two casts of the same spell must land
+// before they are working adjacent ground instead of the same ground, in
+// reference px. It is attacklog.MinCastSpacing (half a cast's reach, the same
+// threshold the post-run report uses to call a pair OVERLAPPED) divided back by
+// the 720p display scale, so the deployer and the tool that measures the
+// deployer hold the same number. Reference px rather than live px because the
+// game renders at one uniform display scale and cal.Length converts this to
+// whatever the device actually needs.
+//
+// The defect this exists to prevent, measured from a real 1280x720 run: five
+// Ice Spells tapped 11 px apart, all five inside a 51x42 px box, because
+// distributeAlong divided whatever line it was handed into `count` equal taps —
+// and the authored ice line is 91 live px long. One freeze landed five times.
+var minCastSpacingRef = attacklog.MinCastSpacing / 1.325
+
+// ringRoundPadPx widens the ring by one pixel-ish per cast so that the exact
+// chord arithmetic survives being stored as integer tap coordinates. A ring
+// sized for a chord of exactly minStep measures up to ~1.4 px short (each of a
+// cast's two coordinates truncates by up to 1 px), which is the whole margin
+// between "spread" and "stacked" by the yardstick this rule exists to satisfy.
+const ringRoundPadPx = 2.0
+
+// maxCastRingRadiusRef is the hard ceiling on how far a cast ring may push its
+// casts from the point it was drawn on, in reference px (~4 village tiles at the
+// reference geometry).
+//
+// It exists to stop a pathological cast count from flinging spells across the
+// village — NOT to trade spacing for compactness, which is what the previous 45
+// made it do. The radius a ring needs is minStep/(2·sin(π/n)); at 8 casts, which
+// a real army carries, that is 63 reference px, so the 45 ceiling clamped a
+// correctly-sized ring down into overlap and the deployer committed the very
+// defect the spacing rule exists to prevent. The comment that stood here claimed
+// the cap "only bites for a formula that asks for a dozen-odd casts"; the live
+// run that measured a closest pair of 41 px against a 50 px bar was an Ice Spell
+// ring of 8. It is raised so it no longer bites in practice (120 reference px
+// carries 16 casts at 50 px spacing) and it now logs when it does.
+const maxCastRingRadiusRef = 120.0
 
 // SpellDeployer handles spell-specific deployment logic.
 type SpellDeployer struct {
@@ -25,6 +64,15 @@ type SpellDeployer struct {
 	// 5. Counts are best-effort: OCR may fail, in which case the legacy
 	// default applies.
 	slotCounts map[int]int
+	// pinnedGround is true when this side's spell pins are the authoritative
+	// geometry (see SetPinnedGround).
+	pinnedGround bool
+	// firePass counts re-fires of the same spell within one reconcile: the
+	// first deployment is pass 0, each reconcile re-fire is one more. It is
+	// deliberately per-unit and short-lived (incremented around the recursive
+	// DeploySpell call), because it describes "this cast must not repeat the
+	// last one", not a property of the deployer.
+	firePass int
 	// troopCounter live-OCRs the count above a spell card. When set,
 	// VerifyAndReconcile can re-read the count after deployment and
 	// re-fire the difference until the slot is empty or retries run out.
@@ -67,15 +115,17 @@ func (sd *SpellDeployer) SetCounter(counter *TroopCounter, barY int) {
 
 // liveCountAndEmpty reads the current state of the spell's card using the
 // shared captureSlotLiveCount helper (one screencap → OCR count + visual
-// empty check). Returns (count, empty, ok); ok is false when capture or
-// OCR is unavailable — callers must treat "unknown" differently from
-// "confirmed empty".
+// empty check). Returns (count, trusted, visuallyEmpty).
+//
+// `trusted` is true only when the count is a real measurement — either a
+// positive number read off the card, or a card that shows no number while
+// other cards on the bar still do. Callers must treat an untrusted zero as
+// "unknown", never as "the card is spent".
 func (sd *SpellDeployer) liveCountAndEmpty(slot *TrackedSlot) (int, bool, bool) {
 	if sd.troopCounter == nil || sd.executor == nil {
 		return 0, false, false
 	}
-	count, empty := captureSlotLiveCount(sd.executor, sd.troopCounter, slot, sd.barY, sd.w, sd.h)
-	return count, empty, true
+	return captureSlotLiveCount(sd.executor, sd.troopCounter, slot, sd.barY, sd.w, sd.h)
 }
 
 // VerifyAndReconcile re-reads the spell's slot state after deployment and
@@ -104,21 +154,29 @@ func (sd *SpellDeployer) VerifyAndReconcile(unit strategy.Unit, slot *TrackedSlo
 			return totalFired, false
 		}
 		sd.executor.client.HumanSleep(reconcileSettleMs, 50)
-		remaining, empty, ok := sd.liveCountAndEmpty(slot)
-		if !ok {
-			sd.logger.Debug().
-				Str("unit", unit.Name).
-				Int("round", round+1).
-				Msg("reconcile: capture/OCR unavailable; stopping spell reconcile")
-			return totalFired, false
-		}
-		if remaining <= 0 && empty {
+		remaining, trusted, empty := sd.liveCountAndEmpty(slot)
+		// Confirmed empty needs the count read and the visual check to agree —
+		// or the visual check alone when no card on the bar is readable (the
+		// end-of-battle case, where every spent card has lost its number).
+		if empty && (!trusted || remaining <= 0) {
 			sd.logger.Info().
 				Str("unit", unit.Name).
 				Int("rounds", round+1).
 				Int("extra_fired", totalFired).
+				Bool("count_read_trusted", trusted).
 				Msg("reconcile: spell slot confirmed empty")
 			return totalFired, true
+		}
+		if !trusted {
+			// The card shows no readable count and is not visually empty, so
+			// there is no number to re-fire against. Stop rather than invent
+			// one: blind taps into a live battle are worse than leaving the
+			// remainder for the sweep.
+			sd.logger.Warn().
+				Str("unit", unit.Name).
+				Int("round", round+1).
+				Msg("reconcile: card count unreadable and card not visually empty; stopping spell reconcile")
+			return totalFired, false
 		}
 		if remaining <= 0 {
 			// OCR says 0 but the card still looks active (cursor
@@ -164,7 +222,15 @@ func (sd *SpellDeployer) VerifyAndReconcile(unit strategy.Unit, slot *TrackedSlo
 
 		re := unit
 		re.Amount = strconv.Itoa(remaining)
+		// A re-fire must land on ground the earlier pass did not already
+		// cover. Reusing the identical geometry is what produced a live ice
+		// spell with 13 taps whose closest pair was 4 px apart: the first
+		// pass covered its ring, and two more passes cast onto the same ring.
+		// The pass counter shifts each re-fire by one cast spacing, which the
+		// placement code applies perpendicular to the authored line.
+		sd.firePass++
 		sd.DeploySpell(re, slot, targetEdge, phasePattern)
+		sd.firePass--
 		totalFired += remaining
 	}
 
@@ -175,6 +241,11 @@ func (sd *SpellDeployer) VerifyAndReconcile(unit strategy.Unit, slot *TrackedSlo
 	return totalFired, false
 }
 
+// SetPinnedGround marks this side's spell pins as authoritative, so the
+// strategy formula no longer replaces the pinned spell lines (see
+// HeroManager.SetPinnedGround for the rationale).
+func (sd *SpellDeployer) SetPinnedGround(v bool) { sd.pinnedGround = v }
+
 // DeploySpell deploys a spell unit according to its pattern.
 //
 // Precedence:
@@ -184,7 +255,21 @@ func (sd *SpellDeployer) VerifyAndReconcile(unit strategy.Unit, slot *TrackedSlo
 //  3. Point pattern with a configured spell target.
 //  4. Line pattern (or default): Line A for rage, Line B otherwise.
 func (sd *SpellDeployer) DeploySpell(unit strategy.Unit, slot *TrackedSlot, targetEdge string, phasePattern string) bool {
-	// Formula FIRST — when the user authored a formula for this spell
+	// USER PINS FIRST: when the side has pins in precision_config.json (placed
+	// with cmd/pick_coords), the spell lines SpellEdgesA/SpellEdgesB ARE the
+	// geometry and the strategy formula must not replace them — otherwise the
+	// user pins a spell line and the spells still go to the formula's ground.
+	if sd.pinnedGround {
+		isPointPattern := unit.Pattern == "Point" || phasePattern == "Point"
+		if spellTarget, ok := sd.pCfg.SpellTargets[targetEdge]; ok && isPointPattern {
+			return sd.deployPointSpell(unit, slot, spellTarget)
+		}
+		if _, okA := sd.pCfg.SpellEdgesA[targetEdge]; okA {
+			return sd.deployLineSpell(unit, slot, targetEdge)
+		}
+	}
+
+	// Formula next — when the user authored a formula for this spell
 	// (e.g. "rage spell" → {"type":"lines","lines":[A,B]}) their
 	// geometry completely replaces Line A/B pCfg and the isRage special.
 	if entry, ok := sd.formulaEntry(unit.Name); ok {
@@ -289,16 +374,20 @@ func (sd *SpellDeployer) deployPointSpell(unit strategy.Unit, slot *TrackedSlot,
 		Int("count", maxSpells).
 		Msg("deploying spells clustered around point target")
 
+	// The ring is sized by the spacing rule, not by a constant. A hardcoded 18
+	// reference px radius puts 5 casts 28 px apart and 8 casts 18 px apart — all
+	// inside one cast's reach, i.e. the same freeze landed 5 times.
+	jitter := 6
+	minStep := sd.ringChord(jitter)
 	points := make([]image.Point, 0, maxSpells)
 	for i := 0; i < maxSpells; i++ {
 		var offset image.Point
-		if maxSpells > 1 {
+		if radius := sd.castRingRadius(maxSpells, minStep); radius > 0 {
 			angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
-			radius := sd.executor.cal.Length(18)
 			offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
 		}
 		pt := image.Pt(spellTarget.X+offset.X, spellTarget.Y+offset.Y)
-		points = append(points, sd.executor.addJitter(pt, 6))
+		points = append(points, sd.executor.addJitter(pt, jitter))
 	}
 
 	for idx, pt := range points {
@@ -557,12 +646,15 @@ func (sd *SpellDeployer) deployFormulaPoint(unit strategy.Unit, _ *TrackedSlot, 
 		Interface("p", center).
 		Msg("formula-driven spell point deploy")
 
+	// Sized by the spacing rule for the same reason as the legacy point path:
+	// a fixed radius shrinks the chord as the cast count grows, so a card
+	// carrying more casts lands all of them on the same ground.
+	minStep := sd.ringChord(jitter)
 	points := make([]image.Point, 0, maxSpells)
 	for i := 0; i < maxSpells; i++ {
 		var offset image.Point
-		if maxSpells > 1 {
+		if radius := sd.castRingRadius(maxSpells, minStep); radius > 0 {
 			angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
-			radius := sd.executor.cal.Length(18)
 			offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
 		}
 		pt := image.Pt(center.X+offset.X, center.Y+offset.Y)
@@ -631,12 +723,44 @@ func (sd *SpellDeployer) deployFormulaLine(unit strategy.Unit, _ *TrackedSlot, e
 			}
 		}
 		if !innerSourceSet(innerSource) {
-			// Default inward offset ~35px. On an 860x732 screen this is
-			// ~2 tiles deeper toward the base center, matching the
+			// The inward offset sets how far apart the two sub-lines run.
+			// A fixed ~35px is ~2 tiles toward the base center, matching the
 			// "outerline = entry, innerline = behind the entry wall"
-			// canonical edrag-rush layout.
-			p1In, p2In = deriveInwardLine(p1, p2, sd.w, sd.h, 35)
+			// canonical edrag-rush layout — but a live 720p run showed why
+			// it cannot be the whole story: the two parallel lines were only
+			// 35px apart while one cast's reach is 100px, so an outer cast
+			// and an inner cast landed 31px apart and the report called the
+			// Rage line OVERLAPPED (2 of 5 casts spent on ground another
+			// already covered). The offset carries one cast spacing, the
+			// per-axis jitter both sub-lines receive (2·√2·j between two
+			// casts, not 2·j), and the integer-rounding pad — the same bar
+			// the cast-level guard below enforces, so a parallel auto-derive
+			// starts compliant and the guard has nothing to do.
+			innerOffset := 35
+			if want := int(math.Ceil(sd.ringChord(jitter) + ringRoundPadPx)); want > innerOffset {
+				innerOffset = want
+			}
+			p1In, p2In = deriveInwardLine(p1, p2, sd.w, sd.h, innerOffset)
 			innerSource = "auto_derive (deriveInwardLine)"
+		}
+		// Whatever supplied the inner line — the user's `_rage_inner` or the
+		// auto-derive — the CASTS it fires must clear the casts the outer
+		// line fires. Checking the lines' midpoints is not enough, and the
+		// live run that proved it is run16 (2026-09-22): the pinned inner
+		// line is rotated a few degrees against the outer one, the midpoint
+		// guard pushed it to its 56 px bar, and the inner line's far END
+		// still swung back to 17 px from the outer line's far end —
+		// outer (505,517) vs inner (512,501) — so 2 of 5 Rage casts shared
+		// ground and the report called the line OVERLAPPED. Midpoint
+		// distance is only the cast distance when the lines are parallel.
+		sepP1, sepP2, pushed := sd.ensureInnerCastsClearOuter(p1, p2, p1In, p2In, inner, jitter)
+		if pushed {
+			sd.logger.Warn().
+				Str("unit", unit.Name).
+				Interface("was_in", p1In).
+				Interface("now_in", sepP1).
+				Msg("rage inner line's casts sat inside one cast spacing of the outer line; pushed inward so the two sub-lines do not overlap")
+			p1In, p2In = sepP1, sepP2
 		}
 
 		sd.logger.Info().
@@ -726,6 +850,110 @@ func deriveInwardLine(p1, p2 image.Point, screenW, screenH, offsetPx int) (image
 	return p1Out, p2Out
 }
 
+// ensureInnerCastsClearOuter is the guard that makes "the two Rage sub-lines
+// never overlap" true at the level that matters: the CASTS each line fires.
+//
+// The inner line is shifted inward — perpendicular to the outer line, in the
+// direction of the screen center — until every cast it would fire sits at least
+// one cast spacing (ringChord) from every cast the outer line would fire.
+// Returns the (possibly) shifted inner line and whether it moved.
+//
+// This replaces a midpoint-only check whose blind spot a live run measured: a
+// pinned `_rage_inner` rotated a few degrees against the outer line cleared the
+// midpoint bar by 56 px, yet its far-end cast sat 17 px from the outer line's
+// far-end cast, because two non-parallel lines CONVERGE toward their ends and
+// midpoint distance bounds the end distance only when the lines are parallel.
+// Convergence is exactly what a user-pinned inner line has: it is authored free-
+// hand in reference space, projected through ApplyScreenScale, and clamped into
+// the live deploy band — none of which preserves parallelism.
+//
+// Measuring casts, not lines, is also what makes the check honest about counts:
+// an inner line carrying 1 cast must clear the 3 the outer line fires, and a
+// longer inner line must clear them at its own cast positions, not at its middle.
+// rageOuterCount is the number of casts the Rage split fires on the outer
+// line: the odd-rounding remainder, ceil(count/2). The inner casts must clear
+// the outer ones, so the guard models the outer line at this density — the
+// conservative choice, since clearing a denser outer field clears the real one.
+func rageOuterCount(total int) int {
+	if total <= 0 {
+		return 1
+	}
+	return total - total/2
+}
+
+func (sd *SpellDeployer) ensureInnerCastsClearOuter(outer1, outer2, inner1, inner2 image.Point, innerCount, jitter int) (image.Point, image.Point, bool) {
+	chord := sd.ringChord(jitter)
+	if chord <= 0 {
+		return inner1, inner2, false
+	}
+	dx := float64(outer2.X - outer1.X)
+	dy := float64(outer2.Y - outer1.Y)
+	length := math.Hypot(dx, dy)
+	if length < 1 {
+		return inner1, inner2, false
+	}
+
+	// Model the casts each line fires: the outer line at its full rage share
+	// (the conservative count — the split actually fires ceil/2, but clearing a
+	// denser outer line clears the real one), the inner at the count it will
+	// fire. The cast positions are exactly what distributeAlong will tap, so
+	// the check measures the deployment, not an abstraction of it.
+	outerCasts := sd.distributeAlong(outer1, outer2, rageOuterCount(5), jitter)
+	nInner := innerCount
+	if nInner < 2 {
+		nInner = 2
+	}
+
+	// Shift the inner line inward — perpendicular to the outer line, toward the
+	// screen center, matching deriveInwardLine's convention — by the largest
+	// shortfall any inner cast has against the chord, and iterate: after one
+	// shift the cast positions move, and a rotated inner line can expose a
+	// different worst pair. A handful of iterations converges because each
+	// shift moves every inner cast the full shortfall of the worst one.
+	px, py := -dy/length, dx/length
+	midX, midY := float64(inner1.X+inner2.X)/2.0, float64(inner1.Y+inner2.Y)/2.0
+	if (float64(sd.w)/2.0-midX)*px+(float64(sd.h)/2.0-midY)*py < 0 {
+		px, py = -px, -py
+	}
+
+	total := 0.0
+	pushed := false
+	for iter := 0; iter < 4; iter++ {
+		innerCasts := sd.distributeAlong(inner1, inner2, nInner, jitter)
+		shift := 0.0
+		for _, ic := range innerCasts {
+			for _, oc := range outerCasts {
+				if d := math.Hypot(float64(ic.X-oc.X), float64(ic.Y-oc.Y)); d < chord {
+					// Shortfall measured perpendicular to the outer line:
+					// shifting the whole inner line by that amount moves this
+					// cast directly away from the outer line's cast field.
+					// +1 px pad: the shift is rounded to integer endpoints, and
+					// without the pad a sub-pixel remainder survives the last
+					// iteration (measured live: a pair left 0.5 px short).
+					if need := chord - d + 1.0; need > shift {
+						shift = need
+					}
+				}
+			}
+		}
+		if shift <= 0.5 {
+			break
+		}
+		ox, oy := int(math.Round(px*shift)), int(math.Round(py*shift))
+		inner1 = image.Pt(inner1.X+ox, inner1.Y+oy)
+		inner2 = image.Pt(inner2.X+ox, inner2.Y+oy)
+		total += shift
+		pushed = true
+	}
+	if pushed {
+		sd.logger.Debug().
+			Float64("total_shift", math.Round(total)).
+			Float64("chord", math.Round(chord)).
+			Msg("rage inner cast clearance: total inward shift applied")
+	}
+	return inner1, inner2, pushed
+}
+
 // deployFormulaLines is the rage-style 3+2 path. Each LinePoint owns
 // its own per-line tap count, jitter, and geometry — the user controls
 // everything.
@@ -789,13 +1017,72 @@ func (sd *SpellDeployer) deployFormulaLines(unit strategy.Unit, slot *TrackedSlo
 	return true
 }
 
-// distributeAlong produces `count` evenly-spaced jittered points
-// between p1 and p2 (with end-anchored distribution: pct goes 0.1 → 0.9
-// when count==2, similar to the legacy deployLineSpell).
+// distributeAlong produces `count` jittered cast points between p1 and p2.
+//
+// Taps are spread over 0.22 → 0.78 of the authored line: the inset at each end
+// is deliberate, so a cast aimed at a wall corner does not land on the wrong
+// side of it. Casts are then spread evenly within that span — but ONLY while
+// the span can carry them at minCastSpacingRef or more. A line shorter than
+// count × spacing cannot hold count distinct casts, and dividing it anyway is
+// what turned five Ice Spells into one freeze plus four wasted cards: 91 live
+// px of line, 5 taps, 22.7 px apart by construction, ~11 px once the tap jitter
+// was applied. When the line is too short the casts go on a ring around the
+// line's midpoint instead — as tight as `count` casts can be while still
+// covering distinct ground, and still anchored to the geometry the user drew.
 func (sd *SpellDeployer) distributeAlong(p1, p2 image.Point, count, jitter int) []image.Point {
 	if count <= 1 {
-		return []image.Point{sd.executor.addJitter(p1, jitter)}
+		// One cast goes to the line's CENTRE, not to its first endpoint.
+		//
+		// The endpoints are the least trustworthy points of a line: they are
+		// what the projection clamp and the red-line push displace first, and a
+		// displaced endpoint can end up on the troop bar. Live 2026-09-25 (run7,
+		// BottomRight): the ice spell's line was clamped to p1=(751,611), the
+		// single cast fired at (751,614) — on the card row of the bar, whose
+		// cards start at y≈596 — so CoC treated it as a bar tap: the card counted
+		// down nowhere, the reconcile re-fired the same endpoint at (750,610),
+		// and the run ended with the ice spell still on the bar (badge x1,
+		// OCR-confirmed) while Deploy Health said SUCCESS. The centre of the
+		// authored line is inside the field by construction, and it is the point
+		// a single cast is meant to cover anyway.
+		centre := image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2)
+		// A re-fire must still land on fresh ground: the same perpendicular
+		// displacement the multi-cast path gets, so pass 1 is one cast spacing
+		// beside pass 0 rather than on the identical spot.
+		centre = sd.shiftPointForPass(centre, p1, p2, sd.minCastSpacing())
+		return []image.Point{sd.executor.addJitter(centre, jitter)}
 	}
+
+	span := 0.56 * math.Hypot(float64(p2.X-p1.X), float64(p2.Y-p1.Y))
+	// Each cast is jittered after it is placed, so two neighbours that are
+	// `minStep` apart on paper can end up 2×jitter closer: a live run's ice
+	// line spaced its casts 53 px apart and the measured closest pair came out
+	// at 47 px, under the 50 px "same ground" bar. Requiring the post-jitter
+	// distance keeps the invariant that actually ships.
+	minStep := sd.minCastSpacing() + 2*float64(jitter)
+
+	if minStep > 0 && span < minStep*float64(count-1) {
+		// Ring fallback: the line is too short to carry `count` casts at the
+		// minimum spacing, so the casts ring the midpoint instead.
+		//
+		// A re-fire cannot be separated by one spacing here the way a line
+		// can: two circles of the same radius whose centres are closer than
+		// their combined radius share points, so shifting the centre by a
+		// single spacing still lets a re-fire cast land on the previous
+		// ring. The clearance that makes the two rings disjoint by exactly
+		// one spacing is 2·radius + spacing; using it keeps the invariant
+		// this whole branch exists to honour — a re-fire never freezes
+		// ground the first pass already froze.
+		chord := sd.ringChord(jitter)
+		radius := sd.ringRadius(count, chord, span)
+		center := image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2)
+		center = sd.shiftPointForPass(center, p1, p2, 2*radius+chord)
+		return sd.spreadOnRing(center, count, jitter, chord, span)
+	}
+
+	// A line re-fire is displaced sideways by whole cast spacings, so pass N
+	// lands on ground pass N-1 did not cover instead of restacking on it.
+	p1, p2 = sd.shiftForPass(p1, p2, minStep)
+
 	pts := make([]image.Point, 0, count)
 	for i := 0; i < count; i++ {
 		pct := 0.22 + float64(i)*0.56/float64(count-1)
@@ -806,11 +1093,189 @@ func (sd *SpellDeployer) distributeAlong(p1, p2 image.Point, count, jitter int) 
 	return pts
 }
 
+// perpendicularOffsetForPass returns the signed perpendicular displacement the
+// current re-fire pass needs to clear `clearance` px of already-covered ground.
+// Zero on pass 0 (every deployment that is not a reconcile re-fire).
+//
+// The sign alternates by pass parity so pass 2 sits one step further out on the
+// first side rather than crossing back over its own trail — pass 1 clears to
+// +clearance, pass 2 to -clearance, pass 3 to +2·clearance, and so on.
+func (sd *SpellDeployer) perpendicularOffsetForPass(clearance float64) float64 {
+	if sd.firePass <= 0 || clearance <= 0 {
+		return 0
+	}
+	side := 1.0
+	steps := sd.firePass
+	if sd.firePass%2 == 0 {
+		side = -1.0
+		steps = sd.firePass / 2
+	} else {
+		steps = (sd.firePass + 1) / 2
+	}
+	return side * clearance * float64(steps)
+}
+
+// shiftForPass displaces a line perpendicular to itself so the casts of a
+// re-fire sit beside the previous pass's rather than on top of them. Returns the
+// segment unchanged on the first pass, or when the segment is too short to have
+// a perpendicular direction.
+func (sd *SpellDeployer) shiftForPass(p1, p2 image.Point, clearance float64) (image.Point, image.Point) {
+	off := sd.perpendicularOffsetForPass(clearance)
+	if off == 0 {
+		return p1, p2
+	}
+	return sd.shiftPoint(p1, p1, p2, off), sd.shiftPoint(p2, p1, p2, off)
+}
+
+// shiftPointForPass moves a single point perpendicular to segment p1→p2 by the
+// offset the current re-fire pass needs. Used for the ring fallback, whose
+// "line" is just the segment it was derived from.
+func (sd *SpellDeployer) shiftPointForPass(pt, p1, p2 image.Point, clearance float64) image.Point {
+	off := sd.perpendicularOffsetForPass(clearance)
+	if off == 0 {
+		return pt
+	}
+	return sd.shiftPoint(pt, p1, p2, off)
+}
+
+// shiftPoint applies a perpendicular offset to `pt`, where the perpendicular is
+// taken from the segment a→b. Falls back to an unshifted point when a==b, which
+// has no perpendicular direction.
+func (sd *SpellDeployer) shiftPoint(pt, a, b image.Point, off float64) image.Point {
+	dx := float64(b.X - a.X)
+	dy := float64(b.Y - a.Y)
+	length := math.Hypot(dx, dy)
+	if length < 1 {
+		return pt
+	}
+	return image.Pt(
+		pt.X+int(math.Round(-dy/length*off)),
+		pt.Y+int(math.Round(dx/length*off)),
+	)
+}
+
+// minCastSpacing converts the shared cast-spacing yardstick into this device's
+// live pixels. Returns 0 ("no constraint") when there is no calibration to
+// convert with, which leaves the pre-existing even spread in place rather than
+// guessing a scale.
+func (sd *SpellDeployer) minCastSpacing() float64 {
+	if sd.executor == nil || sd.executor.cal == nil {
+		return 0
+	}
+	return sd.executor.cal.Length(minCastSpacingRef)
+}
+
+// spreadOnRing places `count` casts evenly on a circle centred on `center`,
+// with the radius chosen so that neighbouring casts sit exactly `chord` apart
+// (chord = 2r·sin(π/n)), and never below half the ring needed to reclaim the
+// short line's own span — the ring should be at least as wide as the ground the
+// user drew, or we would have made the placement tighter, not spread it.
+//
+// `chord` is ringChord(jitter): the pre-jitter distance needed to clear the
+// minimum spacing after jitter. `span` is the usable span of the line that was
+// too short, logged so a reader can see the arithmetic.
+// ringRadius is the radius the ring fallback uses for `count` casts at
+// `minStep` spacing: the chord = 2r·sin(π/n) relation, widened so neighbouring
+// casts sit a hair over the minimum, never narrower than the short line's own
+// usable span (the ring must at least cover the ground the user drew), and
+// capped so a formula asking for a dozen-odd casts on a stub of a line stays
+// near the authored target.
+func (sd *SpellDeployer) ringRadius(count int, minStep, span float64) float64 {
+	radius := sd.castRingRadius(count, minStep)
+	if half := span / 2; radius < half {
+		radius = half
+	}
+	return radius
+}
+
+// ringChord is the centre-to-centre distance a ring's neighbours must have
+// BEFORE jitter, so that they still clear the minimum spacing after it.
+//
+// Jitter is applied per axis over [-j, j], so two neighbours can each move
+// toward each other by up to √2·j — the distance they can lose between them is
+// 2√2·j, not 2j. Sizing a ring for `spacing + 2j` therefore does not hold the
+// invariant it looks like it holds: a live 8-cast Ice Spell ring sized that way
+// measured a closest pair of 41 px against a 50 px bar.
+func (sd *SpellDeployer) ringChord(jitter int) float64 {
+	return sd.minCastSpacing() + 2*math.Sqrt2*float64(jitter)
+}
+
+// castRingRadius returns the radius at which `count` casts placed evenly on a
+// circle sit at least `minStep` apart, from chord = 2r·sin(π/n), widened by a
+// hair so integer tap rounding cannot eat the margin.
+//
+// This is the ONE place a ring radius is decided, and it is the fix for a defect
+// that had three homes: two hardcoded 18 reference px rings and one chord
+// relation capped at 45. All three could hand back a ring whose neighbours sat
+// closer than a cast's own reach. The live case that exposed it is the 8-cast Ice
+// Spell ring in run15: closest pair 41 px against a 50 px bar, with all eight
+// casts on ground another already covered, because the relation asked for 83 live
+// px and the ceiling cut it to 60. A ring of N casts must span enough ground
+// that no two casts cover the same area — that is the invariant, and the ceiling
+// may not silently break it.
+func (sd *SpellDeployer) castRingRadius(count int, minStep float64) float64 {
+	if count < 2 || minStep <= 0 {
+		return 0
+	}
+	radius := (minStep + ringRoundPadPx) / (2 * math.Sin(math.Pi/float64(count)))
+	if maxRadius := sd.executor.cal.Length(maxCastRingRadiusRef); radius > maxRadius {
+		sd.logger.Warn().
+			Int("count", count).
+			Float64("needed_radius", math.Round(radius)).
+			Float64("max_radius", math.Round(maxRadius)).
+			Msg("cast ring clamped: this many casts need a wider ring to stay a minimum spacing apart, so neighbours are closer than that")
+		radius = maxRadius
+	}
+	return radius
+}
+
+func (sd *SpellDeployer) spreadOnRing(center image.Point, count, jitter int, minStep, span float64) []image.Point {
+	radius := sd.ringRadius(count, minStep, span)
+
+	sd.logger.Info().
+		Str("spread", "ring").
+		Int("count", count).
+		Float64("line_span", math.Round(span)).
+		Float64("min_spacing", math.Round(sd.minCastSpacing())).
+		Float64("ring_chord", math.Round(minStep)).
+		Float64("even_spacing_implied", math.Round(span/math.Max(1, float64(count-1)))).
+		Float64("ring_radius", math.Round(radius)).
+		Interface("center", center).
+		Msg("spell line too short for this many casts at minimum spacing; spreading on a ring instead of stacking")
+
+	pts := make([]image.Point, 0, count)
+	for i := 0; i < count; i++ {
+		angle := 2 * math.Pi * float64(i) / float64(count)
+		pt := image.Pt(
+			center.X+int(radius*math.Cos(angle)),
+			center.Y+int(radius*math.Sin(angle)),
+		)
+		pts = append(pts, sd.executor.addJitter(pt, jitter))
+	}
+	return pts
+}
+
 // tapSeries taps each point in `points` with 180ms +/- 40ms inter-tap
 // sleeps. Always delays between taps (no "skip on last" bug from legacy
 // deployLineSpell).
+//
+// Every cast goes through castPointDeployable first: a tap that leaves the
+// screen deploys nothing and is pure noise in the trace (live 2026-09-25, a
+// TopLeft run whose sweep line projected to x=-11 sent 18 taps off-screen), and
+// a cast is not re-tried from the same place just because the tap went out.
 func (sd *SpellDeployer) tapSeries(unit strategy.Unit, points []image.Point, _ int, kind string) {
 	for idx, pt := range points {
+		if !sd.castPointDeployable(pt) {
+			sd.logger.Warn().
+				Str("unit", unit.Name).
+				Str("series", kind).
+				Int("idx", idx).
+				Interface("pt", pt).
+				Int("screen_w", sd.w).
+				Int("screen_h", sd.h).
+				Msg("spell cast point is outside the deployable field; skipping the tap rather than tapping the HUD or the troop bar")
+			continue
+		}
 		sd.logger.Info().
 			Str("unit", unit.Name).
 			Str("series", kind).
@@ -820,4 +1285,42 @@ func (sd *SpellDeployer) tapSeries(unit strategy.Unit, points []image.Point, _ i
 		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
 		sd.executor.client.HumanSleep(80, 20)
 	}
+}
+
+// castPointDeployable reports whether a spell may be cast at `pt`: inside the
+// screen, below the top HUD, and above the troop bar.
+//
+// The bar's boundary is the one place a spell tap silently does nothing: CoC
+// hands it to the card row instead of casting it, so the card keeps its charge
+// and the run looks like it "selected the spell but never placed it". The bar's
+// top is taken from the counter's own bar_y when one is wired (the same number
+// the count reader samples against), and from the deploy band's own bottom on a
+// screen with no counter.
+func (sd *SpellDeployer) castPointDeployable(pt image.Point) bool {
+	if sd.w > 0 && (pt.X < 0 || pt.X >= sd.w) {
+		return false
+	}
+	if sd.h > 0 && (pt.Y < 0 || pt.Y >= sd.h) {
+		return false
+	}
+	if pt.Y < YTopMin() {
+		return false
+	}
+	return pt.Y < sd.spellBarTop()
+}
+
+// spellBarTop is the first y the troop bar occupies. bar_y from the troop
+// counter is the bar's own top edge; without a counter the fallback is the
+// deploy band's top-side cutoff the orchestrator uses (0.85 of the height),
+// which is the last y it will clamp a formula point to.
+func (sd *SpellDeployer) spellBarTop() int {
+	if sd.barY > 0 {
+		return sd.barY
+	}
+	if sd.h > 0 {
+		return int(float64(sd.h) * 0.85)
+	}
+	// No screen geometry to bound against: do not invent a bound and silently
+	// drop every cast.
+	return 1 << 30
 }

@@ -219,7 +219,19 @@ Landed (reference geometry verified unchanged, live and in the test suite):
   (`device.display_scale`) pin a scale measured with `cmd/resprobe`;
 * a raised evidence bar off the reference geometry (two probes instead of one
   for any rule with several probes), and a boot-time warning that the dataset
-  is calibrated for 860×732.
+  is calibrated for 860×732;
+* `config.PinnedDisplayScale` as the one place the pinned `k` is read, used by
+  the bot, `cmd/see` and `cmd/attack_verify` — the two verification tools
+  previously derived their own scale from the screen diagonal and so reported
+  a geometry the bot never runs;
+* the deploy path now uses the world law (see *Deploy geometry* below), so
+  `Calibration` is no longer the only layer that knows how the world maps;
+* `internal/game/testdata/corpus.json` + `corpus_test.go`, which gate the
+  classifier against real captures at **both** geometries; and
+* `cmd/see`, which renders a frame as pixel-ruled text and re-runs the bot's
+  own classifier, calibration and button finder on it (`docs/SEEING.md`) — the
+  instrument that made the rest of this section measurable without a human
+  screenshotting the emulator.
 
 Verified live at 1280×720: the mapped anchor positions land within ~3 px of
 the elements' measured positions (top-right resource icons matched at
@@ -259,14 +271,15 @@ result, army-selection, chest and splash frames have not been captured at any
 non-reference geometry at all.
 
 Still to do: capture and re-validate each state's anchors at the target
-geometry (village, boot splash, search, battle, result, army selection, chest
-are all reachable on demand); re-author the centred states that clip at the new
-aspect; migrate the remaining consumers (`internal/game/loot.go` result panel +
-rois, `internal/game/chestdismiss.go`, `internal/game/navigator.go`,
-`internal/attack` slot bar / troop counter / hero manager / spell deployer / red
-line / deploy geometry); re-check the world band clipping for deploy points
-outside `ref y ∈ [94, 638]`; and finish with a real attack run, since that is
-the only check that covers the deploy mapping.
+geometry (search, army selection and chest remain uncaptured; the village,
+boot logo, battle and result overlay are now in the corpus); re-author the
+centred states that clip at the new aspect (the obstacle dialog is still the
+measured hard stop on a live 720p run); migrate the remaining consumers
+(`internal/game/loot.go` result panel + rois, `internal/game/chestdismiss.go`,
+`internal/game/navigator.go`, `internal/attack` slot bar / troop counter / hero
+manager / spell deployer / red line); re-author the three deploy points that
+project outside the tappable band (below); and finish with a real attack run,
+since that is the only check that covers the deploy mapping.
 
 ### Live run, 2026-09-16: what the first real attacks changed
 
@@ -423,6 +436,135 @@ Still open, in the order that unblocks a full 720p run:
    itself is still single-shot);
 3. recipe selection (`army_slot > 1`) at a non-reference geometry, which needs
    the sheet's recipe list located rather than predicted.
+
+### Deploy geometry, 2026-09-21: the formula path was using a law the game does not follow
+
+The perception half of the migration was done first; this session fixed the
+half that actually spends troops, and the two turned out to disagree.
+
+**`ApplyScreenScale` is the legacy framebuffer-fill model.** It scales x by
+`physW/860` and y by `physH/732`, so at 1280×720 it applies x **1.4884**
+against y **0.9836** — a **−33.9% anisotropy**. The measurements at the top of
+this document say the game does no such thing: the world is uniformly scaled
+about the viewport centre. The same village capture that gave `k = 1.325` from
+`resprobe` puts the top-right storage icons at live y **46** and **127** for
+reference y 35 and 116 — vertical scale 1.325, not 0.9836. Three scale stories
+were live in one run: the calibration's derived diagonal (1.3004), the pinned
+`device.display_scale` (1.325), and the deploy path's per-axis stretch
+(0.9836 on y).
+
+What the wrong law cost, measured on the tracked `auto_edrag_rush` formula at
+1280×720, is that **every formula tap point sat 19–76 px from where the uniform
+world law puts it** — one to two village tiles. It is a self-hiding failure: the
+tap lands on ground, the unit walks toward the target, and no log line is
+wrong. `Formula.ProjectUniform(k, srcW, srcH, dstW, dstH)` implements the
+measured law (`phys_center + (ref − ref_center) × k`) and `internal/attack`
+calls it with the calibration's own `k`, so the deploy geometry and the
+classifier can no longer disagree. `ApplyScreenScale` is kept only for
+`cmd/design_attack`'s authoring preview, where the per-axis view is what the
+author is inspecting.
+
+**Tap points project outside the deployable band at both edges.** Correcting
+the law moved Balloon and Electro Dragon — authored at reference y 580–581 —
+from live y 570 to y **644–645**, below the troop bar at **612**
+(`uiCutoff = h × 0.85`); the old squash had been hiding that by compressing y.
+A tap there hits the bar and the unit never deploys, which is the "it didn't use
+all the troops" report.
+
+Measuring this properly — with a gate rather than a live attack — turned up a
+second, worse case at the opposite edge. `internal/attack/deploy_geometry_test.go`
+projects the *shipped* formula through the orchestrator's own steps at
+1280×720 and reports, for a normal bottom-corner attack, **3 of 14 taps outside
+the band**:
+
+| unit | authored ref y | live y at 720p | band | where the tap lands |
+| --- | --- | --- | --- | --- |
+| balloon | 580 | 645 | > 612 | under the troop bar |
+| electro dragon | 581 | 644 | > 612 | under the troop bar |
+| **dragon duke** | 176 | **108** | < 110 | **behind the top resource HUD** |
+
+Mirroring for a **Top** corner reflects the first two to live y **75–76**, so
+the top bound is load-bearing there as well. The mechanism is the same at both
+edges and follows from the law itself: the world scales uniformly about the
+centre while the HUD is edge-anchored, so the HUD grows inward faster than the
+world does, and a band of authored y values ends up underneath it —
+`ref y ≳ 176` is behind the top HUD, `ref y ≳ 570` is behind the troop bar.
+
+`Formula.ClampY` pulls such points into `[yTopMin, uiCutoff]` — the same range
+`DeployLineCalculator` refuses to place line points outside (`YTopMin()` is now
+exported so the clamp, the renderer and the verifier share one definition of
+the band instead of each keeping its own percentage of the screen) — and the
+orchestrator logs one Warn naming the count and both bounds. The durable fix is
+re-authoring the points for 16:9, and the warning says so.
+
+An earlier version of this clamp guarded only the bottom edge, on the reasoning
+that no authored point had ever needed a top bound. The gate disproved that in
+its first run, which is the argument for having a gate at all: the reasoning was
+plausible and wrong, and no live log would have said so — the tap simply lands
+on the resource bar and the troop stays in the bar.
+
+### Live validation, 2026-09-21: two real attacks at 1280×720
+
+Both ran the full pipeline (`bot_cli --once`), and between them they close the
+deploy half of this document.
+
+**Run 1 (stale binary — the accidental control).** `build/bin/bot_cli` was
+stamped before the top-edge clamp was built, so this run exercised the old
+bottom-only clamp. It picked `TopRight` and tapped 25 points, of which **8 fell
+outside the band**: balloon and electro dragon lines reached y 25–26 (the status
+bar) and three spell taps landed at y 75 and y 99, inside the top resource HUD.
+The run scored 1 star. This is the bug the offline gate described, reproduced
+live — and nothing in the log called it a failure, which is the whole reason the
+gate exists.
+
+**Run 2 (corrected geometry).** `points_clamped=3 band_top=110 band_bottom=612`
+— exactly the three the gate predicts for `BottomRight` — and then 31 tapped
+points spanning y **362–612**, with all ten spell taps inside the band at
+x 711–903 (the screen centre is 640). The verifier reported `remaining=0` and the
+sweep drained the stragglers, so every unit the army bar carried deployed; the
+strategy's Minion Prince and Dragon Duke are not in this army's bar at all and
+were skipped with a warning. The battle ended and the session shut down cleanly —
+the battle-end classifier fix from the previous session held, with no repeat of
+the 4-minute stall.
+
+Tap coordinates were verified by plotting each run's **own log** onto its
+evidence frame, not by re-deriving the plan: that is what showed run 1's 8
+external taps and run 2's zero.
+
+**What the run does not settle.** Run 2 scored **0 stars**. Correct geometry is
+not a won attack, and two structural differences from the reference geometry
+are visible in the same logs:
+
+* **The red zone leaves almost no deployable exterior at 16:9.** Measured at the
+  moment of decision: bbox `(104,0)–(1201,612)` on one pre-deploy battle frame
+  and `(174,0)–(1163,612)` on another — full height, ~95% of the width. The video
+  red line is a world-space rectangle inset at the reference; scaled up 1.325
+  about the centre, its top and bottom edges leave the viewport, so "just outside
+  the red line" is a thin strip at best. The deploy line then falls back to the
+  user's pins, which places the army mid-screen rather than beside the base.
+* **`precision_config.json` is still mapped with the legacy per-axis law.** Its
+  header says `width 860, height 732`, so its pins are reference-authored and
+  scaled at runtime by `w/860` and `h/732` — 1.4884 against 0.9836, the same
+  −33.9% anisotropy the formula path just shed. On the pinned `BottomRight`
+  line that is `(1118,393)→(753,577)` instead of `(1065,405)→(741,653)`, up to
+  76 px off, and it moves hero targets, spell edges and `bar_y` the same way.
+  This is the last per-axis mapping left in the live deploy path.
+
+Neither is a reason to distrust the deploy geometry — the taps land where the
+bot intends and inside the band — but until they are addressed the *outcome* of
+a 16:9 attack will keep looking worse than the same plan at the reference
+geometry, and it will look like an attack-quality problem rather than a mapping
+one.
+
+### Regression gates this section now has
+
+* `internal/attack/deploy_geometry_test.go` projects the *shipped* formula
+  through the orchestrator's own resolution (`applyCornerUnits`), projection
+  (`ProjectUniform` at the pinned `k`) and clamp for all four corners, and fails
+  if any tap ends outside the band the deploy code will use. It logs the
+  pre-clamp debt so it cannot grow unseen.
+* The evidence frame is annotated from that same resolved formula, so what a
+  human reviews cannot diverge from what the bot did.
 
 ## Measuring
 

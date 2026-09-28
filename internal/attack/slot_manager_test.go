@@ -116,3 +116,77 @@ func TestApplyManualLabels_InvalidJSON(t *testing.T) {
 		t.Fatalf("invalid config labeled a slot: %q", slot.UnitName)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetSlot spell fallback — the valk_run6 defect (2026-09-23)
+//
+// The earthquake card template-matched nothing, so the spell plan resolved
+// no slot, the Earthquakes phase deployed NOTHING, and the spells were cast
+// only by the sweep — after the hero abilities, on the generic red-zone
+// line, re-fired 5 times.
+// ---------------------------------------------------------------------------
+
+// TestGetSlot_SpellFallbackResolvesUnnamedSpellCard is the contract of the
+// fix: a strategy spell the classifier could not identify must resolve to
+// an unnamed spell-category slot instead of vanishing from the plan.
+func TestGetSlot_SpellFallbackResolvesUnnamedSpellCard(t *testing.T) {
+	eq := &TrackedSlot{TroopSlot: TroopSlot{X: 433, Y: 682, Category: "Spell"}}
+	sm := newTestSlotManager([]*TrackedSlot{eq})
+
+	slot := sm.GetSlot("Earthquake Spell")
+	if slot == nil {
+		t.Fatal("Earthquake Spell resolved to nil; the spell phase would deploy nothing (valk_run6)")
+	}
+	if slot != eq {
+		t.Fatalf("Earthquake Spell resolved to wrong slot: got x=%d, want x=433", slot.X)
+	}
+
+	// The fallback must be idempotent: re-resolving the same unit returns
+	// the same card (the planner resolves a unit name once per phase, but
+	// the sweep and the verifier look it up again).
+	if again := sm.GetSlot("earthquake spell"); again != eq {
+		t.Fatal("repeat GetSlot did not return the same fallback slot")
+	}
+}
+
+// TestGetSlot_SpellFallbackDoesNotShareCards ensures two different spell
+// units never resolve to the same unnamed card.
+func TestGetSlot_SpellFallbackDoesNotShareCards(t *testing.T) {
+	eq := &TrackedSlot{TroopSlot: TroopSlot{X: 433, Y: 682, Category: "Spell"}}
+	sm := newTestSlotManager([]*TrackedSlot{eq})
+
+	if sm.GetSlot("Earthquake Spell") == nil {
+		t.Fatal("first spell lost its fallback slot")
+	}
+	if sm.GetSlot("Rage Spell") != nil {
+		t.Fatal("second spell was assigned the card already claimed by Earthquake Spell")
+	}
+}
+
+// TestGetSlot_NoFallbackForTroopsAndHeroes ensures the fallback is
+// spell-only: a troop/hero name that is not on the bar must stay nil so it
+// can never double-deploy a real unit.
+func TestGetSlot_NoFallbackForTroopsAndHeroes(t *testing.T) {
+	eq := &TrackedSlot{TroopSlot: TroopSlot{X: 433, Y: 682, Category: "Spell"}}
+	sm := newTestSlotManager([]*TrackedSlot{eq})
+
+	for _, name := range []string{"Valkyrie", "Barbarian King", "Grand Warden", "Stone Slammer", "Dragon Duke"} {
+		if sm.GetSlot(name) != nil {
+			t.Errorf("%s must not fall back to a spell slot", name)
+		}
+	}
+}
+
+// TestGetSlot_SpellFallbackSkipsIdentifiedSpellCards ensures a named spell
+// card is never claimed as a second spell's fallback.
+func TestGetSlot_SpellFallbackSkipsIdentifiedSpellCards(t *testing.T) {
+	named := &TrackedSlot{TroopSlot: TroopSlot{X: 433, Y: 682, Category: "Spell"}, UnitName: "poison spell"}
+	sm := newTestSlotManager([]*TrackedSlot{named})
+
+	if sm.GetSlot("Poison Spell") == nil {
+		t.Fatal("identified spell stopped resolving (regression)")
+	}
+	if sm.GetSlot("Rage Spell") != nil {
+		t.Fatal("Rage Spell fell back onto a card already identified as Poison Spell")
+	}
+}

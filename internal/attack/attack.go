@@ -1638,27 +1638,71 @@ func (e *Executor) ResetBattleOutcome() {
 	e.thDestroyed = false
 }
 
-// endButtonVisible reports whether the red "End Battle" button is on the
-// given frame at the stall_config end_button location. CoC only shows
-// that button once the army is fully spent, so tapping it blind when it
-// is absent just taps the map. The check mirrors EndBattle's legacy
-// dynamic probe (bright red pixel). Returns false when no stall_config is
-// loaded or the probe point is off-screen.
+// endButtonVisible reports whether the battle's red bottom-left control (the
+// END BATTLE / SURRENDER button) is on the given frame at the stall_config
+// end_button location. Tapping it blind when it is absent just taps the map,
+// so the stall branch consults this before ending a battle.
+//
+// Two things were wrong here until 2026-09-21, both measured on a live 720p
+// battle frame (internal/game/testdata/corpus/battle_mid_720p.png):
+//
+//  1. The probe was mapped by the raw physical/reference ratio per axis, while
+//     EndBattle *taps* the same button through the calibration's edge anchor
+//     (e.cal.AnchorPoint). At 1280x720 the ratio put the probe at (99,585) —
+//     ~47 px below the button, on the battlefield — while the tap went to
+//     (89,538), on the button. The stall branch therefore never saw a button
+//     it was about to tap, so a stalled battle waited out its whole deadline
+//     and the session restarted the game instead of finishing the attack.
+//  2. A single pixel was tested, and the edge-mapped anchor lands on the
+//     button's white label as often as on its red face (measured: the pixel at
+//     the mapped anchor is pure white). The check now measures the red
+//     fraction of a small patch centred on the anchor: 0.43 on live battle
+//     frames, 0.05 on a village frame, 0.00 on the result overlay and on the
+//     connection-lost dialog.
+//
+// Returns false when no stall_config is loaded or the anchor is off-screen.
 func (e *Executor) endButtonVisible(screen gocv.Mat, sCfg StallConfig) bool {
 	if sCfg.RefWidth == 0 || sCfg.RefHeight == 0 {
 		return false
 	}
-	scaleX := float64(e.cal.PhysicalW) / float64(sCfg.RefWidth)
-	scaleY := float64(e.cal.PhysicalH) / float64(sCfg.RefHeight)
-	x := int(float64(sCfg.EndButton.X) * scaleX)
-	y := int(float64(sCfg.EndButton.Y) * scaleY)
-	if x < 0 || y < 0 || x >= screen.Cols() || y >= screen.Rows() {
+	// Same anchor EndBattle taps with: the button is bottom-left HUD chrome,
+	// so its distance to the screen edge is what survives a geometry change.
+	x, y := e.cal.AnchorPoint(sCfg.EndButton.X, sCfg.EndButton.Y, game.AnchorEdge)
+	if screen.Empty() {
 		return false
 	}
-	b := screen.GetUCharAt(y, x*3)
-	g := screen.GetUCharAt(y, x*3+1)
-	r := screen.GetUCharAt(y, x*3+2)
-	return r > 130 && g < 110 && b < 110
+
+	// Patch half-width in live px. The button face is ~140x48 at 720p, so a
+	// 25x25 patch centred on the anchor stays inside it at every observed
+	// geometry while still covering the label that sits under the anchor.
+	const half = 12
+	// Minimum saturated-red pixels in that 625-pixel patch. Measured red
+	// counts: 267 on battle frames, 29 on a village (red roofs at the same
+	// screen position), 0 on the result overlay and the lost-connection
+	// dialog. 100 is ~3.5x the worst false positive and ~2.7x under the
+	// smallest true one.
+	const minRed = 100
+
+	reds := 0
+	for dy := -half; dy <= half; dy++ {
+		sy := y + dy
+		if sy < 0 || sy >= screen.Rows() {
+			continue
+		}
+		for dx := -half; dx <= half; dx++ {
+			sx := x + dx
+			if sx < 0 || sx >= screen.Cols() {
+				continue
+			}
+			b := screen.GetUCharAt(sy, sx*3)
+			g := screen.GetUCharAt(sy, sx*3+1)
+			r := screen.GetUCharAt(sy, sx*3+2)
+			if r > 130 && g < 110 && b < 110 {
+				reds++
+			}
+		}
+	}
+	return reds >= minRed
 }
 
 func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duration) bool {
@@ -1674,6 +1718,9 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 	lastPct := 0
 	lastPctTime := time.Now()
 	stallLimit := time.Duration(e.cfg.StallTimerSeconds) * time.Second
+	// Consecutive no-progress stalls in this battle, used to throttle the
+	// "keeping battle alive" log to one Warn per stall episode.
+	stallEpisodes := 0
 
 	var sCfg StallConfig
 	hasStallROI := false
@@ -1692,13 +1739,16 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 
 	var pRoi image.Rectangle
 	if hasStallROI {
-		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
-		pRoi = image.Rect(
-			int(float64(sCfg.PercentROI.Min.X)*scaleX),
-			int(float64(sCfg.PercentROI.Min.Y)*scaleY),
-			int(float64(sCfg.PercentROI.Max.X)*scaleX),
-			int(float64(sCfg.PercentROI.Max.Y)*scaleY),
-		)
+		// HUD chrome, mapped the way every other authored anchor is (edge
+		// anchored, k-scaled) — NOT per-axis. The reference roi (774,585)-
+		// (829,609) sits in the bottom-right damage panel; per-axis scaling put
+		// it at live (1152,575)-(1234,599) at 1280x720, ~50 px BELOW the
+		// destruction percentage, so the readout scanned the battlefield and
+		// returned 0 for a whole battle (measured: the game showed 25% while
+		// last_pct stayed 0, which disabled the stall timer and every
+		// end_at_percent auto-end, and latched 0 destruction for the stars).
+		// HudRect maps it to (1166,525)-(1239,557), on the digits.
+		pRoi = e.cal.HudRect(sCfg.PercentROI)
 	}
 
 	// Optional golden "Town Hall destroyed" banner scan. The banner sits
@@ -1708,13 +1758,9 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 	var thRoi image.Rectangle
 	hasThZone := !sCfg.ThBannerZone.Empty()
 	if hasThZone {
-		scaleX, scaleY := float64(e.cal.PhysicalW)/float64(sCfg.RefWidth), float64(e.cal.PhysicalH)/float64(sCfg.RefHeight)
-		thRoi = image.Rect(
-			int(float64(sCfg.ThBannerZone.Min.X)*scaleX),
-			int(float64(sCfg.ThBannerZone.Min.Y)*scaleY),
-			int(float64(sCfg.ThBannerZone.Max.X)*scaleX),
-			int(float64(sCfg.ThBannerZone.Max.Y)*scaleY),
-		)
+		// Same HUD-chrome mapping as percent_roi above (the banner sits on
+		// the same bar), for the same reason.
+		thRoi = e.cal.HudRect(sCfg.ThBannerZone)
 	}
 
 	for {
@@ -1815,6 +1861,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 					if currentPct > lastPct {
 						lastPct = currentPct
 						lastPctTime = time.Now()
+						stallEpisodes = 0
 						e.logger.Info().Int("percent", currentPct).Msg("destruction increased, resetting stall timer")
 					} else {
 						elapsed := time.Since(lastPctTime)
@@ -1824,7 +1871,18 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 							// ending blind would tap the map, and the "stall" may
 							// be a HUD/OCR artifact rather than a dead army.
 							if !e.endButtonVisible(screen, sCfg) {
-								e.logger.Warn().Int("last_pct", lastPct).Msg("stall detected but End Battle button not visible; keeping battle alive")
+								// Log once per stall episode, then drop to Debug. A
+								// battle whose result overlay the classifier cannot
+								// read yet (or a destruction ROI that reads a stuck
+								// 0%) repeats this branch every stallLimit until the
+								// deadline, and a Warn per tick buries the log for the
+								// whole 4-minute wait without adding information.
+								stallEpisodes++
+								if stallEpisodes == 1 {
+									e.logger.Warn().Int("last_pct", lastPct).Msg("stall detected but End Battle button not visible; keeping battle alive (further repeats at debug level)")
+								} else {
+									e.logger.Debug().Int("last_pct", lastPct).Int("episode", stallEpisodes).Msg("stall repeated; End Battle button still not visible")
+								}
 								lastPctTime = time.Now()
 							} else {
 								e.logger.Warn().Int("last_pct", lastPct).Dur("elapsed", elapsed).Msg("stall detected, ending battle!")

@@ -23,14 +23,14 @@ type LootRecognizer struct {
 	// result-panel OCR path (glyph heights/widths, line gaps, tolerances):
 	// reference distances grow with the display scale on both axes, not with a
 	// per-axis framebuffer ratio.
-	scale          float64
+	scale float64
+	// digitTemplates holds each digit template cropped to its own ink at file
+	// resolution; digitCanon holds the same glyphs resized to the canonical
+	// comparison box, which is what matchDigit compares against.
 	digitTemplates []gocv.Mat
-	// scaledDigitCache holds per-(w,h) pre-scaled digit templates so
-	// matchDigit does not re-Resize every template for every blob.
-	scaledDigitCache map[string][]gocv.Mat
-	logger           zerolog.Logger
-	mu               sync.Mutex
-	Debug            bool
+	digitCanon     []gocv.Mat
+	logger         zerolog.Logger
+	Debug          bool
 }
 
 // lootKernels are static structuring elements reused across every readRow
@@ -61,7 +61,6 @@ func NewLootRecognizer(cal *Calibration, ts *TemplateStore, logger zerolog.Logge
 		scale:            1.0,
 		templates:        ts,
 		digitTemplates:   make([]gocv.Mat, 10),
-		scaledDigitCache: make(map[string][]gocv.Mat),
 		logger:           logger.With().Str("component", "loot_recognizer").Logger(),
 	}
 	if cal != nil {
@@ -73,6 +72,7 @@ func NewLootRecognizer(cal *Calibration, ts *TemplateStore, logger zerolog.Logge
 
 func (lr *LootRecognizer) prepareDigitTemplates() {
 	lr.digitTemplates = make([]gocv.Mat, 10)
+	lr.digitCanon = make([]gocv.Mat, 10)
 	for i := 0; i < 10; i++ {
 		name := fmt.Sprintf("digit_%d", i)
 		tpl, ok := lr.templates.Get(name)
@@ -88,12 +88,19 @@ func (lr *LootRecognizer) prepareDigitTemplates() {
 		bin := gocv.NewMat()
 		gocv.Threshold(gray, &bin, 128, 255, gocv.ThresholdBinary)
 		rect := tightBoundingBox(bin)
+		blob := bin
+		cropped := false
 		if !rect.Empty() {
-			tight := bin.Region(rect)
-			lr.digitTemplates[i] = tight.Clone()
-			tight.Close()
-		} else {
-			lr.digitTemplates[i] = bin.Clone()
+			blob = bin.Region(rect)
+			cropped = true
+		}
+		lr.digitTemplates[i] = blob.Clone()
+		// The canonical box is what the matcher actually compares against; see
+		// internal/vision/digits.go for why resizing the template to the live
+		// glyph's box instead scored correct digits at 0.05-0.45.
+		lr.digitCanon[i] = vision.CanonicalGlyph(blob)
+		if cropped {
+			blob.Close()
 		}
 		bin.Close()
 		gray.Close()
@@ -106,17 +113,45 @@ func (lr *LootRecognizer) Close() {
 			tpl.Close()
 		}
 	}
-	for key, set := range lr.scaledDigitCache {
-		for _, m := range set {
-			if !m.Empty() {
-				m.Close()
-			}
+	for _, canon := range lr.digitCanon {
+		if !canon.Empty() {
+			canon.Close()
 		}
-		delete(lr.scaledDigitCache, key)
 	}
 }
 
 type LootReport struct{ Resources Resources }
+
+// IsZero reports whether a parsed result carries no value at all — every
+// star count, loot row and bonus row read zero. Callers use it to tell a
+// panel that has been emptied by the game from one that has not finished
+// painting, and to decide when there is nothing worth keeping from a read.
+func (r BattleResult) IsZero() bool {
+	return r.Stars == 0 && r.Loot.IsZero() && r.Bonus.IsZero()
+}
+
+// IsZero reports whether every resource in the set read zero.
+func (r Resources) IsZero() bool {
+	return r.Gold == 0 && r.Elixir == 0 && r.DarkElixir == 0 && r.Trophies == 0
+}
+
+// Reference-resolution search zones for the two loot columns on the
+// end-of-battle panel. They bound where text lines may be found; the lines
+// themselves are located by content, and the three bottom-most are read as
+// the column's loot rows.
+//
+// The bonus zone's right edge is the one that bit: the league-bonus rows
+// render a "+" then six digits, and at 16:9 the column sits ~25 reference px
+// further right than the reference-era screenshot these were authored from.
+// A right edge of 676 clipped the last two digits, so a live "+288000"
+// arrived as "288" — and because the clipped header line above it then made
+// up the third row of the bottom-three anchoring, a real league bonus of
+// 288000/288000/2160 was recorded as 90/288/288. See
+// TestBonusSearchCoversObserved720pBonusRows.
+var (
+	battleLootSearch = image.Rect(300, 280, 520, 470) // Battle Loot column
+	bonusLootSearch  = image.Rect(530, 330, 745, 470) // League Bonus column
+)
 
 type BattleResult struct {
 	Loot  Resources
@@ -161,8 +196,8 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	// layout, and the victory-ribbon tail bleeding into the panel's left
 	// edge (x~240-272) otherwise forms a phantom "text line" that displaces
 	// the gold row.
-	battleZone := image.Rect(300, 280, 520, 470) // Battle Loot column
-	bonusZone := image.Rect(530, 320, 676, 470)  // League Bonus column
+	battleZone := battleLootSearch
+	bonusZone := bonusLootSearch
 
 	if data, err := os.ReadFile(paths.Resolve("battle_loot_rois.json")); err == nil {
 		var custom struct {
@@ -771,12 +806,14 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		maxW := int(40*lr.scale) * 5
 
 		if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW {
+			lr.reject(rect, "size", minW, minH, maxW, maxH)
 			continue
 		}
 
 		// Vertical alignment check
 		blobCenterY := rect.Min.Y + rect.Dy()/2
 		if math.Abs(float64(blobCenterY-roiCenterY)) > float64(scaled.Rows())/2.0 {
+			lr.reject(rect, "row-offset", 0, 0, 0, 0)
 			continue
 		}
 
@@ -793,6 +830,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 			// White text Saturation is usually < 40. Icons are > 100.
 			// Increased to 105 to tolerate colorful/grass background bleeding into transparent text regions.
 			if mean.Val2 > 105 {
+				lr.reject(rect, "saturation", 0, 0, 0, 0)
 				continue
 			}
 		}
@@ -800,6 +838,9 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		blob := binary.Region(rect)
 		d := lr.matchDigit(blob)
 		blob.Close()
+		if d.digit < 0 {
+			lr.reject(rect, "no-digit-match", 0, 0, 0, 0)
+		}
 		if d.digit >= 0 {
 			d.rect = image.Rect(rect.Min.X/5, rect.Min.Y/5, rect.Max.X/5, rect.Max.Y/5)
 			detected = append(detected, d)
@@ -883,60 +924,100 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 	return bestVal
 }
 
+// reject records why a candidate blob was dropped, so a read that comes back
+// short of digits is diagnosable from the run log instead of by re-running the
+// pipeline under a debugger. rect is in the 5x-scaled ROI's coordinates; the
+// logged box is scaled back to source pixels.
+func (lr *LootRecognizer) reject(rect image.Rectangle, reason string, minW, minH, maxW, maxH int) {
+	if !lr.Debug {
+		return
+	}
+	e := lr.logger.Debug().
+		Str("reason", reason).
+		Interface("box", image.Rect(rect.Min.X/5, rect.Min.Y/5, rect.Max.X/5, rect.Max.Y/5)).
+		Int("w", rect.Dx()/5).
+		Int("h", rect.Dy()/5)
+	if reason == "size" {
+		e = e.Int("min_w", minW/5).Int("min_h", minH/5).Int("max_w", maxW/5).Int("max_h", maxH/5)
+	}
+	e.Msg("digit candidate rejected")
+}
+
+// matchDigit names one glyph-shaped blob as a digit.
+//
+// It compares SHAPES in a canonical box (vision.CanonicalGlyph / MatchCanonical):
+// both the blob and every template are cropped to their own ink and resized to
+// the same box before matching. The older approach — resize each template to
+// the blob's box — scored correct digits 0.05-0.45 on the game's real font and
+// almost always picked `digit_1`, so a damage panel showing "16%" read as "1"
+// and the end-of-battle wait watched a percentage it could never see move. The
+// only reason anything was read at all is the thin-blob shortcut below, which
+// recognises a `1` without any template at all.
 func (lr *LootRecognizer) matchDigit(bin gocv.Mat) detectedDigit {
-	bestDigit, maxConf := -1, float32(0.0)
 	bw, bh := bin.Cols(), bin.Rows()
 	if bw < 1 || bh < 1 {
 		return detectedDigit{digit: -1}
 	}
 
-	key := strconv.Itoa(bw) + "x" + strconv.Itoa(bh)
-	lr.mu.Lock()
-	scaled, ok := lr.scaledDigitCache[key]
-	if !ok {
-		scaled = make([]gocv.Mat, len(lr.digitTemplates))
-		for i, tpl := range lr.digitTemplates {
-			if tpl.Empty() {
-				continue
-			}
-			s := gocv.NewMat()
-			gocv.Resize(tpl, &s, image.Point{X: bw, Y: bh}, 0, 0, gocv.InterpolationLinear)
-			scaled[i] = s
-		}
-		lr.scaledDigitCache[key] = scaled
-	}
-	lr.mu.Unlock()
+	canon := vision.CanonicalGlyph(bin)
+	bestDigit, maxConf, margin := vision.MatchCanonical(canon, lr.digitCanon)
+	canon.Close()
 
-	for i, tpl := range scaled {
-		if tpl.Empty() {
-			continue
-		}
-		res := vision.GetMat(bin.Rows()-tpl.Rows()+1, bin.Cols()-tpl.Cols()+1, gocv.MatTypeCV32FC1)
-		gocv.MatchTemplate(bin, tpl, &res, gocv.TmCcoeffNormed, vision.EmptyMask())
-		_, conf, _, _ := gocv.MinMaxLoc(res)
-		vision.PutMat(res)
-		if float32(conf) > maxConf {
-			maxConf = float32(conf)
-			bestDigit = i
-		}
-	}
-
-	// Thin vertical blobs are almost always '1'
-	if bestDigit == -1 || maxConf < 0.55 {
+	// Thin vertical blobs are almost always '1'. Kept as a backstop for the
+	// case the template set is missing entirely, but a real match no longer
+	// needs it: at canonical size a `1` wins on its own merits.
+	if bestDigit < 0 || maxConf < float64(digitConfFloor) {
 		minH1 := int(12 * lr.scale)
 		maxW1 := int(6 * lr.scale)
 		if bw >= 1 && bw <= maxW1 && bh >= minH1 { // Narrower and taller
 			fill := float64(gocv.CountNonZero(bin)) / float64(bw*bh)
 			if fill > 0.65 {
+				lr.logDigit(bin, 1, 0.6, 0, "thin-blob shortcut")
 				return detectedDigit{digit: 1, conf: 0.6}
 			}
 		}
 	}
 
-	if maxConf < 0.5 {
+	// A glyph that wins on score alone is accepted; so is one that is a little
+	// weaker but has no near-neighbour. An 11-13 px `6` is genuinely close to
+	// `8` and `9`, and reporting a confident wrong damage percentage is worse
+	// than reporting that the panel could not be read.
+	if bestDigit < 0 || maxConf < float64(digitConfFloor) ||
+		(margin < float64(digitConfMargin) && maxConf < float64(digitConfStrong)) {
+		lr.logDigit(bin, bestDigit, maxConf, margin, "below floor/margin")
 		return detectedDigit{digit: -1}
 	}
-	return detectedDigit{digit: bestDigit, conf: maxConf}
+	lr.logDigit(bin, bestDigit, maxConf, margin, "accepted")
+	return detectedDigit{digit: bestDigit, conf: float32(maxConf)}
+}
+
+// Digit acceptance thresholds, measured on this pipeline rather than copied
+// from the troop counter's: the counter matches grayscale ink crops that keep
+// their anti-aliasing and sees correct digits at 0.54-0.72, while a row read
+// here matches binarised blobs and sees the same digits lower — the damage
+// panel's `6` scores 0.50 with a 0.12 margin. Junk on this path measured 0.44
+// with a 0.00 margin and 0.28 with 0.04, so the floor stays above the junk and
+// the margin below the real glyph.
+const (
+	digitConfFloor  = 0.45
+	digitConfMargin = 0.10
+	digitConfStrong = 0.60
+)
+
+// logDigit records a classification decision under Debug, so a row that reads
+// one digit short of what is on screen can be diagnosed from the log.
+func (lr *LootRecognizer) logDigit(bin gocv.Mat, digit int, conf, margin float64, verdict string) {
+	if !lr.Debug {
+		return
+	}
+	lr.logger.Debug().
+		Int("digit", digit).
+		Float64("conf", math.Round(conf*100)/100).
+		Float64("margin", math.Round(margin*100)/100).
+		Int("w", bin.Cols()).
+		Int("h", bin.Rows()).
+		Str("verdict", verdict).
+		Msg("digit classification")
 }
 
 func tightBoundingBox(bin gocv.Mat) image.Rectangle {
