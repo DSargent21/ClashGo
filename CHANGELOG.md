@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Frame captures are no longer tracked, and the frames that were already in the
+  repository are gone from its history.** A frame off the emulator carries other
+  players' names and clan tags, the owner's village, and gem/loot counters; the
+  `internal/game/testdata/corpus/` set, `internal/attack/testdata/` and
+  `screen_ocr.png` / `screen_victory.png` were published that way, and a blob
+  stays reachable from a public repository after it is untracked, so untracking
+  alone was not a fix. `.gitignore` now lists the captures as local-only and the
+  only image carve-outs left are functional inputs: the template crops, the
+  appicon and logo, and `screen_defeat.png`, whose opponent-name strip was blacked
+  out at the source. Every gate that reads a capture already skips when it is
+  missing, so `make test` keeps its real-frame coverage on a developer's machine
+  and degrades to a skip in CI. History was rewritten to drop the captures, the
+  `assets/templates_captured/` and `assets/templates/debug/` grab trees, the
+  dashboard screenshot, and the committed `logs/`, `attack_history.json`,
+  `stats.json` and diagnostic dumps; all remote refs were force-pushed and
+  `v0.6.0-beta` re-cut on the rewritten commit, so the release's source archives
+  stop serving them too.
+- **Docs point at the schema the picker actually writes.** `docs/formula-authoring.md`
+  said the runtime projected authored points with `ApplyScreenScale` around a fixed
+  860x732 frame; the live path is `ProjectUniform(display_scale)` about the frame the
+  formula declares in `screen` (1280x720 for a `-live` authoring run), and
+  `ApplyScreenScale` survives only for the corner-authoring tool. `_rage_inner` is
+  documented as the optional pre-pin it is, with the deployer's own
+  `deriveInwardLine` as the fallback.
+- **Repository URLs point at `DSargent21/ClashGo`.** The release manifest's
+  `-repo`, the DMG's read-me links and the helper's usage text still named
+  `Ducky705/ClashGO`, which only resolves through GitHub's redirect. The DMG
+  read-me also told users to configure their emulator at the retired 860x732 / 160
+  DPI instead of the 1280x720 / 320 DPI device the bot runs on, and carried a
+  stale version in its title. The Go module path still reads
+  `github.com/Ducky705/ClashGO`; that rename is separate and untouched.
+
 ## [0.6.0-beta] - 2026-09-27
 
 ### Fixed

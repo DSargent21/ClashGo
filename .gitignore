@@ -89,28 +89,27 @@ last_failure.json
 *.log
 logs/
 
-# Images: NEVER push decorative/screenshot raster images to GitHub.
-# Carve-outs (these are functional code inputs, not docs/screenshots):
-#   assets/templates/**/*.png          — gocv template matcher loads at runtime
-#   internal/game/testdata/screen_ocr.png     — Go test fixture (loot_test.go)
-#   internal/game/testdata/screen_victory.png — Go test fixture (loot_test.go)
-#   internal/game/testdata/screen_defeat.png  — defeat regression fixture (loot_test.go)
-#   internal/game/testdata/corpus/*.png        — real-frame classifier corpus
-#                                                (corpus_test.go). These MUST be
-#                                                tracked: the corpus test skips
-#                                                a missing fixture, so an
-#                                                untracked corpus passes in CI
-#                                                while proving nothing.
-#   internal/attack/testdata/*.png             — live frames the troop-count
-#                                                reader is gated on
-#                                                (troop_counter_test.go). Also
-#                                                skipped when missing, and they
-#                                                are the only evidence for the
-#                                                bar-geometry bug they pin.
+# Images: NEVER push raster screen captures to GitHub.
 #
-# If you add a new test fixture or grab-tool input, append it here explicitly
-# rather than dropping a PNG into those dirs — explicit list prevents an
-# accidental debug screenshot from being silently tracked.
+# A frame off the emulator carries other players' names and clan tags, the
+# owner's own base and gem/loot counters. Those bytes must never enter the
+# object database: a blob stays reachable from the public repo after it is
+# untracked, so "deleted later" is not deleted. Real frames the gates use live
+# on the developer's disk only, and every gate that reads one skips when it is
+# absent (corpus_test.go, classifier_fastpath_test.go, classifier_bench_test.go,
+# troop_counter_test.go, zz_720p_count_test.go, battle_end_test.go, loot_test.go)
+# — run `make test` locally, where the frames still exist, for the real coverage.
+#
+# Carve-outs below are functional code inputs (template crops, an icon, the one
+# sanitized result frame), never full-screen captures:
+#   assets/templates/**/*.png                  — gocv template matcher, runtime
+#   internal/game/testdata/screen_defeat.png   — defeat fixture, opponent name
+#                                                strip blacked out at the source
+#   web/src/assets/images/clashgo-logo.png     — UI logo
+#   build/appicon.png                          — bundle icon
+#
+# Before adding any PNG, ask whether it is a capture. If it is, keep it local
+# and let the gate skip instead.
 **/*.png
 **/*.jpg
 **/*.jpeg
@@ -118,14 +117,15 @@ logs/
 **/*.bmp
 **/*.tiff
 !**/assets/templates/**/*.png
-!internal/game/testdata/screen_ocr.png
-!internal/game/testdata/screen_victory.png
-!internal/game/testdata/corpus/*.png
-!internal/attack/testdata/*.png
 !internal/game/testdata/screen_defeat.png
 !web/src/assets/images/clashgo-logo.png
 !build/appicon.png
 assets/templates/debug/
+assets/templates_captured/
+assets/grab/
+test_data/
+dashboard_ui.png
+*.vtest.json
 
 # Auto-generated bindings (do not commit)
 web/wailsjs/

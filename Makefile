@@ -239,7 +239,7 @@ manifest:
 		-zip $(BUILD_DIR)/$(RELEASE_ZIP) \
 		-min-supported $(MIN_SUPPORTED) \
 		-out $(BUILD_DIR)/latest.json \
-		-repo Ducky705/ClashGO \
+		-repo DSargent21/ClashGo \
 		-os darwin \
 		$(if $(NOTES_FILE),-notes-file $(NOTES_FILE))
 

@@ -1,12 +1,12 @@
-ClashGO v0.2.0-beta
-===================
+ClashGO
+=======
 
 To install
 ----------
 1. Drag ClashGO.app into your Applications folder.
 2. Launch ClashGO from Applications.
 3. In Settings, point ClashGO at your emulator (BlueStacks at
-   860x732 / 160 DPI) and set the ADB device.
+   1280x720 / 320 DPI) and set the ADB device.
 
 To update
 ---------
@@ -18,8 +18,8 @@ the banner.
 Resources
 ---------
 - Documentation & strategy authoring:
-  https://github.com/Ducky705/ClashGO
+  https://github.com/DSargent21/ClashGo
 - Report bugs:
-  https://github.com/Ducky705/ClashGO/issues
+  https://github.com/DSargent21/ClashGo/issues
 
 License: MIT (see License.txt on this volume).

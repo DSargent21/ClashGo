@@ -47,8 +47,8 @@ At runtime the orchestrator (`internal/attack/orchestrator.go::DeployDynamicV2`)
 1. Resolves `target_edge` to one of the 4 corner names.
 2. Loads `formula.json` next to the strategy YAML.
 3. **If `corner_overrides[<CORNER>]` is present**, merges it with `formula.units` (per-corner wins per-unit; partial overrides are fine) and uses the result as-is — no mirroring.
-4. **Otherwise**, mirrors `formula.units` around the formula's authored 860×732 reference frame via `formula.MirrorForCorner`.
-5. Projects the (merged or mirrored) units to the live screen via `ApplyScreenScale`.
+4. **Otherwise**, mirrors `formula.units` via `formula.MirrorForCorner`, which reflects across the axes of the frame the formula declares in `screen`. A formula authored with `-live` (the normal case) declares the live device frame — 1280×720 on the pinned 720p device — so `screen` is *where the points were authored*, not a fixed 860×732 reference.
+5. Projects the (merged or mirrored) units onto the live screen with `formula.ProjectUniform(device.display_scale)`: one uniform scale about the frame centre, which leaves a formula already authored at the live size untouched. `ApplyScreenScale` (a per-axis frame ratio) survives only for the corner-authoring path in `cmd/design_attack`, which scales between two buffers of the same device.
 
 This means the same authored formula lands on all 4 sides without re-authoring for each, but you can also pin a specific side's coords when the base geometry demands it.
 
@@ -100,14 +100,16 @@ The full authoring session is **4 runs of `cmd/design_attack`**, one per corner,
      -strategy assets/strategies/auto_edrag_rush.yaml \
      -out assets/strategies/auto_edrag_rush_formula.json -corner BR
    ```
-   Click 1 or 2 points per unit (11 total: balloon, ED, slammer, BK, AQ, Warden, Prince, Duke, rage, ice, `_rage_inner`). For line units (balloon, ED, rage, ice, _rage_inner) click **P1** (line start) then **P2** (line end). For point units (heroes, siege) click **once**. Press ENTER to commit + advance, `s` to save when done.
+   Click 1 or 2 points per unit (11 rows: balloon, ED, slammer, BK, AQ, Warden, Prince, Duke, rage, ice, `_rage_inner`). For line units (balloon, ED, rage, ice, `_rage_inner`) click **P1** (line start) then **P2** (line end). For point units (heroes, siege) click **once**. Press ENTER to commit + advance, `s` to save when done.
+
+   The `_rage_inner` row is **optional**: it only pre-pins the second, deeper rage line. Skip it (press `s`) and `spell_deployer.go` derives the inner line itself; the shipped `auto_edrag_rush_formula.json` carries no `_rage_inner` key.
 
 3. **Pan the camera** to show the BottomLeft side. Re-run the command with `-corner BL`. The tool loads the existing `auto_edrag_rush_formula.json` (preserving the BR `units`) and adds a new entry under `corner_overrides.BottomLeft`.
 
 4. Repeat for `TR` and `TL`. After all 4 runs, the file has the structure:
    ```json
    {
-     "screen": { "w": 860, "h": 732 },
+     "screen": { "w": 1280, "h": 720 },
      "units": { "balloon": { ... }, "slammer": { ... }, ... },
      "corner_overrides": {
        "BottomLeft": { "balloon": { ... }, "slammer": { ... }, ... },
@@ -164,11 +166,12 @@ if formulaPtr.CornerOverrides != nil {
     }
 }
 if !usedOverride {
-    // fallback: mirror units around the formula's 860x732 reference frame
+    // fallback: mirror units across the axes of the frame `formula.screen`
+    // declares (the live device frame for a -live authoring run)
     formulaPtr.MirrorForCorner(targetEdge)
 }
-// then scale to live screen
-formulaPtr.ApplyScreenScale(...)
+// then project onto the live screen with the device's uniform display scale
+formulaPtr.ProjectUniform(k, liveW, liveH, liveW, liveH)
 ```
 
 **Override wins** when present. The mirror is the fallback for corners without an explicit override (so old single-side formulas continue to work).
@@ -217,6 +220,8 @@ type LinePoint struct { P1, P2 Point; Count, Jitter int }
 ```
 
 `CornerOverrides` is **omitted from JSON when nil** (so old formulas without the field round-trip cleanly). Each per-corner value is a per-unit map with the same schema as `Units`.
+
+`type` is what the picker writes, so it is the field to trust: a single tap is `point` (or a legacy `p1`/`p2`-less entry), a straight sweep is `line`, and a multi-cast sweep like the rage 3+2 split is `lines` — one `LinePoint` per sub-line, each with its own `count`. `_rage_inner` is a separate, optional key, never a sub-line: when it is absent the deployer derives the inner line (`deriveInwardLine`). The shipped `assets/strategies/auto_edrag_rush_formula.json` therefore has ten `units` and no `_rage_inner`.
 
 ## Reference: `formula.MirrorForCorner` reflection rules
 
