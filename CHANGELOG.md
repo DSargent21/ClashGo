@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **The released DMG now launches. It never did.** `make build-gui` passed only
+  the version/commit ldflags to `wails build`, so the app's OpenCV references had
+  no `LC_RPATH` to resolve against and dyld aborted before `main()` —
+  "Library not loaded: @rpath/libopencv_gapi.410.dylib, no LC_RPATH's found".
+  Every CLI target already carried that flag; the GUI was the one target excluded
+  from it. The linker is also now given `-headerpad_max_install_names`, without
+  which `install_name_tool` refuses to touch the binary at all ("larger updated
+  load commands do not fit").
+- **The app bundle is self-contained, so the DMG no longer needs OpenCV on the
+  machine that runs it.** `tools/bundle_dylibs.sh` (new, wired as
+  `make bundle-dylibs` ahead of `package` and `build-zip`) walks the load-command
+  closure of the executable, copies all 182 non-system dylibs into
+  `Contents/Frameworks`, rewrites every reference — in the executable and in the
+  copied dylibs, including the ones they make to each other — to
+  `@executable_path/../Frameworks/<name>`, thins fat slices down to the app's own
+  architecture, deletes rpaths that point outside the bundle (which also stops
+  the build machine's paths from being published inside a shipped binary),
+  re-signs what it changed, and then fails the build if a single external
+  reference survives. A released build previously depended on an absolute
+  Homebrew path — `/opt/homebrew/opt/opencv@4/lib/libopencv_gapi.414.dylib` —
+  that no rpath can redirect, so the DMG only ran where that exact formula was
+  installed. Cost: `Contents/Frameworks` is ~227 MB, the DMG ~103 MB and the zip
+  ~95 MB, against 7 MB and 6.5 MB before.
+
 ### Changed
 - **Frame captures are no longer tracked, and the frames that were already in the
   repository are gone from its history.** A frame off the emulator carries other

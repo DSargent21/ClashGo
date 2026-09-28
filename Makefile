@@ -45,14 +45,31 @@ ifneq ($(OPENCV_LIBDIR),)
     GOTEST_LDFLAGS := -ldflags='-extldflags=-Wl,-rpath,$(OPENCV_LIBDIR)'
 endif
 
-# The CLI binary links the same @rpath dylibs, so it needs the same LC_RPATH —
-# without it `make build-cli` produces a binary that aborts at spawn with
-# "Library not loaded: @rpath/libopencv_gapi.410.dylib" and every probe/live
-# run in this repo is dead on arrival. Deliberately narrower than LDFLAGS:
-# the GUI bundle is packaged for other Macs and must NOT bake this machine's
-# lib path into it. Empty on CI, where keg-only linking already works.
+# Every binary that links OpenCV needs the same LC_RPATH — without it it aborts
+# at spawn with "Library not loaded: @rpath/libopencv_gapi.410.dylib" and every
+# probe/live run in this repo is dead on arrival. Empty on CI, where the keg-only
+# install's absolute install names resolve without help.
+#
+# The GUI used to be excluded "because the bundle is packaged for other Macs",
+# which was backwards: excluding it produced a DMG whose app died in dyld on
+# every machine, including this one. The bundle is made portable by
+# `make bundle-dylibs` (tools/bundle_dylibs.sh), which copies the closure into
+# Contents/Frameworks and rewrites these references away — so baking the build
+# machine's lib dir into the binary is fine, and the bundler is what removes it
+# from the shipped artifact.
+#
+# -headerpad_max_install_names is not optional: install_name_tool refuses to
+# grow a load command in a binary linked without it ("larger updated load
+# commands do not fit ... you may need to use -headerpad or
+# -headerpad_max_install_names"), and the bundler has to rewrite every OpenCV
+# reference plus add an rpath.
+# `-Wl,` forwards a COMMA-separated list to the linker, so both options ride in
+# one -extldflags token. `-extldflags` takes a single argument: a space-separated
+# second -Wl, flag is parsed by the Go linker as a flag of its own and the build
+# dies printing its usage (`-extldflags='a b'` does not survive either, because
+# the wails CLI splits the -ldflags string on spaces before handing it to Go).
 ifneq ($(OPENCV_LIBDIR),)
-    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR)
+    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names
 endif
 
 .PHONY: all build build-cli build-gui clean release manifest test test-go test-py
@@ -279,13 +296,24 @@ stage-app: build-gui
 	@codesign --force --deep -s - $(BUILD_DIR)/ClashGO.app >/dev/null 2>&1 && echo "  re-signed (ad-hoc)" || echo "  WARNING: codesign failed"
 	@codesign --verify --deep --strict $(BUILD_DIR)/ClashGO.app >/dev/null 2>&1 && echo "  bundle signature verified" || echo "  WARNING: signature verify failed"
 
-# package depends on stage-app (not build-gui directly) so a `make
+# bundle-dylibs makes the .app self-contained: it copies the OpenCV closure
+# into Contents/Frameworks and rewrites the references, so the DMG launches on a
+# Mac with no OpenCV installed. It runs after stage-app (assets in, first
+# signature) and must run BEFORE package and build-zip, because the DMG is
+# assembled from this bundle and the zip is made from it too — and because
+# build_dmg.sh copies whatever bundle it is handed.
+.PHONY: bundle-dylibs
+bundle-dylibs: stage-app
+	@echo "Bundling OpenCV dylibs into $(BUILD_DIR)/ClashGO.app..."
+	@bash tools/bundle_dylibs.sh $(BUILD_DIR)/ClashGO.app
+
+# package depends on bundle-dylibs (not build-gui directly) so a `make
 # release` run never rebuilds the app between staging and DMG assembly —
 # a fresh `wails build` would wipe the staged Contents/Resources/assets
 # and the zip (built afterwards) would silently ship without them. make
 # dedupes the stage-app prerequisite within one invocation, so `release`
 # still only builds the GUI once.
-package: stage-app
+package: bundle-dylibs
 	@echo "Packaging DMG via tools/build_dmg.sh..."
 	@bash tools/build_dmg.sh $(BUILD_DIR)/ClashGO.app $(BUILD_DIR)/ClashGO.dmg "ClashGO Installer"
 
@@ -293,14 +321,16 @@ package: stage-app
 # caller. Callers (CI / `make release`) still trigger `package` to keep
 # the legacy make-graph intact.
 
-release: build-cli stage-app package build-zip manifest
+release: build-cli package build-zip manifest
 	@echo "Release v$(VERSION) emitted:"
 	@echo "  - $(BUILD_DIR)/ClashGO-v$(VERSION)-macOS.zip"
 	@echo "  - $(BUILD_DIR)/ClashGO.dmg"
 	@echo "  - $(BUILD_DIR)/latest.json (publish alongside the zip on GitHub)"
 
-# build-zip turns the packaged .app into the zip artifact.
-build-zip:
+# build-zip turns the packaged .app into the zip artifact. Depends on
+# bundle-dylibs so the zip carries Contents/Frameworks too — the zip is the
+# artifact the in-app updater installs, so it must be as self-contained as the DMG.
+build-zip: bundle-dylibs
 	@echo "Building release zip..."
 	@mkdir -p $(BUILD_DIR)/release
 	@cp -R $(BUILD_DIR)/ClashGO.app $(BUILD_DIR)/release/
