@@ -7,6 +7,9 @@ import (
 
 // Pinch simulates a multi-touch pinch gesture using parallel ADB swipes.
 func (c *Client) Pinch(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	c.markInput()
 	cmd := fmt.Sprintf("input touchscreen swipe %d %d %d %d %d & input touchscreen swipe %d %d %d %d %d; wait",
 		x1, y1, x2, y2, ms,
@@ -20,6 +23,9 @@ func (c *Client) Pinch(x1, y1, x2, y2, x3, y3, x4, y4, ms int) error {
 // This uses sendevent batching with Protocol A (SYN_MT_REPORT)
 // ensuring emulators like BlueStacks process it as a genuine multi-touch gesture.
 func (c *Client) PinchZoom(zoomOut bool) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	c.markInput()
 	c.log.Debugf("PinchZoom executing (zoomOut: %v)", zoomOut)
 

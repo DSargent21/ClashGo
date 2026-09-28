@@ -62,6 +62,54 @@ type Client struct {
 	// looking at the same screen ask the emulator once (capturecache.go). Off
 	// until a caller opts in with WithCaptureCache.
 	frames *captureCache
+
+	// inputCtx is set by the owning bot. Once cancelled, every input path
+	// rejects new taps/gestures so a stopped attack cannot keep deploying.
+	inputCtx   atomic.Pointer[clientInputContext]
+	inputGuard atomic.Pointer[clientInputGuard]
+}
+
+type clientInputContext struct {
+	ctx context.Context
+}
+
+type clientInputGuard struct {
+	check func() error
+}
+
+// SetInputContext binds input to the owning runtime lifecycle. A nil context
+// restores standalone-client behavior; bot-owned clients pass their runtime
+// context so Stop prevents further device input.
+func (c *Client) SetInputContext(ctx context.Context) {
+	if ctx == nil {
+		c.inputCtx.Store(nil)
+		return
+	}
+	c.inputCtx.Store(&clientInputContext{ctx: ctx})
+}
+
+// SetInputGuard installs an additional owner-defined input check. It is
+// evaluated immediately before device input and may be cleared with nil. This
+// lets long-running operations reject unsafe input without wrapping every
+// individual gesture call site.
+func (c *Client) SetInputGuard(check func() error) {
+	if check == nil {
+		c.inputGuard.Store(nil)
+		return
+	}
+	c.inputGuard.Store(&clientInputGuard{check: check})
+}
+
+func (c *Client) checkInputContext() error {
+	if input := c.inputCtx.Load(); input != nil {
+		if err := input.ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if guard := c.inputGuard.Load(); guard != nil {
+		return guard.check()
+	}
+	return nil
 }
 
 // EnablePersistentShell activates the persistent adb shell pipe for the
@@ -475,6 +523,9 @@ func (c *Client) TapAsync(x, y int) error {
 // routeTap is the shared router for Tap/TapAsync/TapFast through either
 // the persistent pipe (when alive) or the legacy transport.Exec fallback.
 func (c *Client) routeTap(cmd string, x, y int, async bool) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	// Every tap variant funnels through here (and through tapLocked on the pipe
 	// fallback), so this is the one place that has to invalidate the capture
 	// cache for all of them.
@@ -513,6 +564,9 @@ func (c *Client) markPipeBroken() {
 }
 
 func (c *Client) tapLocked(x, y int) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	if c.closed {
 		// See CaptureToMat: after a Stop the transport must not be
 		// silently reconnected, or the stopped bot keeps tapping.
@@ -554,6 +608,9 @@ func (c *Client) TapFastAsync(x, y int, stdDev float64) error {
 // persistent shell pipe is alive each tap round-trips in ~1-5ms instead of
 // ~200ms; falls back to legacy transport.Exec per tap if the pipe is broken.
 func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float64) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -591,6 +648,9 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 // instead of ~200ms; falls back to legacy transport.Exec per tap if the
 // pipe is broken.
 func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float64, x3, y3 int, stdDev3 float64) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -635,6 +695,9 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 // same-point-swipe technique for long presses, so the trick is already
 // proven on BlueStacks.
 func (c *Client) TapHuman(x, y int, stdDev float64) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	// Human reaction latency before committing to the tap: Gaussian
 	// with base 250ms / σ=70ms. The bulk of the mass sits in the
 	// 180-320ms band and the tail reaches ~460ms — the natural
@@ -677,9 +740,15 @@ func gaussianOffset(stdDev float64) (int, int) {
 }
 
 func (c *Client) Swipe(x1, y1, x2, y2 int, ms int) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	c.markInput()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 
 	if p := c.currentPipe(); p != nil {
 		full := fmt.Sprintf("input swipe %d %d %d %d %d", x1, y1, x2, y2, ms)
@@ -740,9 +809,15 @@ func (c *Client) Hold(x, y int, ms int) error {
 }
 
 func (c *Client) Text(text string) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	c.markInput()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 
 	if p := c.currentPipe(); p != nil {
 		// Quote the text to defend against spaces, etc.
@@ -762,10 +837,16 @@ func (c *Client) Text(text string) error {
 }
 
 func (c *Client) KeyEvent(code int) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	// Back/Home/Enter/Delete all arrive here.
 	c.markInput()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 
 	if p := c.currentPipe(); p != nil {
 		full := fmt.Sprintf("input keyevent %d", code)
@@ -795,6 +876,11 @@ func (c *Client) ZoomOut() error { return c.PinchZoom(true) }
 func (c *Client) ZoomIn() error { return c.PinchZoom(false) }
 
 func (c *Client) Shell(cmd string) (string, error) {
+	if isInputShellCommand(cmd) {
+		if err := c.checkInputContext(); err != nil {
+			return "", err
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -804,8 +890,18 @@ func (c *Client) Shell(cmd string) (string, error) {
 		}
 	}
 
+	if isInputShellCommand(cmd) {
+		if err := c.checkInputContext(); err != nil {
+			return "", err
+		}
+	}
 	resp, err := c.transport.Exec("shell:" + cmd)
 	return strings.TrimSpace(string(resp)), err
+}
+
+func isInputShellCommand(cmd string) bool {
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
+	return strings.Contains(cmd, "input ") || strings.Contains(cmd, "sendevent ")
 }
 
 // ShellRunner is the minimal interface the boot orchestrator (and any
@@ -1149,10 +1245,16 @@ func (c *Client) IsConnected() bool {
 }
 
 func (c *Client) ForceStop(pkg string) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	// The app is about to be killed: whatever a cached frame shows is about to
 	// stop being true.
 	c.markInput()
 	if err := c.EnsureConnected(); err != nil {
+		return err
+	}
+	if err := c.checkInputContext(); err != nil {
 		return err
 	}
 	return c.transport.StopApp(pkg)
@@ -1247,8 +1349,14 @@ func (c *Client) ResetAdbServer() error {
 }
 
 func (c *Client) StartApp(pkg string) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	c.markInput()
 	if err := c.EnsureConnected(); err != nil {
+		return err
+	}
+	if err := c.checkInputContext(); err != nil {
 		return err
 	}
 	// Use monkey to reliably start the app by package name

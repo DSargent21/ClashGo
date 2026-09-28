@@ -307,7 +307,7 @@ func (sd *SpellDeployer) deployFourSides(unit strategy.Unit, _ *TrackedSlot, tar
 				tx := targetPt.X + int(radius*math.Cos(angle))
 				ty := targetPt.Y + int(radius*math.Sin(angle))
 				jPt := sd.executor.addJitter(image.Pt(tx, ty), 6)
-				sd.executor.client.TapFast(jPt.X, jPt.Y, 8.0)
+				sd.executor.TapField(jPt.X, jPt.Y, 8.0)
 				time.Sleep(50 * time.Millisecond)
 			}
 		} else {
@@ -354,7 +354,7 @@ func (sd *SpellDeployer) deployFourSides(unit strategy.Unit, _ *TrackedSlot, tar
 				tx := int(float64(p1.X) + float64(p2.X-p1.X)*pct)
 				ty := int(float64(p1.Y) + float64(p2.Y-p1.Y)*pct)
 				jPt := sd.executor.addJitter(image.Pt(tx, ty), 6)
-				sd.executor.client.TapFast(jPt.X, jPt.Y, 8.0)
+				sd.executor.TapField(jPt.X, jPt.Y, 8.0)
 				time.Sleep(50 * time.Millisecond)
 			}
 		}
@@ -392,7 +392,7 @@ func (sd *SpellDeployer) deployPointSpell(unit strategy.Unit, slot *TrackedSlot,
 
 	for idx, pt := range points {
 		sd.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target point")
-		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
+		sd.executor.TapField(pt.X, pt.Y, 8.0)
 		if idx < len(points)-1 {
 			sd.executor.client.HumanSleep(80, 20)
 		}
@@ -505,7 +505,7 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 
 	for idx, pt := range points {
 		sd.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target line")
-		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
+		sd.executor.TapField(pt.X, pt.Y, 8.0)
 		if idx < len(points)-1 {
 			sd.executor.client.HumanSleep(80, 20)
 		}
@@ -541,7 +541,7 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 	deployed := 0
 	for idx, pt := range pointsA {
 		sd.logger.Info().Int("idx", idx).Interface("pt", pt).Msg("tapping rage spell Line A")
-		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
+		sd.executor.TapField(pt.X, pt.Y, 8.0)
 		sd.executor.client.HumanSleep(80, 20)
 		deployed++
 	}
@@ -561,7 +561,7 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 	// iteration — that race condition was what dropped Line B tap #2.
 	for idx, pt := range pointsB {
 		sd.logger.Info().Int("idx", idx+3).Interface("pt", pt).Msg("tapping rage spell Line B")
-		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
+		sd.executor.TapField(pt.X, pt.Y, 8.0)
 		deployed++
 		sd.executor.client.HumanSleep(80, 20)
 	}
@@ -677,26 +677,70 @@ func (sd *SpellDeployer) logRageSpread(points []image.Point) {
 // resolveSpellCount returns the number of spells to deploy.
 //
 // Precedence:
-//  1. Numeric Amount ("2", "3", ...) — the user explicitly pinned a count.
-//  2. Live OCR count for the spell's slot (from TroopCounter) — the army
-//     actually carries N of this spell, tap exactly N.
-//  3. Default 5 (legacy fallback when Amount is "All" and OCR failed).
+//  1. Numeric Amount ("2", "3", ...) — the user explicitly pinned a count,
+//     clamped to a trusted measured count when the card carries fewer.
+//  2. Live OCR count for the spell's slot (from TroopCounter). The map only
+//     holds reads the multi-frame merge confirmed, so a PRESENT zero is
+//     positive evidence the card is empty — never a blurry-frame artifact
+//     (an unreadable card is absent from the map). A trusted zero fires no
+//     taps; inventing casts for an empty card is exactly the over-fire this
+//     count path exists to prevent.
+//  3. Default 5 (legacy fallback when Amount is "All" and there is NO
+//     measurement at all; the post-deploy reconcile still drives it).
 func (sd *SpellDeployer) resolveSpellCount(unit strategy.Unit) int {
+	measured, haveMeasured := 0, false
+	if sd.slotCounts != nil && sd.executor != nil {
+		if n, ok := sd.slotCounts[sd.executor.slotXFor(unit)]; ok {
+			measured, haveMeasured = n, true
+		}
+	}
+
+	authored := -1
 	if unit.Amount != "All" && unit.Amount != "" {
 		if val, err := strconv.Atoi(unit.Amount); err == nil {
-			return val
+			authored = val
 		}
 	}
-	if sd.slotCounts != nil && sd.executor != nil {
-		if n, ok := sd.slotCounts[sd.executor.slotXFor(unit)]; ok && n > 0 {
-			sd.logger.Info().
+
+	switch {
+	case authored >= 0 && haveMeasured && authored > measured:
+		sd.logger.Warn().
+			Str("unit", unit.Name).
+			Int("authored", authored).
+			Int("measured", measured).
+			Msg("authored spell count exceeds what the card measurably carries; clamping to the measured count")
+		return measured
+	case authored >= 0:
+		return authored
+	case haveMeasured:
+		if measured == 0 {
+			sd.logger.Warn().
 				Str("unit", unit.Name).
-				Int("ocr_count", n).
-				Msg("spell count resolved from live slot OCR")
-			return n
+				Msg("spell card measurably empty at deploy start; firing no taps")
 		}
+		return measured
+	default:
+		return 5 // legacy fallback: no measurement exists at all
 	}
-	return 5 // Default fallback
+}
+
+// clampToMeasured caps a formula-authored count at what the card measurably
+// carries. Formula geometry entries (entry.Count) outrank resolveSpellCount,
+// but no authored number may exceed the army actually present.
+func (sd *SpellDeployer) clampToMeasured(unit strategy.Unit, count int) int {
+	if sd.slotCounts == nil || sd.executor == nil {
+		return count
+	}
+	measured, ok := sd.slotCounts[sd.executor.slotXFor(unit)]
+	if !ok || count <= measured {
+		return count
+	}
+	sd.logger.Warn().
+		Str("unit", unit.Name).
+		Int("requested", count).
+		Int("measured", measured).
+		Msg("formula spell count exceeds the measured card; clamping")
+	return measured
 }
 
 // slotXFor resolves the slot X the planner assigned to this unit. It
@@ -756,7 +800,7 @@ func (sd *SpellDeployer) deployFromFormula(unit strategy.Unit, slot *TrackedSlot
 func (sd *SpellDeployer) deployFormulaPoint(unit strategy.Unit, _ *TrackedSlot, entry formula.UnitEntry) bool {
 	maxSpells := sd.resolveSpellCount(unit)
 	if entry.Count > 0 {
-		maxSpells = entry.Count
+		maxSpells = sd.clampToMeasured(unit, entry.Count)
 	}
 	center := entry.P.Image()
 	jitter := entry.Jitter
@@ -808,7 +852,7 @@ func (sd *SpellDeployer) deployFormulaLine(unit strategy.Unit, _ *TrackedSlot, e
 	p2 := entry.P2.Image()
 	count := sd.resolveSpellCount(unit)
 	if entry.Count > 0 {
-		count = entry.Count
+		count = sd.clampToMeasured(unit, entry.Count)
 	}
 	jitter := entry.Jitter
 	if jitter <= 0 {
@@ -1122,7 +1166,7 @@ func (sd *SpellDeployer) deployFormulaLines(unit strategy.Unit, slot *TrackedSlo
 				Int("idx", idx+deployed).
 				Interface("pt", pt).
 				Msg("tapping formula lines spell")
-			sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
+			sd.executor.TapField(pt.X, pt.Y, 8.0)
 			deployed++
 			sd.executor.client.HumanSleep(80, 20)
 		}
@@ -1407,7 +1451,7 @@ func (sd *SpellDeployer) tapSeries(unit strategy.Unit, points []image.Point, _ i
 			Int("idx", idx).
 			Interface("pt", pt).
 			Msg("tapping spell formula point")
-		sd.executor.client.TapFast(pt.X, pt.Y, 8.0)
+		sd.executor.TapField(pt.X, pt.Y, 8.0)
 		sd.executor.client.HumanSleep(80, 20)
 	}
 }

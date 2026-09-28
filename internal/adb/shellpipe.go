@@ -49,7 +49,7 @@ type ShellPipe struct {
 
 type pipeCmd struct {
 	cmd  string
-	done chan struct{}
+	done chan error
 }
 
 // NewShellPipe constructs a ShellPipe; call Start before use.
@@ -245,7 +245,7 @@ func (p *ShellPipe) sendEnqueue(cmd string, async bool) error {
 			return ErrShellPipeBusy
 		}
 	}
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	select {
 	case p.cmdCh <- pipeCmd{cmd: cmd, done: done}:
 	case <-time.After(5 * time.Second):
@@ -254,8 +254,8 @@ func (p *ShellPipe) sendEnqueue(cmd string, async bool) error {
 		return ErrShellPipeBroken
 	}
 	select {
-	case <-done:
-		return nil
+	case err := <-done:
+		return err
 	case <-time.After(5 * time.Second):
 		return errors.New("adb shell pipe write timeout")
 	case <-p.stopCh:
@@ -283,15 +283,15 @@ func (p *ShellPipe) runWorker() {
 	}
 }
 
-// drainOnExit closes any per-cmd `done` channels for residual commands so
-// blocked synchronous senders (already past the enqueue select) are
-// released rather than hanging on their 5s timeout.
+// drainOnExit reports failure for residual commands so blocked synchronous
+// senders (already past the enqueue select) fall back instead of mistaking an
+// unwritten command for success or hanging on their 5s timeout.
 func (p *ShellPipe) drainOnExit() {
 	for {
 		select {
 		case pc := <-p.cmdCh:
 			if pc.done != nil {
-				close(pc.done)
+				pc.done <- ErrShellPipeBroken
 			}
 		default:
 			return
@@ -306,13 +306,14 @@ func (p *ShellPipe) handlePipeCmd(pc pipeCmd) {
 	if conn == nil {
 		p.broken.Store(true)
 		if pc.done != nil {
-			close(pc.done)
+			pc.done <- ErrShellPipeBroken
 		}
 		return
 	}
 	conn.SetWriteDeadline(time.Now().Add(p.timeout))
 	if _, err := conn.Write([]byte(pc.cmd)); err != nil {
 		p.broken.Store(true)
+		writeErr := fmt.Errorf("adb shell pipe write: %w", err)
 		p.logger.Warn(fmt.Sprintf("adb shell pipe write failed: %v (caller will fallback)", err))
 		p.mu.Lock()
 		if p.conn != nil {
@@ -321,7 +322,7 @@ func (p *ShellPipe) handlePipeCmd(pc pipeCmd) {
 		}
 		p.mu.Unlock()
 		if pc.done != nil {
-			close(pc.done)
+			pc.done <- writeErr
 		}
 		return
 	}
@@ -329,7 +330,7 @@ func (p *ShellPipe) handlePipeCmd(pc pipeCmd) {
 	// between attacks) never trips a stale timeout in discardReader.
 	conn.SetDeadline(time.Time{})
 	if pc.done != nil {
-		close(pc.done)
+		pc.done <- nil
 	}
 }
 

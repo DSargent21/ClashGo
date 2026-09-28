@@ -49,8 +49,8 @@ func TestHeroHPMonitor_FiresOnceOnLowHP(t *testing.T) {
 	defer low.Close()
 	m := NewHeroHPMonitor([]*WatchedHero{{X: cx, SlotY: slotY, DeployedAt: time.Now().Add(-time.Minute)}})
 	taps := 0
-	m.Poll(low, nil, time.Now(), func(h *WatchedHero) { taps++ })
-	m.Poll(low, nil, time.Now(), func(h *WatchedHero) { taps++ })
+	m.Poll(low, nil, time.Now(), func(h *WatchedHero) bool { taps++; return true })
+	m.Poll(low, nil, time.Now(), func(h *WatchedHero) bool { taps++; return true })
 	if taps != 1 {
 		t.Fatalf("low HP fired %d taps, want exactly 1", taps)
 	}
@@ -66,11 +66,11 @@ func TestHeroHPMonitor_DeadAfterTwoZeroReads(t *testing.T) {
 	m := NewHeroHPMonitor([]*WatchedHero{{X: cx, SlotY: slotY, DeployedAt: time.Now().Add(-time.Minute)}})
 	taps := 0
 	now := time.Now()
-	m.Poll(blank, nil, now, func(h *WatchedHero) { taps++ })
+	m.Poll(blank, nil, now, func(h *WatchedHero) bool { taps++; return true })
 	if m.AllDone() {
 		t.Fatal("single zero read confirmed death; want 2 strikes")
 	}
-	m.Poll(blank, nil, now, func(h *WatchedHero) { taps++ })
+	m.Poll(blank, nil, now, func(h *WatchedHero) bool { taps++; return true })
 	if !m.AllDone() || taps != 0 {
 		t.Fatalf("dead hero: done=%v taps=%d, want done=true taps=0", m.AllDone(), taps)
 	}
@@ -82,7 +82,7 @@ func TestHeroHPMonitor_WardenProactive(t *testing.T) {
 	defer full.Close()
 	m := NewHeroHPMonitor([]*WatchedHero{{X: cx, SlotY: slotY, Warden: true, DeployedAt: time.Now().Add(-time.Minute)}})
 	taps := 0
-	m.Poll(full, nil, time.Now(), func(h *WatchedHero) { taps++ })
+	m.Poll(full, nil, time.Now(), func(h *WatchedHero) bool { taps++; return true })
 	if taps != 1 {
 		t.Fatalf("warden with full bar fired %d taps, want 1 proactive", taps)
 	}

@@ -21,10 +21,10 @@ import (
 // ~44px wide centred on the card, rows slotY-8..slotY-3. Ref offsets below
 // reproduce that band through cal.Length (K=1.325 at 1280x720 → 8x5 live px).
 const (
-	heroHPThreshold  = 0.30 // fire ability below 30% HP
-	heroHPMinAlive   = 0.03 // below this the bar is gone: dead or undeployed
-	heroHPDeadStrikes = 2   // confirm death over 2 ticks (one 0.0 is a stray frame)
-	heroWardenDelay  = 4 * time.Second // warden HP reads full till death: fire proactively
+	heroHPThreshold   = 0.30            // fire ability below 30% HP
+	heroHPMinAlive    = 0.03            // below this the bar is gone: dead or undeployed
+	heroHPDeadStrikes = 2               // confirm death over 2 ticks (one 0.0 is a stray frame)
+	heroWardenDelay   = 4 * time.Second // warden HP reads full till death: fire proactively
 
 	heroHPStripTopRef = 8.0 // strip rows above the card centre, ref px
 	heroHPStripBotRef = 3.0
@@ -87,6 +87,7 @@ func HeroHPFraction(screen gocv.Mat, cardCX, slotY int, cal *game.Calibration) f
 type WatchedHero struct {
 	X          int // card centre x (live px)
 	SlotY      int // card centre y (live px)
+	Slot       *TrackedSlot
 	Warden     bool
 	DeployedAt time.Time
 	activated  bool
@@ -120,7 +121,7 @@ func (m *HeroHPMonitor) AllDone() bool {
 // Poll reads each unresolved hero once against screen and taps for the
 // ability when due. tap receives the hero (X/SlotY card point, Warden flag
 // for the card's Y offset); the caller owns transport.
-func (m *HeroHPMonitor) Poll(screen gocv.Mat, cal *game.Calibration, now time.Time, tap func(h *WatchedHero)) {
+func (m *HeroHPMonitor) Poll(screen gocv.Mat, cal *game.Calibration, now time.Time, tap func(h *WatchedHero) bool) {
 	if m == nil || m.AllDone() {
 		return
 	}
@@ -132,8 +133,9 @@ func (m *HeroHPMonitor) Poll(screen gocv.Mat, cal *game.Calibration, now time.Ti
 		// Proactive warden: its bar reads full until death, so fire once
 		// shortly after deploy instead of waiting for a low read.
 		if h.Warden && !now.Before(h.DeployedAt.Add(heroWardenDelay)) {
-			tap(h)
-			h.activated, h.Done = true, true
+			if tap != nil && tap(h) {
+				h.activated, h.Done = true, true
+			}
 			continue
 		}
 		frac := HeroHPFraction(screen, h.X, h.SlotY, cal)
@@ -148,8 +150,9 @@ func (m *HeroHPMonitor) Poll(screen gocv.Mat, cal *game.Calibration, now time.Ti
 		if frac >= heroHPThreshold {
 			continue
 		}
-		tap(h)
-		h.activated, h.Done = true, true
+		if tap != nil && tap(h) {
+			h.activated, h.Done = true, true
+		}
 	}
 }
 
@@ -157,36 +160,124 @@ func isWardenName(name string) bool {
 	return strings.Contains(strings.ToLower(name), "warden")
 }
 
-// snapshotHeroWatch collects deployed heroes that still hold their ability tap
-// (SpotTaps < maxHeroSpotTaps: one tap places, one more fires the ability) so
-// the battle-end wait can fire them on low HP. Heroes whose budget is spent,
-// fallback-labeled bonus troops, and empty snapshots leave no watch.
-func (e *Executor) snapshotHeroWatch(sm *SlotManager) {
-	e.heroWatch = nil
-	if sm == nil {
+// Track adds a deployed hero that still holds its ability tap (SpotTaps <
+// maxHeroSpotTaps: one tap places, one more fires the ability) so the battle
+// watcher can fire it on low HP. Heroes whose budget is spent, fallback-
+// labeled bonus troops, non-hero slots, and already-tracked (X, SlotY)
+// positions are ignored.
+func (m *HeroHPMonitor) Track(slot *TrackedSlot) {
+	if m == nil || slot == nil || slot.Category != "Hero" || slot.FallbackLabeled || slot.State != SlotDeployed || slot.SpotTaps >= maxHeroSpotTaps {
 		return
 	}
-	var heroes []*WatchedHero
+	for _, h := range m.heroes {
+		if h.X == slot.X && h.SlotY == slot.Y {
+			return
+		}
+	}
+	at := slot.DeployedAt
+	if at.IsZero() {
+		at = time.Now()
+	}
+	m.heroes = append(m.heroes, &WatchedHero{
+		X: slot.X, SlotY: slot.Y, Slot: slot, Warden: isWardenName(slot.UnitName), DeployedAt: at,
+	})
+}
+
+// clearHeroWatch drops any watch from a previous battle. Called at deploy start.
+func (e *Executor) clearHeroWatch() {
+	e.heroWatchMu.Lock()
+	e.heroWatch = nil
+	e.heroWatchMu.Unlock()
+}
+
+// armHeroWatch tracks every hero the slot manager has confirmed deployed so
+// far, so an ability becomes eligible the moment the hero lands instead of at
+// the end of the whole deploy. Safe to call repeatedly.
+func (e *Executor) armHeroWatch(sm *SlotManager) int {
+	if sm == nil {
+		return 0
+	}
+	e.heroWatchMu.Lock()
+	defer e.heroWatchMu.Unlock()
+	if e.heroWatch == nil {
+		e.heroWatch = NewHeroHPMonitor(nil)
+	}
 	for _, slot := range sm.slots {
-		if slot == nil || slot.Category != "Hero" || slot.FallbackLabeled {
-			continue
-		}
-		if slot.State != SlotDeployed || slot.SpotTaps >= maxHeroSpotTaps {
-			continue
-		}
-		at := slot.DeployedAt
-		if at.IsZero() {
-			at = time.Now()
-		}
-		heroes = append(heroes, &WatchedHero{
-			X:          slot.X,
-			SlotY:      slot.Y,
-			Warden:     isWardenName(slot.UnitName),
-			DeployedAt: at,
-		})
+		e.heroWatch.Track(slot)
 	}
-	if len(heroes) > 0 {
-		e.heroWatch = NewHeroHPMonitor(heroes)
-		e.logger.Info().Int("watched_heroes", len(heroes)).Msg("hero HP watch armed for the battle-end wait")
+	watched := 0
+	if e.heroWatch != nil {
+		watched = len(e.heroWatch.heroes)
 	}
+	if watched == 0 {
+		e.heroWatch = nil
+	}
+	return watched
+}
+
+// pollHeroWatch runs one HP check on an already-captured frame. Costs no extra
+// capture: callers pass the frame they already own (the battle-end tick, or
+// the deployment watcher's fresh frame).
+func (e *Executor) pollHeroWatch(frame gocv.Mat) {
+	e.heroWatchMu.Lock()
+	defer e.heroWatchMu.Unlock()
+	if e.heroWatch == nil {
+		return
+	}
+	e.heroWatch.Poll(frame, e.cal, time.Now(), e.fireHeroAbility)
+	if e.heroWatch.AllDone() {
+		e.heroWatch = nil
+	}
+}
+
+// fireHeroAbility fires exactly one hero ability tap for the HP monitor.
+// Returns true only when the tap actually reached the device, so an
+// interrupted or failed tap is retried on the next frame instead of being
+// marked done.
+func (e *Executor) fireHeroAbility(h *WatchedHero) bool {
+	if h == nil {
+		return false
+	}
+	// Stop or confirmed battle end: the client guard would reject the tap
+	// anyway; skipping here avoids logging a guaranteed failure.
+	if err := e.deploymentErr(); err != nil {
+		return false
+	}
+	if h.Slot != nil {
+		if h.Slot.SpotTaps >= maxHeroSpotTaps {
+			// The ability already fired through another path (explicit
+			// ability phase or the sweep); never tap a third time.
+			return false
+		}
+		h.Slot.SpotTaps++
+	}
+	y := h.SlotY
+	if h.Warden {
+		// Same card-tap point as the deploy path (fireSlotTap): the warden's
+		// icon sits above the card centre.
+		y -= int(e.cal.Length(25))
+	}
+	if err := e.client.TapFast(h.X, y, 4.0); err != nil {
+		e.logger.Warn().Err(err).Int("x", h.X).Msg("hero ability tap failed; will retry next frame")
+		if h.Slot != nil {
+			h.Slot.SpotTaps-- // nothing was delivered; keep the budget honest
+		}
+		return false
+	}
+	if e.deployCtxIsActive() {
+		// Mid-deploy: the ability's card tap re-selects the hero card. Put
+		// the deploy's own troop/spell selection back so the next field tap
+		// does not fire with a hero selected (valk_run6 failure mode).
+		if e.tapExec != nil {
+			e.client.HumanSleep(120, 25)
+			if !e.tapExec.RestoreSelection() {
+				e.logger.Warn().Msg("could not restore troop-bar selection after a mid-deploy hero ability")
+				return false
+			}
+		}
+		e.logger.Info().Int("x", h.X).Msg("hero ability fired mid-deploy; prior bar selection restored")
+	} else {
+		e.logger.Info().Int("x", h.X).Msg("hero ability fired on low HP")
+	}
+	return true
 }

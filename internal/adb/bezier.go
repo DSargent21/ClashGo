@@ -93,6 +93,9 @@ func clampInt(v, min, max int) int {
 // SwipeHuman (the existing randomized linear swipe) so navigation never
 // breaks on a device that doesn't support raw input injection.
 func (c *Client) SwipeBezier(x1, y1, x2, y2, ms int) error {
+	if err := c.checkInputContext(); err != nil {
+		return err
+	}
 	// A gesture under way is input, from the first sample of the sendevent
 	// stream: invalidate before anything can capture mid-gesture.
 	c.markInput()
