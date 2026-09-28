@@ -19,6 +19,10 @@ type lootTestCase struct {
 }
 
 // Reference screenshots with hand-labelled ground-truth loot values.
+//
+// These frames are captures of a live village, so they are deliberately NOT
+// tracked: see the image rules in .gitignore. They stay on the developer's
+// disk and every test below skips when one is missing.
 var lootTestCases = []lootTestCase{
 	{
 		name:     "screen_ocr",
@@ -193,7 +197,7 @@ func BenchmarkLootRecognition(b *testing.B) {
 
 	img := gocv.IMRead("testdata/screen_ocr.png", gocv.IMReadColor)
 	if img.Empty() {
-		b.Fatal("cannot read reference image")
+		b.Skip("screen_ocr.png is not in this checkout (captures are local-only)")
 	}
 	defer img.Close()
 
@@ -241,11 +245,11 @@ func TestLootAccuracyExact(t *testing.T) {
 }
 
 // victoryTestCase captures the ground truth for an end-of-battle screen.
-// screen_victory.png is the tracked regression fixture for victory-screen
-// parsing, including the league-bonus column (which previously clipped a
-// trailing zero on a live capture). The former screen_victory_live.png
-// fixture was a live capture containing real player names and was removed
-// for privacy; screen_victory.png keeps victory-screen coverage.
+// screen_victory.png is the regression fixture for victory-screen parsing,
+// including the league-bonus column (which previously clipped a trailing zero
+// on a live capture). Like every other capture in testdata/ it is untracked —
+// the frame still shows the opponent's player and clan names — so this test
+// skips unless the developer has it locally.
 type victoryTestCase struct {
 	name      string
 	imgPath   string
