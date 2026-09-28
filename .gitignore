@@ -128,7 +128,11 @@ dashboard_ui.png
 *.vtest.json
 
 # Auto-generated bindings (do not commit)
-web/wailsjs/
+web/wailsjs/*
+!web/wailsjs/go/
+!web/wailsjs/go/main/
+!web/wailsjs/go/main/App.js
+!web/wailsjs/go/main/App.d.ts
 web/dist/
 web/node_modules/
 web/package.json.md5

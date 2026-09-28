@@ -244,7 +244,13 @@ attack-classify: build-attack-record
 build-gui:
 	@echo "Building GUI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) wails build -o ClashGO -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)"
+	# -skipbindings: bindings are committed (web/wailsjs/go), and generating
+	# them runs wails' throwaway helper binary, which links OpenCV with an
+	# @rpath it can never satisfy without the build machine's exact DYLD
+	# environment (CI run #11 failed here on a fresh checkout; locally the
+	# same way). Skipping it works because the committed bindings are what
+	# generation would emit.
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) wails build -o ClashGO -skipbindings -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)"
 
 # manifest target — produces build/bin/latest.json once the zip is on
 # disk. Standalone so it can be invoked from CI without a full GUI
@@ -305,7 +311,9 @@ stage-app: build-gui
 .PHONY: bundle-dylibs
 bundle-dylibs: stage-app
 	@echo "Bundling OpenCV dylibs into $(BUILD_DIR)/ClashGO.app..."
-	@bash tools/bundle_dylibs.sh $(BUILD_DIR)/ClashGO.app
+	# CLASHGO_BUNDLE_SMOKE=1: after the rewrite, launch the binary once so a
+	# bundler regression is a build failure here, not a dead app for a user.
+	@CLASHGO_BUNDLE_SMOKE=1 bash tools/bundle_dylibs.sh $(BUILD_DIR)/ClashGO.app
 
 # package depends on bundle-dylibs (not build-gui directly) so a `make
 # release` run never rebuilds the app between staging and DMG assembly —

@@ -12,12 +12,32 @@
 #   dyld: Library not loaded: /opt/homebrew/opt/opencv@4/lib/libopencv_gapi.414.dylib
 #
 # This script walks the load-command closure of the app's executable, copies
-# every non-system dylib into Contents/Frameworks, rewrites every reference
-# (in the executable and in the copied dylibs, including the ones the dylibs
-# make to each other) to @executable_path/../Frameworks/<name>, re-signs what it
-# touched, and then proves no reference to an external path is left. Same idea
-# as `dylibbundler` / `macdeployqt`, without adding a Homebrew dependency to the
-# build.
+# every non-system dylib into Contents/Frameworks, rewrites every reference to
+# @loader_path form, re-signs what it touched, and then proves the bundle
+# actually loads. Same idea as `dylibbundler` / `macdeployqt`, without adding a
+# Homebrew dependency to the build.
+#
+# Why @loader_path and not @executable_path or @rpath:
+#   - @executable_path/... only works in load commands the EXECUTABLE owns; a
+#     dylib that references a sibling cannot use it (the paths differ per
+#     referencing file).
+#   - @rpath/<name> works from any file, but only if the referencing file
+#     carries an LC_RPATH — and installing one requires `install_name_tool
+#     -add_rpath`, which needs headerpad slack in the target binary. You cannot
+#     assume that slack inside third-party dylibs: CI run #11 failed with 687
+#     surviving references precisely because the rpath adds silently failed.
+#   - @loader_path/<name> resolves relative to the file that carries the load
+#     command: a dylib's own directory IS Contents/Frameworks, and the
+#     executable's is Contents/MacOS, one `..` above it. No LC_RPATH is needed
+#     anywhere, and `-change` to these short forms does not depend on slack the
+#     way `-add_rpath` does. Whoever wrote the original reference — absolute
+#     Homebrew path or @rpath — the rewrite erases the distinction.
+#
+# Dylibs keep their original install names (LC_ID_DYLIB): nothing references
+# them by that spelling after the rewrite, so the name is inert.
+#
+# Set CLASHGO_BUNDLE_SMOKE=1 to also launch the binary at the end and fail if
+# dyld rejects any load command (wired into `make bundle-dylibs`).
 #
 # Cost: OpenCV@4 pulls 100-200 dylibs (openblas, protobuf, ffmpeg, absl, icu...),
 # so Contents/Frameworks is a couple hundred MB and the DMG grows with it. That
@@ -71,12 +91,42 @@ is_system() {
 # or the walk treats a dylib as depending on itself and tries to resolve a
 # header line as a path.
 deps_of() {
-  otool -L "$1" \
-    | tail -n +2 \
-    | grep -v '^[[:space:]]*[^[:space:]]* (architecture [^)]*):[[:space:]]*$' \
-    | sed 's/ (compatibility[^)]*)//' \
-    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-    | grep -v '^$'
+  # Drop the file's own install name(s) (LC_ID_DYLIB, what `otool -D` prints)
+  # from `otool -L` output. Usually the identity's basename equals the file's
+  # name and only otool's header needs skipping, but a copy of cv-env's
+  # libopenblas under the name libcblas.3.dylib carries the ID
+  # `@rpath/libopenblas.0.dylib`, which reads exactly like a dependency of the
+  # file — and install_name_tool silently refuses to -change a file's own ID
+  # (exit 0, nothing written), so a rewrite pass fed that line would report
+  # success while changing nothing. That silent no-op is what survived into
+  # CI run #11's verify as "references survived bundling".
+  local ids
+  # The `|| true` is load-bearing: when the file has no LC_ID (any
+  # executable), grep -v selects no lines and exits 1, and under set -e that
+  # rc kills this function before the real otool -L below runs — which made
+  # every executable look like it linked nothing at all.
+  ids="$(otool -D "$1" 2>/dev/null \
+    | sed 's/^[^:]*:/ /; s/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | grep -v '^$')" || true
+  # An executable has no LC_ID_DYLIB, so ids is empty there — and an empty
+  # -F pattern matches every line, which would silently drop ALL dependencies.
+  # Only apply the filter when there is at least one ID to drop.
+  if [[ -n "$ids" ]]; then
+    otool -L "$1" \
+      | tail -n +2 \
+      | grep -v '^[[:space:]]*[^[:space:]]* (architecture [^)]*):[[:space:]]*$' \
+      | sed 's/ (compatibility[^)]*)//' \
+      | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+      | grep -v '^$' \
+      | grep -Fvx "$ids"
+  else
+    otool -L "$1" \
+      | tail -n +2 \
+      | grep -v '^[[:space:]]*[^[:space:]]* (architecture [^)]*):[[:space:]]*$' \
+      | sed 's/ (compatibility[^)]*)//' \
+      | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+      | grep -v '^$'
+  fi
 }
 
 # Every LC_RPATH of a Mach-O with @loader_path/@executable_path expanded to the
@@ -121,13 +171,26 @@ strip_external_rpaths() {
 # Canonicalize a path: one form per file. rpath entries are written both ways
 # (`@loader_path/` and `@loader_path`), so the same library resolves to
 # "/x/lib//libfoo.dylib" and "/x/lib/libfoo.dylib" — two strings, one file, and
-# a string-keyed visited set would bundle it twice and then trip the
-# duplicate-basename guard. pwd -P also collapses `..` and any symlinked prefix
-# (on CI, /opt/homebrew/opt/opencv@4 -> /opt/homebrew/Cellar/opencv@4/<version>,
-# so the real file is the one copied).
+# a string-keyed visited set would bundle it twice. pwd -P collapses `..` and
+# any symlinked path prefix (on CI, /opt/homebrew/opt/opencv@4 ->
+# /opt/homebrew/Cellar/opencv@4/<version>), and the final `readlink -f` also
+# collapses a symlinked BASENAME: cv-env ships libcblas.3.dylib ->
+# libopenblas.0.dylib in the same directory, and without the basename
+# resolution one real library entered the closure under three names (cblas,
+# lapack, openblas), got copied three times under three names, and the copies
+# whose install name (LC_ID) is @rpath/libopenblas.0.dylib then silently no-op
+# every -change attempt (install_name_tool refuses to rewrite a load command
+# equal to the file's own install name), which is exactly the CI run #11
+# failure shape.
 canon() {
   local p="$1"
-  if [[ -d "$(dirname "$p")" ]]; then
+  # readlink -f resolves every symlink component including the basename, so a
+  # symlink alias and its target canonicalize to the same path and bundle once
+  # under one name. Falls back to the dir-collapsing form when readlink -f is
+  # unavailable (bash 3.2 era coreutils) or the file is absent.
+  if rl="$(readlink -f "$p" 2>/dev/null)" && [[ -n "$rl" ]]; then
+    printf '%s\n' "$rl"
+  elif [[ -d "$(dirname "$p")" ]]; then
     printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"
   else
     printf '%s\n' "$p"
@@ -145,11 +208,18 @@ resolve_ref() {
     @rpath/*)
       base="$(basename "$ref")"
       # A dylib referenced through @rpath resolves against the referencing
-      # file's rpaths; the bundle's own Frameworks dir is one of them after the
-      # first pass, so an already-rewritten dylib is left as it is.
+      # file's rpaths. Also try the owner's own directory (its @loader_path):
+      # cv-env's libcblas.3.dylib carries the rpath `@loader_path` and still
+      # failed to resolve when the probe hit a path where `-e "$r/$base"` is
+      # checked BEFORE the rpath list is read — order the probes so a symlink
+      # whose final component is resolved by canon() cannot slip through.
       while IFS= read -r r; do
         [[ -n "$r" && -e "$r/$base" ]] && { canon "$r/$base"; return 0; }
       done < <(rpaths_of "$owner")
+      # Sibling next to the owner (equivalent to an implicit @loader_path
+      # probe): covers owners whose rpaths point elsewhere, e.g. an rpath
+      # written as /x/lib plus the dep sitting in /x/lib.
+      [[ -e "$(dirname "$owner")/$base" ]] && { canon "$(dirname "$owner")/$base"; return 0; }
       return 1 ;;
     @loader_path/*|@executable_path/*)
       ref="${ref/@loader_path/$dir}"; ref="${ref/@executable_path/$dir}"
@@ -174,6 +244,9 @@ while ((${#queue[@]} > 0)); do
   while IFS= read -r ref; do
     [[ -n "$ref" ]] || continue
     is_system "$ref" && continue
+    # A dylib's own LC_ID_DYLIB line comes first in `otool -L` output; it is
+    # not a dependency of itself.
+    [[ "$(basename "$ref")" == "$(basename "$cur")" ]] && continue
     if ! p="$(resolve_ref "$ref" "$cur")"; then
       warn "unresolved reference $ref (from $(basename "$cur")) — leaving it alone"
       continue
@@ -202,6 +275,39 @@ for p in "${libs[@]}"; do
   esac
   basenames="$basenames$base"$'\n'
 done
+
+# ---- 1b. Alias map: every name a reference can use for a bundled file. ---
+# References are rewritten to @loader_path/<basename>, so each must map to
+# the REAL bundled file's basename. A library that entered the closure only
+# through an alias (gocv loads cv-env's libcblas.3.dylib, a symlink to
+# libopenblas.0.dylib which is the file actually bundled) is still referenced
+# as @rpath/libcblas.3.dylib by other libraries — map alias -> canonical so
+# those references resolve inside the bundle too. bash 3.2: string table
+# again, entries spelled alias:canonical.
+map_lookup() {
+  local line
+  while IFS= read -r line; do
+    [[ "$line" == "$2:"* ]] && { printf '%s\n' "${line#*:}"; return 0; }
+  done <<< "$1"
+  return 1
+}
+
+refmap=$'\n'
+for p in "${libs[@]}"; do refmap+="$(basename "$p"):$(basename "$p")"$'\n'; done
+dirs=$'\n'
+for p in "${libs[@]}"; do
+  d="$(dirname "$p")"
+  case "$dirs" in *$'\n'"$d"$'\n'*) continue ;; esac
+  dirs="$dirs$d"$'\n'
+done
+while IFS= read -r d; do
+  [[ -n "$d" ]] || continue
+  while IFS= read -r link; do
+    [[ -n "$link" ]] || continue
+    t="$(readlink -f "$link" 2>/dev/null)" || continue
+    case "$seen" in *$'\n'"$t"$'\n'*) refmap+="$(basename "$link"):$(basename "$t")"$'\n' ;; esac
+  done < <(find "$d" -maxdepth 1 -type l 2>/dev/null)
+done < <(printf '%s' "$dirs")
 
 # ---- 2. Copy them in. ------------------------------------------------
 # The bundler owns Contents/Frameworks: a previous run's copies must not survive
@@ -244,43 +350,48 @@ change_ref() {
 }
 
 rewrite_file() {
-  local file="$1" ref p base want self
+  local file="$1" kind="$2" ref base want self
   self="$(basename "$file")"
   while IFS= read -r ref; do
     [[ -n "$ref" ]] || continue
     is_system "$ref" && continue
-    case "$ref" in
-      @executable_path/../Frameworks/*) continue ;;
-    esac
     base="$(basename "$ref")"
     # A dylib's own LC_ID_DYLIB line is not a dependency; -change cannot
-    # rewrite it (install_name_tool errors), and -id handles it separately.
+    # rewrite it (install_name_tool errors) and nothing loads a dylib by its
+    # install name unless some load command spells it out, which the rewrite
+    # handles.
     [[ "$base" == "$self" ]] && continue
-    if ! p="$(resolve_ref "$ref" "$file")"; then continue; fi
-    base="$(basename "$p")"
-    [[ -f "$FW/$base" ]] || continue     # not part of the closure: leave it
-    want="@executable_path/../Frameworks/$base"
+    canonbase="$(map_lookup "$refmap" "$base")" || continue  # not part of the closure: leave it
+    case "$kind" in
+      exe) want="@loader_path/../Frameworks/$canonbase" ;;
+      *)   want="@loader_path/$canonbase" ;;
+    esac
     [[ "$ref" == "$want" ]] && continue
     change_ref "$file" "$ref" "$want"
   done < <(deps_of "$file")
 }
 
 log "rewriting references in the executable"
-rewrite_file "$BIN"
+rewrite_file "$BIN" exe
 
 for p in "${libs[@]}"; do
   f="$FW/$(basename "$p")"
-  install_name_tool -id "@executable_path/../Frameworks/$(basename "$p")" "$f" 2>/dev/null \
-    || { codesign --remove-signature "$f" 2>/dev/null || true
-         install_name_tool -id "@executable_path/../Frameworks/$(basename "$p")" "$f"; }
-  rewrite_file "$f"
+  # Normalize the copy's own install name to @loader_path/<name> — the source
+  # ID is by definition reachable as a reference (cv-env's openblas ships
+  # ID @rpath/libopenblas.0.dylib) and an @rpath ID inside the bundle can
+  # only resolve by luck of a foreign rpath.
+  codesign --remove-signature "$f" 2>/dev/null || true
+  install_name_tool -id "@loader_path/$(basename "$p")" "$f" 2>/dev/null \
+    || warn "could not set install name of $(basename "$f")"
+  rewrite_file "$f" lib
 done
 # Signing is a single pass at the end, not inside the loops: install_name_tool
 # invalidates a signature, so signing before the last modification would only be
 # undone by it. On arm64 every loaded dylib must be signed to load at all.
 
-# Belt and braces: an @rpath that lands inside the bundle, in case a reference
-# written as @rpath/... survives (a future Wails/gocv change could add one).
+# Belt and braces: an rpath that lands inside the bundle. Nothing after the
+# rewrite needs it (@loader_path covers every reference), so a failure here is
+# only noise — which is why it is a warn, not a fail.
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$BIN" 2>/dev/null \
   || warn "could not add @executable_path/../Frameworks rpath (references are already rewritten)"
 
@@ -300,21 +411,59 @@ codesign --verify --deep --strict "$APP" >/dev/null 2>&1 \
   && log "bundle signature verified" \
   || warn "codesign --verify failed — the shipped app may be flagged"
 
-log "checking for remaining external references"
+log "checking every reference resolves inside the bundle"
 leftovers=0
 for f in "$BIN" "$FW"/*.dylib; do
   self="$(basename "$f")"
+  fdir="$(cd "$(dirname "$f")" && pwd)"
   while IFS= read -r ref; do
     [[ -n "$ref" ]] || continue
     is_system "$ref" && continue
-    case "$ref" in
-      @executable_path/../Frameworks/*) continue ;;
-    esac
     [[ "$(basename "$ref")" == "$self" ]] && continue
+    case "$ref" in
+      @loader_path/*|@executable_path/*)
+        # Expand against THIS file's directory and require the target to exist:
+        # a @loader_path/X from a dylib means FW/X, from the executable
+        # MacOS/../Frameworks/X.
+        t="${ref/@loader_path/$fdir}"; t="${t/@executable_path/$fdir}"
+        [[ -e "$t" ]] \
+          || { warn "$self references $ref — no such file in the bundle"; leftovers=$((leftovers + 1)); }
+        continue ;;
+      @rpath/*)
+        # Everything we rewrite is @loader_path-based; a surviving @rpath
+        # reference can only resolve by luck of a foreign rpath we did not
+        # audit. Treat it as a failure.
+        warn "$self references $ref via @rpath — should have been rewritten"
+        leftovers=$((leftovers + 1)); continue ;;
+    esac
     warn "$self still references $ref"
     leftovers=$((leftovers + 1))
   done < <(deps_of "$f")
 done
-((leftovers == 0)) || fail "$leftovers external references survived bundling" 70
+((leftovers == 0)) || fail "$leftovers references do not resolve inside the bundle" 70
+
+# Static checks can pass a bundle that dyld still refuses (a missed rpath, an
+# ID collision). With CLASHGO_BUNDLE_SMOKE=1 the caller asks for the real
+# thing: run the binary briefly. dyld rejects bad load commands within
+# milliseconds, so a 1s alarm is enough to see either rejection or a live
+# process; the bot never gets far enough to touch ADB or the game. ANY exit
+# (timeout kill, clean exit, panic after main) proves the loader accepted
+# every load command — the ONLY failure signature is dyld's own rejection
+# text on stderr, which is emitted before main() runs.
+if [[ "${CLASHGO_BUNDLE_SMOKE:-0}" == "1" ]]; then
+  log "smoke: launching the bundled binary to prove dyld resolves everything"
+  smoke_err="$(mktemp)"
+  # The alarm kill (rc 142) is the EXPECTED happy path for a server-like
+  # binary, so it must not trip set -e — only the dyld-text check below
+  # decides pass/fail.
+  perl -e 'alarm 1; exec @ARGV or exit 127' -- "$BIN" 2>"$smoke_err" || true
+  if grep -q "Library not loaded\|no LC_RPATH\|image not found" "$smoke_err"; then
+    sed 's/^/    /' "$smoke_err" >&2
+    rm -f "$smoke_err"
+    fail "dyld rejected the bundled binary" 70
+  fi
+  rm -f "$smoke_err"
+  log "smoke: loader accepted all load commands"
+fi
 
 log "self-contained: $(du -sh "$FW" | cut -f1) in Frameworks, no external dylib references"
