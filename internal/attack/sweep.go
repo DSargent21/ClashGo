@@ -231,6 +231,20 @@ func (sw *Sweeper) heroDropCandidates(slot *TrackedSlot) []image.Point {
 		cands = append(cands, heroFormulaCandidates(entry, sw.h)...)
 	}
 	cands = append(cands, heroGroundCandidates(sw.deployLine.Points, sw.h, sw.zone)...)
+	// The tile the siege machine is standing on is not hero ground: a placement
+	// tap there is refused by the game and is the second siege tap the user asked
+	// us never to fire. See HeroManager.heroDropCandidates for the live numbers.
+	if _, ok := sw.executor.SiegeGround(); ok {
+		clear := make([]image.Point, 0, len(cands))
+		for _, p := range cands {
+			if sw.executor.clearsSiege(p) {
+				clear = append(clear, p)
+			}
+		}
+		if len(clear) > 0 {
+			cands = clear
+		}
+	}
 	// Retry ground for the rescue: step outward from the ground that failed (the
 	// hero phase's pick when this sweep was triggered by it) rather than re-tap
 	// it. Field taps only — the sweep's own card tap is already spent.
@@ -244,10 +258,11 @@ func (sw *Sweeper) heroDropCandidates(slot *TrackedSlot) []image.Point {
 }
 
 // fireHeroFieldTap sends one hero field tap at pt (+/- 3 px). No card tap is
-// involved, so it can never spend a hero's 2-tap card budget.
+// involved, so it can never spend a hero's 2-tap card budget. Goes through
+// TapUnitField so the siege machine's tile stays untouched.
 func (sw *Sweeper) fireHeroFieldTap(pt image.Point) {
 	j := sw.executor.addJitter(pt, 3)
-	sw.executor.client.TapFast(j.X, j.Y, 12.0)
+	sw.executor.TapUnitField(j, 12.0)
 }
 
 // Sweep deploys any remaining undeployed slots.
@@ -545,6 +560,19 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 	// the line like a troop, not single-tapped like a hero.
 	if slot.Category == "Hero" && !slot.FallbackLabeled {
 		return sw.deployHeroSlotOnce(slot)
+	}
+
+	// The siege machine took its one placement tap (see
+	// TrackedSlot.SiegePlaced). Nothing about it is undeployed, and every tap
+	// this path fires would land on the machine standing on the field: a swept
+	// siege retry is not a rescue, it is the second tap the user reported
+	// destroying the machine. Close the slot out with no taps at all.
+	if slot.SiegePlaced {
+		sw.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("sweep: the siege machine already took its one placement tap; marking the slot closed without tapping")
+		return true
 	}
 
 	// Siege defense-in-depth: see comment above. If we somehow got
@@ -977,6 +1005,12 @@ func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count 
 			ty := p1.Y + int(float64(p2.Y-p1.Y)*pct)
 			tx += (i%5 - 2) * jitter
 			ty += (i%3 - 1) * jitter
+			// Troop batches are unit placements, and the pinned deploy line can run
+			// within a tile of the machine this battle already placed — live
+			// 2026-09-27 the sweep's re-fired balloon/e-dragon line passed 26 px from
+			// it. Move the batch base clear of the machine; the three taps of the
+			// batch keep their shape relative to it.
+			tx, ty = sw.executor.avoidSiegeGroundXY(tx, ty)
 			if batchSize == 3 {
 				sw.executor.client.TapTriple(tx, ty, 12.0, tx+5, ty+3, 12.0, tx-3, ty+6, 12.0)
 			} else if batchSize == 2 {

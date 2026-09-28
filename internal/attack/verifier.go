@@ -135,6 +135,17 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 			continue
 		}
 
+		// A placed siege machine never leaves its card looking empty (siege
+		// cards keep a cooldown silhouette), so every measurement below reads
+		// "still has content" forever. Counting it as undeployed is what sends
+		// the retry pass to fire field taps at the machine that is already
+		// standing there — the second tap that destroys it. It is not
+		// undeployed: it has had its one placement tap (TrackedSlot.SiegePlaced).
+		if slot.SiegePlaced {
+			v.slotManager.MarkDeployed(slot.UnitName)
+			continue
+		}
+
 		ratio := GetSlotActivityRatioStatic(screen, slot.X, slot.Y, v.w)
 
 		if ratio < v.config.EmptyThreshold {
@@ -208,6 +219,18 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 // count+visual-empty confirmation before declaring success.
 func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 	const retryBatches = 2
+
+	// Never re-place a siege machine: the field tap of this retry lands on the
+	// machine the first placement already put down, and destroys it. Nothing is
+	// marked here — checkRemainingSlots already closes this slot out, and this
+	// guard is the backstop for any future caller.
+	if slot.SiegePlaced {
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("retry: the siege machine already took its placement tap; refusing to fire at it again")
+		return
+	}
 
 	// Heroes get the hero-shaped retry: one tight tap cluster on the
 	// deploy line, delta-verified — never the troop triple-tap spam,
@@ -350,9 +373,11 @@ func (v *Verifier) retryHeroSlot(slot *TrackedSlot) {
 	}
 	v.executor.HumanSleep(150, 30)
 
-	// Single tap — one tap deploys a hero; extra taps are bot-signature.
+	// Single tap — one tap deploys a hero; extra taps are bot-signature. Jitter
+	// first, then TapUnitField, so the siege-clearance check is last: this retry
+	// must not land on the machine the hero phase already placed.
 	j1 := v.executor.addJitter(pt, 3)
-	v.executor.client.TapFast(j1.X, j1.Y, 12.0)
+	v.executor.TapUnitField(j1, 12.0)
 
 	v.executor.HumanSleep(300, 40)
 

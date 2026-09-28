@@ -281,6 +281,85 @@ func TestDeployLineSpell_RageSpecial_3OnA_2OnB(t *testing.T) {
 	}
 }
 
+// The rage layout the user asked for, in one assertion: three casts on Line A —
+// one on each END and one on the CENTRE — and two on Line B, one on each END.
+//
+// The point of the layout is SPREAD. The previous 0.10/0.50/0.90 insets left 10%
+// of the line unused at each end; on the live 720p TopLeft rage line that put the
+// three Line A casts 56 px apart against a 50 px same-ground bar — a "tight"
+// line in the post-run report, and five rage spells that landed as one cluster.
+func TestDeployLineSpell_RageSpecial_PlacesCastsOnLineEndsAndCentre(t *testing.T) {
+	pCfg := testLinePCfg()
+	sd, tl := newSpellTestHarness(t, pCfg, nil, nil, []*TrackedSlot{spellSlot("rage spell", 100)})
+	unit := strategy.Unit{Name: "Rage Spell", Amount: "All"} // 5 → 3 on A, 2 on B
+
+	if !sd.DeploySpell(unit, spellSlot("rage spell", 100), "BottomRight", "Line") {
+		t.Fatal("DeploySpell returned false")
+	}
+	taps := tl.fieldTaps()
+	if len(taps) != 5 {
+		t.Fatalf("got %d field taps, want 5", len(taps))
+	}
+
+	lineA := pCfg.SpellEdgesA["BottomRight"]
+	lineB := pCfg.SpellEdgesB["BottomRight"]
+	midA := image.Pt(
+		int(float64(lineA.P1.X)+float64(lineA.P2.X-lineA.P1.X)*0.5),
+		int(float64(lineA.P1.Y)+float64(lineA.P2.Y-lineA.P1.Y)*0.5),
+	)
+	// Tap order is Line A (start, centre, end) then Line B (start, end) — the
+	// same order the taps are logged in, so a cast that goes missing is visible
+	// in the log rather than averaged away.
+	want := []image.Point{lineA.P1, midA, lineA.P2, lineB.P1, lineB.P2}
+	for i, pt := range taps {
+		if d := dist(pt, want[i]); d > 12 {
+			t.Errorf("tap %d at %v is %.1fpx from where the end/centre/end layout puts it (%v); jitter is ≤ 8 px per axis", i, pt, d, want[i])
+		}
+	}
+
+	// And the spread itself: the two ends of Line A are the full length of the
+	// line apart, which is the widest gap this geometry can carry. An insetted
+	// layout would fall 20% short of it.
+	lineALength := dist(lineA.P1, lineA.P2)
+	if got := dist(taps[0], taps[2]); got < 0.75*lineALength {
+		t.Errorf("Line A's end casts are %.0fpx apart, want the full line (~%.0fpx): the casts are still insetted", got, lineALength)
+	}
+}
+
+// A cast point that lands in the game's chrome deploys nothing at all, and the
+// end/centre/end layout deliberately taps the line's most extreme points — the
+// ones the deploy band clamp moves first. So the layout pulls an out-of-field
+// cast point back onto the field rather than spending the card on the HUD.
+func TestDeployLineSpell_RageSpecial_PullsCastsOutOfTheHUD(t *testing.T) {
+	pCfg := PrecisionConfig{
+		SpellEdgesA: map[string]ManualEdge{
+			// P1 sits in the resource HUD (above BandTop); P2 is in the field.
+			"BottomRight": {P1: image.Pt(400, 40), P2: image.Pt(700, 500)},
+		},
+		SpellEdgesB: map[string]ManualEdge{
+			"BottomRight": {P1: image.Pt(420, 500), P2: image.Pt(720, 520)},
+		},
+	}
+	sd, tl := newSpellTestHarness(t, pCfg, nil, nil, []*TrackedSlot{spellSlot("rage spell", 100)})
+	unit := strategy.Unit{Name: "Rage Spell", Amount: "All"}
+
+	if !sd.DeploySpell(unit, spellSlot("rage spell", 100), "BottomRight", "Line") {
+		t.Fatal("DeploySpell returned false")
+	}
+	taps := tl.fieldTaps()
+	if len(taps) != 5 {
+		t.Fatalf("got %d field taps, want 5 (a clamped cast must still be placed)", len(taps))
+	}
+	for i, pt := range taps {
+		if pt.Y < BandTop() {
+			t.Errorf("tap %d at %v is in the top HUD (BandTop %d): the cast would deploy nothing", i, pt, BandTop())
+		}
+		if pt.Y >= sd.spellBarTop() {
+			t.Errorf("tap %d at %v is on the troop bar (bar top %d): the cast would feed the card row, not the field", i, pt, sd.spellBarTop())
+		}
+	}
+}
+
 func TestDeployLineSpell_NonRageNeverTriggersRageSpecial(t *testing.T) {
 	pCfg := testLinePCfg()
 	// Only Line B configured: a rage special would fail; poison must still deploy on B.

@@ -3,6 +3,7 @@ package attack
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,6 +66,11 @@ type TroopCounter struct {
 	// real geometry still reads. Zero means "not measured", and the reader then
 	// falls back to the row the configured geometry implies.
 	rowTop, rowBottom int
+
+	// unreadableDumps counts the annotated bar bands this counter has written.
+	// See dumpUnreadableBarBand: it is the budget for the one reader outcome that
+	// costs battle time. Touched only from the deploy path, like rowTop/rowBottom.
+	unreadableDumps int
 }
 
 // glyphAccepted reports whether one glyph's match is a confident read: either
@@ -1549,6 +1555,20 @@ func GetCountForSlot(counts []TroopCount, slotX int) int {
 	return 0
 }
 
+// GetCountForSlotMeasured returns the slot's battle-start count together with
+// whether the reader actually measured it. The count alone cannot say: an
+// unreadable card and an empty one both come back 0. Callers that use the
+// number to decide a tap count need the difference (see
+// HeroManager.DeployTroops's detectedTrusted argument).
+func GetCountForSlotMeasured(counts []TroopCount, slotX int) (int, bool) {
+	for _, c := range counts {
+		if c.X == slotX {
+			return c.Count, c.OK
+		}
+	}
+	return 0, false
+}
+
 // GetAllCounts returns a map of slot X -> count for the slots whose read was a
 // trustworthy measurement. Slots with no readable count are omitted rather
 // than reported as 0, so a blind read can never be mistaken downstream for a
@@ -1582,6 +1602,103 @@ func (tc *TroopCounter) HasDigitTemplates() bool {
 		}
 	}
 	return false
+}
+
+// unreadableDumpBudget is how many bar bands one battle may keep. The budget is
+// small on purpose: six frames from the first unreadable read answer "what does
+// an unreadable badge look like at this geometry" as well as six hundred would,
+// and six hundred would cost more than the deploy they were recording.
+const unreadableDumpBudget = 6
+
+// dumpUnreadableBarBand saves the troop bar as the reader saw it when a card's
+// count label was present but its digits could not be settled, with the windows
+// the reader searched drawn on top.
+//
+// # Why
+//
+// "count label present but not readable" is the one reader outcome that costs
+// real battle time: the caller has no number to fire and no proof the card is
+// spent, so it fires a blind top-up batch and reconciles again. Measured live
+// 2026-09-27, Balloon and Electro Dragon each burned three reconcile rounds that
+// way (~9 extra taps each) and the battle deployed in 26s against a <7s target.
+//
+// The log line alone cannot say which of the two causes that was:
+//
+//	(a) the badge is drawn outside the window the reader searched (geometry), or
+//	(b) the digits are inside it but their shape does not match the templates.
+//
+// Those need opposite fixes — one moves a window, the other changes matching —
+// and no amount of log reading separates them, because the reader reports the
+// same sentence for both. The frame separates them, so the frame is kept: the
+// band is drawn with every badge-row candidate it tried (red for the row
+// measured from this frame, orange for the geometry fallback), the slot anchor
+// (yellow) and the numbers that produced them, so the artifact explains itself
+// without the log beside it.
+func (tc *TroopCounter) dumpUnreadableBarBand(screen gocv.Mat, slotX, slotY, barY int) {
+	if tc == nil || screen.Empty() {
+		return
+	}
+	if tc.unreadableDumps >= unreadableDumpBudget {
+		return
+	}
+
+	slack := int(tc.scale(countBandSlackRef))
+	rows := tc.countRowCandidates(barY)
+	if len(rows) == 0 {
+		return
+	}
+	top, bottom := rows[0].top-slack, rows[len(rows)-1].bottom+slack
+	top, bottom = clampRange(top, bottom, 0, screen.Rows())
+	if bottom-top < int(tc.scale(12)) {
+		return
+	}
+
+	tc.unreadableDumps++
+
+	band := screen.Region(image.Rect(0, top, screen.Cols(), bottom))
+	defer band.Close()
+
+	// 2x so an ~11px-tall glyph is legible in an image viewer. The band is a few
+	// hundred KB at 720p and the budget caps the total.
+	annotated := gocv.NewMat()
+	defer annotated.Close()
+	gocv.Resize(band, &annotated, image.Pt(0, 0), 2, 2, gocv.InterpolationNearestNeighbor)
+
+	half := int(tc.scale(badgeSearchHalfRef))
+	for i, row := range rows {
+		x1, x2 := clampRange(slotX-half, slotX+half, 0, screen.Cols())
+		y1, y2 := clampRange(row.top-slack, row.bottom+slack, 0, screen.Rows())
+		colour := color.RGBA{R: 255, G: 60, B: 60, A: 255}
+		if i > 0 {
+			colour = color.RGBA{R: 255, G: 170, B: 0, A: 255}
+		}
+		gocv.Rectangle(&annotated,
+			image.Rect(x1*2, (y1-top)*2, x2*2, (y2-top)*2), colour, 1)
+	}
+	gocv.Line(&annotated,
+		image.Pt(slotX*2, 0), image.Pt(slotX*2, annotated.Rows()-1),
+		color.RGBA{R: 255, G: 255, B: 0, A: 255}, 1)
+	gocv.PutText(&annotated,
+		fmt.Sprintf("x=%d slot_y=%d bar_y=%d band=%d..%d rows=%d scale=%.4f",
+			slotX, slotY, barY, top, bottom, len(rows), tc.scale(1)),
+		image.Pt(6, 18), gocv.FontHersheySimplex, 0.5,
+		color.RGBA{R: 0, G: 255, B: 255, A: 255}, 1)
+
+	path := paths.ResolveConfig(fmt.Sprintf("debug_bar_unreadable_%02d.png", tc.unreadableDumps))
+	if ok := gocv.IMWrite(path, annotated); !ok {
+		tc.unreadableDumps--
+		tc.logger.Warn().
+			Str("path", path).
+			Msg("could not save the bar band for an unreadable count label; the next one will try again")
+		return
+	}
+	tc.logger.Info().
+		Str("path", path).
+		Int("x", slotX).
+		Int("bar_y", barY).
+		Int("dumps", tc.unreadableDumps).
+		Int("budget", unreadableDumpBudget).
+		Msg("saved the troop bar as the reader saw it, with the searched badge windows drawn; the unreadable count label is in this frame")
 }
 
 // DetectCount reads the count above a single slot's card in the provided

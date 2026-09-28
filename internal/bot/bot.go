@@ -199,12 +199,47 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	if cfg.Device.DisplayScale > 0 {
 		cal.SetDisplayScale(cfg.Device.DisplayScale)
 	}
+	// Name the file the calibration settings came from. A pin that lives in a
+	// different tree than the running binary reads is invisible but looks
+	// identical in the old log line, and that ambiguity is what hid the split
+	// config trees; the path makes the next occurrence self-diagnosing.
+	configPath := paths.ResolveConfig("config.json")
 	log.Info().
 		Int("screen_w", w).
 		Int("screen_h", h).
 		Float64("display_scale", cal.DisplayScale()).
 		Bool("display_scale_pinned", cfg.Device.DisplayScale > 0).
+		Str("config_path", configPath).
 		Msg("calibration built")
+
+	// Name the asset tree at boot, for the same reason the line above names the
+	// config file: `make pick-coords` writes assets/precision_config.json, and a
+	// packaged app that read a COPY of assets/ carried inside its bundle was a
+	// second, invisible source of geometry. See paths.GetAssetsDir.
+	//
+	// Two trees at once is worth a warning, not just a log field: the whole cost
+	// of the split is that both files look right and only one is obeyed.
+	if a := paths.DescribeAssets(); a.Dir != "" {
+		ev := log.Info().Str("assets_dir", a.Dir).Str("assets_source", a.Source)
+		pinsAge, pinsOK := paths.FileAge(filepath.Join(a.Dir, "precision_config.json"))
+		if pinsOK {
+			ev = ev.Float64("pins_age_hours", pinsAge.Hours())
+		}
+		if a.IgnoredDir != "" {
+			ev = ev.Str("ignored_assets_dir", a.IgnoredDir)
+			if age, ok := paths.FileAge(filepath.Join(a.IgnoredDir, "precision_config.json")); ok {
+				ev = ev.Float64("ignored_pins_age_hours", age.Hours())
+			}
+			ev.Msg("asset tree resolved")
+			log.Warn().
+				Str("using", a.Dir).
+				Str("ignoring", a.IgnoredDir).
+				Str("assets_source", a.Source).
+				Msg("two asset trees are present; the pins in the one named 'ignoring' are NOT read by this run")
+		} else {
+			ev.Msg("asset tree resolved")
+		}
+	}
 	// Off the reference geometry the whole dataset is a mapped prediction, so
 	// say so loudly: at 1280x720 an unpinned scale left the village with 1 of 7
 	// probes passing, and some states misrank (docs/RESOLUTION.md). Behaviour
@@ -223,9 +258,10 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 				Int("screen_w", w).
 				Int("screen_h", h).
 				Float64("derived_scale", cal.DisplayScale()).
+				Str("config_path", configPath).
 				Msg("non-reference display geometry without a pinned display scale: the derived scale measured 1.9% off at " +
-					"1280x720, which loses single-pixel probes. Measure the live scale with cmd/resprobe and set device.display_scale, " +
-					"or run at 860x732. See docs/RESOLUTION.md.")
+					"1280x720, which loses single-pixel probes. Measure the live scale with cmd/resprobe and set device.display_scale in " +
+					"" + configPath + ", or run at 860x732. See docs/RESOLUTION.md.")
 		}
 	}
 
@@ -401,6 +437,10 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	}
 
 	b.navigator = game.NewNavigator(client, cal, graph, b.classify, b.logger)
+	// DismissOverlay verifies an overlay against this classifier's own rules before
+	// it moves anything (see internal/game/dismiss.go); without it the navigator
+	// refuses to dismiss rather than tapping a predicted point.
+	b.navigator.SetClassifier(b.classifier)
 	if b.templates != nil {
 		b.navigator.SetTemplates(b.templates)
 	}
@@ -428,12 +468,14 @@ func (b *Bot) Start() error {
 			Msg("connected")
 	}
 
-	// Village content is centred on the viewport, so a focus tap on it follows
-	// the centre model (measured, docs/RESOLUTION.md).
-	focusX, focusY := b.cal.Centre(842, 345)
-	b.logger.Info().Int("x", focusX).Int("y", focusY).Msg("performing initial focus click")
-	b.client.Tap(focusX, focusY)
-	b.client.JitteredSleep(1 * time.Second)
+	// NO startup tap. The bot used to open every session with a "focus click" on
+	// the middle of the village; it was the first thing a run did and the first
+	// thing it had no evidence for. ADB input goes to the guest, so the click was
+	// never what gave the emulator focus, and on a session that starts on a
+	// dialog it landed behind the dialog. The capture loop classifies the first
+	// frame and dismisses whatever is actually there (see dismissInterruptions),
+	// which is the same job with evidence behind it.
+	b.logger.Info().Msg("startup: no input fired; the capture loop dismisses what the first frame shows")
 
 	go b.captureLoop()
 	return nil
@@ -775,24 +817,6 @@ func (b *Bot) recoverEmulator() {
 	b.restartGame()
 }
 
-// connectionLostTryAgain returns the live tap point for the lost-connection
-// dialog's TRY AGAIN button.
-//
-// The dialog's panel is drawn at a fixed pixel size rather than scaling with
-// the display scale k, so the reference measurement does not survive a
-// geometry change the way HUD chrome does: at 1280x720 the reference point
-// (ref 300,478) maps to live (468,508), which is 34 px below the button — the
-// dialog renders ~240 live px tall where the k map predicts ~348. The 720p
-// coordinate is measured off the live dialog (ref 303,451 -> live (472,473),
-// a glyph stroke inside the TRY AGAIN label); see
-// corpus/connection_lost_720p.png and the StateConnectionLost rule.
-func (b *Bot) connectionLostTryAgain() (int, int) {
-	if b.cal.IsReferenceGeometry() {
-		return b.cal.Centre(300, 478)
-	}
-	return b.cal.Centre(303, 451)
-}
-
 func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, captureMs time.Duration) {
 	if err != nil {
 		gc.RecordCaptureError()
@@ -889,18 +913,12 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 				defer b.splashDismissInFlight.Store(false)
 				time.Sleep(1200 * time.Millisecond)
 
-				var x, y int
-				switch st {
-				case game.StateTapToContinue:
-					// Tap the "ТАР!" prompt text (ref 450,195). Verified live:
-					// this dismisses the collect splash into the game.
-					x, y = b.cal.Centre(450, 195)
-				case game.StateNewsSplash:
-					// Tap the green Continue button (ref 403,535).
-					x, y = b.cal.Centre(403, 535)
-				}
-				if err := b.client.TapRandomized(x, y); err != nil {
-					b.logger.Warn().Err(err).Msg("boot splash dismiss tap failed; will retry on next detection")
+				// Evidence-gated dismissal (game.DismissOverlay): the splash must
+				// still be on the frame this captures, and the tap lands on the
+				// classifier's own probe for it rather than on a predicted point.
+				if !game.DismissOverlay(b.client, b.cal, b.classifier, st, b.templates, b.logger) {
+					b.logger.Warn().Str("state", st.String()).
+						Msg("boot splash not dismissed from verified evidence; will retry on next detection")
 					return
 				}
 				// Deliberately NO recordActivity here: the adb tap reports
@@ -927,11 +945,12 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	// RETURN HOME button satisfied that rule's template-only match —
 	// and the bot tapped result-screen coordinates forever (observed
 	// live: 18:26 boot → 18:28 ReturnHome fallback → 18:33 emergency
-	// restart loop). Tapping TRY AGAIN (see connectionLostTryAgain for the
-	// per-geometry coordinate) makes the game reconnect in place. Like the
-	// splash dismissal below, activity is
-	// deliberately NOT recorded: the adb tap reports success even when
-	// the dialog survives, and the stuck-watchdog must still fire if
+	// restart loop). Tapping TRY AGAIN makes the game reconnect in place; the
+	// point comes from the dialog's own classifier probes (game.DismissOverlay),
+	// because the panel is drawn at a fixed pixel size and the reference probe
+	// maps 34 px below the label at 720p. Like the splash dismissal below,
+	// activity is deliberately NOT recorded: the adb tap reports success even
+	// when the dialog survives, and the stuck-watchdog must still fire if
 	// reconnect keeps failing.
 	if state == game.StateConnectionLost {
 		if b.connLostDismissInFlight.CompareAndSwap(false, true) {
@@ -939,9 +958,8 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			go func() {
 				defer b.connLostDismissInFlight.Store(false)
 				time.Sleep(800 * time.Millisecond)
-				x, y := b.connectionLostTryAgain()
-				if err := b.client.TapRandomized(x, y); err != nil {
-					b.logger.Warn().Err(err).Msg("connection-lost dismiss tap failed; will retry on next detection")
+				if !game.DismissOverlay(b.client, b.cal, b.classifier, game.StateConnectionLost, b.templates, b.logger) {
+					b.logger.Warn().Msg("connection-lost dialog not dismissed from verified evidence; will retry on next detection")
 					return
 				}
 				b.logger.Info().Msg("connection-lost TRY AGAIN tapped; waiting for reconnect")
@@ -962,9 +980,11 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			go func() {
 				defer b.connLostDismissInFlight.Store(false)
 				time.Sleep(800 * time.Millisecond)
-				x, y := b.cal.Centre(279, 429)
-				if err := b.client.TapRandomized(x, y); err != nil {
-					b.logger.Warn().Err(err).Msg("quit-confirm cancel tap failed; will retry on next detection")
+				// The Cancel FACE is one of the rule's own probes; the tap lands on
+				// it only while it still reads as the orange Cancel button, never on
+				// the green Okay face beside it (which quits the game).
+				if !game.DismissOverlay(b.client, b.cal, b.classifier, game.StateConfirmExit, b.templates, b.logger) {
+					b.logger.Warn().Msg("quit-confirm dialog not dismissed from verified evidence; will retry on next detection")
 					return
 				}
 				b.logger.Info().Msg("quit-confirm Cancel tapped")
@@ -1265,6 +1285,11 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		if !b.findAndClick("btn_next", "Next Match", 2) {
 			b.logger.Warn().Msg("template match failed, forcing skip via color/pinpoint")
 
+			// The orange Next button is LOCATED (PixelSearch), never predicted. The
+			// hardcoded reference coordinate this used to fall back to was a tap on
+			// whatever happened to be there; a base that cannot be skipped this way
+			// is left to the search loop's own 5-minute bound, which restarts the
+			// game rather than clicking blind.
 			searchROI := image.Rect(b.cal.PhysicalW/2, b.cal.PhysicalH/2, b.cal.PhysicalW, b.cal.PhysicalH)
 			orangePt, err := vision.PixelSearch(screen, searchROI, 252, 186, 54, 50)
 			if err == nil {
@@ -1272,13 +1297,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				b.client.TapRandomized(orangePt.X, orangePt.Y)
 				b.recordActivity()
 			} else {
-
+				b.logger.Warn().Msg("Next button not located and no orange fallback found; not clicking blind")
 				b.DumpDiagnostics("next_button_not_found", screen, map[string]interface{}{
-					"message": "forcing skip via hardcoded coordinates",
+					"message": "no located Next control on this frame; no blind tap fired",
 				})
-				nextX, nextY := b.cal.Hud(796, 565)
-				b.client.TapRandomized(nextX, nextY)
-				b.recordActivity()
 			}
 		}
 
@@ -1552,11 +1574,23 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// reference point (set only on a real return home, not on a restart).
 	b.lastAttackEnd = time.Now()
 
-	// Empty village space next to the bottom bar; village content is centred.
-	sideX, sideY := b.cal.Centre(537, 693)
-	b.logger.Info().Msg("Tapping side area to dismiss potential post-attack popups...")
-	_ = b.client.Tap(sideX, sideY)
-	time.Sleep(1000 * time.Millisecond)
+	// Leftover post-attack popups are dismissed only when one is actually on the
+	// screen. This used to be an unconditional tap on empty village space, which
+	// is a tap with no evidence behind it: the bot clicked the village after every
+	// battle whether or not anything was up. The classification says whether there
+	// is anything to dismiss, and dismissInterruptions only fires on an overlay it
+	// can verify (game.DismissOverlay).
+	if screen, err := b.client.CaptureToMat(); err == nil {
+		state, _ := b.classify(screen)
+		screen.Close()
+		if state != game.StateMainVillage && state != game.StateUnknown {
+			b.logger.Info().Str("state", state.String()).Msg("post-attack overlay detected; dismissing it")
+			b.dismissInterruptions()
+			time.Sleep(1000 * time.Millisecond)
+		} else {
+			b.logger.Debug().Msg("returned home with nothing to dismiss; no tap fired")
+		}
+	}
 
 	if b.cfg.Upgrade.UpgradeWalls {
 		b.UpgradeWalls(gc)
@@ -2013,16 +2047,17 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 		return true
 	}
 
-	if pp, ok := villagePinpoints[templateName]; ok {
-		px, py := b.pinpointPoint(pp)
-		b.logger.Warn().Str("step", pp.Name).Msg("pinpoint color check and template match failed; executing blind tap fallback")
-		if err := b.client.TapRandomized(px, py); err == nil {
-			b.recordActivity()
-			return true
-		}
-	}
-
-	b.logger.Error().Str("step", stepName).Int("retries", maxRetries).Msg("failed after retries")
+	// NO blind-tap fallback. This is where the "clicking" happened even after
+	// every located path had failed: the pinpoint's coordinate was tapped and the
+	// step was logged as a success, because a predicted coordinate had been tapped
+	// rather than a widget. That is the race docs/RESOLUTION.md measured on the
+	// 1280x720 runs — the tap landed on whatever was behind the panel that failed
+	// to match, closed it, and every later tap in the chain went to the village.
+	// Failing here instead lets each caller decide: they retry, dump diagnostics,
+	// skip the base, or restart the game, and all four are better than a tap
+	// nobody could aim.
+	b.logger.Error().Str("step", stepName).Int("retries", maxRetries).
+		Msg("no control located on this frame; not tapping a predicted coordinate")
 	return false
 }
 
@@ -2111,6 +2146,22 @@ func (b *Bot) colorCheck(screen gocv.Mat, x, y int, lower, upper gocv.Scalar, mi
 // If the dismiss is actually working, the resulting state transition (caught
 // by the captureLoop's next frame) will reset lastAction via recordActivity()
 // on its own.
+// dismissInterruptions clears a transient overlay the capture loop just saw.
+//
+// Every action goes through game.DismissOverlay, which captures its own frame and
+// refuses to fire unless (a) the state is still on that frame and (b) the control
+// it moves — a probe the classifier verified, a located button, or Back — is where
+// the action expects it. The per-state coordinate table this used to hold (blind
+// taps at (400,300) for the obstacle sheet, predicted X / Welcome-Back / splash /
+// TRY AGAIN coordinates) is gone with it; see internal/game/dismiss.go for why a
+// predicted tap is worse than no tap.
+//
+// Like the old direct taps, these deliberately DO NOT call recordActivity() — if
+// an overlay is truly stuck and refusing to dismiss, the global stuck watchdog
+// must fire and cycle the game rather than have the hang masked as forward
+// progress. If the dismissal is actually working, the resulting state transition
+// (caught by the captureLoop's next frame) resets lastAction via recordActivity()
+// on its own.
 func (b *Bot) dismissInterruptions() {
 	screen, err := b.client.CaptureToMat()
 	if err != nil {
@@ -2119,47 +2170,48 @@ func (b *Bot) dismissInterruptions() {
 	state, _ := b.classify(screen)
 	screen.Close()
 
-	switch state {
-	case game.StateObstacleDialog:
-		b.client.TapRandomized(400, 300)
-		time.Sleep(400 * time.Millisecond)
-		b.client.Back()
-	case game.StateGemDialog, game.StateShieldInfo:
-		// Close X on a centred dialog. Previously tapped at raw (175,30),
-		// which only worked at the reference geometry.
-		dx, dy := b.cal.Centre(175, 30)
-		b.client.TapRandomized(dx, dy)
-	case game.StateWelcomeBack:
-
-		ox, oy := b.cal.Centre(430, 520)
-		b.client.TapRandomized(ox, oy)
-	case game.StateChatOpen:
-		b.client.Back()
-	case game.StateTapToContinue:
-		// Post-boot "ТАР!" collect splash — tap the prompt text.
-		px, py := b.cal.Centre(450, 195)
-		b.client.TapRandomized(px, py)
-	case game.StateNewsSplash:
-		// Post-boot news splash — tap the green Continue button.
-		px, py := b.cal.Centre(403, 535)
-		b.client.TapRandomized(px, py)
-	case game.StateConnectionLost:
-		// Connection-lost dialog — tap TRY AGAIN to reconnect in place.
-		px, py := b.connectionLostTryAgain()
-		b.client.TapRandomized(px, py)
-	case game.StateConfirmExit:
-		// Quit-confirm dialog — tap Cancel to stay in the game.
-		px, py := b.cal.Centre(279, 429)
-		b.client.TapRandomized(px, py)
+	if !game.DismissOverlay(b.client, b.cal, b.classifier, state, b.templates, b.logger) {
+		b.logger.Debug().Str("state", state.String()).
+			Msg("no overlay to dismiss from verified evidence; no input fired")
 	}
 }
 
-// dismissSelection taps in the background/empty space to close any active
-// selection menus. Used as the production Dismiss hook for the wall-upgrade
-// loop in RunWallUpgradeLoop. The 500ms settle waits for the menu
-// close-animation; without it the next capture can race the menu's
-// fade-out and confuse the next template match.
+// wallMenuActionWindow is the frame-fraction window a wall-selection menu's own
+// action button sits in: the body of the centred modal. It exists so
+// dismissSelection can tell "a wall menu is open" from "the bot is looking at an
+// ordinary village", which is the whole difference between closing a menu and
+// clicking empty ground.
+var wallMenuActionWindow = [4]float64{0.10, 0.20, 0.90, 0.80}
+
+// dismissSelection closes an active wall-selection menu by tapping the empty
+// village space beside it. Used as the production Dismiss hook for the
+// wall-upgrade loop in RunWallUpgradeLoop.
+//
+// The tap is gated on evidence that a menu is actually open: the menu's own
+// Upgrade button, located in the live frame. Without it this ran after every
+// failed template match and tapped empty ground on a plain village — a click with
+// nothing behind it. The tap point itself is the one thing here that is not a
+// located widget, because the action IS "touch nothing": the documented way to
+// close a CoC selection menu is to tap the ground beside it, and tapping a
+// located widget there (Back included) would open the quit-confirm dialog.
+//
+// The 500ms settle waits for the menu close-animation; without it the next capture
+// can race the menu's fade-out and confuse the next template match.
 func (b *Bot) dismissSelection() {
+	screen, err := b.client.CaptureToMat()
+	if err != nil {
+		return
+	}
+	win := vision.FractionRect(screen.Cols(), screen.Rows(),
+		wallMenuActionWindow[0], wallMenuActionWindow[1],
+		wallMenuActionWindow[2], wallMenuActionWindow[3])
+	_, menuOpen := vision.FindActionButton(screen, win, vision.DefaultActionButtonConfig())
+	screen.Close()
+
+	if !menuOpen {
+		b.logger.Debug().Msg("no selection menu located; not tapping empty ground")
+		return
+	}
 	tx, ty := b.cal.Centre(50, 450)
 	_ = b.client.Tap(tx, ty)
 	time.Sleep(500 * time.Millisecond)

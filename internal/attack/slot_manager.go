@@ -64,6 +64,23 @@ type TrackedSlot struct {
 	// refused (which deselects the card). Bounded by maxHeroRearms; kept apart
 	// from SpotTaps so a re-arm can never steal the ability's tap.
 	SpotRearms int `json:"spot_rearms"`
+
+	// DeployedAt stamps when the slot reached SlotDeployed (zero when never).
+	// The battle-end HP watch uses it for the warden's proactive ability
+	// timing; see internal/attack/hero_hp.go.
+	DeployedAt time.Time `json:"deployed_at"`
+
+	// SiegePlaced records that this battle's siege machine has already taken
+	// the ONE field tap that places it (see TapExecutor.PlaceSiege).
+	//
+	// A siege machine is not a troop card: it leaves the bar on the FIRST tap,
+	// and every tap after that lands on the machine now standing on the field,
+	// which destroys it (user-reported). A flag on the slot — rather than a
+	// convention each call site keeps — is what makes "exactly one placement
+	// tap" true no matter which path (main phase, sweep, event pass, verifier)
+	// gets there first: every one of them checks it, and the field-tap choke
+	// point refuses to fire a second time.
+	SiegePlaced bool `json:"siege_placed"`
 }
 
 // SlotManager handles slot detection, classification, identity resolution, and state tracking.
@@ -558,6 +575,14 @@ func (sm *SlotManager) GetEventTroops(strategyUnitNames []string) []*TrackedSlot
 		if slot.State == SlotDeployed || slot.State == SlotFailed {
 			continue
 		}
+		if slot.SiegePlaced {
+			// The siege machine already took its one placement tap. Treating it
+			// as an undeployed bonus card is what fires the taps that destroy it:
+			// the card never drains (siege cards keep a cooldown silhouette), so
+			// without this check the event pass re-deploys the machine that is
+			// already on the field.
+			continue
+		}
 		if slot.FallbackLabeled {
 			// Stale label — treat as event troop regardless of what the
 			// label claims (hero/spell/siege all possible).
@@ -588,6 +613,7 @@ func (sm *SlotManager) RecordAttempt(unitName string, success bool) {
 
 	if success {
 		slot.State = SlotDeployed
+		slot.DeployedAt = time.Now()
 	}
 }
 
@@ -598,6 +624,7 @@ func (sm *SlotManager) MarkDeployed(unitName string) {
 		return
 	}
 	slot.State = SlotDeployed
+	slot.DeployedAt = time.Now()
 	slot.IsEmpty = true
 }
 
@@ -610,6 +637,7 @@ func (sm *SlotManager) MarkSlotDeployed(slot *TrackedSlot) {
 		return
 	}
 	slot.State = SlotDeployed
+	slot.DeployedAt = time.Now()
 	slot.IsEmpty = true
 }
 

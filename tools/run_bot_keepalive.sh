@@ -46,7 +46,8 @@ if [ -d "$PROJECT_DIR/assets" ]; then
   export CLASHGO_ASSETS_DIR="$PROJECT_DIR/assets"
 fi
 
-LOG_DIR="$HOME/Library/Application Support/ClashGO/dev/logs"
+# One config tree per user for both binaries (see internal/paths): no "/dev".
+LOG_DIR="$HOME/Library/Application Support/ClashGO/logs"
 if [ -n "${CLASHGO_CONFIG_DIR:-}" ]; then
   LOG_DIR="$CLASHGO_CONFIG_DIR/logs"
 fi

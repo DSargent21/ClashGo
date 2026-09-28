@@ -33,6 +33,12 @@ type Navigator struct {
 	// and let the bot's stuck-watchdog / restart-game ladder take over.
 	chestCascadeCount int
 
+	// classifier is what DismissOverlay verifies an overlay against before it
+	// moves it (see dismiss.go). Wired once at bot startup via SetClassifier;
+	// nil means the navigator refuses to dismiss an overlay, which is the safe
+	// direction — no evidence, no input.
+	classifier *Classifier
+
 	// disableChestDismissal is the runtime kill-switch for the chest
 	// recovery flow. When true, DismissChestReward returns nil
 	// immediately on any chest state, allowing the bot's other ladders
@@ -58,6 +64,14 @@ func NewNavigator(client Device, cal *Calibration, graph *StateGraph, classify f
 
 func (n *Navigator) SetTemplates(ts *TemplateStore) {
 	n.templates = ts
+}
+
+// SetClassifier supplies the classifier whose rules DismissOverlay verifies an
+// overlay's control against (dismiss.go). Wire it once at startup, before the
+// capture loop can see an overlay: with no classifier the navigator will not
+// dismiss anything, rather than tapping a predicted point.
+func (n *Navigator) SetClassifier(cl *Classifier) {
+	n.classifier = cl
 }
 
 // SetDisableChestDismissal flips the runtime kill-switch for the
@@ -161,16 +175,17 @@ func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 		}
 
 		switch state {
-		case StateObstacleDialog:
-			n.dismissObstacle()
-		case StateGemDialog:
-			n.dismissGemDialog()
-		case StateWelcomeBack:
-			n.dismissWelcomeBack()
-		case StateShieldInfo:
-			n.dismissShieldInfo()
-		case StateChatOpen:
-			n.client.Back()
+		case StateObstacleDialog, StateGemDialog, StateWelcomeBack, StateShieldInfo, StateChatOpen:
+			// One evidence-gated path for every overlay (dismiss.go). No input is
+			// fired unless the state is still on the frame AND the control it
+			// moves (a verified probe, a located button, or Back) is where the
+			// action expects it. A refusal is an error, so the caller escalates to
+			// the stuck-watchdog ladder rather than sweeping the screen.
+			if !DismissOverlay(n.client, n.cal, n.classifier, state, n.templates, n.logger) {
+				n.logger.Warn().Str("state", state.String()).
+					Msg("overlay not dismissed from verified evidence; escalating")
+				return fmt.Errorf("overlay %s not dismissed (no verified evidence)", state)
+			}
 		case StateChestReward:
 			// Cascade guard: only ONE chest-dismiss attempt per
 			// handleInterruptions invocation. If the chest is STILL
@@ -195,60 +210,6 @@ func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 		time.Sleep(n.cfg.SettleTime)
 	}
 	return fmt.Errorf("too many nested interruptions")
-}
-
-func (n *Navigator) dismissObstacle() {
-	candidates := []image.Point{
-		{X: 400, Y: 300},
-		{X: 430, Y: 430},
-		{X: 400, Y: 500},
-		{X: 500, Y: 430},
-	}
-	for _, pt := range candidates {
-		// Blind taps across the middle of the screen: centred content.
-		sx, sy := n.cal.Centre(pt.X, pt.Y)
-		n.client.TapRandomized(sx, sy)
-		time.Sleep(500 * time.Millisecond)
-	}
-	n.client.Back()
-}
-
-func (n *Navigator) dismissWelcomeBack() {
-	if n.templates != nil {
-		tpl, ok := n.templates.Get("btn_okay")
-		if ok {
-			norm, physScale, err := n.captureNormalized()
-			if err == nil {
-				defer norm.Close()
-				// The button is usually in the lower half of the screen
-				searchRect := image.Rect(200, 350, 660, 650)
-				pt, conf, err := vision.MatchTemplateRegion(norm, tpl, searchRect, 0.6)
-				if err == nil && conf > 0.6 {
-					ax := int(float64(pt.X) * physScale)
-					ay := int(float64(pt.Y) * physScale)
-					n.client.Tap(ax, ay)
-					time.Sleep(1000 * time.Millisecond)
-					return
-				}
-			}
-		}
-	}
-	// Fallback to center-ish tap on the centred Welcome Back dialog.
-	sx, sy := n.cal.Centre(430, 520)
-	n.client.TapRandomized(sx, sy)
-	time.Sleep(1000 * time.Millisecond)
-}
-
-func (n *Navigator) dismissGemDialog() {
-	x, y := n.cal.Centre(175, 30)
-	n.client.TapRandomized(x, y)
-	time.Sleep(300 * time.Millisecond)
-}
-
-func (n *Navigator) dismissShieldInfo() {
-	x, y := n.cal.Centre(175, 30)
-	n.client.TapRandomized(x, y)
-	time.Sleep(300 * time.Millisecond)
 }
 
 // IdlePan performs a small, randomized camera pan and back — the kind of
@@ -474,7 +435,7 @@ func (n *Navigator) captureNormalized() (gocv.Mat, float64, error) {
 		return gocv.Mat{}, 0, fmt.Errorf("empty capture")
 	}
 
-	norm := vision.ResizeToHeight(raw, 732)
+	norm := vision.ResizeToHeight(raw, RefHeight)
 	physScale := float64(raw.Rows()) / 732.0
 	raw.Close()
 

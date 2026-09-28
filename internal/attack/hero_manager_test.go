@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/Ducky705/ClashGO/pkg/strategy"
+	"github.com/rs/zerolog"
+	"gocv.io/x/gocv"
 )
 
 // TestResolveLiveTapCount_LiveWinsOverDetected: when the live read is
@@ -112,6 +114,59 @@ func TestResolveLiveTapCount_NeverZero(t *testing.T) {
 	got := hm.resolveLiveTapCount(strategy.Unit{Name: "Balloon"}, nil, 0, false, 0)
 	if got < 1 {
 		t.Fatalf("resolveLiveTapCount must never return <1 (got %d) so the bot never skips the main pass", got)
+	}
+}
+
+// The troop reconcile must not fire blind top-up batches at a card whose count
+// label goes unreadable AFTER the main pass already fired a MEASURED count.
+//
+// Live 2026-09-27 (720p, BottomRight and TopLeft): three blind rounds fired 9
+// extra taps at a 10-Balloon card the deploy had already drained — the selection
+// animation had eaten the card's count label, which is a fact about the FRAME and
+// says nothing about the card. ~2 seconds and 9 taps per troop unit, and the
+// sweep then fired its own blind batch at the same card. The rule under test:
+// re-read briefly, then hand the decision to the sweep rather than guess.
+func TestDeployTroops_MeasuredPassDoesNotFireBlindTopUps(t *testing.T) {
+	exec, probe := newTapProbe(t)
+	hm := NewHeroManager(exec, &SlotManager{}, PrecisionConfig{}, "BottomRight", 1280, 720,
+		nil, nil, DeployLine{}, zerolog.Nop())
+	slot := &TrackedSlot{TroopSlot: TroopSlot{X: 200, Y: 682, Category: "Troop"}, UnitName: "balloon"}
+
+	// detectedTrusted=true is the orchestrator's settled multi-frame battle-start
+	// read: the card holds 10, so the main pass fires 10 plus the tail pad, and
+	// the reader wired to this slot is nil, which makes every post-pass read
+	// untrusted — the exact situation the blind batch used to fill.
+	if hm.DeployTroops(strategy.Unit{Name: "Balloon", Amount: "All"}, slot, "Line", 0, "Line",
+		gocv.NewMat(), 10, true) {
+		t.Fatal("a card whose count label never becomes readable must not be reported as confirmed deployed")
+	}
+	// 11 taps arrive as four calls (3+3+3+2). The old reconcile added three more
+	// calls, each a blind 3-tap batch: that is the waste this rule removes.
+	if got := probe.tapCalls(); got != 4 {
+		t.Fatalf("tap calls = %d, want the measured main pass's 4 (11 taps as 3+3+3+2) and no blind top-up batches", got)
+	}
+}
+
+// The blind batch is not gone: when the main pass had no measurement either, a
+// bounded guess driven by the visual check is strictly better than firing
+// nothing, and the sweep/sweep-style reconcile is the only way those units are
+// placed at all.
+func TestDeployTroops_BlindMainPassStillTopsUp(t *testing.T) {
+	exec, probe := newTapProbe(t)
+	hm := NewHeroManager(exec, &SlotManager{}, PrecisionConfig{}, "BottomRight", 1280, 720,
+		nil, nil, DeployLine{}, zerolog.Nop())
+	slot := &TrackedSlot{TroopSlot: TroopSlot{X: 200, Y: 682, Category: "Troop"}, UnitName: "balloon"}
+
+	hm.DeployTroops(strategy.Unit{Name: "Balloon", Amount: "All"}, slot, "Line", 0, "Line",
+		gocv.NewMat(), 0, false)
+
+	// blindBatchTaps for the main pass, then a bounded blind batch per reconcile
+	// round — more than the blind batch alone, which is the point.
+	// The main pass (one blind batch = one call) plus a top-up call per reconcile
+	// round. More than one call is the point: with nothing measured, the
+	// reconcile's taps are the only way the card drains at all.
+	if got := probe.tapCalls(); got <= 1 {
+		t.Fatalf("tap calls = %d, want the blind main pass plus its reconcile top-ups: with nothing measured those taps are the only way the card drains", got)
 	}
 }
 

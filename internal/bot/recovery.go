@@ -176,25 +176,37 @@ func (p *RecoveryPolicy) Strategies(packageName string, w, h, dpi int) []Recover
 	return strats
 }
 
+// FailureContext describes what the failed step says about the world, so the
+// ladder can skip strategies that cannot help. Today it carries one bit:
+// TransportDown means the ADB shell path itself is dead (screencap AND package
+// manager both errored). RelaunchGame is a force-stop + start over that same
+// shell: firing it with a dead transport burns ~5-15s proving nothing, so the
+// ladder jumps straight to the emulator-level strategies.
+type FailureContext struct {
+	TransportDown bool
+}
+
 // Escalate decides which strategy (by index in Strategies()) to try
 // next. failureContext tells the policy what step failed; the return
 // value is the index into Strategies() to try, or -1 if the ladder
 // is exhausted.
 //
-// The current implementation is a simple linear walk: it always
-// tries the next strategy on each escalation. A future enhancement
-// could skip strategies whose "predicate" doesn't match the failure
-// (e.g. don't try RelaunchGame if the failure is in adb.connect
-// itself).
-func (p *RecoveryPolicy) Escalate(strats []RecoveryStrategy, attempt int) int {
+// The walk is linear from the attempt offset, except game-level strategies
+// (RelaunchGame) are skipped while the transport is down — relaunching the
+// game over a dead shell cannot work, and the wait it costs is the slowest
+// part of a recovery users watch.
+func (p *RecoveryPolicy) Escalate(strats []RecoveryStrategy, attempt int, fc FailureContext) int {
 
 	if attempt < 1 {
-		return 0
+		attempt = 1
 	}
-	if attempt > len(strats) {
-		return -1
+	for idx := attempt - 1; idx < len(strats); idx++ {
+		if fc.TransportDown && strats[idx].Name == "RelaunchGame" {
+			continue
+		}
+		return idx
 	}
-	return attempt - 1
+	return -1
 }
 
 // Backoff returns the wait time before the next attempt. Exponential
@@ -266,8 +278,7 @@ func SuggestedAction(lastStep, lastStrategy, lastErr string) string {
 	return fmt.Sprintf("last error: %s", lastErr)
 }
 
-// containsFold is a tiny ASCII-case-insensitive substring test so
-// the SuggestedAction heuristics work on "Boot_Completed" or
+// containsFold is a tiny ASCII-case-insensitive substring test so// the SuggestedAction heuristics work on "Boot_Completed" or
 // "boot_completed" or "BOOT_COMPLETED" equally. We avoid strings.ToLower
 // to keep the heap pressure zero (this is called once per failure).
 func containsFold(haystack, needle string) bool {

@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math/rand"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,6 +57,8 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// Record the active strategy so the battle-end wait can honor
 	// per-strategy knobs (e.g. end_at_percent auto-end threshold).
 	e.activeStrategy = s
+	// A new battle owns a new HP watch; the snapshot at the end replaces it.
+	e.heroWatch = nil
 
 	// Pre-flight validation
 	if err := e.Validate(s); err != nil {
@@ -422,6 +425,31 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			Msg("using the USER-PINNED deploy line for every troop, hero and sweep tap (strategy formula not substituted for this side)")
 	}
 
+	// Which pin FILE this battle is obeying, and how old it is. The pins are the
+	// one source of geometry a human authored (cmd/pick_coords), so a run that
+	// reads a different copy than the picker wrote is attacking with geometry
+	// nobody chose — and nothing in the old log could show it. Live 2026-09-27:
+	// `wails dev` runs build/bin/ClashGO.app, whose bundled assets/ were copied
+	// when that bundle was last built, so every run that night attacked with
+	// pins from 2026-08-10 while the picker kept writing current ones into the
+	// project tree. GetAssetsDir now prefers the source tree for a dev build;
+	// this line is what proves it, every battle.
+	if pinPath := paths.Resolve("precision_config.json"); pinPath != "" {
+		ev := e.logger.Info().
+			Str("pins_path", pinPath).
+			Str("assets_source", paths.DescribeAssets().Source)
+		if age, ok := paths.FileAge(pinPath); ok {
+			ev = ev.Float64("pins_age_hours", age.Hours())
+		}
+		if ignored := paths.DescribeAssets().IgnoredDir; ignored != "" {
+			ev = ev.Str("ignored_assets_dir", ignored)
+			if age, ok := paths.FileAge(filepath.Join(ignored, "precision_config.json")); ok {
+				ev = ev.Float64("ignored_pins_age_hours", age.Hours())
+			}
+		}
+		ev.Msg("deploy geometry comes from this pin file (a second asset tree, if any, is named here)")
+	}
+
 	// The ground the hero path and the sweep will drop on. Logged once per
 	// battle because it is the difference between a drop the game accepts and
 	// one it silently refuses: run10 dropped both heroes on the pinned edge
@@ -524,6 +552,12 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// live: the EQ-spell sweep kept re-firing for ~2 minutes after the
 	// battle had already ended because no wall-clock bound existed.
 	tapExec.StartDeployBudget()
+	// deployStart is the clock behind the DeployGoal line reported after the
+	// phase loop: the user's "all troops and spells in under seven seconds"
+	// window, measured rather than guessed. It is the first placement phase's
+	// start, so it includes the inter-phase settles and every per-unit slot
+	// selection that the deploy actually pays for.
+	deployStart := time.Now()
 
 	// 7. Plan phases
 	planner := NewDeployPlanner(slotMgr, pCfg, targetEdge, w, h, e.logger)
@@ -647,6 +681,7 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		if e.OnPhaseStart != nil {
 			e.OnPhaseStart(plan.Phase.Name, targetEdge)
 		}
+		phaseStart := time.Now()
 
 		// Deploy spells. Thread the live OCR counts + slot resolver so
 		// Amount:"All" spells tap exactly the count the army carries
@@ -730,8 +765,17 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			// Siege (they share the 35ms gap and the same bug).
 			tapExec.HumanSleep(150, 30)
 
-			detectedCount := GetCountForSlot(troopCounts, up.Slot.X)
-			heroMgr.DeployTroops(up.Unit, up.Slot, plan.Phase.Pattern, plan.Phase.Offset, plan.Phase.Pattern, screen, detectedCount)
+			// detectedTrusted travels with the count: an unreadable card and an
+			// empty one both read 0, and DeployTroops uses the difference to
+			// decide whether it may skip its own pre-deploy capture.
+			detectedCount, detectedTrusted := GetCountForSlotMeasured(troopCounts, up.Slot.X)
+			unitStart := time.Now()
+			heroMgr.DeployTroops(up.Unit, up.Slot, plan.Phase.Pattern, plan.Phase.Offset, plan.Phase.Pattern, screen, detectedCount, detectedTrusted)
+			e.logger.Info().
+				Str("unit", up.Unit.Name).
+				Int("x", up.Slot.X).
+				Int64("elapsed_ms", time.Since(unitStart).Milliseconds()).
+				Msg("unit deploy elapsed")
 		}
 
 		// Deploy siege
@@ -820,6 +864,35 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		if pDelay > 0 {
 			time.Sleep(pDelay)
 		}
+		e.logger.Info().
+			Str("phase", plan.Phase.Name).
+			Int64("phase_elapsed_ms", time.Since(phaseStart).Milliseconds()).
+			Int64("deploy_elapsed_ms", time.Since(deployStart).Milliseconds()).
+			Int64("goal_ms", DeployGoal.Milliseconds()).
+			Msg("phase complete")
+	}
+
+	// The user's target, in the run's own words: every placement phase (troops,
+	// siege, heroes, spells) from the first tap to the last cast. Reported
+	// unconditionally — a wall clock can only be moved by measuring it, and the
+	// line above gives the per-phase split that says where it went.
+	placementsMs := time.Since(deployStart).Milliseconds()
+	goalMs := DeployGoal.Milliseconds()
+	e.logger.Info().
+		Int64("placements_ms", placementsMs).
+		Int64("goal_ms", goalMs).
+		Bool("within_goal", placementsMs <= goalMs).
+		// The siege contract, in the summary: one placement, and how many later
+		// placement taps had to be moved off the machine to keep it alive. A
+		// placement count above 1 means a path found a way around PlaceSiege.
+		Int("siege_placements", tapExec.SiegePlacements()).
+		Int("siege_clearance_nudges", tapExec.SiegeNudges()).
+		Msg("deploy window: troops + siege + heroes + spells")
+	if placementsMs > goalMs {
+		e.logger.Warn().
+			Int64("placements_ms", placementsMs).
+			Int64("over_by_ms", placementsMs-goalMs).
+			Msg("deploy window is over the seven-second goal; see the per-phase elapsed lines above for where it went")
 	}
 
 	// Abilities declared inline (e.g. auto_edrag_rush's pattern:Ability
@@ -836,20 +909,28 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	sweeper := NewSweeper(tapExec, slotMgr, pCfg, deployLine, w, h, formulaPtr, troopCounter, s.EventTroopsAutoDeployEnabled(), e.logger)
 	sweeper.SetRedZone(redZone)
 	sweeper.SetPinnedGround(userPinnedForTarget)
+	sweepStart := time.Now()
 	sweeper.Sweep(strategyNames, countMap)
+	e.logger.Info().
+		Int64("sweep_ms", time.Since(sweepStart).Milliseconds()).
+		Int64("deploy_total_ms", time.Since(deployStart).Milliseconds()).
+		Msg("sweep complete with deploy window total")
 
 	// 11. Verify
 	verifier := NewVerifier(tapExec, slotMgr, pCfg, targetEdge, w, h, DefaultVerifyConfig(), troopCounter, e.logger)
 	verifier.SetRedZone(redZone)
 	remainingCount := verifier.VerifyAll()
 
-	// 12. Evidence capture: save a post-deploy annotated screenshot so every
-	// real attack can be reviewed afterwards (did spells land on the formula
+	// 12. Evidence capture: save a post-deploy annotated screenshot so every	// real attack can be reviewed afterwards (did spells land on the formula
 	// lines? did every card drain?). Passes the formula the deploy path used —
 	// corner-resolved, projected, clamped — so the picture shows the taps that
 	// were fired and not a re-derivation of them. Best-effort: a capture failure
 	// must never fail an otherwise-good attack.
 	e.dumpAttackEvidence(formulaPtr, targetEdge, w, h, remainingCount)
+
+	// Snapshot deployed heroes for the battle-end HP watch: abilities that
+	// are still unspent fire on low HP during the wait (see hero_hp.go).
+	e.snapshotHeroWatch(slotMgr)
 
 	return remainingCount, nil
 }
@@ -886,7 +967,6 @@ func (e *Executor) dumpAttackEvidence(f *formula.Formula, targetEdge string, w, 
 	if f == nil {
 		return
 	}
-
 	annotated := capture.Clone()
 	defer annotated.Close()
 	// The deploy path's own band, not a percentage invented here: the same

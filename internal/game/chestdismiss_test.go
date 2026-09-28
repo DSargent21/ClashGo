@@ -58,6 +58,10 @@ type fakeDevice struct {
 	recorded []image.Point
 	swipes   []swipeCall
 	allMats  []gocv.Mat
+	// wentBack records that a Back press was sent. The overlay-dismissal path
+	// is allowed to move the screen with Back (never with a blind tap), so the
+	// tests have to be able to see both kinds of input.
+	wentBack bool
 }
 
 // swipeCall is the recorded shape of one SwipeBezier invocation.
@@ -108,7 +112,7 @@ func (f *fakeDevice) ZoomIn() error                { return nil }
 func (f *fakeDevice) Hold(x, y, ms int) error      { return nil }
 func (f *fakeDevice) KeyEvent(code int) error      { return nil }
 func (f *fakeDevice) Text(text string) error       { return nil }
-func (f *fakeDevice) Back() error                  { return nil }
+func (f *fakeDevice) Back() error                  { f.wentBack = true; return nil }
 func (f *fakeDevice) CaptureToMat() (gocv.Mat, error) {
 	if f.capIdx >= len(f.caps) {
 		// Give the loop a stable "main village" return when it overshoots.
@@ -139,9 +143,9 @@ func (s *scriptedClassifier) classify(_ gocv.Mat) (GameState, int) {
 }
 
 // makeTestNavigator wires a Navigator with a no-op graph + zero-scale
-// cal + scripted classifier. Zero-scale is fine because the loop
-// taps a uniformly-random point inside the loaded ROI; with sx=sy=1
-// the result is identical, just easier to assert against.
+// cal + scripted classifier. Zero-scale is fine because the chest loop taps the
+// centre of the loaded ROI; with sx=sy=1 the result is the identity mapping,
+// just easier to assert against.
 func makeTestNavigator(dev Device, sc *scriptedClassifier) *Navigator {
 	cal := &Calibration{PhysicalW: RefWidth, PhysicalH: RefHeight, ScaleX: 1, ScaleY: 1}
 	g := NewStateGraph()
@@ -272,12 +276,20 @@ func TestChestDismiss_RectValid(t *testing.T) {
 	}
 }
 
-func TestChestDismiss_RandomPointInRect(t *testing.T) {
+// TestChestDismiss_RectTargetIsTheCentre pins the replacement for the random
+// point-in-rect: same rect, same containment guarantee, one deterministic answer.
+// The old helper drew a uniformly-random point (and this test existed to check it
+// landed inside), which is the tap kind this change removes: a dismissal the log
+// could not replay and a shrug where the rect's centre was available.
+func TestChestDismiss_RectTargetIsTheCentre(t *testing.T) {
 	r := Rectangle{X1: 100, Y1: 200, X2: 300, Y2: 400}
-	for i := 0; i < 1000; i++ {
-		x, y := randomPointInRect(r)
-		if x < r.X1 || x > r.X2 || y < r.Y1 || y > r.Y2 {
-			t.Fatalf("randomPointInRect produced (%d,%d) outside %v", x, y, r)
+	for i := 0; i < 100; i++ {
+		x, y := chestRectTarget(r)
+		if x != 200 || y != 300 {
+			t.Fatalf("chestRectTarget produced (%d,%d), want the rect centre (200,300)", x, y)
+		}
+		if !r.Contains(x, y) {
+			t.Fatalf("chestRectTarget produced (%d,%d) outside %v", x, y, r)
 		}
 	}
 	// Degenerate rects must NOT panic; they should pin to the corner.
@@ -285,10 +297,46 @@ func TestChestDismiss_RandomPointInRect(t *testing.T) {
 		{X1: 5, Y1: 5, X2: 5, Y2: 5},
 		{X1: 9, Y1: 5, X2: 3, Y2: 5},
 	} {
-		x, y := randomPointInRect(deg)
+		x, y := chestRectTarget(deg)
 		if x != deg.X1 || y != deg.Y1 {
 			t.Errorf("degenerate %v produced (%d,%d), expected (%d,%d)",
 				deg, x, y, deg.X1, deg.Y1)
+		}
+	}
+}
+
+// TestChestDismiss_TapsAreDeterministic is the property the random draw broke:
+// two runs of the same dismissal have to send the same gesture, so a failure in
+// the log can be reproduced from the log.
+func TestChestDismiss_TapsAreDeterministic(t *testing.T) {
+	withFastChestAnimSettle(t)
+	cfg := &ChestROISchema{
+		TapROI:           &Rectangle{X1: 100, Y1: 200, X2: 300, Y2: 400},
+		SkipButton:       &Rectangle{X1: 200, Y1: 600, X2: 320, Y2: 660},
+		ConfirmYesButton: &Rectangle{X1: 380, Y1: 480, X2: 480, Y2: 540},
+	}
+
+	run := func() []image.Point {
+		dev := newFakeDevice(4)
+		defer dev.Close()
+		sc := &scriptedClassifier{states: []GameState{StateChestReward, StateMainVillage}}
+		nav := makeTestNavigator(dev, sc)
+		if err := nav.dismissChestRewardWithCfg(cfg, nil); err != nil {
+			t.Fatalf("dismiss: %v", err)
+		}
+		return append([]image.Point{}, dev.recorded...)
+	}
+
+	first, second := run(), run()
+	if len(first) == 0 {
+		t.Fatal("no taps were recorded; the flow changed shape")
+	}
+	if len(first) != len(second) {
+		t.Fatalf("tap counts differ between runs: %d vs %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Errorf("tap %d is not reproducible: %v vs %v (a random tap cannot be replayed from the log)", i, first[i], second[i])
 		}
 	}
 }

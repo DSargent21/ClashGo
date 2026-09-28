@@ -476,8 +476,11 @@ func (o *BootOrchestrator) probeWithRecovery(ctx context.Context) (adb.ProbeResu
 		o.report.AppendStep("boot.probe", start, BootResultTimeout, reason)
 
 		// Choose the next strategy. If we've exhausted the ladder,
-		// bail with a synthesized error.
-		idx := o.policy.Escalate(strats, attempt)
+		// bail with a synthesized error. The shell path is dead when
+		// BOTH the screencap and package-manager signals errored: a
+		// game relaunch over that shell cannot work, so the ladder
+		// skips it for emulator-level strategies.
+		idx := o.policy.Escalate(strats, attempt, transportDown(res))
 		if idx < 0 {
 			o.report.SetAttempts(attempt)
 			return res, fmt.Errorf("boot probe failed after %d attempts; last result: %s", attempt, summarizeProbe(res))
@@ -508,6 +511,21 @@ func (o *BootOrchestrator) probeWithRecovery(ctx context.Context) (adb.ProbeResu
 	}
 	o.report.SetAttempts(o.cfg.MaxRecoveryAttempts)
 	return adb.ProbeResult{}, errors.New("boot probe exhausted recovery attempts")
+}
+
+// transportDown reports whether the probe result says the ADB shell path is
+// dead: both the screencap and the package-manager signals errored. Either
+// one alone can be a wedged subsystem (SurfaceFlinger still serves frames
+// while WindowManager sulks); both together mean no shell command —
+// including a game force-stop — can get through.
+func transportDown(res adb.ProbeResult) FailureContext {
+	if len(res.Signals) == 0 {
+		return FailureContext{}
+	}
+	screen, okS := res.Signals[adb.SignalScreenReady]
+	pm, okP := res.Signals[adb.SignalPackageMgr]
+	down := okS && okP && screen.Error != "" && pm.Error != ""
+	return FailureContext{TransportDown: down}
 }
 
 // screenSize fetches the display dimensions. The primary source is

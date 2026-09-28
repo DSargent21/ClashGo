@@ -112,6 +112,16 @@ func captureSlotLiveCount(
 			next.Close()
 		}
 	}
+
+	// Still unreadable after the retry: this is the outcome that costs battle
+	// time (the caller has no number to fire and no proof the card is spent, so
+	// it fires a blind batch and reconciles again). Keep the frame, once, so the
+	// cause is diagnosable from an image instead of from a log line that reads
+	// the same for a mis-placed window and for unmatched digits. Bounded by the
+	// counter's own budget; see dumpUnreadableBarBand.
+	if !trusted && labelSeen {
+		troopCounter.dumpUnreadableBarBand(screen, slot.X, slot.Y, barY)
+	}
 	screen.Close()
 
 	return count, trusted, visuallyEmpty

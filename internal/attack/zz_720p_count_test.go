@@ -12,7 +12,7 @@ import (
 // barFixturePath is the frame every 720p bar read below is pinned against.
 //
 // It MUST be committed test data. These tests used to read the bot's runtime
-// artifact (~/Library/Application Support/ClashGO/dev/last_troop_bar.png) — the
+// artifact (~/Library/Application Support/ClashGO/last_troop_bar.png) — the
 // file a live battle overwrites — so they asserted counts against whichever
 // frame happened to be there last: the suite went red after every run and could
 // not distinguish a reader regression from a different army.

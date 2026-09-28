@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"os/exec"
 	"strings"
@@ -491,12 +490,14 @@ func (t *Transport) Tap(x, y int) error {
 	return err
 }
 
-func (t *Transport) TapRandomized(x, y int) error {
-	ox := rand.Intn(11) - 5
-	oy := rand.Intn(11) - 5
-	time.Sleep(time.Duration(50+rand.Intn(151)) * time.Millisecond)
-	return t.Tap(x+ox, y+oy)
-}
+// NOTE: this used to carry a TapRandomized that offset the point by a
+// uniform ±5 px and slept a uniform 50-200ms before tapping. It had no callers
+// (every tap goes through Client, whose TapHuman owns the jitter and the human
+// reaction delay) and it was the only uniform-random tap left in the transport
+// layer — a second, worse answer to "what is a human-like tap" sitting one
+// interface away from the code that actually taps. Deleted rather than kept as
+// an unused alternative (see internal/game/dismiss.go for the other half of this
+// cleanup).
 
 func (t *Transport) Swipe(x1, y1, x2, y2 int, ms int) error {
 	_, err := t.Exec(fmt.Sprintf("shell:input swipe %d %d %d %d %d", x1, y1, x2, y2, ms))

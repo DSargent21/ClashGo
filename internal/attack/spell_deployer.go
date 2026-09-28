@@ -400,6 +400,14 @@ func (sd *SpellDeployer) deployPointSpell(unit strategy.Unit, slot *TrackedSlot,
 	return true
 }
 
+// fallbackOffset is the offset a unit would have used, for logging only.
+func fallbackOffset(unit strategy.Unit) int {
+	if unit.Offset != 0 {
+		return unit.Offset
+	}
+	return unit.PhaseOffset
+}
+
 // deployLineSpell deploys spells along a line (Line A for rage, Line B for others).
 func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, targetEdge string) bool {
 	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
@@ -452,16 +460,35 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 
 	// Apply offset. Per-unit offset wins; fall back to the phase-level
 	// offset so valk_spam-style "deeper in for EQs" phase pins still work.
-	off := unit.Offset
-	if off == 0 {
-		off = unit.PhaseOffset
-	}
-	if off > 0 {
-		centerX, centerY := sd.w/2, sd.h/2
-		pct := float64(off)/150.0 + 0.12
-		p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
-		p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
-		sd.logger.Debug().Interface("offset_p1", p1).Interface("offset_p2", p2).Msg("applied inward offset")
+	//
+	// A PINNED side never takes the offset. The offset is strategy intent —
+	// "these spells belong deeper in than the troop line" — and it is expressed
+	// as a percentage slide toward the screen centre, which on a line the user
+	// drew by hand only moves the casts OFF their line. Live 2026-09-27 the Ice
+	// Spell on pinned TopRight SpellEdgesB (982,295)->(1056,393) was cast at
+	// (900,341): 82 px left of the segment, i.e. off the pin by more than two
+	// tiles, exactly the "spells are all off" the user reported. The picker
+	// writes edges, hero_targets AND spell_edges_a/b for the same side in one
+	// sitting, so pinnedGround implies these spell lines are the user's too —
+	// the same reason DeploySpell routes to them ahead of the formula. Pins win;
+	// the strategy offset only shapes ground the user did not choose.
+	if sd.pinnedGround {
+		sd.logger.Debug().
+			Str("unit", unit.Name).
+			Int("strategy_offset", fallbackOffset(unit)).
+			Msg("pinned spell line: keeping the casts ON the user's line and not applying the strategy's inward offset")
+	} else {
+		off := unit.Offset
+		if off == 0 {
+			off = unit.PhaseOffset
+		}
+		if off > 0 {
+			centerX, centerY := sd.w/2, sd.h/2
+			pct := float64(off)/150.0 + 0.12
+			p1 = image.Pt(int(float64(p1.X)+float64(centerX-p1.X)*pct), int(float64(p1.Y)+float64(centerY-p1.Y)*pct))
+			p2 = image.Pt(int(float64(p2.X)+float64(centerX-p2.X)*pct), int(float64(p2.Y)+float64(centerY-p2.Y)*pct))
+			sd.logger.Debug().Interface("offset_p1", p1).Interface("offset_p2", p2).Msg("applied inward offset")
+		}
 	}
 
 	// Distribute spells along line
@@ -486,7 +513,17 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 	return true
 }
 
-// deployRageSpecial deploys 5 rage spells: 3 on Line A, 2 on Line B.
+// deployRageSpecial deploys the five rage spells across the user's two pinned
+// spell lines: 3 on Line A (one on each END, one on the CENTRE) and 2 on Line B
+// (one on each END).
+//
+// The end/centre/end layout is what the user asked for, and it is also the
+// widest spread a fixed line can carry. The previous 0.10 / 0.50 / 0.90 left 10%
+// of the line unused at each end, which on the live 720p TopLeft rage line
+// (140 px at display_scale 1.325) put the three casts 56 px apart — inside one
+// rage's own reach, so the post-run report called the line TIGHT and the five
+// spells landed as one cluster. Using the whole line moves the same three casts
+// to 70 px apart there and the two-cast line to its full 121 px.
 //
 // Histrionically bots have silently dropped the last Line B tap because the
 // "if idx < len(pointsB)-1" sleep guard skipped the final inter-tap delay
@@ -495,20 +532,11 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 // taps, and log the final count so a missed spell becomes visible in the
 // tap log instead of vanishing.
 func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB ManualEdge) bool {
-	sd.logger.Info().Msg("deploying rage spells: 3 on Line A, 2 on Line B")
+	sd.logger.Info().Msg("deploying rage spells: 3 on Line A (end/centre/end), 2 on Line B (end/end)")
 
-	p1A, p2A := edgeA.P1, edgeA.P2
-	pointsA := []image.Point{
-		sd.executor.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.10), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.10)), 8),
-		sd.executor.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.50), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.50)), 8),
-		sd.executor.addJitter(image.Pt(int(float64(p1A.X)+float64(p2A.X-p1A.X)*0.90), int(float64(p1A.Y)+float64(p2A.Y-p1A.Y)*0.90)), 8),
-	}
-
-	p1B, p2B := edgeB.P1, edgeB.P2
-	pointsB := []image.Point{
-		sd.executor.addJitter(image.Pt(int(float64(p1B.X)+float64(p2B.X-p1B.X)*0.10), int(float64(p1B.Y)+float64(p2B.Y-p1B.Y)*0.10)), 8),
-		sd.executor.addJitter(image.Pt(int(float64(p1B.X)+float64(p2B.X-p1B.X)*0.90), int(float64(p1B.Y)+float64(p2B.Y-p1B.Y)*0.90)), 8),
-	}
+	pointsA := sd.rageLinePoints("Line A", edgeA, []float64{0, 0.5, 1})
+	pointsB := sd.rageLinePoints("Line B", edgeB, []float64{0, 1})
+	sd.logRageSpread(append(append([]image.Point{}, pointsA...), pointsB...))
 
 	deployed := 0
 	for idx, pt := range pointsA {
@@ -547,6 +575,103 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 			Msg("RAGE SPECIAL: deployed fewer spells than requested")
 	}
 	return true
+}
+
+// rageLinePoints turns a pinned spell line plus a list of fractions along it
+// (0 = P1, 1 = P2) into jittered cast points.
+//
+// Every point is pulled back onto ground a cast can actually land on first.
+// Now that the casts sit on the line's ENDS, a pin whose end falls under the top
+// HUD or on the troop bar would otherwise spend a rage on the chrome, where CoC
+// deploys nothing at all — the same failure the deploy-band clamp exists to
+// prevent in the formula path, and the reason distributeAlong insets its casts.
+func (sd *SpellDeployer) rageLinePoints(name string, edge ManualEdge, fractions []float64) []image.Point {
+	out := make([]image.Point, 0, len(fractions))
+	for _, f := range fractions {
+		pt := image.Pt(
+			int(float64(edge.P1.X)+float64(edge.P2.X-edge.P1.X)*f),
+			int(float64(edge.P1.Y)+float64(edge.P2.Y-edge.P1.Y)*f),
+		)
+		// Jitter first, clamp second: the clamp is 8 px wide, and a clamp
+		// applied before the jitter leaves the jitter free to push the cast
+		// straight back into the chrome the clamp just moved it out of.
+		pt = sd.executor.addJitter(pt, 8)
+		if clamped, moved := sd.castPointInField(pt); moved {
+			sd.logger.Warn().
+				Str("line", name).
+				Float64("at", f).
+				Interface("was", pt).
+				Interface("clamped_to", clamped).
+				Int("field_top", BandTop()).
+				Int("bar_top", sd.spellBarTop()).
+				Msg("rage cast point sat outside the deployable field (top HUD or troop bar); pulled it back onto the field")
+			pt = clamped
+		}
+		out = append(out, pt)
+	}
+	return out
+}
+
+// castPointInField pulls a cast point out of the game's chrome: inside the
+// screen, below the top HUD, above the troop bar. Returns the point and whether
+// it moved. castPointDeployable answers the same question as a predicate, for
+// the paths whose contract is to SKIP a cast that cannot land; the rage layout's
+// contract is to still place the user's five casts, so it moves them instead.
+func (sd *SpellDeployer) castPointInField(pt image.Point) (image.Point, bool) {
+	moved := false
+	if sd.w > 0 {
+		if pt.X < 0 {
+			pt.X, moved = 0, true
+		}
+		if pt.X >= sd.w {
+			pt.X, moved = sd.w-1, true
+		}
+	}
+	top := BandTop() + 1
+	if pt.Y < top {
+		pt.Y, moved = top, true
+	}
+	if bot := sd.spellBarTop() - 1; bot > top && pt.Y > bot {
+		pt.Y, moved = bot, true
+	}
+	return pt, moved
+}
+
+// logRageSpread reports the closest pair of this deployment's rage casts, in the
+// same currency the post-run report measures with (attacklog.MinCastSpacing: half
+// a cast's reach — below it the two casts are working the same ground). The
+// deployer states its own spread here instead of leaving it to the report,
+// because "spread more on the line" is a request about a number, and the number
+// belongs in the run's log beside the taps that produced it.
+func (sd *SpellDeployer) logRageSpread(points []image.Point) {
+	if len(points) < 2 {
+		return
+	}
+	bar := sd.minCastSpacing()
+	closest := math.Inf(1)
+	closestI, closestJ := 0, 0
+	for i := 0; i < len(points); i++ {
+		for j := i + 1; j < len(points); j++ {
+			d := math.Hypot(
+				float64(points[i].X-points[j].X),
+				float64(points[i].Y-points[j].Y),
+			)
+			if d < closest {
+				closest, closestI, closestJ = d, i, j
+			}
+		}
+	}
+	ev := sd.logger.Info()
+	if bar > 0 && closest < bar {
+		ev = sd.logger.Warn()
+	}
+	ev.
+		Int("casts", len(points)).
+		Float64("closest_pair_px", math.Round(closest)).
+		Float64("min_cast_spacing_px", math.Round(bar)).
+		Interface("closest_a", points[closestI]).
+		Interface("closest_b", points[closestJ]).
+		Msg("rage cast spread: closest pair of the five casts")
 }
 
 // resolveSpellCount returns the number of spells to deploy.

@@ -113,6 +113,12 @@ type WallUpgradeHooks struct {
 	// verify loop and to detect interruption dialogs. May be nil.
 	Classify func(gocv.Mat) (game.GameState, int)
 
+	// Classifier is the classifier DismissOverlay verifies an interruption
+	// against before moving it (see game/dismiss.go). May be nil; a nil
+	// classifier makes interruption dismissal a no-op rather than a blind tap,
+	// which is the safe direction. Production wires the bot's own classifier.
+	Classifier *game.Classifier
+
 	// Dismiss taps a neutral background area to clear any active
 	// wall-selection after a failed button-template match. May be nil.
 	Dismiss func()
@@ -140,7 +146,11 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 		Cal:       b.cal,
 		Templates: b.templates,
 		Classify:  b.classify,
-		Dismiss:   b.dismissSelection,
+		// Same classifier the bot's own dismiss path uses, so the wall loop's
+		// interruption handling is the same evidence-gated code (no per-dialog
+		// coordinate tables living in two places).
+		Classifier: b.classifier,
+		Dismiss:    b.dismissSelection,
 		// StopCheck lets a user Stop interrupt the otherwise-unbounded
 		// wall-upgrade loop at its next iteration boundary.
 		StopCheck: func() bool { return b.ctx.Err() != nil },
@@ -1294,15 +1304,21 @@ func waitForMainVillage(h *WallUpgradeHooks, timeout time.Duration) bool {
 	return false
 }
 
-// dismissInterruptionsFor mirrors Bot.dismissInterruptions but operates
-// on the hooks-provided client + classifier. Called from the
-// waitForMainVillage loop between captures. When Classify is nil
-// (manual mode), no classification → no dismiss attempt.
+// dismissInterruptionsFor clears an interruption dialog seen on the
+// waitForMainVillage loop's frames. It delegates to game.DismissOverlay, which is
+// the same evidence-gated path the bot's capture loop uses (game/dismiss.go), so
+// there is exactly one overlay-dismissal implementation in the project and no
+// second coordinate table to drift from it.
 //
-// Uses TapRandomized for StateObstacleDialog / GemDialog / ShieldInfo to
-// match prod's Gaussian-distributed taps (adb.Client.TapRandomized
-// wraps TapHuman → TapFast with stddev=3.5). Plain Tap is used for
-// WelcomeBack's calibrated pinpoint.
+// This used to carry its own copy of the coordinate table: a blind tap at
+// (400,300) for the obstacle sheet, a predicted (175,30) X for the gem/shield
+// popups, calibrated Welcome-Back / splash coordinates, and a comment claiming
+// that made it "mirror Bot.dismissInterruptions". Two copies of a guessed tap is
+// two places for a guessed tap to survive a cleanup.
+//
+// Called with Classify nil (manual mode) there is no state to verify, and with
+// Classifier nil there is nothing to verify it against — either way DismissOverlay
+// refuses to fire, which is the safe direction.
 func dismissInterruptionsFor(h *WallUpgradeHooks) {
 	if h.Classify == nil {
 		return
@@ -1313,26 +1329,10 @@ func dismissInterruptionsFor(h *WallUpgradeHooks) {
 	}
 	state, _ := h.Classify(screen)
 	screen.Close()
-	switch state {
-	case game.StateObstacleDialog:
-		_ = h.Client.TapRandomized(400, 300)
-		time.Sleep(400 * time.Millisecond)
-		_ = h.Client.Back()
-	case game.StateGemDialog, game.StateShieldInfo:
-		_ = h.Client.TapRandomized(175, 30)
-	case game.StateWelcomeBack:
-		ox, oy := h.Cal.Centre(430, 520)
-		_ = h.Client.Tap(ox, oy)
-	case game.StateChatOpen:
-		_ = h.Client.Back()
-	case game.StateTapToContinue:
-		// Post-boot "ТАР!" collect splash — tap the prompt text.
-		px, py := h.Cal.Centre(450, 195)
-		_ = h.Client.Tap(px, py)
-	case game.StateNewsSplash:
-		// Post-boot news splash — tap the green Continue button.
-		px, py := h.Cal.Centre(403, 535)
-		_ = h.Client.Tap(px, py)
+
+	if !game.DismissOverlay(h.Client, h.Cal, h.Classifier, state, h.Templates, h.Logger) {
+		h.Logger.Debug().Str("state", state.String()).
+			Msg("no overlay to dismiss from verified evidence; no input fired")
 	}
 }
 

@@ -13,7 +13,9 @@ import (
 
 func TestZZVerifyPlacement(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, "Library/Application Support/ClashGO/dev")
+	// No "/dev": the per-binary tree is gone (see internal/paths) — both the
+	// packaged app and the CLI resolve to the one config dir now.
+	dir := filepath.Join(home, "Library/Application Support", "ClashGO")
 
 	// CLASHGO_PROBE_FRAMES (comma-separated paths) reads frames that were copied
 	// out of the config dir — a finished run's own post-deploy evidence. Defaults

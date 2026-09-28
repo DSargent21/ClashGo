@@ -2,9 +2,100 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.6.0-beta] - 2026-09-27
 
 ### Fixed
+- **A siege machine is now placed with exactly one field tap, per battle, from
+  every path that can tap.** A siege leaves the bar on its first field tap, and
+  every tap after that lands on the machine now standing on the field, which
+  destroys it (user-reported). "Exactly one" was a convention each call site kept
+  separately, and two of them did not: the event-troop pass re-deploys any card
+  the strategy did not declare — including a siege slot whose label does not match
+  the strategy's spelling, and siege cards never leave a bar looking empty, so
+  nothing ever closed the slot out — and the verifier's retry fires at any slot a
+  previous pass reported FAILED. Both are now impossible: the field tap lives in
+  one function (`TapExecutor.PlaceSiege`) that records the placement on the slot
+  (`TrackedSlot.SiegePlaced`) and refuses to fire twice, selecting the card again
+  is refused once the tap is spent, and the sweep, the verifier and the
+  event-troop pass all close such a slot out without tapping. The refusal is
+  logged as a refusal, so a future path that tries again is visible in the run
+  rather than silent.
+- **Rage spells are spread across the line the user drew: one on each END, one on
+  the CENTRE.** 5 rage spells still go 3 on Line A and 2 on Line B, but the casts
+  now sit on the line's ends instead of at 0.10 / 0.50 / 0.90 of it. The insets
+  left 10% of the line unused at each end, and on the live 720p TopLeft rage line
+  (140 px at display_scale 1.325) that put the three Line A casts 56 px apart —
+  inside one rage's own reach, which is why the post-run report called the line
+  TIGHT and the five spells landed as a single cluster. Using the whole line moves
+  the same three casts to 70 px apart there and the two-cast line to its full
+  121 px. The end points are the ones the deploy-band clamp moves first, so each
+  cast is now pulled back onto the field (below the top HUD, above the troop bar)
+  AFTER its jitter, and the deployer logs its own closest cast pair in the same
+  units the report grades with, so "how spread is it" is a number in the run log
+  next to the taps that produced it.
+- **The deploy stops firing blind top-up taps at cards nobody measured, which is
+  where most of a 17-second deploy went.** Live 720p runs of the same attack
+  measured 14-17 s from the first drop to the last cast. The largest single cost
+  was the troop reconcile: once a card is selected and mid-drop its count label
+  animates away, so the post-deploy read comes back "label present but not
+  readable" — a fact about the FRAME — and the old loop answered it with a blind
+  3-tap batch, three rounds in a row: 9 extra taps at a 10-Balloon card the deploy
+  had already drained, ~2 s per troop unit, and then the sweep fired its own blind
+  batch at the same card. The loop now remembers whether the main pass fired a
+  MEASURED count (live OCR, the orchestrator's settled battle-start read, or the
+  strategy amount) and, when it did, re-reads instead of re-firing: briefly, and if
+  the label never returns it stops and hands the slot to the sweep rather than
+  guessing. The blind batch is kept exactly where it was written for — a main pass
+  that had no measurement either. The per-unit pre-deploy capture is skipped when
+  the battle-start read is trustworthy (a capture is ~300 ms of a window the user
+  asked to keep under 7 s), the siege confirm's two 700 ms waits are one 400 ms
+  wait, and every phase now logs its own elapsed time plus a `deploy window` line
+  with the total against the 7 s goal (`DeployGoal`), so the next run reports the
+  split instead of requiring it to be inferred from timestamps.
+- **One config tree for every binary, so the app finally reads settings the CLI
+  tools wrote.** The packaged app (which is what `wails dev` runs) resolved its
+  config dir to `~/Library/Application Support/ClashGO` while the unbundled CLI
+  (`pick_coords`, `attack_verify`, `resprobe`, …) used a `…/ClashGO/dev`
+  subdirectory — two trees for one user, and the app only ever read its own. The
+  measured display scale pinned in the CLI tree (`device.display_scale: 1.325`,
+  and with it `max_attack_per_session`, `restart_on_startup`, the shell-pipe
+  settings) was therefore invisible to the app: all 8 runs logged
+  `display_scale_pinned=false` and fell back to the 1.9%-off derived scale, which
+  is 12px at the troop bar — a whole digit glyph — so every count label read
+  `count label present but not readable`. Resolution is now the same for both
+  layouts, and the first `GetConfigDir` copies the legacy `dev` tree's state files
+  into the unified dir (copy, never move, and never over a file that is already
+  there), so an existing pin is adopted instead of lost. The calibration line now
+  names the config file it read (`config_path=`), because a pin in a tree the
+  running binary does not read is indistinguishable from no pin at all in a log.
+- **Overlays are dismissed from evidence, so a run stops tapping the screen at
+  random points.** Getting out of a dialog used to be a coordinate table: four
+  blind taps across the middle of the screen for the obstacle sheet, a blind tap
+  at (400,300) for whatever dialog was up, predicted reference coordinates for the
+  gem/shield X, the Welcome-Back centre, the splash prompt and the
+  lost-connection TRY AGAIN button, a random point inside the chest rect, the
+  per-geometry TRY AGAIN pin, plus single stray taps on empty village ground
+  (startup "focus click", post-attack side tap, wall-menu dismiss) and a
+  blind-tap fallback in `findAndClick` that fired after every located path had
+  already failed. Every dismissal now goes through one function with two checks on
+  the frame it captures: the state is still on that frame (the classifier's own
+  rule for it reports Matched, through the same scorer `ClassifyState` uses), and
+  the thing it moves is where the action expects it — a probe the classifier
+  verified, a template-located button, or the Back key. Failing either check fires
+  nothing and leaves the case to the stuck-watchdog ladder, because (as
+  docs/RESOLUTION.md measured) a tap on a predicted point during an animation
+  lands on whatever is behind it. The overlays whose only safe exit is the cancel
+  action (gem popup, shield info, obstacle sheet, chat) are closed with Back
+  instead of a tap: the gem popup's primary button spends gems.
+- **The chest fallback taps the rect centre, not a random point.** `randomPointInRect`
+  made every Skip/Confirm/Continue dismissal a different gesture, so a failure
+  could not be replayed from the log; the rect the user picked still decides where,
+  but the code no longer picks a spot inside it. Pinned by a test that runs the
+  same dismissal twice and requires identical taps.
+- **Removed `Transport.TapRandomized`,** a second, unused implementation of a
+  "random" tap (uniform ±5 px offset, uniform 50-200ms sleep) sitting one interface
+  away from `Client.TapHuman`, which is the jitter and reaction delay the bot
+  actually uses.
 - **Heroes now deploy and their abilities fire.** A placement the game refuses
   *deselects* the hero's card — the code had assumed the opposite, so every retry
   field tap was fired at an unselected card and could never land. Measured on
@@ -30,6 +121,17 @@ All notable changes to this project will be documented in this file.
   after every run. They now read a committed deploy-time fixture.
 
 ### Added
+- **An unreadable count label leaves a frame behind** (`debug_bar_unreadable_NN.png`
+  in the config dir, 6 per battle). "Count label present but not readable" is the
+  one reader outcome that costs battle time — the deployer has neither a number to
+  fire nor proof the card is spent, so it fires a blind top-up batch and reconciles
+  again, and three rounds of that is what turned a 10-tap balloon drop into 20 taps
+  and a 26s deployment on 2026-09-27. The log line is identical whether the badge
+  sits outside the searched window (a geometry bug) or inside it with digits the
+  templates cannot match (a matching bug), and those need opposite fixes; the frame
+  says which. The saved band is the full bar width at 2× with the badge windows the
+  read searched drawn on it (red = the row measured from that frame, orange = the
+  geometry fallback, yellow = the slot anchor) plus the values that produced them.
 - **The picker now checks your points for you** (`Charts`/`Checks` panel, per-side
   badge on each tab, red dashed rings on the frame). It flags a point under the
   top HUD or the troop bar, a deploy point too far from every border to sit
@@ -730,6 +832,26 @@ the phase-1 status (what is landed, what is verified, what remains).
   at the target geometry rather than only the village, and migrate the attack
   path's geometry (button ROIs, slot bar, troop counts, loot/result panel,
   deploy points). See `docs/RESOLUTION.md`.
+
+### Fixed
+- **The hero phase could not be exercised from a hand-built `HeroManager`**
+  (`internal/attack/hero_manager.go`). `heroDropCandidates` read the siege
+  machine's tile through `hm.executor` unconditionally, so the two tests that
+  build a `HeroManager` literal — the outward-retry ladder and the pinned hero
+  point — died on a nil dereference instead of asserting the property they were
+  written for, and `make test` was red on the branch. The tile is only known
+  when an executor actually ran, which is the same nil check the sweep and the
+  spell deployer already carry.
+- **The spell contract tests pin the formula schema the picker writes today**
+  (`tests/test_spell_placement.py`). Rage now ships as one `"type": "lines"`
+  entry carrying its outer and inner sub-lines, and the pinpoints are authored
+  in LIVE pixels with the captured frame recorded in `screen` — both changed
+  with the geometry work, and the three tests still asserting a separate
+  `_rage_inner` entry against an 860x732 reference header went red. They now
+  take the sub-lines from either schema, require the inner one to sit closer to
+  the base centre, and require `screen` to describe the pixels the points live
+  in (landscape, every authored point inside it) — the mismatch that shifts
+  every tap by tens of pixels.
 
 ## [0.5.0-beta] - 2026-09-16
 

@@ -56,6 +56,12 @@ type Executor struct {
 	OnUnitDeploy func(unit string, slotX int, slotY int)
 
 	OnDukePick func(targetEdge string, chosenEdge string)
+
+	// heroWatch polls deployed heroes' HP strips during the battle-end wait
+	// and fires each unspent ability once (low HP, or proactively for the
+	// warden). Snapshotted at the end of DeployDynamicV2; nil when no battle
+	// deployed heroes or the watch already resolved.
+	heroWatch *HeroHPMonitor
 }
 
 // LastDestructionPercent returns the highest destruction percentage the
@@ -1776,10 +1782,36 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			}
 			state, _ := e.classify(screen)
 
-			if state == game.StateBattleEnd || state == game.StateReturnHome {
-				screen.Close()
-				return true
+		if state == game.StateBattleEnd || state == game.StateReturnHome {
+			screen.Close()
+			return true
+		}
+
+		// HP-triggered hero abilities: the deploy already spent the
+		// placement tap; this fires the remaining ability tap on low HP
+		// (or proactively for the warden). Reuses this tick's frame, so
+		// the watch costs no extra captures. See hero_hp.go.
+		if e.heroWatch != nil {
+			watch := e.heroWatch
+			now := time.Now()
+			watch.Poll(screen, e.cal, now, func(h *WatchedHero) {
+				y := h.SlotY
+				if h.Warden {
+					// Same card-tap point as the deploy path (see
+					// TapExecutor.fireSlotTap): the warden's icon sits
+					// above the card centre.
+					y -= int(e.cal.Length(25))
+				}
+				if err := e.client.TapFast(h.X, y, 4.0); err != nil {
+					e.logger.Warn().Err(err).Int("x", h.X).Msg("hero HP ability tap failed")
+				} else {
+					e.logger.Info().Int("x", h.X).Msg("hero ability fired on low HP")
+				}
+			})
+			if watch.AllDone() {
+				e.heroWatch = nil
 			}
+		}
 
 			// Per-strategy auto-end threshold from end_at_percent (0 = off).
 			endAtPct := 0
