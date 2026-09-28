@@ -215,10 +215,19 @@ attack-classify: build-attack-record
 		--extra-tap-count $(EXTRA_TAPS) --extra-tap-delay $(EXTRA_DELAY) \
 		--dry-run 2>&1 | grep -E 'slot|deploy|dry-run'
 
+# build-gui MUST carry $(CLI_OPENCV_LDFLAGS) like every CLI target does: the
+# GUI links the same gocv/OpenCV libraries, and without the rpath dyld aborts
+# the app before main() — "Library not loaded: @rpath/libopencv_gapi.410.dylib,
+# no LC_RPATH's found" — which is a DMG that mounts, verifies and then will not
+# launch. CI passes the same flag, where it resolves to the runner's Homebrew
+# prefix; those absolute install names are why a released DMG still only
+# launches on a machine with the matching OpenCV at the same path. Bundling the
+# dylibs into Contents/Frameworks is the fix for that, and is not what this
+# flag does.
 build-gui:
 	@echo "Building GUI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) wails build -o ClashGO -ldflags "$(LDFLAGS)"
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) wails build -o ClashGO -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)"
 
 # manifest target — produces build/bin/latest.json once the zip is on
 # disk. Standalone so it can be invoked from CI without a full GUI
