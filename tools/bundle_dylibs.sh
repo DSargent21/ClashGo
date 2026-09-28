@@ -445,18 +445,37 @@ done
 # Static checks can pass a bundle that dyld still refuses (a missed rpath, an
 # ID collision). With CLASHGO_BUNDLE_SMOKE=1 the caller asks for the real
 # thing: run the binary briefly. dyld rejects bad load commands within
-# milliseconds, so a 1s alarm is enough to see either rejection or a live
-# process; the bot never gets far enough to touch ADB or the game. ANY exit
-# (timeout kill, clean exit, panic after main) proves the loader accepted
-# every load command — the ONLY failure signature is dyld's own rejection
-# text on stderr, which is emitted before main() runs.
+# milliseconds, so a couple of seconds of life is enough to see either
+# rejection or a live process; the bot never gets far enough to touch ADB or
+# the game. The ONLY failure signature is dyld's own rejection text on stderr,
+# which is emitted before main() runs.
+#
+# The process is stopped by an explicit WATCHDOG that kills it, not by a
+# signal handed to it. `perl -e 'alarm N; exec ...'` looks equivalent and is
+# not: whether SIGALRM ends the process is the target's decision, and the Go
+# runtime ignores SIGALRM unless the program registered for it. That bound
+# held on a developer machine and did not hold on CI, where the smoke process
+# outlived every attempt to signal it — and the job with it — until the
+# workflow's own 60-minute timeout (run 36456408588). A watchdog that sends
+# SIGKILL and then waits cannot be ignored or outlived.
 if [[ "${CLASHGO_BUNDLE_SMOKE:-0}" == "1" ]]; then
   log "smoke: launching the bundled binary to prove dyld resolves everything"
   smoke_err="$(mktemp)"
-  # The alarm kill (rc 142) is the EXPECTED happy path for a server-like
-  # binary, so it must not trip set -e — only the dyld-text check below
-  # decides pass/fail.
-  perl -e 'alarm 1; exec @ARGV or exit 127' -- "$BIN" 2>"$smoke_err" || true
+  # Both streams are redirected to files: a child holding the step's stdout
+  # open is how a "finished" smoke check still leaves the CI step hanging.
+  "$BIN" >/dev/null 2>"$smoke_err" &
+  smoke_pid=$!
+  smoke_deadline=$((SECONDS + 5))
+  while (( SECONDS < smoke_deadline )) && kill -0 "$smoke_pid" 2>/dev/null; do
+    sleep 0.2
+  done
+  # The binary is a server that runs until it is closed, so it is expected to
+  # still be alive here. Stop it for real, and reap it so nothing is left
+  # holding the step open.
+  kill -TERM "$smoke_pid" 2>/dev/null || true
+  sleep 0.5
+  kill -KILL "$smoke_pid" 2>/dev/null || true
+  wait "$smoke_pid" 2>/dev/null || true
   if grep -q "Library not loaded\|no LC_RPATH\|image not found" "$smoke_err"; then
     sed 's/^/    /' "$smoke_err" >&2
     rm -f "$smoke_err"
