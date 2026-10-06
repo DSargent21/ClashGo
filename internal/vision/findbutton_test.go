@@ -180,6 +180,99 @@ func TestFindActionButton_ClassifiesPalette(t *testing.T) {
 	}
 }
 
+// FacePixels is the "is a painted control drawn here" probe a caller uses when it
+// already knows the rect to look in (the wall-upgrade loop's tray gate). The
+// distinction it has to make is painted face versus on-screen text, because a
+// panel reflow can put a menu row where a control used to be.
+func TestFacePixelsSeparatesFacesFromText(t *testing.T) {
+	face := image.Rect(200, 300, 300, 380)
+
+	empty := newFrame(1280, 720)
+	defer empty.Close()
+	if got := FacePixels(empty, face); got != 0 {
+		t.Errorf("FacePixels on empty panel background = %d, want 0", got)
+	}
+
+	painted := newFrame(1280, 720)
+	defer painted.Close()
+	paintButton(&painted, face, [3]uint8{54, 177, 247}) // gold face
+	got := FacePixels(painted, face)
+	if got < face.Dx()*face.Dy()/2 {
+		t.Errorf("FacePixels over a gold face = %d, want most of %d px", got, face.Dx()*face.Dy())
+	}
+
+	// White text is the thing the mask must reject: bright, zero saturation.
+	text := newFrame(1280, 720)
+	defer text.Close()
+	for y := face.Min.Y; y < face.Max.Y; y++ {
+		for x := face.Min.X; x < face.Max.X; x++ {
+			if (x*7+y*3)%9 < 2 { // sparse glyph strokes
+				for c := 0; c < 3; c++ {
+					text.SetUCharAt(y, x*3+c, 255)
+				}
+			}
+		}
+	}
+	if got := FacePixels(text, face); got != 0 {
+		t.Errorf("FacePixels over white label glyphs = %d, want 0 (text is bright but unsaturated)", got)
+	}
+
+	// Degenerate and off-frame rects answer 0 rather than touching OpenCV with an
+	// illegal ROI.
+	if got := FacePixels(painted, image.Rect(0, 0, 0, 0)); got != 0 {
+		t.Errorf("FacePixels on a zero rect = %d, want 0", got)
+	}
+	if got := FacePixels(painted, image.Rect(5000, 5000, 5100, 5100)); got != 0 {
+		t.Errorf("FacePixels on an off-frame rect = %d, want 0", got)
+	}
+}
+
+// ColourPixels is what lets a caller ask "is a face painted inside this box?"
+// instead of sampling one pixel, so the count and the share both have to be
+// right, and a box the mask does not paint has to come back as zero rather than
+// as a fraction of nothing.
+func TestColourPixelsMeasuresTheMaskedShare(t *testing.T) {
+	img := newFrame(200, 100)
+	defer img.Close()
+
+	// Half the frame painted in the band's own colour: BGR(16,69,169), the live
+	// village Attack! face measured 2026-09-29.
+	face := image.Rect(0, 0, 100, 100)
+	paintButton(&img, face, [3]uint8{16, 69, 169})
+
+	lower := gocv.NewScalar(0, 40, 150, 0)
+	upper := gocv.NewScalar(160, 230, 255, 0)
+
+	px, frac := ColourPixels(img, face, lower, upper)
+	// paintButton stamps a dark label band through the middle of the face; that
+	// band is BGR(20,20,20) and is correctly outside the warm band.
+	band := (face.Dx() - 12) * 4
+	want := face.Dx()*face.Dy() - band
+	if px != want {
+		t.Errorf("ColourPixels over a painted face = %d px, want %d", px, want)
+	}
+	if got := float64(want) / float64(face.Dx()*face.Dy()); frac != got {
+		t.Errorf("ColourPixels fraction = %v, want %v", frac, got)
+	}
+
+	// White label glyphs and the village's greens and blues are outside the band.
+	white := newFrame(50, 50)
+	defer white.Close()
+	paintButton(&white, image.Rect(0, 0, 50, 50), [3]uint8{255, 255, 255})
+	if px, frac := ColourPixels(white, image.Rect(0, 0, 50, 50), lower, upper); px != 0 || frac != 0 {
+		t.Errorf("ColourPixels over white glyphs = (%d, %v), want (0, 0)", px, frac)
+	}
+
+	// Degenerate and off-frame rects answer (0, 0) rather than handing OpenCV an
+	// illegal ROI.
+	if px, frac := ColourPixels(img, image.Rect(0, 0, 0, 0), lower, upper); px != 0 || frac != 0 {
+		t.Errorf("ColourPixels on a zero rect = (%d, %v), want (0, 0)", px, frac)
+	}
+	if px, frac := ColourPixels(img, image.Rect(5000, 5000, 5100, 5100), lower, upper); px != 0 || frac != 0 {
+		t.Errorf("ColourPixels on an off-frame rect = (%d, %v), want (0, 0)", px, frac)
+	}
+}
+
 func TestFractionRect(t *testing.T) {
 	got := FractionRect(1280, 720, 0.5, 0.5, 1.0, 1.0)
 	want := image.Rect(640, 360, 1280, 720)

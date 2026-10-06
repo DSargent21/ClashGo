@@ -92,6 +92,9 @@ func captureSlotLiveCount(
 	res, labelSeen := troopCounter.detectSlotCountDetailed(screen, slot.X, slot.Y, barY)
 	legible := troopCounter.BarLegible(screen, barY, slot.Y)
 	count, trusted := liveCountVerdict(res, labelSeen, legible)
+	if labelSeen || count > 0 {
+		visuallyEmpty = false
+	}
 
 	// The label-present-but-unreadable outcome is per-frame noise: the same
 	// card read clean on the next frame in every live case examined. One
@@ -108,6 +111,9 @@ func captureSlotLiveCount(
 			count2, trusted2 := liveCountVerdict(res2, seen2, troopCounter.BarLegible(next, barY, slot.Y))
 			if trusted2 {
 				count, trusted = count2, true
+			}
+			if seen2 || count > 0 {
+				visuallyEmpty = false
 			}
 			next.Close()
 		}

@@ -16,6 +16,11 @@ const (
 	bandTopInset = 20
 	linePoints   = 15
 	lineSpacing  = 35
+
+	// safeGroundInsetFrac is how far in from each playfield edge the
+	// conservative deployable box sits, used only when the red boundary could
+	// not be established. See SafeGroundRect.
+	safeGroundInsetFrac = 0.20
 )
 
 // YTopMin is the top of the deployable band: the deploy line never places a
@@ -24,6 +29,125 @@ const (
 // clamp share one definition of the band instead of each keeping its own
 // percentage of the screen.
 func YTopMin() int { return yTopMin }
+
+// SafeGroundRect is the box a deploy point is guaranteed to be inside when the
+// red no-deploy boundary could NOT be established, and therefore nothing about
+// the frame's outer ground has been verified.
+//
+// The red band is a property of the MAP, not of the screen: in Clash of Clans
+// the ring between the village and the outer edge of the battle map is
+// undeployable, so a point's risk of being refused is a function of how far it
+// sits from the middle of the view. The middle of the frame is inside the base
+// and is never inside that ring. So when the boundary is unknown, the frame's
+// central box is the one region whose legality does not depend on having solved
+// the detection problem, and it is what the deploy path falls back to.
+//
+// Live reason this exists: 2026-09-30, `Auto EDrag Rush`, target BottomRight.
+// The detector rejected its only candidate (the whole-frame sheet the gold HUD
+// and warm terrain fuse into) and reported no boundary, so the run deployed with
+// no legality check at all onto the user's pinned line (897,557)->(1154,367) —
+// which hugs the right edge of a 1280px frame — and the game answered every tap
+// with "You cannot deploy troops on the Red area!". All five slots stayed
+// undeployed and the deploy phase burned 17.5s against a 7s goal. Retrying
+// helped nothing: the retry ladder moved points 8-38px, which stays inside the
+// refused region by construction.
+//
+// This is a floor, not a target. The band clamp is still applied on top of it
+// (the box is derived from the band, so it is a subset), and when the boundary
+// IS found this is not consulted at all — a real outline beats a guess.
+func SafeGroundRect(w, h, uiCutoff int) image.Rectangle {
+	bandTop := BandTop()
+	bandBot := uiCutoff
+	if bandBot <= bandTop {
+		bandBot = h
+	}
+	insetX := int(float64(w) * safeGroundInsetFrac)
+	insetY := int(float64(bandBot-bandTop) * safeGroundInsetFrac)
+	lo := image.Pt(insetX, bandTop+insetY)
+	hi := image.Pt(w-insetX, bandBot-insetY)
+	if hi.X <= lo.X {
+		// A frame too narrow for the inset still has a legal middle; keep it
+		// non-empty rather than collapsing every point onto one column.
+		lo.X, hi.X = 0, w-1
+	}
+	if hi.Y <= lo.Y {
+		lo.Y, hi.Y = bandTop, bandBot
+	}
+	return image.Rect(lo.X, lo.Y, hi.X, hi.Y)
+}
+
+// TranslateIntoSafeGround shifts a whole deploy line by the smallest offset
+// that puts every one of its points inside safe, and reports the offset.
+//
+// safe is a half-open image.Rectangle: Max is exclusive, so the last legal
+// column/row is Max-1. The offsets are computed against that last legal
+// coordinate rather than against Max itself — landing a tap exactly on Max
+// satisfies a `>=` comparison and still fails image.Rectangle.In, which is the
+// check the deploy path uses to decide a point is on legal ground.
+//
+// A translation, not a per-point clamp, because clamping collapses a line onto
+// the box edge and destroys the length and the direction the user pinned: the
+// BottomRight line above would have folded into the corner of the box and
+// deployed every unit on top of one tile. Shifting preserves both, so a
+// corrected line is still the line that was asked for, just further in.
+//
+// The smallest offset is chosen per axis independently, which is exact for an
+// axis-aligned bound: if the line overflows on the right, move it left by
+// exactly that overflow, and no less will do.
+func TranslateIntoSafeGround(points []image.Point, safe image.Rectangle) (dx, dy int, moved bool) {
+	if len(points) == 0 || safe.Empty() {
+		return 0, 0, false
+	}
+	minX, minY := points[0].X, points[0].Y
+	maxX, maxY := points[0].X, points[0].Y
+	for _, p := range points {
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.Y > maxY {
+			maxY = p.Y
+		}
+	}
+	lastX, lastY := safe.Max.X-1, safe.Max.Y-1
+	dx = axisOffset(minX, maxX, safe.Min.X, lastX)
+	dy = axisOffset(minY, maxY, safe.Min.Y, lastY)
+	if dx == 0 && dy == 0 {
+		return 0, 0, false
+	}
+	for i := range points {
+		points[i].X += dx
+		points[i].Y += dy
+	}
+	return dx, dy, true
+}
+
+// axisOffset is the translation that brings the [min, max] span inside the
+// INCLUSIVE range [lo, hi] (lo is a legal coordinate, hi is the last legal
+// coordinate): none when it already fits, the exact overflow when it overhangs
+// one end, and a centring when the span is wider than the box.
+//
+// That last case is a real loss: no translation can make an over-long line fit,
+// so it is centred and still overhangs. The caller reports the offsets so the
+// reader sees the line is no longer the pinned one rather than having a
+// silently shortened line pass for it.
+func axisOffset(min, max, lo, hi int) int {
+	if max-min > hi-lo {
+		return (lo+hi)/2 - (min+max)/2
+	}
+	switch {
+	case min < lo:
+		return lo - min
+	case max > hi:
+		return hi - max
+	}
+	return 0
+}
 
 // DeployLine represents a calculated deployment line.
 type DeployLine struct {

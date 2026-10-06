@@ -155,6 +155,7 @@ func TestDismissOverlayBackStates(t *testing.T) {
 		{StateGemDialog, "the popup's primary button BUYS gems; the cancel action must not be a tap"},
 		{StateShieldInfo, "same overlay family as the gem popup: cancel, never a predicted X coordinate"},
 		{StateChatOpen, "already Back-dismissed before this change; kept so the table stays the whole surface"},
+		{StateOfferPopup, "the offer modal has no X and its one button leaves for the store; Back is the cancel action"},
 	} {
 		dev := newFrameDevice(overlayEvidenceFrame(t, cl, tc.state))
 		acted := DismissOverlay(dev, cl.cal, cl, tc.state, nil, zerolog.Nop())

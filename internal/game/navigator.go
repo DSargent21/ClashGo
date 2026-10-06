@@ -1,6 +1,8 @@
 package game
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"image"
 	"math"
@@ -258,24 +260,167 @@ func (n *Navigator) TapAt(x, y int) error {
 	return n.client.Tap(x, y)
 }
 
-func (n *Navigator) ZoomOut() {
+// zoomPinchRepeats is how many pinches a single zoom step fires. One pinch can
+// land while the camera is still settling, and the view saturates after the
+// first few, so repeating is cheap insurance rather than an attempt to travel
+// further (verified live: pinch #1 moves the camera, #2 and #3 are no-ops).
+const zoomPinchRepeats = 3
+
+// Zoom saturation limits, measured live on this emulator (2026-09-30, village
+// screen): ONE pinch reaches the game's max zoom-out — the green-terrain
+// fraction goes 0.0042 -> 0.0144 with the first gesture and then never moves
+// again, no matter how wide or fast the pinch is (a 1080px-apart gesture at
+// 900ms moved nothing, while a zoom-IN moved freely, so the wall is the game's
+// clamp, not the gesture's reach). The limits below are belt-and-braces for
+// ZoomOutMax's loop, not a claim that they are reachable.
+const (
+	zoomOutMaxAttempts  = 5
+	zoomOutMaxThreshold = 0.4 // percent of thumbnail pixels, from vision.ChangedPercent
+	zoomSettleMillis    = 900 // the camera eases after a pinch; less reads as still moving
+)
+
+// ZoomOut is a single fixed zoom-out step; see ZoomOutMax for the closed-loop
+// variant the startup path uses. The error is the point. Live 2026-09-30: every
+// zoom-out logged "native pinch failed: context canceled" and the caller — which
+// discarded the result — went on to attack with whatever zoom the game happened
+// to be at. The pinch had not run at all, because the input context was already
+// dead by the time the first attempt was made, and a zoom that never happened
+// silently becomes a wrong-geometry attack.
+func (n *Navigator) ZoomOut() error {
 	n.logger.Info().Msg("performing focus-independent native zoom out...")
-	err := n.client.PinchZoom(true)
-	if err != nil {
-		n.logger.Warn().Err(err).Msg("native ZoomOut failed")
-	} else {
-		n.logger.Debug().Msg("native ZoomOut completed")
-	}
+	return n.pinch(true)
 }
 
-func (n *Navigator) ZoomIn() {
+// ZoomIn is ZoomOut's counterpart; see ZoomOut for why it reports an error.
+func (n *Navigator) ZoomIn() error {
 	n.logger.Info().Msg("performing focus-independent native zoom in...")
-	err := n.client.PinchZoom(false)
-	if err != nil {
-		n.logger.Warn().Err(err).Msg("native ZoomIn failed")
-	} else {
-		n.logger.Debug().Msg("native ZoomIn completed")
+	return n.pinch(false)
+}
+
+// ZoomOutMax zooms out until the view STOPS responding, then reports what it
+// saw. "As far out as the game allows" is a property of the screen, not of a
+// gesture count: the fixed 3-pinch loop below cannot tell a saturated view from
+// a stuck one, because both return nil after the same number of delivered
+// gestures. This one reads the frame.
+//
+// The loop: capture a signature, pinch, wait for the camera to settle, capture
+// again. When the two signatures agree (ChangedPercent under
+// zoomOutMaxThreshold), the view has stopped moving — saturated, or already at
+// max — and the last pinch changed nothing. Measured live: one pinch takes the
+// village from 0.0042 to 0.0144 green fraction and a second moves nothing, so
+// this exits after TWO delivered pinches in the common case — one that moved
+// the view, one that confirmed saturation — instead of a fixed three that never
+// verified anything.
+//
+// Every capture error is fatal to the loop rather than silently treated as "no
+// change": a zoom that cannot be verified did not verifiably happen, and the
+// caller needs that distinction. A cancelled context propagates unchanged.
+func (n *Navigator) ZoomOutMax() error {
+	n.logger.Info().Msg("zooming out until the view stops responding (max zoom-out)...")
+	delivered := 0
+	for attempt := 0; attempt < zoomOutMaxAttempts; attempt++ {
+		prevSig, err := n.captureSignature()
+		if err != nil {
+			n.logger.Warn().Err(err).Int("delivered", delivered).
+				Msg("zoom-out: could not capture a frame to verify against; the view may NOT be at max zoom-out")
+			return err
+		}
+		if err := n.client.PinchZoom(true); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				n.logger.Warn().Err(err).Int("delivered", delivered).
+					Msg("zoom-out aborted: the run's context is cancelled, so this zoom did NOT happen")
+				return err
+			}
+			n.logger.Warn().Err(err).Int("delivered", delivered).Msg("zoom-out pinch failed")
+			return err
+		}
+		delivered++
+		time.Sleep(zoomSettleMillis * time.Millisecond)
+		curSig, err := n.captureSignature()
+		if err != nil {
+			n.logger.Warn().Err(err).Int("delivered", delivered).
+				Msg("zoom-out: could not capture the post-pinch frame; the view may NOT be at max zoom-out")
+			return err
+		}
+		changed := vision.ChangedPercent(prevSig, curSig, vision.DefaultChangeDelta)
+		prevSig.Close()
+		curSig.Close()
+		n.logger.Info().
+			Int("attempt", attempt+1).
+			Int("delivered", delivered).
+			Float64("changed_pct", changed).
+			Msg("zoom-out pinch verified against the frame")
+		if changed < zoomOutMaxThreshold {
+			n.logger.Info().
+				Int("pinches", delivered).
+				Float64("last_changed_pct", changed).
+				Msg("view stopped responding: at max zoom-out")
+			return nil
+		}
 	}
+	n.logger.Warn().
+		Int("pinches", delivered).
+		Msg("zoom-out: the view was STILL moving after the attempt budget; it may not be at max zoom-out")
+	return nil
+}
+
+// captureSignature reduces the live frame to a change-detection thumbnail. The
+// Mat is caller-owned: Close it when the comparison is done.
+func (n *Navigator) captureSignature() (gocv.Mat, error) {
+	frame, err := n.client.CaptureToMat()
+	if err != nil {
+		return gocv.Mat{}, err
+	}
+	defer frame.Close()
+	if frame.Empty() {
+		return gocv.Mat{}, errors.New("captured frame is empty")
+	}
+	sig := vision.Signature(frame)
+	if sig.Empty() {
+		return gocv.Mat{}, errors.New("frame too small for a change signature")
+	}
+	return sig, nil
+}
+
+// pinch fires zoomPinchRepeats pinches, stopping at the first failure, and
+// returns that failure (nil when every pinch was delivered).
+//
+// A cancelled context is reported distinctly from a device failure. The old
+// loop slept a fixed 500ms between repeats without ever consulting the
+// context, so once the session was cancelled it kept sleeping and kept trying —
+// burning up to a second of wall clock on gestures nobody would receive, and
+// reporting the cancellation as if it were a pinch malfunction. A dead context
+// means the run is over, and the caller needs to know that rather than retry.
+func (n *Navigator) pinch(zoomOut bool) error {
+	var lastErr error
+	delivered := 0
+	for i := 0; i < zoomPinchRepeats; i++ {
+		if err := n.client.PinchZoom(zoomOut); err != nil {
+			lastErr = err
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				n.logger.Warn().
+					Err(err).
+					Int("delivered", delivered).
+					Bool("zoom_out", zoomOut).
+					Msg("native pinch aborted: the run's context is already cancelled, so this zoom did NOT happen")
+				return err
+			}
+			break
+		}
+		delivered++
+		// Sleep only BETWEEN attempts: the last one has nothing to wait for,
+		// and a cancelled context should end the loop immediately rather than
+		// after a fixed sleep the caller already knows is pointless.
+		if i < zoomPinchRepeats-1 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	if lastErr != nil {
+		n.logger.Warn().Err(lastErr).Int("delivered", delivered).Bool("zoom_out", zoomOut).Msg("native pinch failed")
+		return lastErr
+	}
+	n.logger.Debug().Int("delivered", delivered).Bool("zoom_out", zoomOut).Msg("native pinch completed")
+	return nil
 }
 
 // PinchAtScaled runs a pinch whose four reference points are on the game world

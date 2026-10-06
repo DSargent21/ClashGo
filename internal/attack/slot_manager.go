@@ -54,11 +54,28 @@ type TrackedSlot struct {
 	FallbackLabeled bool      `json:"fallback_labeled"` // name came from stale manual_labels.json, not a template match
 
 	// SpotTaps counts how many times the bot has tapped this slot's CARD
-	// (not the field). A hero card is capped at maxHeroSpotTaps: one tap
-	// selects/places the hero and one more activates its ability. Every
-	// deploy path shares this one counter (main drop, sweep, verifier,
-	// ability pass) so no combination of retries can ever exceed the cap.
+	// (not the field) to PLACE the unit. A hero card is capped at
+	// maxHeroSpotTaps: the initial drop plus at most one rescue. Every
+	// deploy path shares this one counter (main drop, sweep, verifier) so
+	// no combination of retries can ever exceed the cap.
+	//
+	// The ability tap is NOT on this counter; it has its own one-shot flag
+	// (AbilityFired). See maxHeroSpotTaps for the live measurement that
+	// forced the split.
 	SpotTaps int `json:"spot_taps"`
+
+	// AbilityFired records that this battle's ONE ability tap for the hero
+	// has been spent.
+	//
+	// It is kept apart from SpotTaps because placement and activation are
+	// different intents with different failure modes. A hero the sweep had to
+	// rescue spends two PLACEMENT taps, and the deferred ability pass used to
+	// read that as "budget exhausted" and skip the activation — the hero stood
+	// on the field with its ability unused. Live 2026-10-01 (TopLeft): the
+	// Grand Warden was placed by the sweep, then "hero card tap budget
+	// exhausted (max 2)" and "ability pass: skipping ability". That is the
+	// user's "it doesn't activate heroes properly".
+	AbilityFired bool `json:"ability_fired"`
 
 	// SpotRearms counts REPLACEMENT card taps made after a placement the game
 	// refused (which deselects the card). Bounded by maxHeroRearms; kept apart

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -241,6 +242,239 @@ func TestClampY_PullsPointsIntoTheBand(t *testing.T) {
 	nilFormula.ClampY(0, 100) // must not panic
 }
 
+// The red no-deploy ring is a property of the map, so a formula point in the
+// outer band of the view is a tap the game refuses with "You cannot deploy
+// troops on the Red area!" — and the bot's tap call still reports success, so
+// the unit silently stays in the bar. Live 2026-09-30: red detection reported no
+// boundary, so nothing pulled the formula's own ground inward and every tap was
+// refused. TranslateIntoRect is the fallback that does not need the boundary.
+//
+// attack.SafeGroundRect(1280, 720, 612) at the shipped 20% inset is
+// x 256..1024 and y 226..516, both half-open, i.e. a legal x of 256..1023.
+func TestTranslateIntoRect_PullsFormulaIntoCentralGround(t *testing.T) {
+	const (
+		minX, maxX = 256, 1024
+		minY, maxY = 226, 516
+	)
+	// Every coordinate sits in the view's outer band — x from 60 to 1200 against
+	// a legal 256..1023, y from 150 to 600 against a legal 226..515 — but the
+	// span itself FITS the box, so one offset per axis is enough to bring the
+	// whole formula in. (A span too wide is the separate centring case below.)
+	f := &Formula{
+		Screen: ScreenSize{W: 1280, H: 720},
+		Units: map[string]UnitEntry{
+			"right_edge": {Type: "point", P: &Point{X: 1200, Y: 400}},
+			"left_edge":  {Type: "point", P: &Point{X: 450, Y: 300}},
+			"under_bar":  {Type: "point", P: &Point{X: 600, Y: 600}},
+			"line":       {Type: "line", P1: &Point{X: 1150, Y: 350}, P2: &Point{X: 900, Y: 550}},
+			"lines":      {Type: "lines", Lines: []LinePoint{{P1: Point{X: 500, Y: 200}, P2: Point{X: 1150, Y: 480}}}},
+		},
+	}
+	// Snapshot every coordinate, so the assertion below is about a shared OFFSET
+	// and not merely about the bounds — a per-point clamp passes every
+	// inside-the-box check while destroying the shape.
+	type coord struct {
+		x, y int
+	}
+	// Sorted unit names: map iteration order is randomized, so the snapshot and
+	// the walk below have to agree on an order or the comparison is noise.
+	names := make([]string, 0, len(f.Units))
+	for name := range f.Units {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var before []coord
+	for _, name := range names {
+		u := f.Units[name]
+		for _, p := range []*Point{u.P, u.P1, u.P2} {
+			if p != nil {
+				before = append(before, coord{p.X, p.Y})
+			}
+		}
+		for i := range u.Lines {
+			for _, p := range []*Point{&u.Lines[i].P1, &u.Lines[i].P2} {
+				before = append(before, coord{p.X, p.Y})
+			}
+		}
+	}
+
+	if got := f.TranslateIntoRect(minX, maxX, minY, maxY); got != len(before) {
+		t.Errorf("TranslateIntoRect reported %d moved coordinates, want %d", got, len(before))
+	}
+
+	// One offset per axis, independently. x spans 450..1200 (750 wide) against a
+	// legal 256..1023 (767 wide), so it FITS and takes the smallest offset that
+	// brings the far end in: 1023-1200 = -177. y spans 200..600 (400 wide)
+	// against a legal 226..515 (290 wide), so it cannot fit and is centred
+	// instead. Both are correct; a clamp would silently collapse each point onto
+	// the box edge and satisfy neither.
+	const (
+		wantDX = 1023 - 1200
+		wantDY = (226+515)/2 - (200+600)/2
+	)
+	i := 0
+	for _, name := range names {
+		u := f.Units[name]
+		all := []*Point{u.P, u.P1, u.P2}
+		for j := range u.Lines {
+			all = append(all, &u.Lines[j].P1, &u.Lines[j].P2)
+		}
+		for _, p := range all {
+			if p == nil {
+				continue
+			}
+			if p.X != before[i].x+wantDX || p.Y != before[i].y+wantDY {
+				t.Errorf("%s (%d,%d) -> (%d,%d), want one shared offset (dx=%d dy=%d)",
+					name, before[i].x, before[i].y, p.X, p.Y, wantDX, wantDY)
+			}
+			i++
+		}
+	}
+	if i != len(before) {
+		t.Errorf("walked %d coordinates but snapshotted %d", i, len(before))
+	}
+
+	// A degenerate rect must not collapse every coordinate onto one spot.
+	beforeDegenerate := *f.Units["line"].P1
+	if got := f.TranslateIntoRect(0, -1, 0, 100); got != 0 {
+		t.Errorf("degenerate rect moved %d coordinates, want 0", got)
+	}
+	if got := *f.Units["line"].P1; got != beforeDegenerate {
+		t.Errorf("degenerate rect moved a coordinate: %v -> %v", beforeDegenerate, got)
+	}
+
+	var nilFormula *Formula
+	nilFormula.TranslateIntoRect(0, 10, 0, 10) // must not panic
+	empty := &Formula{Units: map[string]UnitEntry{}}
+	if got := empty.TranslateIntoRect(0, 10, 0, 10); got != 0 {
+		t.Errorf("a formula with no coordinates reported %d moves", got)
+	}
+}
+
+// The exact live regression. `Auto EDrag Rush` at 1280x720 puts every line unit
+// and hero on the 85% column x=1088, and the central ground's last legal column
+// is 1023. A per-point clamp folded thirteen taps onto the single column x=1024
+// — a plan that is legal on paper and deploys the whole army on one tile line.
+// The translation must move that column to 1023 and leave it a column.
+func TestTranslateIntoRect_KeepsAFormulaColumnAColumn(t *testing.T) {
+	// The live auto-picked ground for target BottomRight: line troops and heroes
+	// as a vertical column of taps at x=1088 spanning y 144..576.
+	f := &Formula{
+		Screen: ScreenSize{W: 1280, H: 720},
+		Units: map[string]UnitEntry{
+			"balloon": {Type: "line", P1: &Point{X: 1088, Y: 144}, P2: &Point{X: 1088, Y: 576}, Count: 10},
+			"dragon":  {Type: "point", P: &Point{X: 1088, Y: 504}},
+			"archer":  {Type: "point", P: &Point{X: 1088, Y: 288}},
+		},
+	}
+	// x span 1088..1088 fits; y span 144..576 is 432 wide against a legal
+	// 226..515, so it is centred — see the note below on why that is the honest
+	// outcome rather than a clamp.
+	const (
+		minX, maxX = 256, 1024
+		minY, maxY = 226, 516
+	)
+	if got := f.TranslateIntoRect(minX, maxX, minY, maxY); got != 4 {
+		t.Errorf("moved %d coordinates, want 4", got)
+	}
+
+	// Every tap that was on the 85% column is now on the last LEGAL column. A
+	// per-point clamp would report 1024 here, which fails image.Rectangle.In.
+	for name, u := range f.Units {
+		for _, p := range []*Point{u.P, u.P1, u.P2} {
+			if p != nil && p.X != 1023 {
+				t.Errorf("%s x=%d, want 1023: the column must move onto the last legal column", name, p.X)
+			}
+		}
+	}
+
+	// The column is still a column: every point shares one x, and the line's
+	// length and direction survive. A clamp folds points onto one x too, so the
+	// load-bearing assertion is the length.
+	if got := f.Units["balloon"].P2.X - f.Units["balloon"].P1.X; got != 0 {
+		t.Errorf("the column lost its vertical alignment: dx=%d, want 0", got)
+	}
+	if got, want := f.Units["balloon"].P2.Y-f.Units["balloon"].P1.Y, 576-144; got != want {
+		t.Errorf("balloon line length changed: %d, want %d", got, want)
+	}
+	// y is centred: the 144..576 span is 432 wide against a legal 226..515
+	// (290 wide), so it cannot fit and is recentred on the box middle — dy=+10.
+	if got, want := f.Units["balloon"].P1.Y, 144+((226+515)/2-(144+576)/2); got != want {
+		t.Errorf("balloon P1 y=%d, want %d (the over-long span recentred)", got, want)
+	}
+}
+
+// A formula whose span is WIDER than the central ground cannot be made to fit by
+// any offset. The honest outcome is to centre it — and to report the offsets, so
+// the caller can say the line no longer fits rather than let a silently broken
+// plan pass for the authored one.
+func TestTranslateIntoRect_CentresAnOversizedFormula(t *testing.T) {
+	const (
+		minX, maxX = 256, 1024
+		minY, maxY = 226, 516
+	)
+	f := &Formula{
+		Screen: ScreenSize{W: 1280, H: 720},
+		Units: map[string]UnitEntry{
+			"wide": {Type: "line", P1: &Point{X: -200, Y: 250}, P2: &Point{X: 1500, Y: 480}},
+		},
+	}
+	if got := f.TranslateIntoRect(minX, maxX, minY, maxY); got != 2 {
+		t.Errorf("moved %d coordinates, want 2", got)
+	}
+	// The MIDPOINT lands in the middle of the box even though the ends still
+	// overhang — that is the part that helps, and the rest is why the caller logs.
+	midX := (f.Units["wide"].P1.X + f.Units["wide"].P2.X) / 2
+	wantMidX := (minX + maxX - 1) / 2
+	if diff := midX - wantMidX; diff > 1 || diff < -1 {
+		t.Errorf("midpoint x=%d, want the middle of the central ground %d (within 1px)", midX, wantMidX)
+	}
+	// Length survives, which clamping would destroy outright.
+	if got, want := f.Units["wide"].P2.X-f.Units["wide"].P1.X, 1500-(-200); got != want {
+		t.Errorf("line length changed: %d, want %d", got, want)
+	}
+}
+
+// ClampY runs first and TranslateIntoRect second, so the stricter bound wins: a
+// point the band clamp rescued must still be pulled out of the outer band.
+func TestTranslateIntoRect_AfterClampYIsTheStricterBound(t *testing.T) {
+	f := &Formula{
+		Screen: ScreenSize{W: 1280, H: 720},
+		Units:  map[string]UnitEntry{"u": {Type: "point", P: &Point{X: 1200, Y: 700}}},
+	}
+	f.ClampY(130, 612) // band only: x is not this clamp's business
+	if got := f.Units["u"].P; got.Y != 612 {
+		t.Fatalf("ClampY put y=%d, want 612", got.Y)
+	}
+	f.TranslateIntoRect(256, 1024, 226, 516)
+	if got := f.Units["u"].P; got.X != 1023 || got.Y != 515 {
+		t.Errorf("after both, (%d,%d), want (1023,515): one offset onto the last legal coordinate", got.X, got.Y)
+	}
+}
+
+// A formula already inside the box must come out byte-identical: the fallback
+// exists for the outer band, and re-aiming every good plan would be a worse bug
+// than the one being fixed.
+func TestTranslateIntoRect_LeavesACentralFormulaUntouched(t *testing.T) {
+	f := &Formula{
+		Screen: ScreenSize{W: 1280, H: 720},
+		Units: map[string]UnitEntry{
+			"a": {Type: "line", P1: &Point{X: 500, Y: 300}, P2: &Point{X: 740, Y: 420}},
+			"b": {Type: "point", P: &Point{X: 640, Y: 360}},
+		},
+	}
+	if got := f.TranslateIntoRect(256, 1024, 226, 516); got != 0 {
+		t.Errorf("moved %d coordinates for a formula already inside the box, want 0", got)
+	}
+	if got := *f.Units["a"].P1; got != (Point{X: 500, Y: 300}) {
+		t.Errorf("a.P1 = %v, want (500,300)", got)
+	}
+	if got := *f.Units["b"].P; got != (Point{X: 640, Y: 360}) {
+		t.Errorf("b.P = %v, want (640,360)", got)
+	}
+}
+
 func TestApplyScreenScale_DegenerateParamsNoPanic(t *testing.T) {
 	var f *Formula
 	f.ApplyScreenScale(0, 0, 0, 0) // nil receiver must not panic
@@ -409,4 +643,15 @@ func TestShippedFormulaFile_MirrorRoundTripsEveryUnit(t *testing.T) {
 		return
 	}
 	t.Skip("shipped formula not found from test cwd")
+}
+
+// checkShift asserts a coordinate landed exactly where one shared offset put it.
+func checkShift(t *testing.T, name string, p *Point, dx, dy int) {
+	t.Helper()
+	if p == nil {
+		return
+	}
+	if p.X != p.X-dx || p.Y != p.Y-dy {
+		t.Errorf("%s (%d,%d): every coordinate must share the one offset (dx=%d dy=%d)", name, p.X, p.Y, dx, dy)
+	}
 }

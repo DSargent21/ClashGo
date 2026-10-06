@@ -226,6 +226,20 @@ func main() {
 			activeLine = pl
 		}
 	}
+
+	// …and the same fallback the orchestrator applies (orchestrator.go: when the
+	// red boundary is NOT established, the deploy line is translated into the
+	// frame's central ground). Without this the harness would keep reporting the
+	// PRE-fix plan — an edge-hugging pin that the bot no longer taps — and a
+	// reviewer would read a fixed bug as a live one.
+	safeGround := attack.SafeGroundRect(w, h, uiCutoff)
+	safeShrunk := 0
+	if !redZone.Valid && len(activeLine.Points) >= 2 {
+		if dx, dy, moved := attack.TranslateIntoSafeGround(activeLine.Points, safeGround); moved {
+			safeShrunk = len(activeLine.Points)
+			fmt.Printf("deploy line: red boundary not established, so it was TRANSLATED into the central ground (dx=%d dy=%d, box %v) — the pre-fix line is the one shown as \"pinned\" above\n", dx, dy, safeGround)
+		}
+	}
 	pointsOffScreen, pointsUnderBar := 0, 0
 	for _, pt := range activeLine.Points {
 		if pt.X < 0 || pt.X >= w || pt.Y < 0 || pt.Y >= h {
@@ -365,6 +379,12 @@ func main() {
 		// Same band the orchestrator uses: yTopMin (the deploy line's own top
 		// bound) up to the uiCutoff the bot computes for this screen.
 		clampedOutsideBand = formulaPtr.ClampY(attack.YTopMin(), int(float64(h)*0.85))
+		// …and the central-ground clamp, for the same reason: without it this
+		// harness renders the pre-fix formula ground and the overlay contradicts
+		// what the bot now does.
+		if !redZone.Valid {
+			formulaPtr.TranslateIntoRect(safeGround.Min.X, safeGround.Max.X, safeGround.Min.Y, safeGround.Max.Y)
+		}
 		for name, entry := range formulaPtr.Units {
 			if strings.HasPrefix(name, "_") {
 				continue // helper entries (e.g. _rage_inner) are not directly tapped
@@ -527,6 +547,12 @@ func main() {
 	}
 	if cornerHits > 0 {
 		warn("%d formula tap points fall OUTSIDE the deployable band even after clamping — these land on the HUD/corners in a real battle", cornerHits)
+	}
+	if safeShrunk > 0 {
+		warn("no red boundary in this frame, so all %d deploy-line points sat in the view's outer band (where the map's no-deploy ring lives) and were TRANSLATED into the central ground %v — without this the bot taps there and the game answers \"You cannot deploy troops on the Red area!\"", safeShrunk, safeGround)
+	}
+	if bbox, ok := formulaPtr.BBox(); ok && !bbox.In(safeGround) {
+		warn("the formula's span %v is LARGER than the central ground %v, so no translation brings it fully inside — it is centred and its ends are still in unverified ground (taps at y<%d or y>%d)", bbox, safeGround, safeGround.Min.Y, safeGround.Max.Y-1)
 	}
 	if zeroCounts > len(slots)/2 {
 		warn("most slot counts OCR'd as 0 — count-driven deploy will misfire; sweep phase is compensating")

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -64,13 +65,28 @@ type Bot struct {
 	chestDismissInFlight    atomic.Bool
 	splashDismissInFlight   atomic.Bool
 	connLostDismissInFlight atomic.Bool
-	lastArmyCampGuardLog    time.Time
-	startedAt               time.Time
-	lastAction              time.Time
-	lastSequenceStart       time.Time
-	lastNav                 time.Time
-	lastCapture             time.Time
-	lastIdlePan             time.Time
+	// splashDismissAttempts counts the evidence-backed dismissal taps spent on
+	// the boot splash currently on screen, and splashDismissGaveUp is set when
+	// that budget runs out. Both are per-splash-episode state: they are cleared
+	// the moment the classifier reports a state that is not a tap-dismissed
+	// splash, so the next boot's splash starts with a full budget.
+	//
+	// They exist because a splash can survive the tap that was verified on its
+	// own frame (observed live 2026-09-29: the "ТАР!" splash stayed up and the
+	// bot re-tapped its prompt for the whole 5-minute boot grace). Tapping
+	// forever is the "random tapping" this dismissal path exists to remove.
+	splashDismissAttempts atomic.Int32
+	splashDismissGaveUp   atomic.Bool
+	// updatePromptTaps counts the outside-panel dismiss taps this session has
+	// spent on the "Update Available!" login prompt (see dismissUpdatePrompt).
+	updatePromptTaps     atomic.Int32
+	lastArmyCampGuardLog time.Time
+	startedAt            time.Time
+	lastAction           time.Time
+	lastSequenceStart    time.Time
+	lastNav              time.Time
+	lastCapture          time.Time
+	lastIdlePan          time.Time
 	// lastAttackEnd is stamped when a battle fully returns home; the
 	// inter-attack cooldown (cfg.Attack.MinSecondsBetweenAttacks) is
 	// measured from it. Written by the attack goroutine only.
@@ -90,6 +106,15 @@ type Bot struct {
 	armySlot int
 
 	historyCache []AttackReport
+
+	// returnHomeGate state: the terminal-state branch runs per capture frame,
+	// and ReturnHome is a physical tap. Without single-flight + cooldown the
+	// bot fires a result-panel tap at capture rate (the "random taps after the
+	// battle" symptom) and the piled-up goroutines keep tapping through the
+	// transition into the village.
+	returnHomeMu       sync.Mutex
+	returnHomeInFlight bool
+	returnHomeLast     time.Time
 
 	OnStatsUpdate func()
 }
@@ -340,6 +365,8 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	// deploy aborts when a strategy card measurably reads zero, never on
 	// unknown counts (see Executor.SetFullArmyRequired).
 	attackExec.SetFullArmyRequired(cfg.Training.FullArmyBeforeAttack)
+	// CLI -perf: lean attack path (fewer captures, no evidence PNGs).
+	attackExec.SetPerfMode(cfg.Performance.PerfMode)
 
 	var templates *game.TemplateStore
 	templates, err = game.NewTemplateStore(paths.Resolve("templates"))
@@ -647,6 +674,64 @@ func (b *Bot) recordActivity() {
 	b.lastAction = time.Now()
 }
 
+// maxSplashDismissAttempts bounds how many evidence-backed taps go out for ONE
+// boot splash (the "ТАР!" collect splash or the news splash) before the bot
+// stops tapping and hands the screen back to the stuck-watchdog. It is the same
+// shape as maxUpdatePromptDismissAttempts below, for the same reason: a screen
+// that survives a tap verified against its own classifier probe is not going to
+// be cleared by repeating that tap, and repeating it every capture is the
+// "random tapping" the dismissal path exists to remove.
+//
+// Four leaves room for the splash's entrance animation swallowing a tap (the
+// handler's 1200 ms lead-in is sized against it) and for one tap lost to a
+// capture that landed mid-transition, without ever reaching the boot grace's
+// 5-minute window. At the measured cadence (~2.5 s per attempt) the whole budget
+// costs about ten seconds.
+const maxSplashDismissAttempts = 4
+
+// splashDismissAllowed reports whether the splash episode may spend another
+// dismissal tap, given how many it has already spent.
+func splashDismissAllowed(attempt int) bool {
+	return attempt <= maxSplashDismissAttempts
+}
+
+// bootGraceApplies reports whether the generous boot-splash grace (rather than
+// the generic stuck timeout) owns this state.
+//
+// StateLogo deserves it unconditionally: the castle logo sits static for 1-3
+// minutes while the session connects and has no progress indicator at all.
+// StateUpdatePrompt shares it for the reason spelled out at its use site.
+//
+// The two TAP-DISMISSED splashes are the exception, and only while they still
+// have dismissal taps left. Once a splash has spent its whole budget the bot has
+// stopped touching it (see the TapToContinue/NewsSplash handler in processFrame),
+// so the grace would only buy the bot several more minutes of sitting on a screen
+// it cannot advance — the failure measured live on 2026-09-29, where the "ТАР!"
+// splash survived every verified tap for the full window before the watchdog
+// recovered the run. A splash with no taps left is handed to the ordinary
+// watchdog instead, which escalates in seconds rather than minutes.
+func (b *Bot) bootGraceApplies(state game.GameState) bool {
+	switch state {
+	case game.StateLogo, game.StateUpdatePrompt:
+		return true
+	case game.StateTapToContinue, game.StateNewsSplash:
+		return !b.splashDismissGaveUp.Load()
+	}
+	return false
+}
+
+// clearSplashDismissEpisode resets the per-splash tap budget and clears the
+// give-up flag. It is called on every frame whose classifier verdict is NOT a
+// tap-dismissed splash: that verdict IS the progress signal the dismissal path
+// deliberately does not fake, so a splash reached after a real transition (a
+// fresh boot, or the news splash following the collect splash) starts clean.
+func (b *Bot) clearSplashDismissEpisode() {
+	b.splashDismissAttempts.Store(0)
+	if b.splashDismissGaveUp.Swap(false) {
+		b.logger.Info().Msg("no boot splash on screen; the next splash gets a fresh dismissal budget")
+	}
+}
+
 // checkStuck enforces a global watchdog: if the capture pipeline is dead,
 // or if the bot is in-progress for absurdly long, or has been sitting in
 // one place doing nothing for too long, we cycle the game to recover from
@@ -683,7 +768,14 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 	// endless force-stop/relaunch loop on the collect splash. Give the whole
 	// boot-splash chain a generous window; the dismiss taps in processFrame
 	// advance through it.
-	if state == game.StateLogo || state == game.StateTapToContinue || state == game.StateNewsSplash {
+	//
+	// StateUpdatePrompt belongs to the same group for the same reason: it is a
+	// login-time screen with an exit that is a single touch, and while it is up
+	// no other state can be reached. Restarting the game does not clear it (the
+	// prompt comes back on every relaunch), so the 35s generic timeout would
+	// only turn one un-dismissed prompt into a restart loop; the dismissal in
+	// processFrame gets the whole window to land instead.
+	if b.bootGraceApplies(state) {
 		bootStuck := time.Since(b.lastAction)
 		const bootSplashTimeout = 5 * time.Minute
 		if bootStuck > bootSplashTimeout {
@@ -731,6 +823,29 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 		b.restartGame()
 		b.lastSequenceStart = time.Now()
 	}
+}
+
+// claimReturnHome reports whether a Return Home attempt may fire right now and
+// marks it in flight. The terminal-state branch runs on every capture frame
+// while a result panel is up; this gate turns that into one physical tap per
+// attempt with a 2s cooldown — the panel is clicked once, not at 10 Hz.
+func (b *Bot) claimReturnHome() bool {
+	b.returnHomeMu.Lock()
+	defer b.returnHomeMu.Unlock()
+	if b.returnHomeInFlight || time.Since(b.returnHomeLast) < 2*time.Second {
+		return false
+	}
+	b.returnHomeInFlight = true
+	b.returnHomeLast = time.Now()
+	return true
+}
+
+// releaseReturnHome ends the in-flight attempt and stamps the cooldown.
+func (b *Bot) releaseReturnHome() {
+	b.returnHomeMu.Lock()
+	b.returnHomeInFlight = false
+	b.returnHomeLast = time.Now()
+	b.returnHomeMu.Unlock()
 }
 
 func (b *Bot) restartGame() {
@@ -850,8 +965,22 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		if isVillage {
 			if b.zoomedOut.CompareAndSwap(false, true) {
 				b.logger.Info().Msg("village detected, performing MANDATORY initial zoom out...")
-				b.navigator.ZoomOut()
+				zoomErr := b.navigator.ZoomOutMax()
 				b.recordActivity()
+
+				if zoomErr != nil {
+					// The zoom is what makes the rest of the session's geometry
+					// mean anything: attack the zoomed-in view and every
+					// reference coordinate lands on the wrong building. Live
+					// 2026-09-30 this swallowed the failure and the run went on
+					// to attack at whatever zoom the game was already at.
+					// Release the flag so the next village frame retries —
+					// CompareAndSwap set it true, and leaving it true would
+					// make this a one-shot that never happens again.
+					b.zoomedOut.Store(false)
+					b.logger.Warn().Err(zoomErr).
+						Msg("MANDATORY initial zoom out did NOT happen; the view is still at whatever zoom it had. Retrying on the next village frame — do not trust this session's deploy geometry until it succeeds")
+				}
 
 				time.Sleep(1800 * time.Millisecond)
 
@@ -862,6 +991,13 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 
 	if state != gc.State && state != game.StateUnknown && state != game.StateLoading {
 		b.recordActivity()
+	}
+
+	// Any frame that is not a tap-dismissed splash ends the current splash
+	// episode, so the dismissal budget below is per splash rather than per
+	// session (see clearSplashDismissEpisode).
+	if state != game.StateTapToContinue && state != game.StateNewsSplash {
+		b.clearSplashDismissEpisode()
 	}
 
 	if gc.ConfirmState(state) {
@@ -913,7 +1049,25 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	// force-restarted the game in an endless loop.
 	if state == game.StateTapToContinue || state == game.StateNewsSplash {
 		if b.splashDismissInFlight.CompareAndSwap(false, true) {
-			b.logger.Info().Str("state", state.String()).Msg("boot splash detected; dispatching dismiss tap")
+			attempt := int(b.splashDismissAttempts.Add(1))
+			if !splashDismissAllowed(attempt) {
+				b.splashDismissInFlight.Store(false)
+				// Log the transition to "given up" once, not on every later frame.
+				if attempt == maxSplashDismissAttempts+1 {
+					b.splashDismissGaveUp.Store(true)
+					b.logger.Error().
+						Str("state", state.String()).
+						Int("attempts", maxSplashDismissAttempts).
+						Msg("boot splash survived every evidence-backed dismissal tap; " +
+							"the prompt is on this frame but the screen is not advancing — " +
+							"firing no further taps and handing it to the stuck-watchdog")
+				}
+				return
+			}
+			b.logger.Info().
+				Str("state", state.String()).
+				Int("attempt", attempt).
+				Msg("boot splash detected; dispatching dismiss tap")
 			go func(st game.GameState) {
 				defer b.splashDismissInFlight.Store(false)
 				time.Sleep(1200 * time.Millisecond)
@@ -998,9 +1152,34 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
+	// Update-available login prompt ("Update Available! / A new version of
+	// Clash of Clans is available...", one green Update button). CoC checks for
+	// a new build at login, and when one exists the prompt greets EVERY
+	// relaunch, so a boot that cannot clear it is a boot loop — measured
+	// 2026-09-29: connected 13:21:43 -> village 13:23:48, and the frames in
+	// between classified as Logo, which parked them under the boot-splash grace
+	// in checkStuck until the watchdog force-restarted into the same prompt.
+	//
+	// The dismissal deliberately does NOT press the panel's only button: Update
+	// leaves the game for the app store. game.DismissOverlay taps outside the
+	// panel instead (game.overlayOutsideTapStates), still gated on the prompt
+	// being on the frame it captures. Same no-recordActivity reasoning as the
+	// splash and connection handlers: the adb tap reports success even when the
+	// prompt survives, so a tap that does not clear it must still reach the
+	// watchdog rather than mask the hang as progress.
+	if state == game.StateUpdatePrompt {
+		b.dismissUpdatePrompt()
+		return
+	}
+
 	if gc.State == game.StateBattleEnd || gc.State == game.StateReturnHome {
-		b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
-		go b.attackExec.ReturnHome()
+		if b.claimReturnHome() {
+			b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
+			go func() {
+				defer b.releaseReturnHome()
+				_ = b.attackExec.ReturnHome()
+			}()
+		}
 		b.recordActivity()
 		return
 	}
@@ -1062,6 +1241,57 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	}
 }
 
+// attackButtonScaleSteps is how finely the Attack! template is scaled inside the
+// button's ROI. The historical 5 steps sample scales 0.2, 0.65, 1.1, … and this
+// client draws the button's label at scale 0.457, which no 5-step sweep contains
+// — the matcher walked straight past a visibly drawn button at every threshold,
+// findAttackButton's box hit test then failed on a probe point that lands inside
+// the label glyphs, and the bot sat in the village with the button on screen
+// until the stuck watchdog force-restarted the game (observed live 2026-09-29:
+// 35 s of MainVillage, no sequence, emergency restart). Every other template
+// search in this file already uses 20.
+const attackButtonScaleSteps = 20
+
+// attackButtonFaceMinPx / attackButtonFaceMinFrac floor the warm face a matched
+// Attack! box has to carry before the match is believed.
+//
+// Both floors are well under what a real match measures — the live 1280x720
+// village box holds ~1000 such pixels — because their job is to reject a match
+// on a GLYPH (white text on a dark panel scores zero here) rather than to
+// re-derive the face's exact area, which moves with the scenery behind it.
+const (
+	attackButtonFaceMinPx   = 300
+	attackButtonFaceMinFrac = 0.10
+)
+
+// attackButtonWarmLower / attackButtonWarmUpper bracket the Attack! button's own
+// warm face, in gocv's BGR scalar order: blue <= 160, green 40..230, red >= 150.
+//
+// The band is deliberately wider than the single-pixel isOrange box above, and
+// the looseness is the point. That box demands G >= 100, which the button's face
+// misses on this client: measured live (2026-09-29) the village face is
+// BGR(16,69,169) — a mid orange whose green channel sits 30 below the floor —
+// while the same button on an older frame from the same device measures
+// BGR(40,102,194). A mask tuned to one capture's exposure reads the other as "no
+// button". What both faces have in common, and what the label's white glyphs, the
+// grass and the water do not, is a red channel that dominates while blue stays
+// low: white sits at blue 255 and the scenery's greens and blues all sit above the
+// blue roof.
+var (
+	attackButtonWarmLower = gocv.NewScalar(0, 40, 150, 0)
+	attackButtonWarmUpper = gocv.NewScalar(160, 230, 255, 0)
+)
+
+// findAttackButton reports whether the Attack! button is on screen.
+//
+// The verdict is the template match CONFIRMED by the control's own orange face.
+// It used to be a single-pixel probe at the button's reference centre, and that
+// probe is what broke: on this client the mapped point lands inside the "Attack!"
+// label rather than on the face beside it, and the 21x21 box the probe samples
+// came back with 19 orange pixels where colorCheck demands more than 20 — one
+// pixel short of the button existing. The template match below was already being
+// computed there and then thrown away (the function logged it and returned the
+// probe), so the evidence that the button was drawn was on the frame and unused.
 func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 	pinX, pinY := b.cal.Hud(60, 695)
 	if b.isOrange(screen, pinX, pinY) {
@@ -1078,26 +1308,68 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 	// The Attack! button is bottom-left HUD chrome, so the search window keeps
 	// its distance to the left and bottom edges.
 	physROI := b.cal.HudRect(roi)
+	// ...but the left edge is pulled back to the frame: HudRect maps reference
+	// x=0 to physical x=70 on this client while Hud(0,695) maps the same column to
+	// x=0, and the Attack! label is drawn against the very left of the village HUD.
+	// The 70 px inset therefore clipped the label out of the search area, the
+	// matcher could only place the template at the clip (33 px right of where the
+	// label actually is) and its score collapsed under every threshold — while a
+	// whole-frame search of the same frames finds the button at conf 0.767. Only
+	// the left edge is widened: the window still ends before the map's centre.
+	physROI.Min.X = 0
 
-	matches, err := vision.MatchMultiScaleROICached(screen, tpl, "btn_attack", 0.2, 2.0, 5, threshold, physROI)
-	if err != nil || len(matches) == 0 {
-		if err != nil {
-			b.logger.Debug().Err(err).Msg("btn_attack template match error")
-		}
+	matches, err := vision.MatchMultiScaleROICached(screen, tpl, "btn_attack", 0.2, 2.0, attackButtonScaleSteps, threshold, physROI)
+	if err != nil {
+		b.logger.Debug().Err(err).Msg("btn_attack template match error")
+		return false
+	}
+	if len(matches) == 0 {
 		return false
 	}
 
 	best := matches[0]
-	isOrange := b.isOrange(screen, best.Point.X, best.Point.Y)
+	confirmed, facePx, faceFrac := attackButtonFaceConfirmed(screen, best, tpl)
 
 	b.logger.Debug().
 		Float64("conf", best.Confidence).
 		Int("x", best.Point.X).
 		Int("y", best.Point.Y).
-		Bool("is_orange", isOrange).
+		Float64("scale", best.Scale).
+		Int("face_px", facePx).
+		Float64("face_frac", faceFrac).
+		Bool("is_orange", confirmed).
 		Msg("attack button detection check")
 
-	return isOrange
+	return confirmed
+}
+
+// attackButtonFaceConfirmed reports whether a matched Attack! box is drawn on the
+// button's own warm face, returning the two measurements behind that verdict for
+// the caller's log.
+//
+// This is the second half of the attack-button test: the template match says a
+// label shaped like "Attack!" is in the bottom-left HUD band, and the face mask
+// says the control under it is painted, not a glyph on a panel. Checked against
+// the button's FACE rather than a single pixel, because a one-pixel probe on a
+// control whose middle third is white glyphs is a coin flip.
+func attackButtonFaceConfirmed(screen gocv.Mat, m vision.Match, tpl gocv.Mat) (confirmed bool, facePx int, faceFrac float64) {
+	facePx, faceFrac = vision.ColourPixels(screen, matchBox(m, tpl), attackButtonWarmLower, attackButtonWarmUpper)
+	return facePx >= attackButtonFaceMinPx && faceFrac >= attackButtonFaceMinFrac, facePx, faceFrac
+}
+
+// matchBox is the image rectangle a vision.Match covers. vision reports a match
+// by the CENTRE of its box (MatchMultiScaleROICached adds half the scaled
+// template back to the peak location), so the box is that centre grown by half
+// the template at the match's own scale.
+func matchBox(m vision.Match, tpl gocv.Mat) image.Rectangle {
+	w := int(float64(tpl.Cols()) * m.Scale)
+	h := int(float64(tpl.Rows()) * m.Scale)
+	if w < 1 || h < 1 {
+		return image.Rectangle{}
+	}
+	minX := m.Point.X - w/2
+	minY := m.Point.Y - h/2
+	return image.Rect(minX, minY, minX+w, minY+h)
 }
 
 func (b *Bot) isOrange(screen gocv.Mat, x, y int) bool {
@@ -1132,6 +1404,71 @@ func (b *Bot) templateMatch(screen gocv.Mat, name string, threshold float32) boo
 	return len(matches) > 0
 }
 
+// maxUpdatePromptDismissAttempts bounds how many outside-panel taps one session
+// spends on the "Update Available!" login prompt.
+//
+// The prompt is driven by an external fact — a newer CoC build exists — that no
+// touch can change. If a touch does not clear it, tapping again on every capture
+// is a storm of 150-odd taps on the village behind the panel across the 5-minute
+// boot grace, which is exactly the "random tapping" the dismissal path exists to
+// remove. So the attempts are counted and the bot says so instead. Three leaves
+// room for a first touch lost to the prompt's entrance animation, which the
+// handler's 800 ms lead-in is already sized against.
+const maxUpdatePromptDismissAttempts = 3
+
+// updatePromptDismissAllowed reports whether this session may spend another
+// outside-panel tap on the update prompt, given how many it has already spent.
+func updatePromptDismissAllowed(attempt int) bool {
+	return attempt <= maxUpdatePromptDismissAttempts
+}
+
+// dismissUpdatePrompt taps outside the "Update Available!" panel to clear it,
+// at most maxUpdatePromptDismissAttempts times per session.
+//
+// connLostDismissInFlight is this loop's single "overlay dismissal in flight"
+// latch (shared with the connection-lost and quit-confirm handlers), so two
+// dismissals can never overlap.
+func (b *Bot) dismissUpdatePrompt() {
+	if !b.connLostDismissInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	attempt := int(b.updatePromptTaps.Add(1))
+	if !updatePromptDismissAllowed(attempt) {
+		b.connLostDismissInFlight.Store(false)
+		// Log the transition to "given up" once, not on every later frame.
+		if attempt == maxUpdatePromptDismissAttempts+1 {
+			b.logger.Error().
+				Int("attempts", maxUpdatePromptDismissAttempts).
+				Msg("update-available prompt survived every dismissal attempt; " +
+					"tapping outside does not clear this build of the game — it needs a manual update. " +
+					"Handing it back to the stuck-watchdog and firing no further taps")
+		}
+		return
+	}
+
+	b.logger.Warn().Int("attempt", attempt).
+		Msg("update-available prompt detected; tapping outside the panel to dismiss...")
+	go func() {
+		defer b.connLostDismissInFlight.Store(false)
+		time.Sleep(800 * time.Millisecond)
+		if !game.DismissOverlay(b.client, b.cal, b.classifier, game.StateUpdatePrompt, b.templates, b.logger) {
+			b.logger.Warn().Msg("update-available prompt not dismissed from verified evidence; will retry on next detection")
+			return
+		}
+		b.logger.Info().Msg("update-available prompt dismissed")
+	}()
+}
+
+// sessionCapReached reports whether the configured per-session attack cap has
+// been hit. A cap of 0 (or negative) means UNLIMITED: the session keeps
+// attacking until the user stops it, which is what the GUI's single Start
+// button implies — one Start, one run, the Stop button ends it. Only a positive
+// cap ever ends a session by itself. Both call sites below share this predicate
+// so the two can never disagree about what "at the cap" means.
+func sessionCapReached(cap_ int, attacks int32) bool {
+	return cap_ > 0 && attacks >= int32(cap_)
+}
+
 func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// Panic guard for the long-running attack goroutine (spawned from
 	// processFrame outside the frame-loop recover). A panic anywhere in
@@ -1155,7 +1492,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		defer b.client.ClosePersistentShell()
 	}
 
-	if b.attackCount.Load() >= int32(b.cfg.Attack.MaxAttackPerSession) {
+	if sessionCapReached(b.cfg.Attack.MaxAttackPerSession, b.attackCount.Load()) {
 		return
 	}
 
@@ -1181,9 +1518,24 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	}
 
 	if !b.clickSequence() {
-		b.logger.Warn().Msg("attack click sequence failed, restarting game to recover...")
-		b.restartGame()
-		return
+		// One clean retry BEFORE the heavy recovery. The common live failure is
+		// not a broken UI: it is the search aborting — a "connection lost"
+		// blip puts the client straight back in the village — and the click
+		// chain is safe to walk again from there. Restarting the game for that
+		// costs a full splash (~19 s) plus the mandatory zoom-out (~20 s),
+		// which is the long stretch of nothing the user reads as "it got stuck".
+		//
+		// The retry must live INSIDE this branch: run the second clickSequence
+		// unconditionally and a sequence that just succeeded gets one more, and
+		// that one taps Attack! again on top of the search it just started —
+		// killing the search it was about to wait for.
+		b.logger.Warn().Msg("attack click sequence failed; clearing anything covering the village and retrying once before restarting the game")
+		b.clearSwallowedTap()
+		if !b.clickSequence() {
+			b.logger.Warn().Msg("attack click sequence failed, restarting game to recover...")
+			b.restartGame()
+			return
+		}
 	}
 
 	b.logger.Info().Msg("waiting for base to be found...")
@@ -1604,7 +1956,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// Cap check stays after wall upgrades so the graceful shutdown (2s
 	// grace then cancel) never interrupts an in-progress wall loop; the
 	// count itself was already incremented when the report was recorded.
-	if int(b.attackCount.Load()) >= b.cfg.Attack.MaxAttackPerSession {
+	if sessionCapReached(b.cfg.Attack.MaxAttackPerSession, b.attackCount.Load()) {
 		b.logger.Info().
 			Int32("attacks", b.attackCount.Load()).
 			Int("cap", b.cfg.Attack.MaxAttackPerSession).
@@ -2234,8 +2586,34 @@ func (b *Bot) dismissSelection() {
 	time.Sleep(500 * time.Millisecond)
 }
 
+// searchNeverStartedFrames is how many consecutive frames of a village state it
+// takes to declare that the search never began, rather than waiting out the
+// whole 60-second budget.
+//
+// Live 2026-10-01 (1280x720): the tap chain completed, the search produced a
+// couple of cloud frames, the client dropped to "connection lost", the dialog
+// was dismissed — and the game was simply standing in the village again. The
+// bot then logged "waiting for battle state (searching)... state=MainVillage"
+// once a second for 58 seconds and finally timed out into a full game restart.
+// To the user that minute of a village sitting still IS the bot being stuck.
+// Six polls (~3 s) is far longer than any real cloud-or-loading transition, and
+// a wrong bail costs one extra attempt instead of a minute plus a restart.
+const searchNeverStartedFrames = 6
+
+// villageStatesThatMeanTheSearchDidNotStart are the screens that cannot follow a
+// real search. Deliberately narrow: the splash and news states are excluded
+// because they legitimately appear while the client is still coming up.
+func villageStatesThatMeanTheSearchDidNotStart(state game.GameState) bool {
+	switch state {
+	case game.StateMainVillage, game.StateBuilderBase, game.StateObstacleDialog:
+		return true
+	}
+	return false
+}
+
 func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
+	villageFrames := 0
 	for time.Now().Before(deadline) {
 		screen, err := b.client.CaptureToMat()
 		if err != nil {
@@ -2251,14 +2629,28 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 			b.logger.Info().Msg("battle state detected, entering search loop")
 			return true
 		case state == game.StateSearchMap || state == game.StateLoading:
+			villageFrames = 0
 			b.logger.Info().Msg("in clouds/loading...")
 			time.Sleep(1 * time.Second)
 			continue
 		case state == game.StateArmySelection || state == game.StateArmyCamp:
+			villageFrames = 0
 			b.logger.Info().Msg("in army menu, retrying battle click...")
 			b.findAndClick("btn_battle", "Battle Retry", 1)
 			time.Sleep(1 * time.Second)
 		default:
+			if villageStatesThatMeanTheSearchDidNotStart(state) {
+				villageFrames++
+				if villageFrames >= searchNeverStartedFrames {
+					b.logger.Warn().
+						Str("state", state.String()).
+						Int("frames", villageFrames).
+						Msg("the client is back in the village: the search never started, so waiting out the rest of the budget would just stall — handing back for a fresh attempt")
+					return false
+				}
+			} else {
+				villageFrames = 0
+			}
 			b.logger.Info().Str("state", state.String()).Msg("waiting for battle state (searching)...")
 			b.dismissInterruptions()
 			time.Sleep(500 * time.Millisecond)

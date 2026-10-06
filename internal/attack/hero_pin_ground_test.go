@@ -66,7 +66,14 @@ func TestPinnedHeroPointFoundForPinnedSide(t *testing.T) {
 	}
 }
 
-func TestHeroDropCandidatesLeadsWithPinnedPoint(t *testing.T) {
+// TestHeroDropCandidatesDemotesRefusedPin pins the 2026-10-05 ordering fix.
+//
+// The pin used to lead every candidate list (ground_source=pinned in the log),
+// and live run1 + probe3 then refused that first tap 11/12 while the outward
+// points beside it landed on the rescue taps. With no axis to prove (this pin's
+// troop line is diagonal, so groundAxis never matches), the outward order is
+// the only evidence left — it must beat both the pin and the formula mirror.
+func TestHeroDropCandidatesDemotesRefusedPin(t *testing.T) {
 	hm := pinnedHM()
 
 	// A formula that carries its own hero entry, exactly like
@@ -82,9 +89,17 @@ func TestHeroDropCandidatesLeadsWithPinnedPoint(t *testing.T) {
 	if len(cands) == 0 {
 		t.Fatal("no hero drop candidates")
 	}
-	if cands[0] != (image.Point{X: 281, Y: 181}) {
-		t.Fatalf("first candidate = %v, want the user's pinned point (281,181); the formula's mirrored %v must not lead",
-			cands[0], image.Point{X: 192, Y: 216})
+	pin := image.Point{X: 281, Y: 181}
+	if cands[0] == pin {
+		t.Fatalf("first candidate = the pin %v; a pin-led first tap was refused 11/12 live — outward ground must lead", cands[0])
+	}
+	if cands[0] == (image.Point{X: 192, Y: 216}) {
+		t.Fatalf("first candidate = the formula mirror %v; the pin's side must not take the formula's point", cands[0])
+	}
+	mid := image.Pt(hm.w/2, hm.h/2)
+	if dist2(cands[0], mid) <= dist2(pin, mid) {
+		t.Fatalf("first candidate %v is not further from the field centre than the pin %v; the first tap must be the outward ground",
+			cands[0], pin)
 	}
 }
 

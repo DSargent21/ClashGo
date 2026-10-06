@@ -895,13 +895,46 @@ func (c *Client) Shell(cmd string) (string, error) {
 			return "", err
 		}
 	}
+	before := c.transport.WedgeFallbacks()
 	resp, err := c.transport.Exec("shell:" + cmd)
-	return strings.TrimSpace(string(resp)), err
+	out := strings.TrimSpace(string(resp))
+	if err != nil {
+		return out, err
+	}
+	// A BlueStacks-wedged adbd answers every bare shell command with FAIL
+	// "closed", and Transport.Exec recovers by re-running the command behind the
+	// "getprop ro.build.type; " prefix. That recovery is invisible in the
+	// returned output — the prefix line is stripped — so an input command that
+	// ONLY works because of it looks identical to one that worked first time.
+	//
+	// That is exactly the case for the framework pinch (internal/adb/zoominject.go):
+	// verified live on this emulator, the unprefixed form always answers
+	// "error: closed" and only the prefixed form reaches the injector. Without
+	// this line a pinch that landed purely via the fallback is indistinguishable
+	// from a native one, and a future break in the fallback leaves no trace.
+	//
+	// Counted rather than sniffed from the output: the prefix emits the property
+	// VALUE ("user" here, "userdebug" on a debuggable image), not its name, so
+	// matching the text would silently stop working on other images.
+	if isInputShellCommand(cmd) && c.transport.WedgeFallbacks() > before {
+		c.log.Debugf("shell command reached the device only via the BlueStacks wedge fallback (the unprefixed form was refused): %s", firstLine(out))
+	}
+	return out, nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func isInputShellCommand(cmd string) bool {
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
-	return strings.Contains(cmd, "input ") || strings.Contains(cmd, "sendevent ")
+	return strings.Contains(cmd, "input ") ||
+		strings.Contains(cmd, "sendevent ") ||
+		// the framework pinch helper (zoominject.go) is input too
+		strings.Contains(cmd, strings.ToLower(zoomInjectClass)+" ")
 }
 
 // ShellRunner is the minimal interface the boot orchestrator (and any

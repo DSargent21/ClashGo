@@ -44,6 +44,15 @@ const (
 	troopCountFrameSettle = 220 * time.Millisecond
 )
 
+// spellReconcileEntry is one fired spell unit awaiting the deferred post-deploy
+// reconcile (see DeployDynamicV2: the phase loop collects, the recovery phase
+// runs them after the placements window closes).
+type spellReconcileEntry struct {
+	unit    strategy.Unit
+	slot    *TrackedSlot
+	pattern string
+}
+
 // armyReadinessGap reports strategy troops/spells whose bar card has positive
 // evidence of being empty at deploy start: a MERGE-CONFIRMED zero count (an
 // unreadable card is absent from the counts map, never zero). Heroes, siege
@@ -220,6 +229,19 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		if mBarY > int(float64(h)*0.92) {
 			mBarY = int(float64(h) * 0.92)
 		}
+		// Every coordinate above is now in LIVE frame pixels, so the config must
+		// stop advertising the reference geometry it was authored at. The
+		// consumers (HeroManager.resolveTroopTarget, Verifier.retryDeploy, the
+		// executor's deploy path) each re-run ScaleEdge on these same maps, and
+		// ScaleEdge is `curW/refW` — so with Width/Height still 860/732 the
+		// already-live pin is scaled a SECOND time. Live 2026-09-30: the TopRight
+		// pin came back as (1213,128)->(1616,246) on a 1280px frame, i.e. x past
+		// the right edge, and the game refused every such tap with "You cannot
+		// deploy troops on the Red area!" while the whole army stayed in the bar.
+		// Claiming the live size makes those ScaleEdge calls the identity they
+		// were always meant to be, and leaves a config that describes the frame
+		// it is actually expressed in.
+		pCfg.Width, pCfg.Height = w, h
 	}
 
 	// 2a. Detect user-pinned coords for the SPECIFIC chosen target.
@@ -377,6 +399,15 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 				Int("band_bottom", uiCutoff).
 				Msg("red-line push moved formula points out of the deployable band (behind the top HUD or under the troop bar); pulled them back into it")
 		}
+
+		// Deliberately NOT translated into a guessed "safe" box when the red
+		// boundary is unknown. That guess (SafeGroundRect, a 20% inset of the
+		// frame) is not where the map's no-deploy ring is — the ring belongs to
+		// the map, not to the screen — and it silently overrode authored geometry.
+		// Live 2026-10-01: a user-drawn TopLeft line (187,317)->(506,71) was moved
+		// to (256,413)->(575,226) before any tap, so the attack ran on ground
+		// nobody chose. The band clamp above is kept; it only pulls a point out
+		// from under the HUD. Which side is deployable is the picker's call.
 		e.logger.Info().
 			Str("strategy", s.Name).
 			Int("units", len(formulaPtr.Units)).
@@ -457,6 +488,15 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			Msg("using the USER-PINNED deploy line for every troop, hero and sweep tap (strategy formula not substituted for this side)")
 	}
 
+	// The pinned line is used exactly as drawn. It is NOT translated into a
+	// guessed "safe" box when the red boundary is unknown: that box is an inset
+	// of the FRAME, while the no-deploy ring belongs to the MAP, so the guess has
+	// no way to be right and every run it fires on rewrites the user's geometry.
+	// (The earlier version of this did exactly that: a drawn TopLeft line
+	// (187,317)->(506,71) became (256,413)->(575,226).) A pin the user placed on
+	// the battle screen is the one piece of deploy geometry that is known good;
+	// if a tap is refused, re-pin rather than let the bot move it.
+
 	// Which pin FILE this battle is obeying, and how old it is. The pins are the
 	// one source of geometry a human authored (cmd/pick_coords), so a run that
 	// reads a different copy than the picker wrote is attacking with geometry
@@ -522,8 +562,14 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// three-minute battle.
 	troopCounter := NewTroopCounter(e.cal, pCfg.Width, pCfg.Height, e.logger)
 	slots := slotMgr.GetAllSlots()
+	extraCountFrames := troopCountExtraFrames
+	if e.perfMode {
+		// Performance mode: the multi-frame merge costs two extra captures plus
+		// ~0.5s before the first drop; the battle-start frame stands alone.
+		extraCountFrames = 0
+	}
 	countFrames := []gocv.Mat{screen}
-	for attempt := 0; attempt < troopCountExtraFrames; attempt++ {
+	for attempt := 0; attempt < extraCountFrames; attempt++ {
 		if err := e.runtimeContext().Err(); err != nil {
 			return len(slotMgr.GetUndeployedSlots()), err
 		}
@@ -629,19 +675,27 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// a dedicated "Abilities" phase and pattern:Ability units declared
 	// inline inside the Heroes phase — auto_edrag_rush uses the latter
 	// shape). They are fired only when an explicit "Abilities" phase is
-	// reached, or after the last phase — never mid-deploy. Tapping the
+	// reached, or — for the inline shape — at the very END of the deploy,
+	// after the sweep and the verifier, never mid-deploy. Tapping the
 	// hero icon a second time re-selects the hero's card, which poisons
 	// the next slot-selection tap until that card is deployed or
 	// deselected; deferring the pass keeps it from eating the next
 	// unit's selection (valk_run6: abilities fired 60ms after the hero
 	// drops and the EQ phase then tapped the siege slot instead of the
-	// earthquake card).
+	// earthquake card). Running it after every placement step means no
+	// slot-selection tap can follow it at all.
+	// Spell deployer for the phase loop + the deferred reconcile pass.
+	spellDeployer := NewSpellDeployerWithCounts(tapExec, pCfg, formulaPtr, w, h, countMap, e.logger)
+	spellDeployer.SetCounter(troopCounter, slotMgr.GetBarY())
+	spellDeployer.SetPinnedGround(userPinnedForTarget)
+	var spellReconcile []spellReconcileEntry
+
 	var pendingAbilities []UnitPlan
 	fireAbilities := func() {
 		if len(pendingAbilities) == 0 {
 			return
 		}
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(40 * time.Millisecond)
 		for _, up := range pendingAbilities {
 			if up.Slot == nil {
 				continue
@@ -670,22 +724,21 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 				return
 			}
 			if !tapExec.TapHeroAbility(up.Slot) {
-				// The card's 2-tap budget was spent on placement (e.g. a sweep
-				// recovery tap): the hero is not re-tapped.
+				// The ability is a one-shot per hero: TapHeroAbility refuses only
+				// when it already fired (the HP watcher got there first).
 				e.logger.Warn().
 					Str("unit", up.Unit.Name).
 					Int("x", up.Slot.X).
-					Msg("ability pass: hero card tap budget exhausted; skipping ability")
+					Msg("ability pass: hero ability already fired this battle; skipping")
 				continue
 			}
 			e.logger.Info().
 				Str("unit", up.Unit.Name).
 				Int("x", up.Slot.X).
-				Msg("hero ability activated (deferred ability pass)")
-			// 250ms between hero-icon taps: the 60ms of the old
-			// bulk loop outpaced CoC's ability activation animation,
-			// so later activations in the loop silently no-opped.
-			tapExec.HumanSleep(250, 40)
+				Msg("hero ability activated")
+			// Fast sequential burst across hero cards: activates all abilities
+			// together in a rapid human-like wave.
+			tapExec.HumanSleep(25, 10)
 		}
 		pendingAbilities = nil
 	}
@@ -754,13 +807,12 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		}
 		phaseStart := time.Now()
 
-		// Deploy spells. Thread the live OCR counts + slot resolver so
-		// Amount:"All" spells tap exactly the count the army carries
-		// instead of a hardcoded 5 (the valk EQ army carries e.g. 4 EQs
-		// on one card; the edrag rush carries 11 rage on another).
-		spellDeployer := NewSpellDeployerWithCounts(tapExec, pCfg, formulaPtr, w, h, countMap, e.logger)
-		spellDeployer.SetCounter(troopCounter, slotMgr.GetBarY())
-		spellDeployer.SetPinnedGround(userPinnedForTarget)
+		// Deploy spells. The deployer is hoisted out of the loop (it threads
+		// the live OCR counts + slot resolver so Amount:"All" spells tap
+		// exactly the count the army carries instead of a hardcoded 5: the
+		// valk EQ army carries e.g. 4 EQs on one card; the edrag rush carries
+		// 11 rage on another) and its reconcile pass runs AFTER the placements
+		// window — see spellReconcile below.
 		for _, up := range ResolveSpellTargets(plan) {
 			if err := e.deploymentErr(); err != nil {
 				return len(slotMgr.GetUndeployedSlots()), err
@@ -793,22 +845,12 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			success := spellDeployer.DeploySpell(up.Unit, up.Slot, targetEdge, plan.Phase.Pattern)
 			if success {
 				slotMgr.MarkDeployed(strings.ToLower(up.Unit.Name))
-				// Post-deploy verify: live-OCR the card count and re-fire
-				// any spells that didn't drop (same reconcile philosophy as
-				// the troop path). Best-effort — a failed OCR just logs.
-				// 4 rounds: each round fires only the unconfirmed remainder,
-				// and the internal no-progress stop aborts early when OCR
-				// reads the same count twice — so more headroom only helps
-				// genuinely draining multi-charge cards, never the spent-
-				// card loop (live: 1-charge rage re-fired for the old 2-
-				// round budget while OCR read "1" every time).
-				if extra, confirmed := spellDeployer.VerifyAndReconcile(up.Unit, up.Slot, targetEdge, plan.Phase.Pattern, 4); extra > 0 {
-					e.logger.Info().
-						Str("unit", up.Unit.Name).
-						Int("extra_fired", extra).
-						Bool("confirmed_empty", confirmed).
-						Msg("spell reconcile fired extra spells")
-				}
+				// Post-deploy reconcile is DEFERRED to after the placements
+				// window: the top-up decision is better made on settled cards,
+				// and a slow OCR round must not sit inside the seven-second
+				// deploy window. Any extra taps still fire before the sweep and
+				// stay budget-guarded.
+				spellReconcile = append(spellReconcile, spellReconcileEntry{unit: up.Unit, slot: up.Slot, pattern: plan.Phase.Pattern})
 			}
 		}
 
@@ -984,11 +1026,25 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			Msg("deploy window is over the seven-second goal; see the per-phase elapsed lines above for where it went")
 	}
 
-	// Abilities declared inline (e.g. auto_edrag_rush's pattern:Ability
-	// units inside the Heroes phase, with a Spells phase after) never hit
-	// an "Abilities" phase — fire whatever is still pending here, after
-	// every deploy phase, so spells still go first.
-	fireAbilities()
+	// Deferred spell reconciliation: live-OCR each fired spell card and re-fire
+	// any spells that did not drop, now that the cards have settled. 4 rounds:
+	// each round fires only the unconfirmed remainder, and the internal
+	// no-progress stop aborts early when OCR reads the same count twice — so
+	// more headroom only helps genuinely draining multi-charge cards, never the
+	// spent-card loop (live: 1-charge rage re-fired for the old 2-round budget
+	// while OCR read "1" every time).
+	for _, se := range spellReconcile {
+		if err := e.deploymentErr(); err != nil {
+			return len(slotMgr.GetUndeployedSlots()), err
+		}
+		if extra, confirmed := spellDeployer.VerifyAndReconcile(se.unit, se.slot, targetEdge, se.pattern, 4); extra > 0 {
+			e.logger.Info().
+				Str("unit", se.unit.Name).
+				Int("extra_fired", extra).
+				Bool("confirmed_empty", confirmed).
+				Msg("spell reconcile fired extra spells")
+		}
+	}
 
 	// 10. Sweep remaining. Pass formulaPtr so the sweep path honors
 	// user-pinned _event_troop / _event_spell coords the same way
@@ -1014,11 +1070,29 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// lines? did every card drain?). Passes the formula the deploy path used —
 	// corner-resolved, projected, clamped — so the picture shows the taps that
 	// were fired and not a re-derivation of them. Best-effort: a capture failure
-	// must never fail an otherwise-good attack.
-	e.dumpAttackEvidence(formulaPtr, targetEdge, w, h, remainingCount)
+	// must never fail an otherwise-good attack. Skipped in performance mode
+	// (CLI -perf): the PNGs are review artifacts, not part of the attack.
+	if !e.perfMode {
+		e.dumpAttackEvidence(formulaPtr, targetEdge, w, h, remainingCount)
+	}
+
+	// Hero abilities go LAST, after every placement step there is (the
+	// phase loop, the sweep, the verifier's re-deploy). The user's contract:
+	// both heroes down, then spells, then abilities — with the hero ->
+	// ability gap spanning the whole deploy, because the activation taps are
+	// slow to land and firing them early also buys nothing. Doing it here
+	// means no slot-selection tap can ever follow the ability tap (the
+	// valk_run6 mis-select class cannot happen), and a hero that only the
+	// sweep or the verifier recovered still gets its ability.
+	// Abilities declared inline (auto_edrag_rush's pattern:Ability units
+	// inside the Heroes phase, with a Spells phase after) never hit an
+	// "Abilities" phase, so this is their only firing point.
+	fireAbilities()
 
 	// Catch any hero deployed outside the main hero phase (sweep recovery,
-	// event troops) so the battle-end wait can still fire its ability.
+	// event troops) so the battle-end wait can still fire its ability. Runs
+	// after the pass above: a hero whose ability already fired has spent its
+	// 2-tap budget and is not watched again.
 	e.armHeroWatch(slotMgr)
 
 	return remainingCount, nil

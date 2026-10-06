@@ -16,9 +16,13 @@ import (
 // slot-selection tap landed on the still-highlighted hero icon instead of
 // the earthquake card (live: the siege slot got tapped instead). The fix
 // routes every ability plan through a deferred pass fired only when the
-// strategy reaches an explicit "Abilities" phase — or after the last
-// phase, for strategies like auto_edrag_rush that declare
-// pattern:Ability units inline inside the Heroes phase.
+// strategy reaches an explicit "Abilities" phase — or at the very END of
+// the deploy, after the sweep and the verifier, for strategies like
+// auto_edrag_rush that declare pattern:Ability units inline inside the
+// Heroes phase. The end-of-deploy placement is the user's contract:
+// heroes down, then spells, then abilities, with the hero -> ability gap
+// spanning every remaining placement (see DeployDynamicV2's closing
+// fireAbilities call, which is the last device input of the deploy).
 // ---------------------------------------------------------------------------
 
 // TestPlanPhase_CollectsInlineAbilityUnits ensures pattern:Ability units

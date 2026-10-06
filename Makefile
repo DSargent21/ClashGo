@@ -150,6 +150,19 @@ pick-coords:
 #   make see ARGS="look -img tmp/x.png -rect 580,585,130,50"
 #   make see ARGS="diff tmp/a.png tmp/b.png"
 #   make see ARGS="timeline"
+# refmap: turn physically-dragged rects into asset-shaped JSON. Every picking
+# tool routes its drags through this so the HUD law is inverted in exactly one
+# place (internal/game.Calibration.HudRectReferenceSnap); dividing the drag by a
+# scale factor, which the old wall-button picker did, is NOT the inverse and was
+# why the recorded boxes moved on every run.
+#   make refmap ARGS="-describe"
+#   printf 'gold 591 503 692 601\n' | make refmap ARGS="-w 1280 -h 720 -k 1.325 -schema buttons"
+.PHONY: refmap
+refmap:
+	@mkdir -p $(BUILD_DIR)
+	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/refmap ./cmd/refmap
+	@if [ -n "$(ARGS)" ]; then $(BUILD_DIR)/refmap $(ARGS); fi
+
 .PHONY: see
 see:
 	@mkdir -p $(BUILD_DIR)

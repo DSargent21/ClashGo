@@ -23,6 +23,13 @@ type BotConfig struct {
 // estimates from code analysis plus measurements on recorded frames
 // (docs/PERFORMANCE.md, "Audit 2"); the defaults are deliberately conservative.
 type PerformanceConfig struct {
+	// PerfMode is the CLI `-perf` switch: the lean attack path. It sheds
+	// OBSERVABILITY work only — one troop-bar frame instead of three before the
+	// first drop, no post-attack evidence PNGs — and never changes what reaches
+	// the device. Use it for unattended farming where the deploy window and CPU
+	// matter more than review artifacts.
+	PerfMode bool `json:"perf_mode"`
+
 	// SkipUnchangedClassify skips the classifier on a captured frame that has
 	// not changed since the previous one. The classifier is a pure function of
 	// the pixels, so an unchanged frame cannot have a different verdict, and a
@@ -157,9 +164,15 @@ type TrainingConfig struct {
 }
 
 type AttackConfig struct {
-	Enabled             bool     `json:"enabled"`
-	StrategyFile        string   `json:"strategy_file"`
-	AttackWhenFull      bool     `json:"attack_when_full"`
+	Enabled        bool   `json:"enabled"`
+	StrategyFile   string `json:"strategy_file"`
+	AttackWhenFull bool   `json:"attack_when_full"`
+	// MaxAttackPerSession caps how many attacks one session runs before the bot
+	// shuts itself down cleanly (see Bot.executeAttackSequence's cap check).
+	// 0 or negative means UNLIMITED: the session keeps attacking until the user
+	// stops it. The GUI has one Start button and one Stop button, so unlimited is
+	// what those two imply — the cap is opt-in, and only a positive value ever
+	// ends a session without the user asking.
 	MaxAttackPerSession int      `json:"max_attack_per_session"`
 	DropDelay           Duration `json:"drop_delay"`
 	SpellDelay          Duration `json:"spell_delay"`
@@ -262,7 +275,7 @@ func DefaultConfig() *BotConfig {
 		Attack: AttackConfig{
 			Enabled:                  true,
 			StrategyFile:             paths.Resolve("strategies/auto_edrag_rush.yaml"),
-			MaxAttackPerSession:      100,
+			MaxAttackPerSession:      0, // 0 = unlimited: run until the user stops the session
 			DropDelay:                Duration{500 * time.Millisecond},
 			SpellDelay:               Duration{2 * time.Second},
 			EndBattleDelay:           Duration{30 * time.Second},

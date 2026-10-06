@@ -25,6 +25,10 @@ type Transport struct {
 	conn   net.Conn
 	mu     sync.Mutex
 	closed atomic.Bool
+
+	// wedgeFallbacks counts commands delivered through shellWedgeFallback. See
+	// WedgeFallbacks.
+	wedgeFallbacks atomic.Uint64
 }
 
 func NewTransport(deviceID, host string, port int, timeout time.Duration) (*Transport, error) {
@@ -75,7 +79,14 @@ func (t *Transport) execLocked(service string) ([]byte, error) {
 // getprop is used as the prefix because it is the cheapest whitelisted
 // call (~30ms round trip observed) and its output lands on the first
 // line where callers that parse `wm size` output can ignore it.
-const bluestacksWedgePrefix = "getprop ro.build.type; "
+const bluestacksWedgePrefix = "getprop " + wedgePrefixProperty + "; "
+
+// wedgePrefixProperty is the property the BlueStacks wedge workaround reads. It
+// is named separately because the detector that spots an unstripped prefix line
+// (client.go's isWedgedShellOutput) must match on the name, not on this
+// device's value for it — ro.build.type reads "user" on a retail image and
+// "userdebug" on a debuggable one.
+const wedgePrefixProperty = "ro.build.type"
 
 // isClosedFailure reports whether err is the adbd FAIL "closed"
 // response that characterizes the BlueStacks wedge (raw protocol:
@@ -127,12 +138,28 @@ func (t *Transport) Exec(service string) ([]byte, error) {
 	}
 	out2, err2 := t.execService(fallback)
 	if err2 == nil {
+		// Record that the fallback carried this command. The prefix line is
+		// stripped from the result, so the caller cannot otherwise tell that
+		// the command only worked because of the workaround — and on this
+		// emulator the framework pinch is exactly such a command.
+		t.wedgeFallbacks.Add(1)
 		// The getprop prefix line precedes the payload; strip it so
 		// callers see exactly what the original command would have
 		// returned.
 		return stripPrefixLine(out2), nil
 	}
 	return out, err
+}
+
+// WedgeFallbacks is how many commands have been delivered via the BlueStacks
+// wedge workaround rather than on their first attempt. Callers compare it across
+// one Exec to learn whether the workaround was needed, which the returned bytes
+// cannot say because the prefix line is stripped.
+func (t *Transport) WedgeFallbacks() uint64 {
+	if t == nil {
+		return 0
+	}
+	return t.wedgeFallbacks.Load()
 }
 
 // stripPrefixLine removes everything up to and including the first

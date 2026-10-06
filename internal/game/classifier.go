@@ -483,13 +483,28 @@ func (c *Classifier) buildRules() {
 		// the game establishes its session after the tap-to-continue screen.
 		// It is static for 1-3 minutes (no progress indicator); classifying it
 		// keeps the stuck-watchdog from force-restarting mid-boot.
+		//
+		// MinPass is 3 — EVERY probe. Measured 2026-10-01 on live 720p frames:
+		// the effective discriminators are only the light band and the dark
+		// left ground (the pink-art probe misses even on the recorded
+		// "boot logo" fixture — which is not the splash at all, it is a
+		// village frame with the builder-apprentice offer dialog), and ANY
+		// village frame with a light area and a dark area at those two
+		// centre-mapped points passes 2/3 and fired this rule. Because the
+		// rule sits at priority 92 and StateLogo grants an unconditional
+		// 5-minute boot grace, that false positive stalled the bot on an
+		// attackable village for 5 minutes at a time (two such village frames
+		// are pinned in the corpus). Requiring all three probes cannot fire on
+		// either frame (both pass 2/3), and the cost of missing a real splash
+		// is the documented safe direction: an undetected splash falls to the
+		// 35s stuck-watchdog, while a misdetected village spins for minutes.
 		{
 			State:    StateLogo,
 			Priority: 92,
 			Weight:   92,
-			Desc:     "CoC castle logo / connecting splash (fallback; observed castle-like frames were actually the news splash)",
+			Desc:     "CoC castle logo / connecting splash (fallback; every observed match was a village frame — see MinPass)",
 			Anchor:   AnchorCenter,
-			MinPass:  2,
+			MinPass:  3,
 			// 720p probe audit (2026-09-23): the dark-corner probe read d=28
 			// on battle frames (vs d=8.2 on the boot-logo fixture) — one drift
 			// from pairing with a second hit and misreading a battle as the
@@ -693,13 +708,40 @@ func (c *Classifier) buildRules() {
 		// dialog for the full boot-splash grace (5 min) then force-
 		// restarted, every cycle. Panel pixel = the dialog's light-gray
 		// body; both buttons must match (real villages have neither).
+		//
+		// MinPass is 3 — EVERY probe, so the orange Cancel face is mandatory
+		// rather than optional. It was 2, and that was a live deadlock:
+		// measured 2026-09-29 on this project's 1280x720 device, CoC's
+		// "Update Available! / please update your game" dialog passes the
+		// green probe (497,431 -> live 729,446 HIT) and the light-gray body
+		// probe (430,340 -> live 640,326 HIT) while the orange Cancel face
+		// (279,429 -> live 440,443) misses, so the rule fired with score 299
+		// on a dialog it was never authored against. processFrame then ran
+		// the quit-confirm dismissal, whose only control candidate is that
+		// same Cancel probe (game.overlayControlProbes), which cannot read
+		// as orange on a dialog with no Cancel button — so DismissOverlay
+		// refused to tap, correctly, and the overlay stayed up: 248 "no
+		// verified control on this frame; no tap fired" refusals, and the
+		// stuck watchdog restarted the game 7 times across 7m10s
+		// (12:47:27-12:54:37), because the update prompt is a login-time
+		// check that comes back on every relaunch.
+		//
+		// A rule that fires without its own dismiss control can only ever
+		// produce that loop, so the two must not be separable: keep MinPass
+		// equal to len(Checks) here (pinned by
+		// TestConfirmExitRuleRequiresEveryProbe), and add another geometry's
+		// measured Cancel point as an extra probe — the way
+		// StateConnectionLost carries two candidates — rather than lowering
+		// the bar. Losing detection of a real dialog is the safe direction:
+		// an undetected overlay falls to the watchdog, while a
+		// detected-but-undismissable one spins on every frame for minutes.
 		{
 			State:    StateConfirmExit,
 			Priority: 99,
 			Weight:   99,
 			Desc:     "quit confirm dialog (Cancel / Okay)",
 			Anchor:   AnchorCenter,
-			MinPass:  2,
+			MinPass:  3,
 			Checks: []PixelCheck{
 				// Green Okay button
 				{497, 431, 0xD6, 0xF4, 0x76, 45},
@@ -707,6 +749,111 @@ func (c *Classifier) buildRules() {
 				{279, 429, 0xFE, 0xC3, 0x69, 45},
 				// Light-gray dialog body between the texts
 				{430, 340, 0xE8, 0xE8, 0xE0, 25},
+			},
+		},
+		// StateUpdatePrompt is CoC's login-time "Update Available! / A new
+		// version of Clash of Clans is available" prompt: a centred light-gray
+		// panel with one green Update button and no other control. It had no
+		// rule before, and the frame it lands on was being misread — measured
+		// 2026-09-29 on this project's 1280x720 device it satisfies two of
+		// StateLogo's probes (score 292, priority 92) and four of
+		// StateConnectionLost's five, so the boot classified it as Logo and
+		// sat out the 5-minute boot-splash grace before force-restarting into
+		// the same prompt, because the check is a login-time one that comes
+		// back on every relaunch (connected 13:21:43 -> village 13:23:48 with
+		// the panel on screen the whole time).
+		//
+		// Signature: the light-gray panel body sampled at two points in the
+		// blank strip between the title and the message, plus the SOLID green
+		// band across the middle of the Update button. The button's bright top
+		// highlight is deliberately NOT a probe: it is the same light green as
+		// the quit dialog's Okay face (the StateConfirmExit probe
+		// 0xD6,0xF4,0x76), and that resemblance is exactly what let the quit
+		// rule fire on this dialog. The solid band reads (109,188,31), which is
+		// unique to this button; the panel body reads (232,232,224), the same
+		// colour the quit dialog's body probe carries.
+		//
+		// MinPass is 3 of 3, the same reason as StateConfirmExit: a rule that
+		// fires without the control its own dismissal needs can only spin. This
+		// dialog's dismissal is not a button at all — its one button leaves for
+		// the app store — so the control is a tap OUTSIDE the panel; see
+		// game.overlayOutsideTapStates and
+		// TestUpdatePromptOutsideTapIsClearOfControls, which pins that point
+		// against every probe here and against the HUD button windows.
+		//
+		// The probes are the 720p measurement expressed in reference space (the
+		// inverse of the centre mapping at the pinned k=1.325), the way the
+		// StateConnectionLost and StateBattleEnd 720p blocks are. Unlike those
+		// rules there is no separate reference-geometry block to fall back on:
+		// every coordinate here was measured on the live device, so the
+		// reference path is this same mapping's identity case rather than an
+		// independent measurement.
+		{
+			State:    StateUpdatePrompt,
+			Priority: 99,
+			Weight:   99,
+			Desc:     "update-available login prompt (light-gray panel + green Update band)",
+			Anchor:   AnchorCenter,
+			MinPass:  3,
+			Checks: []PixelCheck{
+				// Panel body, blank strip above the title -> 720p live (400,275).
+				{249, 302, 0xE8, 0xE8, 0xE0, 25},
+				// Panel body, same strip on the right flank -> 720p live (880,275).
+				{611, 302, 0xE8, 0xE8, 0xE0, 25},
+				// Solid green band of the Update button, below the message and
+				// clear of its white label -> 720p live (640,493), measured
+				// (109,188,31) across the whole band.
+				{430, 466, 0x6D, 0xBC, 0x1F, 40},
+			},
+		},
+		// StateOfferPopup is the centred in-game offer modal (captured
+		// 2026-10-04 at 1280x720, corpus/offer_goldpass_720p.png: "55% OFF
+		// YOUR FIRST GOLD PASS!" over the village, body copy, and one green
+		// "KNOW MORE!" button). It had no rule and read as Unknown, so the
+		// bot looped "waiting for battle state" and the stuck-watchdog
+		// force-restarted the game into the same modal three times (observed
+		// live 21:04-21:08; the classifier probe reported state=Unknown with
+		// every other rule at 0-1 passes).
+		//
+		// Signature: the saturated-green button face sampled on both flanks
+		// of its white label (139,212,58) across the flat face), plus the
+		// white title glyph band. The face is clearly distinct from the pale
+		// news-splash Continue face (0xBE,0xEA,0x8C, whose probe renders
+		// 22 px above this button at 720p and reads white label there) and
+		// from battle-field grass.
+		// MinPass is 3 of 3 anyway: the two flank pixels alone are bright
+		// enough that a battle frame's sunlit grass plus a white field pixel
+		// must not be able to pair up, and a rule that fires without the
+		// evidence its dismissal needs can only spin.
+		//
+		// Dismissal is the device's Back key (game.overlayBackStates): the
+		// modal carries NO close X anywhere on the frame (pixel-scanned the
+		// top-right corner and the whole panel edge), and its one button,
+		// KNOW MORE!, leaves the game for the store — the same trap as the
+		// update prompt's Update button. Back is unverified-live: the offer
+		// is one-shot per period and was gone before it could be measured
+		// (eight clean relaunches after the one showing). The failure mode is
+		// safe: if Back does not close it, the stuck-watchdog cycles the game
+		// and the offer does not come back on the next boot.
+		{
+			State:    StateOfferPopup,
+			Priority: 96,
+			Weight:   100,
+			Desc:     "centred offer modal (e.g. 55% OFF YOUR FIRST GOLD PASS) with green KNOW MORE button",
+			Anchor:   AnchorCenter,
+			MinPass:  3,
+			Checks: []PixelCheck{
+				// Green button face, right flank of the label -> 720p live
+				// (738,616), measured (139,212,58) across a flat neighbourhood.
+				{504, 559, 0x8B, 0xD4, 0x3A, 40},
+				// Green button face, left flank of the label -> 720p live
+				// (530,617), same flat face. Both flanks are pinned to pixels
+				// whose reference mapping round-trips to the exact sample:
+				// sampling (536,615) and letting the map round landed one pixel
+				// onto the corner's anti-aliased edge (d=41, one unit out).
+				{347, 560, 0x8B, 0xD4, 0x3A, 40},
+				// White title glyph band -> 720p live (640,485).
+				{430, 460, 0xFF, 0xFF, 0xFF, 30},
 			},
 		},
 		{

@@ -210,10 +210,18 @@ func (t *TapExecutor) DeployBudgetRemaining() time.Duration {
 }
 
 // maxHeroSpotTaps is the hard ceiling on how many times the bot may tap a
-// hero's CARD per battle: one tap places the hero, one more activates its
-// ability. Never more. A tapped card is the only way to drop or trigger a
-// hero, so an uncapped retry/sweep/verify pass is exactly the "it keeps
-// tapping the Archer Queen even after the ability was used" symptom.
+// hero's CARD per battle to PLACE it: the initial drop, and at most one rescue.
+// Never more. A tapped card is the only way to drop a hero, so an uncapped
+// retry/sweep/verify pass is exactly the "it keeps tapping the Archer Queen"
+// symptom.
+//
+// The ability is no longer part of this budget. One shared counter meant a
+// hero whose drop the sweep had to rescue had spent both taps before the
+// ability pass ran, so the pass skipped the activation — a deployed hero, with
+// its ability unused. Live 2026-10-01 (TopLeft): exactly that happened to the
+// Grand Warden. The ability now carries its own one-shot flag
+// (TrackedSlot.AbilityFired), which still permits exactly one activation per
+// hero per battle.
 const maxHeroSpotTaps = 2
 
 // The single hero placement sequence, shared by the hero phase and the sweep.
@@ -224,7 +232,18 @@ const maxHeroSpotTaps = 2
 // which. Both callers now use these.
 const (
 	heroCardTapJitter = 4
-	heroArmSettleMs   = 150
+	// heroArmSettleMs is the pause between a hero card tap and the field tap
+	// that spends it. Measured live 2026-10-04 (tmp/audit4, four attacks + a
+	// heroes-only probe): a card's FIRST selection in a battle needs longer
+	// than 155ms to arm — every batch wave drop at card→field 155-205ms was
+	// refused (12/12), while the same fireHeroDrop at the same field points
+	// landed every time when it followed a RE-arm tap (12/14), and the
+	// hero phase's identical arm+drop has failed while the sweep's landed
+	// since 2026-09-27 for the same reason (the sweep re-selects a card the
+	// hero phase already touched). 400ms covers the first-selection arm; the
+	// wave costs 250ms per hero more than before and drops the rescue path
+	// entirely when it works.
+	heroArmSettleMs   = 400
 	heroDropSettleMs  = 300
 )
 
@@ -254,11 +273,25 @@ func isHeroCardSlot(slot *TrackedSlot) bool {
 	return slot != nil && slot.Category == "Hero" && !slot.FallbackLabeled
 }
 
-// consumeHeroSpotTap returns true when the slot still has a hero-card tap
-// left and burns one. Non-hero slots are always allowed and never counted.
+// consumeHeroSpotTap returns true when the hero slot still has a PLACEMENT card
+// tap left and burns one. Non-hero slots are always allowed and never counted.
+// The ability tap does not come through here — see TapHeroAbility.
 func (t *TapExecutor) consumeHeroSpotTap(slot *TrackedSlot, what string) bool {
 	if !isHeroCardSlot(slot) {
 		return true
+	}
+	// A CONFIRMED deployment ends the placement budget. The second placement
+	// tap exists for one purpose only: rescuing a drop the game refused, which
+	// leaves the slot short of SlotDeployed. A hero already standing on the
+	// field must never be re-placed — that is a second army unit the user did
+	// not ask for.
+	if slot.State == SlotDeployed && slot.SpotTaps >= 1 {
+		t.logger.Warn().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Str("attempted", what).
+			Msg("hero is already deployed; refusing a second placement tap")
+		return false
 	}
 	if slot.SpotTaps >= maxHeroSpotTaps {
 		t.logger.Warn().
@@ -266,18 +299,24 @@ func (t *TapExecutor) consumeHeroSpotTap(slot *TrackedSlot, what string) bool {
 			Int("x", slot.X).
 			Int("spot_taps", slot.SpotTaps).
 			Str("attempted", what).
-			Msg("hero card tap budget exhausted (max 2: place + ability); refusing to tap the hero again")
+			Msg("hero placement card tap budget exhausted (max 2: drop + one rescue); refusing to tap the hero again")
 		return false
 	}
 	slot.SpotTaps++
 	return true
 }
 
-// HeroSpotTapBudgetLeft reports whether the hero slot may still take a card
-// tap. Non-hero slots always report true.
+// HeroSpotTapBudgetLeft reports whether the hero slot may still take a
+// PLACEMENT card tap. Non-hero slots always report true. It mirrors
+// consumeHeroSpotTap exactly, including the rule that a confirmed deployment
+// has no placement taps left. A hero that is out of placement taps is still
+// eligible for its ability — see AbilityFired.
 func (t *TapExecutor) HeroSpotTapBudgetLeft(slot *TrackedSlot) bool {
 	if !isHeroCardSlot(slot) {
 		return true
+	}
+	if slot.State == SlotDeployed && slot.SpotTaps >= 1 {
+		return false
 	}
 	return slot.SpotTaps < maxHeroSpotTaps
 }
@@ -595,13 +634,25 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 	time.Sleep(120 * time.Millisecond)
 }
 
-// TapHeroAbility taps a hero slot for ability activation. It shares the same
-// 2-tap card budget as placement, so a hero that already spent both taps
-// (place + ability, or a placement retry) is never tapped a third time.
-// Returns false when the budget is spent and no tap was fired.
+// TapHeroAbility taps a hero slot to activate its ability.
+//
+// The activation is gated on its OWN one-shot flag, not on the placement
+// budget: placement and activation are different intents. What the 2-tap rule
+// protects is "never two placements and never a repeated activation", and
+// that is still enforced — placement is capped by maxHeroSpotTaps and the
+// ability by AbilityFired, so a hero can be activated exactly once per battle
+// however many paths race to do it. Returns false when the ability already
+// fired and no tap was sent.
 func (t *TapExecutor) TapHeroAbility(slot *TrackedSlot) bool {
-	if !t.consumeHeroSpotTap(slot, "ability") {
+	if slot != nil && slot.AbilityFired {
+		t.logger.Warn().
+			Str("unit", slot.UnitName).
+			Int("x", slot.X).
+			Msg("hero ability already fired this battle; refusing to tap the hero again")
 		return false
+	}
+	if slot != nil {
+		slot.AbilityFired = true
 	}
 
 	ptY := slot.Y

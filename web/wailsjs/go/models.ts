@@ -250,6 +250,7 @@ export namespace config {
 		}
 	}
 	export class PerformanceConfig {
+	    perf_mode: boolean;
 	    skip_unchanged_classify: boolean;
 	    classify_change_threshold: number;
 	    classify_max_stale_sec: number;
@@ -263,6 +264,7 @@ export namespace config {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.perf_mode = source["perf_mode"];
 	        this.skip_unchanged_classify = source["skip_unchanged_classify"];
 	        this.classify_change_threshold = source["classify_change_threshold"];
 	        this.classify_max_stale_sec = source["classify_max_stale_sec"];

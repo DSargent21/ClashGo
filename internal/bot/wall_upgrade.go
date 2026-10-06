@@ -40,13 +40,11 @@ type wallClient interface {
 // writes a top-level dict with one or more {x1, y1, x2, y2} rects,
 // which this struct decodes uniformly.
 //
-// Coords are PHYSICAL pixels captured at the picker session's actual
-// screen size. Per the user's calibration baseline (860x732 on BlueStacks
-// Air + adb screencap at the device's native frame), the picker and the
-// bot's reference frame agree at 1:1, so JSON values land directly in bot
-// reference coordinates without re-scaling. They are then mapped to the
-// live geometry by the caller; on a non-reference frame the picker output
-// needs re-picking, which is a separate concern.
+// Coords are REFERENCE-frame (860x732) pixels: the pickers write the pick's
+// `reference` block as `physical / scale`, and the shipped wall-upgrade assets
+// were picked at 860x732, where that division is the identity. They are mapped
+// into live geometry by Rect.Live at load time (see that method for the law and
+// for what consuming them raw cost on a 1280x720 device).
 //
 // The legacy tap pattern in earlier versions of this file used the
 // image.Rectangle stdlib type via image.Rect(x1,y1,x2,y2). image.Rectangle
@@ -89,6 +87,105 @@ func (r Rect) Empty() bool {
 	return r.X1 == r.X2 || r.Y1 == r.Y2
 }
 
+// assetRect is one rectangle inside a wall-upgrade asset file. Two shapes are
+// on disk:
+//
+//   - the FLAT REFERENCE shape the shipped files use — {"x1":393,"y1":568,…} —
+//     written by the pickers of the day, which recorded the reference
+//     coordinates of the pick directly;
+//   - the TWO-BLOCK shape cmd/refmap writes — {"physical":{…},
+//     "reference":{…}} — where `reference` is the coordinate the bot's HUD law
+//     maps back onto the box the user dragged, and `physical` is that drag, kept
+//     beside it so a human can see both.
+//
+// A `reference` block wins whenever present: it is the one the picking tool
+// verified round-trips onto the drag, while a flat file is only correct for
+// whatever geometry it was picked at. A file carrying `physical` alone is
+// rejected rather than misread — those are live-device pixels and the loaders
+// would treat them as reference ones, which is exactly the mismatch that put
+// this flow's blind taps on builder-menu rows on the live 1280x720 run.
+//
+// The legacy point shape ({"x":551,"y":540}) is accepted too, as a 1-pixel box,
+// because tools/picker.py's confirm preset still writes one and a point and a
+// degenerate rect identify the same tap.
+type assetRect struct {
+	rect Rect
+	// source names the shape the value came from, for the loader logs.
+	source string
+}
+
+func (a *assetRect) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if block, ok := raw["reference"]; ok {
+		var r Rect
+		if err := json.Unmarshal(block, &r); err != nil {
+			return err
+		}
+		*a = assetRect{rect: r, source: "reference"}
+		return nil
+	}
+	if _, ok := raw["physical"]; ok {
+		*a = assetRect{source: "physical-only"}
+		return nil
+	}
+	if _, ok := raw["x"]; ok {
+		var pt struct {
+			X int `json:"x"`
+			Y int `json:"y"`
+		}
+		if err := json.Unmarshal(data, &pt); err != nil {
+			return err
+		}
+		*a = assetRect{rect: Rect{X1: pt.X, Y1: pt.Y, X2: pt.X + 1, Y2: pt.Y + 1}, source: "flat-reference"}
+		return nil
+	}
+	var r Rect
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	*a = assetRect{rect: r, source: "flat-reference"}
+	return nil
+}
+
+// Empty reports a rect the loader must refuse: a missing/zero box, or a
+// physical-only asset that cannot be mapped through the HUD law.
+func (a assetRect) Empty() bool {
+	return a.source == "physical-only" || a.rect.Empty()
+}
+
+// Live maps a rect from the authored frame the pickers wrote it in into the
+// live geometry, so a device that is not the reference geometry taps its
+// widgets and not the map next to them.
+//
+// Every rect in this family (wall_upgrade_buttons.json, ..._confirm.json,
+// ..._x_roi.json) holds REFERENCE-frame (860x732) coordinates. Both pickers that
+// write them derive a `reference` block as `physical / scale`
+// (tools/picker.py's menu preset, tools/internal/select_builder_roi.py), and the
+// shipped wall_upgrade_*.json files carry physical == reference — the values were
+// picked at 860x732, where that division is the identity. The tap path used to
+// consume those numbers RAW, which is right only while the device still runs the
+// reference geometry. On the live 1280x720 device (pinned k = 1.325,
+// device.display_scale) raw consumption put the resource buttons ~210 px and the
+// gem-buy X ~110 px from their widgets, i.e. the blind taps fired into the
+// village instead of the tray — the failure mode docs/RESOLUTION.md lists under
+// "Consequences of flipping 860x732 -> 1280x720 with only a config change".
+//
+// The law is the HUD one (Calibration.HudRect): the widget keeps its distance to
+// the edge it sits against — the tray buttons and the popup X are bottom- and
+// right/centre-anchored chrome — and its size grows with k. It is the identity at
+// the reference geometry and for a nil Calibration, which is what keeps the
+// authored 1:1 dataset and the small-frame test fixtures valid unchanged.
+func (r Rect) Live(cal *game.Calibration) Rect {
+	if cal == nil || cal.IsReferenceGeometry() {
+		return r
+	}
+	m := cal.HudRect(r.ImageRect())
+	return Rect{X1: m.Min.X, Y1: m.Min.Y, X2: m.Max.X, Y2: m.Max.Y}
+}
+
 // WallUpgradeHooks groups the dependencies a wall-upgrade loop iteration
 // needs. Used both by Bot.UpgradeWalls (production path) and the
 // cmd/test_wall_upgrade diagnostic tool.
@@ -99,7 +196,10 @@ func (r Rect) Empty() bool {
 //     the game into MainVillage themselves and skips dialog handling).
 //   - OnStep:   nil silences all instrumentation events. When wired, each
 //     phase boundary calls OnStep("phase_name", data). The diagnostic
-//     tool uses this to save annotated screenshots per phase.
+//     tool uses this to save annotated screenshots per phase. Frames are
+//     only cloned for a wired receiver (see stepScreen).
+//   - Sleep:    nil means time.Sleep. A no-op injection lets the test suite
+//     run a full sequence in milliseconds.
 //   - Dismiss:  nil makes the loop's fallback skip the neutral-tap
 //     dismiss (e.g. when btn_upgrade_wall or btn_confirm_upgrade fail
 //     matching). Production wires this to Bot.dismissSelection.
@@ -132,6 +232,23 @@ type WallUpgradeHooks struct {
 
 	// OnStep is the optional phase-boundary instrumentation hook.
 	OnStep func(step string, data map[string]any)
+
+	// Sleep is the sequence's timing primitive. nil means time.Sleep, which
+	// is the production behaviour. A caller (the test suite) may inject a
+	// no-op so a full pass costs milliseconds instead of the ~20s of
+	// animation/ADB settle the sequence is tuned for on a real device.
+	Sleep func(time.Duration)
+}
+
+// sleep waits for d, or delegates to the injected Sleep hook when one is
+// wired. Every wait in the sequence goes through here so the timing budget can
+// be replaced in one place instead of at two dozen phase boundaries.
+func (h *WallUpgradeHooks) sleep(d time.Duration) {
+	if h.Sleep != nil {
+		h.Sleep(d)
+		return
+	}
+	time.Sleep(d)
 }
 
 // UpgradeWalls executes the wall-upgrade sequence repeatedly until no
@@ -167,10 +284,29 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 //  1. ASSET-DRIVEN (BLIND-TAP) — when wall_upgrade_buttons.json +
 //     wall_upgrade_confirm.json + wall_upgrade_x_roi.json ALL load
 //     cleanly:
-//     a. Tap gold rect Center.
-//     b. Tap Confirm rect Center (BLIND — no template match).
-//     c. Wait + capture. Then check BOTH hasModalInRect(x_popup_roi)
-//     AND hasModalInRect(x_popup_roi_alt) (alt only if configured).
+//     a0. Capture ONE pre-tap baseline frame and gate on it:
+//     locateWallTray must find a painted chip inside both mapped
+//     gold/elixir rects (a builder-menu row drawn at those
+//     coordinates has white text on a dark panel, zero
+//     saturated pixels, and fails the gate), otherwise the
+//     iteration ends with `wall_tray_absent` and fires NO input.
+//     The same frame records each X rect's red-pixel level, so
+//     every later popup check asks for GROWTH over it as well as
+//     the absolute floor (xPopupPresent) rather than brightness
+//     alone.
+//     a. Tap the LOCATED gold chip Center (mapped rect when the
+//     frame had nothing better to offer).
+//     b. Capture the confirm page and require the CONFIRM control
+//     to be DRAWN inside the mapped confirm rect (a green face
+//     with a white caption, confirmButtonDrawn). If it is not
+//     there the tap is skipped — no input — and the next button
+//     is tried.
+//     c. Tap the confirm rect Center, wait + capture. Then check
+//     BOTH xPopupPresent(x_popup_roi) AND
+//     xPopupPresent(x_popup_roi_alt) (alt only if configured).
+//     The alt tap that follows is evidence-gated on its own fresh
+//     capture, so a clean primary popup no longer drags a blind
+//     tap onto whatever the alt rect happens to cover.
 //     Chained-popup support per the user's spec: dismissing the
 //     gem-buy modal can reveal a SECOND popup whose X lives at
 //     x_popup_roi_alt; both must be down before declaring success.
@@ -182,12 +318,16 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 //     still up → fall through to the NEXT button on this same wall
 //     (gold → elixir per spec "if gold was unsuccessful, click
 //     elixir"), emitting primary_still_up / alt_still_up diagnostics
-//     so the user knows which rect mis-picked. If BOTH buttons fire
-//     this path, the post-button-loop check surfaces the
+//     so the user knows which rect mis-picked. If the dismissal
+//     SUCCEEDED the button is unaffordable too — a popup that had to
+//     be closed is the "this would cost gems" signal, not an upgrade
+//     — so that also falls through to the next button, logged as
+//     `asset_driven_unaffordable_dismissed`. Once both buttons are
+//     unaffordable the post-button-loop check surfaces the
 //     `all_unaffordable` exit and the sequence ends. Wall-level
 //     aborts only fire on defensive capture failures (modalErr /
 //     verErr — transport sick), not on rect mis-picks.
-//     f. Both rects down → silent spawn = success. Move to next button.
+//     f. No popup at all → silent spawn = success. Move to next wall.
 //
 //  2. PROBE-AND-DISCARD — when only wall_upgrade_buttons.json loads
 //     (legacy mode from the original pre-rect refactor):
@@ -218,9 +358,10 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 	// per sequence, not once per iteration. Per the user's "They appear
 	// in same spot every time", the JSON content is constant across
 	// iterations.
-	goldBtn, elixirBtn, hasButtons := loadWallUpgradeButtons(h.Logger)
-	confirmRect, hasConfirmRect := loadWallUpgradeConfirmRect(h.Logger)
-	xPopupRect, xPopupAlt, hasXPopupRect := loadWallUpgradeXPopupRect(h.Logger)
+	goldBtn, elixirBtn, hasButtons := loadWallUpgradeButtons(h.Cal, h.Logger)
+	confirmRect, hasConfirmRect := loadWallUpgradeConfirmRect(h.Cal, h.Logger)
+	xPopupRect, xPopupAlt, hasXPopupRect := loadWallUpgradeXPopupRect(h.Cal, h.Logger)
+	builderX, builderY, hasBuilderButton := loadWallUpgradeBuilderButton(h.Cal, h.Logger)
 
 	hasBlindFlow := hasButtons && hasConfirmRect && hasXPopupRect
 	switch {
@@ -260,16 +401,24 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		}
 		h.step("main_village_verified", nil)
 
-		// 2. Click the builder head button in the top middle
+		// 2. Click the builder head button in the top middle. The authored
+		// reference point is the fallback; a picked assets/builder_button.json
+		// (the picking session's first step) wins when it is present, because the
+		// top bar's chrome is the part of this sequence most likely to move.
 		bx, by := h.Cal.Hud(430, 30)
-		h.Logger.Debug().Int("x", bx).Int("y", by).Msg("Clicking builder head icon")
+		builderSource := "authored-reference"
+		if hasBuilderButton {
+			bx, by = builderX, builderY
+			builderSource = "assets/builder_button.json"
+		}
+		h.Logger.Debug().Int("x", bx).Int("y", by).Str("source", builderSource).Msg("Clicking builder head icon")
 		if err := h.Client.Tap(bx, by); err != nil {
 			h.Logger.Error().Err(err).Msg("Failed to tap builder head")
 			h.step("tap_builder_failed", map[string]any{"err": err.Error()})
 			break
 		}
-		h.step("builder_tapped", map[string]any{"x": bx, "y": by})
-		time.Sleep(1500 * time.Millisecond) // Wait for menu to appear
+		h.step("builder_tapped", map[string]any{"x": bx, "y": by, "source": builderSource})
+		h.sleep(1500 * time.Millisecond) // Wait for menu to appear
 
 		// ROI for the upgrades menu (default right side of the screen)
 		menuROI := image.Rect(
@@ -280,23 +429,66 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		)
 
 		// Load custom ROI if it exists (assets/builder_menu_roi.json)
+		//
+		// The pickers write the rect as a `reference` block (the authored
+		// 860x732 frame, `physical / scale`) plus the raw `physical` one. The
+		// reference block is the one that is comparable across geometries, so
+		// it wins when present, and either way the values are mapped into the
+		// live frame through the HUD law: a menu panel's edges are anchored to
+		// the edges they sit against, so each edge is mapped on its own band
+		// (the panel's top is top-anchored just under the top bar while its
+		// bottom is mid-screen, and mapping both with the centre's band would
+		// stretch the panel's top edge to y=0). Consuming the block raw, as
+		// this used to, searched the reference-frame ROI on a 1280x720 device —
+		// 170 px left of where the menu is, where `text_wall` can never match.
 		if roiData, err := os.ReadFile(paths.Resolve("builder_menu_roi.json")); err == nil {
 			type ROIConfig struct {
-				Physical map[string]int `json:"physical"`
+				Physical  map[string]int `json:"physical"`
+				Reference map[string]int `json:"reference"`
 			}
 			var cfg ROIConfig
-			if json.Unmarshal(roiData, &cfg) == nil {
-				menuROI = image.Rect(
-					cfg.Physical["x1"],
-					cfg.Physical["y1"],
-					cfg.Physical["x2"],
-					cfg.Physical["y2"],
-				)
-				h.Logger.Info().
-					Int("x1", menuROI.Min.X).Int("y1", menuROI.Min.Y).
-					Int("x2", menuROI.Max.X).Int("y2", menuROI.Max.Y).
-					Msg("Loaded custom builder menu ROI")
+			// A malformed file must be reported, not swallowed. The record is a
+			// pair of rect blocks at the top level; a picking tool that wrapped the
+			// pair under an extra `physical` key produces JSON that unmarshals into
+			// nothing here, and silently keeping the default ROI would look like a
+			// working run.
+			if err := json.Unmarshal(roiData, &cfg); err != nil {
+				h.Logger.Error().Err(err).
+					Str("want", `{"reference":{"x1":0,"y1":0,"x2":0,"y2":0},"physical":{...}}`).
+					Msg("assets/builder_menu_roi.json is malformed; keeping the default menu ROI")
+			} else {
+				src, source := cfg.Reference, "reference"
+				if _, ok := src["x1"]; !ok {
+					src, source = cfg.Physical, "physical"
+				}
+				if _, ok := src["x1"]; !ok {
+					h.Logger.Error().
+						Str("want", `{"reference":{"x1":0,"y1":0,"x2":0,"y2":0}}`).
+						Msg("assets/builder_menu_roi.json holds no usable rect block; keeping the default menu ROI")
+				}
+				if _, ok := src["x1"]; ok {
+					x1, y1 := h.Cal.Hud(src["x1"], src["y1"])
+					x2, y2 := h.Cal.Hud(src["x2"], src["y2"])
+					menuROI = image.Rect(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+					h.Logger.Info().
+						Str("block", source).
+						Int("ref_x1", src["x1"]).Int("ref_y1", src["y1"]).
+						Int("ref_x2", src["x2"]).Int("ref_y2", src["y2"]).
+						Int("x1", menuROI.Min.X).Int("y1", menuROI.Min.Y).
+						Int("x2", menuROI.Max.X).Int("y2", menuROI.Max.Y).
+						Msg("Loaded builder menu ROI (ref coords mapped to live geometry)")
+				}
 			}
+		}
+		// Keep the ROI inside the live frame. The reference-frame default spans
+		// ref y 50..732, i.e. past the bottom of a 720-tall frame, which would
+		// put the scroll margins off-screen (sy1 would clamp at the frame edge
+		// and the swipe would run outside its own ROI).
+		if h.Cal.PhysicalW > 0 && h.Cal.PhysicalH > 0 {
+			menuROI = image.Rect(
+				max(0, menuROI.Min.X), max(0, menuROI.Min.Y),
+				min(h.Cal.PhysicalW, menuROI.Max.X), min(h.Cal.PhysicalH, menuROI.Max.Y),
+			)
 		}
 		h.step("menu_roi_loaded", map[string]any{"roi": menuROI})
 
@@ -373,9 +565,9 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				h.step("scroll_failed", map[string]any{"err": err.Error(), "iter": i})
 				return
 			}
-			time.Sleep(450 * time.Millisecond)
+			h.sleep(450 * time.Millisecond)
 		}
-		time.Sleep(1200 * time.Millisecond) // momentum settle
+		h.sleep(1200 * time.Millisecond) // momentum settle
 		h.step("menu_scrolled_to_bottom", nil)
 
 		// 4. Slowly scroll back up and search for "Wall" text
@@ -391,7 +583,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		for attempt := 0; attempt < 12; attempt++ {
 			screen, err := h.Client.CaptureToMat()
 			if err != nil {
-				time.Sleep(500 * time.Millisecond)
+				h.sleep(500 * time.Millisecond)
 				continue
 			}
 			// Robust 0.78 threshold, 60 scale steps.
@@ -433,32 +625,27 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					Int("x", best.Point.X).
 					Int("y", best.Point.Y).
 					Msg("Wall text template found")
-				hookScreen := screen.Clone()
-				if hookScreen.Empty() {
-					h.step("wall_text_found", map[string]any{
-						"attempt": attempt,
-						"conf":    best.Confidence,
-						"scale":   best.Scale,
-						"x":       best.Point.X,
-						"y":       best.Point.Y,
-						"matches": matches,
-					})
-				} else {
-					h.step("wall_text_found", map[string]any{
-						"attempt": attempt,
-						"conf":    best.Confidence,
-						"scale":   best.Scale,
-						"x":       best.Point.X,
-						"y":       best.Point.Y,
-						"screen":  hookScreen,
-						"matches": matches,
-					})
-				}
-				if err := h.Client.Tap(best.Point.X, best.Point.Y); err == nil {
-					wallClicked = true
-				}
+				h.stepScreen("wall_text_found", screen, map[string]any{
+					"attempt": attempt,
+					"conf":    best.Confidence,
+					"scale":   best.Scale,
+					"x":       best.Point.X,
+					"y":       best.Point.Y,
+					"matches": matches,
+				})
+				// Tap from a FRESH frame: the menu keeps gliding for a second or more
+				// after the last swipe, so the row under a match computed from an
+				// older capture can move ~40 px before the tap fires. On the live
+				// 1280x720 run the ~100 ms between "Wall x127" matching at (504,251)
+				// and the tap put the tap on the "Hero Hunter" row above it and
+				// opened that unit's confirm dialog instead of the wall tray.
+				tapped, tapData := tapWallRow(h, wallTpl, menuROI, *best, wallRowTapWindow)
+				h.stepScreen("wall_row_tap", screen, tapData)
+				screen.Close()
+				wallClicked = tapped
+			} else {
+				screen.Close()
 			}
-			screen.Close()
 
 			if wallClicked {
 				break
@@ -482,7 +669,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				h.step("scroll_up_failed", map[string]any{"err": err.Error()})
 				break
 			}
-			time.Sleep(1000 * time.Millisecond)
+			h.sleep(1000 * time.Millisecond)
 		}
 
 		if !wallClicked {
@@ -510,12 +697,12 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		// retry loop after captures+re-matches adds up to 3 more seconds
 		// of headroom for slow pans without permanently slowing down the
 		// fast path on a quick UI response.
-		time.Sleep(2500 * time.Millisecond)
+		h.sleep(2500 * time.Millisecond)
 
 		// 6. Choose flow: asset-driven (preferred), probe-and-discard,
 		// or template-matching fallback.
 		if hasBlindFlow {
-			// ASSET-DRIVEN: all three rects loaded. Tap blind, observe.
+			// ASSET-DRIVEN: all three rects loaded. Gate, THEN tap, then observe.
 			//
 			// Per the user's simplified flow: "It just hits upgrade
 			// button, and it either upgrades successfully, or asks to
@@ -525,6 +712,28 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// the gem-buy popup NOT appearing after the blind-confirm
 			// tap; the failure signal is the popup appearing, in which
 			// case we close via the x_popup_roi rect center.
+			//
+			// One pre-tap baseline frame feeds both gates below, and both
+			// refuse to fire input when they cannot prove the tray is up:
+			//
+			//   1. locateWallTray — the mapped gold/elixir chip rects must
+			//      hold PAINTED faces in the live frame. Without this gate
+			//      the mapped centres tap whatever sits at those
+			//      coordinates, which on the live 1280x720 run was the
+			//      builder menu's row band: the mapped gold centre
+			//      (641,552) opened an "Upgrade Hero Hunter to Level 4?"
+			//      panel and the mapped elixir centre opened a storage
+			//      detail panel. A tap that lands on a menu row activates
+			//      unrelated UI, which is strictly worse than stopping.
+			//   2. xPopupPresent — every later popup check compares against
+			//      the baseline count for the same rect, because a rect
+			//      parked on permanent chrome (x_popup_roi_alt over the
+			//      dark-elixir readout) would otherwise testify "popup up"
+			//      on every verify and turn both buttons into
+			//      asset_driven_modal_close_failed. The signal itself is the
+			//      popup's RED close control, not brightness: the confirm
+			//      page's own bright panel covers x_popup_roi on this client,
+			//      which is what made an affordable wall look unaffordable.
 			gcx, gcy := goldBtn.Center()
 			ecx, ecy := elixirBtn.Center()
 			ccx, ccy := confirmRect.Center()
@@ -535,19 +744,64 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				"confirm_center": []int{ccx, ccy},
 				"x_popup_center": []int{xcx, xcy},
 			})
+
+			// Pre-tap baseline. A capture failure here aborts the iteration
+			// without any input: with no baseline there is no tray gate and no
+			// popup reference, and the whole point of this block is to stop
+			// tapping blind when the screen cannot be read.
+			baseScreen, baseErr := h.Client.CaptureToMat()
+			if baseErr != nil {
+				h.Logger.Error().Err(baseErr).Msg("asset-driven baseline capture failed; firing no input (no frame to gate the tray or to verify a popup against)")
+				h.step("asset_driven_baseline_capture_failed", map[string]any{"err": baseErr.Error()})
+				break
+			}
+			basePopupRed := redFacePixelsIn(baseScreen, xPopupRect)
+			baseAltRed := 0
+			if xPopupAlt != nil {
+				baseAltRed = redFacePixelsIn(baseScreen, *xPopupAlt)
+			}
+			gate := locateWallTray(baseScreen, goldBtn, elixirBtn)
+			gateData := gate.Data()
+			gateData["base_popup_red"] = basePopupRed
+			gateData["base_alt_red"] = baseAltRed
+			h.stepScreen("asset_driven_tray_gate", baseScreen, gateData)
+			baseScreen.Close()
+
+			if !gate.Present() {
+				h.Logger.Warn().
+					Int("gold_face_px", gate.GoldFacePx).
+					Int("elixir_face_px", gate.ElixirFacePx).
+					Bool("gold_found", gate.GoldFound).
+					Bool("elixir_found", gate.ElixirFound).
+					Msg("Wall-upgrade tray is not on screen: the mapped gold/elixir chip rects hold no painted chip (bright-saturated pixels), so the sequence is stopping instead of blind-tapping whatever is there. Re-pick the chip rects with the game parked in the wall tray: ./tools/picker.py --preset buttons")
+				h.step("wall_tray_absent", nil)
+				runDismiss(h)
+				break
+			}
+			if xPopupAlt != nil && baseAltRed >= popupRedPixelsMin {
+				// Evidence, not a refusal: the growth gate still keeps this rect
+				// quiet, but a chained popup landing on it would go undetected, so
+				// say so while the run is happening rather than after a failure.
+				h.Logger.Warn().
+					Int("base_alt_red", baseAltRed).
+					Msg("x_popup_roi_alt already reads as a popup's close control on the pre-tap baseline (it overlaps permanent screen chrome, e.g. a red HUD element). It can no longer witness a chained popup. Re-pick it: ./tools/picker.py -o assets/wall_upgrade_x_roi.json --rect x_popup_roi_alt")
+			}
+
 			success := false
 			type btnInfo struct {
-				rect Rect
-				name string
+				rect   Rect
+				mapped Rect
+				name   string
 			}
 			buttons := []btnInfo{
-				{rect: goldBtn, name: "gold"},
-				{rect: elixirBtn, name: "elixir"},
+				{rect: gate.GoldChip, mapped: goldBtn, name: "gold"},
+				{rect: gate.ElixirChip, mapped: elixirBtn, name: "elixir"},
 			}
 			for _, btn := range buttons {
 				bcx, bcy := btn.rect.Center()
 				h.step("asset_driven_tap_upgrade", map[string]any{
 					"name": btn.name, "x": bcx, "y": bcy,
+					"mapped": btn.mapped.ImageRect(),
 				})
 				if err := h.Client.Tap(bcx, bcy); err != nil {
 					h.Logger.Error().Err(err).Msg("asset-driven upgrade tap failed")
@@ -556,13 +810,54 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					})
 					continue
 				}
-				time.Sleep(1200 * time.Millisecond)
+				h.sleep(1200 * time.Millisecond)
 
-				// Blind-confirm tap. No template matching, no
-				// cost-color check. The post-tap capture below
-				// decides success-vs-popup via pixel detection.
+				// Pre-confirm evidence, read from the frame this button's
+				// tap produced: the CONFIRM control has to be DRAWN inside
+				// the mapped rect. The shipped confirm asset mapped 94 live
+				// px above this client's button, so the old blind tap pressed
+				// the dialog's flavour text, nothing upgraded, and the flow
+				// then reported a silent spawn on a wall nobody had upgraded.
+				// Skipping the tap when the control is not there is the same
+				// rule the tray gate applies to the chips.
+				pageScreen, pageErr := h.Client.CaptureToMat()
+				if pageErr != nil {
+					h.Logger.Error().Err(pageErr).Msg("asset-driven confirm-page capture failed; firing no input for this button")
+					h.step("asset_driven_confirm_page_capture_failed", map[string]any{"name": btn.name, "err": pageErr.Error()})
+					aborted = true
+					break
+				}
+				confirmDrawn, confirmBright, confirmGreen := confirmButtonDrawn(pageScreen, confirmRect)
+				h.stepScreen("asset_driven_confirm_page", pageScreen, map[string]any{
+					"name":           btn.name,
+					"confirm_drawn":  confirmDrawn,
+					"confirm_bright": confirmBright,
+					"confirm_green":  confirmGreen,
+					"confirm_rect":   confirmRect.ImageRect(),
+				})
+				pageScreen.Close()
+
+				if !confirmDrawn {
+					h.Logger.Warn().
+						Int("confirm_bright", confirmBright).
+						Int("confirm_green", confirmGreen).
+						Str("button", btn.name).
+						Msg("The confirm dialog's button is not drawn inside the mapped confirm rect (no green face with a white caption there), so this button's confirm tap is being skipped instead of pressing whatever sits at those coordinates. Re-pick it: ./tools/picker.py -o assets/wall_upgrade_confirm.json --rect confirm_button")
+					h.step("asset_driven_confirm_button_absent", map[string]any{
+						"name":           btn.name,
+						"confirm_bright": confirmBright,
+						"confirm_green":  confirmGreen,
+						"confirm_rect":   confirmRect.ImageRect(),
+					})
+					continue
+				}
+
+				// Confirm tap. The mapped centre is used as-is now that the
+				// frame proves the control is drawn there; the post-tap
+				// capture below decides success-vs-popup.
 				h.step("asset_driven_tap_confirm", map[string]any{
 					"name": btn.name, "x": ccx, "y": ccy,
+					"confirm_rect": confirmRect.ImageRect(),
 				})
 				if err := h.Client.Tap(ccx, ccy); err != nil {
 					h.Logger.Error().Err(err).Msg("asset-driven confirm tap failed")
@@ -571,7 +866,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					})
 					continue
 				}
-				time.Sleep(1200 * time.Millisecond)
+				h.sleep(1200 * time.Millisecond)
 
 				modalScreen, modalErr := h.Client.CaptureToMat()
 				if modalErr != nil {
@@ -592,19 +887,18 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				// disjunction that the per-attempt verifier inside the
 				// retry loop ALSO emits (same shape, just different
 				// gating role).
-				primaryUp, primaryPx := hasModalInRect(modalScreen, xPopupRect)
-				altUp, altPx := false, 0
+				primaryUp, primaryRed := xPopupPresent(modalScreen, xPopupRect, basePopupRed)
+				altUp := false
+				altRed := 0
 				if xPopupAlt != nil {
-					altUp, altPx = hasModalInRect(modalScreen, *xPopupAlt)
+					altUp, altRed = xPopupPresent(modalScreen, *xPopupAlt, baseAltRed)
 				}
 				allUp := primaryUp || altUp
-				hookScreen := modalScreen.Clone()
-				h.step("asset_driven_modal_checked", map[string]any{
+				h.stepScreen("asset_driven_modal_checked", modalScreen, map[string]any{
 					"name":       btn.name,
-					"primary_up": primaryUp, "primary_px": primaryPx,
-					"alt_up": altUp, "alt_px": altPx,
+					"primary_up": primaryUp, "primary_red": primaryRed,
+					"alt_up": altUp, "alt_red": altRed,
 					"all_up": allUp,
-					"screen": hookScreen,
 				})
 				modalScreen.Close()
 
@@ -635,17 +929,39 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 						if err := h.Client.Tap(xcx, xcy); err != nil {
 							h.Logger.Error().Err(err).Msg("primary X tap failed")
 						}
-						time.Sleep(1000 * time.Millisecond)
+						h.sleep(1000 * time.Millisecond)
 					}
 					if xPopupAlt != nil {
-						acx, acy := xPopupAlt.Center()
-						h.step("asset_driven_modal_close_alt", map[string]any{
-							"name": btn.name, "x": acx, "y": acy,
-						})
-						if err := h.Client.Tap(acx, acy); err != nil {
-							h.Logger.Error().Err(err).Msg("alt X tap failed")
+						// Evidence-gated, and on a FRESH capture: closing the primary
+						// popup is what can reveal a chained one, so the alt rect has
+						// to be re-read after that close rather than assumed. The old
+						// unconditional alt tap is what pressed the resource HUD at
+						// (1209,174) on the live 720p run, with no popup on screen.
+						altScreen, altCapErr := h.Client.CaptureToMat()
+						if altCapErr != nil {
+							h.Logger.Warn().Err(altCapErr).Msg("alt-popup probe capture failed; skipping the alt tap (there is no evidence a chained popup is up)")
+							h.step("asset_driven_alt_probe_failed", map[string]any{"name": btn.name, "err": altCapErr.Error()})
+						} else {
+							altNowUp, altNowRed := xPopupPresent(altScreen, *xPopupAlt, baseAltRed)
+							h.stepScreen("asset_driven_alt_probe", altScreen, map[string]any{
+								"name":    btn.name,
+								"alt_red": altNowRed, "alt_baseline_red": baseAltRed,
+								"alt_up": altNowUp,
+							})
+							altScreen.Close()
+							if !altNowUp {
+								h.step("asset_driven_alt_skipped", map[string]any{"name": btn.name, "alt_red": altNowRed})
+							} else {
+								acx, acy := xPopupAlt.Center()
+								h.step("asset_driven_modal_close_alt", map[string]any{
+									"name": btn.name, "x": acx, "y": acy,
+								})
+								if err := h.Client.Tap(acx, acy); err != nil {
+									h.Logger.Error().Err(err).Msg("alt X tap failed")
+								}
+								h.sleep(1000 * time.Millisecond)
+							}
 						}
-						time.Sleep(1000 * time.Millisecond)
 					}
 
 					// Final verify: did both popups dismiss?
@@ -656,19 +972,17 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 						aborted = true
 						break
 					}
-					verPrimaryUp, verPrimaryPx := hasModalInRect(verCap, xPopupRect)
-					verAltUp, verAltPx := false, 0
+					verPrimaryUp, verPrimaryRed := xPopupPresent(verCap, xPopupRect, basePopupRed)
+					verAltUp, verAltRed := false, 0
 					if xPopupAlt != nil {
-						verAltUp, verAltPx = hasModalInRect(verCap, *xPopupAlt)
+						verAltUp, verAltRed = xPopupPresent(verCap, *xPopupAlt, baseAltRed)
 					}
 					verAllUp := verPrimaryUp || verAltUp
-					hookScreen := verCap.Clone()
-					h.step("asset_driven_modal_verified", map[string]any{
+					h.stepScreen("asset_driven_modal_verified", verCap, map[string]any{
 						"name":       btn.name,
-						"primary_up": verPrimaryUp, "primary_px": verPrimaryPx,
-						"alt_up": verAltUp, "alt_px": verAltPx,
+						"primary_up": verPrimaryUp, "primary_red": verPrimaryRed,
+						"alt_up": verAltUp, "alt_red": verAltRed,
 						"all_up": verAllUp,
-						"screen": hookScreen,
 					})
 					verCap.Close()
 
@@ -716,8 +1030,36 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 						continue
 					}
 
-					// Both popups dismissed → fall through to the
-					// silent_spawn success marker below.
+					// Dismissed popups mean this resource could NOT pay for the
+					// upgrade: the gem-buy popup IS the "that would cost gems"
+					// signal, so the tap did not upgrade anything. Reporting
+					// success here made the outer loop re-select the same wall
+					// for ever — every iteration raises the same popup, closes it,
+					// declares success and starts over, so the sequence never
+					// reached its `all_unaffordable` exit and only a user Stop (or
+					// a mis-picked X rect, which takes the close_failed branch
+					// below) could end it. Treat it exactly like the failed-close
+					// case: try the next button on this same wall, so both-
+					// unaffordable ends the sequence cleanly.
+					h.Logger.Info().Str("button", btn.name).
+						Msg("Gem-buy popup dismissed: this resource cannot pay for the upgrade. Trying the next button.")
+					h.step("asset_driven_unaffordable_dismissed", map[string]any{
+						"name": btn.name, "when": "after_confirm",
+					})
+					// Closing the popup reveals the confirm dialog again, and that
+					// dialog covers the tray: without leaving it the next craft's
+					// chip tap lands on the dialog's body, the following CONFIRM
+					// press raises the SAME gold prompt, and the elixir option is
+					// never actually evaluated. leaveConfirmDialog only sends the
+					// Back when the dialog's button is drawn, and the next chip's
+					// tray gate catches an over-eager Back.
+					leaveConfirmDialog(h, confirmRect)
+					// No runDismiss(h) here, for the same reason as the
+					// close_failed path below: the next button's modal check
+					// re-evaluates the rects, and the post-button-loop
+					// `all_unaffordable` exit runs the single sequence-end
+					// dismiss.
+					continue
 				}
 
 				// Modal absent = silent spawn = success.
@@ -771,7 +1113,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// this when both are present — hasBlindFlow's gate above
 			// would already have triggered in that case, so reaching this
 			// branch means xPopupRect wasn't a workable Rect.
-			xBtnX, xBtnY := loadWallUpgradeXButton(h.Logger, h.Cal.Length(1), h.Cal.Length(1))
+			xBtnX, xBtnY := loadWallUpgradeXButton(h.Cal, h.Logger)
 			// Load btn_confirm_upgrade now (after the wall-pan settle) so
 			// log-spam is local to the new flow rather than the for loop.
 			// Nil-check is critical: vision.MatchMultiScaleROICached panics
@@ -813,7 +1155,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					h.Logger.Error().Err(err).Msg("hardcoded upgrade tap failed")
 					continue
 				}
-				time.Sleep(1200 * time.Millisecond)
+				h.sleep(1200 * time.Millisecond)
 
 				modalScreen, modalErr := h.Client.CaptureToMat()
 				if modalErr != nil {
@@ -826,7 +1168,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					// undismissed prior modal and trigger a chained
 					// pop-up.
 					_ = h.Client.Tap(xBtnX, xBtnY)
-					time.Sleep(1000 * time.Millisecond)
+					h.sleep(1000 * time.Millisecond)
 					continue
 				}
 				bottomROI := image.Rect(0, int(h.Cal.Length(400)), modalScreen.Cols(), modalScreen.Rows())
@@ -849,11 +1191,9 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					bestConfirm.Point.Y+int(55*scl),
 				)
 				isRed := checkConfirmRed(modalScreen, roiConfirmCost, h.Logger)
-				hookScreen := modalScreen.Clone()
-				h.step("hardcoded_confirm_checked", map[string]any{
+				h.stepScreen("hardcoded_confirm_checked", modalScreen, map[string]any{
 					"name":   btn.name,
 					"is_red": isRed,
-					"screen": hookScreen,
 				})
 				modalScreen.Close()
 
@@ -864,7 +1204,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					if err := h.Client.Tap(xBtnX, xBtnY); err != nil {
 						h.Logger.Error().Err(err).Msg("X-button dismiss tap failed")
 					}
-					time.Sleep(1000 * time.Millisecond)
+					h.sleep(1000 * time.Millisecond)
 					continue
 				}
 
@@ -873,7 +1213,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				if err := h.Client.Tap(bestConfirm.Point.X, bestConfirm.Point.Y); err != nil {
 					h.Logger.Error().Err(err).Msg("hardcoded confirm tap failed")
 				}
-				time.Sleep(2000 * time.Millisecond)
+				h.sleep(2000 * time.Millisecond)
 				successHardcoded = true
 				break
 			}
@@ -929,7 +1269,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		const upgradeMatchMaxRetries = 3
 		for retry := 0; retry < upgradeMatchMaxRetries; retry++ {
 			if retry > 0 {
-				time.Sleep(1000 * time.Millisecond)
+				h.sleep(1000 * time.Millisecond)
 			}
 			if hasCapture {
 				captureScreen.Close()
@@ -1001,17 +1341,9 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			// false-positives here are harmless.
 			bottomROI := image.Rect(0, int(h.Cal.Length(400)), captureScreen.Cols(), captureScreen.Rows())
 			debugMatches, _ := vision.MatchMultiScaleAllROICached(captureScreen, upgradeTpl, "btn_upgrade_wall", 0.3, 1.5, 60, 0.40, bottomROI)
-			if captureScreen.Empty() {
-				h.step("upgrade_not_found", map[string]any{
-					"debug_matches": debugMatches,
-				})
-			} else {
-				hookScreen := captureScreen.Clone()
-				h.step("upgrade_not_found", map[string]any{
-					"screen":        hookScreen,
-					"debug_matches": debugMatches,
-				})
-			}
+			h.stepScreen("upgrade_not_found", captureScreen, map[string]any{
+				"debug_matches": debugMatches,
+			})
 			captureScreen.Close()
 			runDismiss(h)
 			break
@@ -1155,13 +1487,13 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				h.Logger.Error().Err(err).Msg("Failed to tap upgrade button")
 				continue
 			}
-			time.Sleep(1200 * time.Millisecond) // Wait for confirm dialog or gem popup
+			h.sleep(1200 * time.Millisecond) // Wait for confirm dialog or gem popup
 
 			confirmScreen, err := h.Client.CaptureToMat()
 			if err != nil {
 				h.Logger.Error().Err(err).Msg("Failed to capture screen for confirm check")
 				_ = h.Client.Back()
-				time.Sleep(1500 * time.Millisecond)
+				h.sleep(1500 * time.Millisecond)
 				continue
 			}
 
@@ -1187,28 +1519,18 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				)
 
 				isRed := checkConfirmRed(confirmScreen, roiConfirmCost, h.Logger)
-				if confirmScreen.Empty() {
-					h.step("confirm_checked", map[string]any{
-						"btn_idx": idx,
-						"is_red":  isRed,
-						"matches": confirmMatches,
-					})
-				} else {
-					hookScreen := confirmScreen.Clone()
-					h.step("confirm_checked", map[string]any{
-						"btn_idx": idx,
-						"is_red":  isRed,
-						"screen":  hookScreen,
-						"matches": confirmMatches,
-					})
-				}
+				h.stepScreen("confirm_checked", confirmScreen, map[string]any{
+					"btn_idx": idx,
+					"is_red":  isRed,
+					"matches": confirmMatches,
+				})
 				confirmScreen.Close()
 
 				if isRed {
 					h.Logger.Info().Msg("Confirm button price is RED (unaffordable). Dismissing dialog.")
 					h.step("confirm_red", map[string]any{"btn_idx": idx})
 					_ = h.Client.Back()
-					time.Sleep(1500 * time.Millisecond)
+					h.sleep(1500 * time.Millisecond)
 					continue
 				}
 
@@ -1227,16 +1549,11 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				if err := h.Client.Tap(bestConfirm.Point.X, bestConfirm.Point.Y); err != nil {
 					h.Logger.Error().Err(err).Msg("Failed to tap confirm button")
 				}
-				time.Sleep(2000 * time.Millisecond)
+				h.sleep(2000 * time.Millisecond)
 				success = true
 				break
 			} else {
-				if confirmScreen.Empty() {
-					h.step("confirm_missing", map[string]any{"btn_idx": idx})
-				} else {
-					hookScreen := confirmScreen.Clone()
-					h.step("confirm_missing", map[string]any{"btn_idx": idx, "screen": hookScreen})
-				}
+				h.stepScreen("confirm_missing", confirmScreen, map[string]any{"btn_idx": idx})
 				confirmScreen.Close()
 
 				// In Clash of Clans, AFFORDABLE wall upgrades DO NOT show
@@ -1286,7 +1603,7 @@ func waitForMainVillage(h *WallUpgradeHooks, timeout time.Duration) bool {
 	for time.Now().Before(deadline) {
 		screen, err := h.Client.CaptureToMat()
 		if err != nil {
-			time.Sleep(500 * time.Millisecond)
+			h.sleep(500 * time.Millisecond)
 			continue
 		}
 		if h.Classify == nil {
@@ -1299,7 +1616,7 @@ func waitForMainVillage(h *WallUpgradeHooks, timeout time.Duration) bool {
 			return true
 		}
 		dismissInterruptionsFor(h)
-		time.Sleep(500 * time.Millisecond)
+		h.sleep(500 * time.Millisecond)
 	}
 	return false
 }
@@ -1344,6 +1661,100 @@ func runDismiss(h *WallUpgradeHooks) {
 	}
 }
 
+// wallRowTapWindow is how far around the seed match the fresh-frame row tap
+// looks, in live pixels. The builder menu's rows are ~40 px apart and the menu
+// glides by roughly that much between a capture and the tap, so the window has to
+// be wider than one row while staying far too tight to reach the menu's other
+// columns.
+const wallRowTapWindow = 70
+
+// tapWallRow taps the builder menu's "Wall" row from the freshest possible
+// frame, and reports the tap it actually made.
+//
+// The row a match was computed on is not the row that will be under the finger:
+// CoC's menu keeps gliding after the swipe ends, so the ~100 ms between the
+// capture and the tap moved the rows ~40 px on the live run and the tap landed on
+// the neighbouring "Hero Hunter" row. Re-matching inside a window around the seed
+// (bounded, so the matcher cannot wander to another row) and tapping the centre
+// of THAT match is what closes the gap. When the fresh frame no longer holds a
+// match at all (the row scrolled away entirely) the seed's own centre is tapped
+// as the fallback, so a menu that settled instantly behaves as it did before.
+func tapWallRow(h *WallUpgradeHooks, tpl gocv.Mat, menuROI image.Rectangle, seed vision.Match, window int) (bool, map[string]any) {
+	mw := int(float64(tpl.Cols()) * seed.Scale)
+	mh := int(float64(tpl.Rows()) * seed.Scale)
+	cx, cy := seed.Point.X+mw/2, seed.Point.Y+mh/2
+
+	screen, err := h.Client.CaptureToMat()
+	if err != nil {
+		h.step("wall_row_fresh_capture_failed", map[string]any{"err": err.Error()})
+		return false, nil
+	}
+	defer screen.Close()
+
+	hunt := image.Rect(cx-window, cy-window/2, cx+window, cy+window/2).Intersect(menuROI)
+	if hunt.Empty() {
+		hunt = menuROI
+	}
+	matches, _ := vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.3, 1.5, 20, 0.78, hunt)
+	tx, ty := cx, cy
+	data := map[string]any{
+		"seed":   []int{seed.Point.X, seed.Point.Y},
+		"window": hunt,
+		"fresh":  false,
+	}
+	for _, m := range matches {
+		if !m.Point.In(hunt) {
+			continue
+		}
+		fw := int(float64(tpl.Cols()) * m.Scale)
+		fh := int(float64(tpl.Rows()) * m.Scale)
+		tx, ty = m.Point.X+fw/2, m.Point.Y+fh/2
+		data["fresh"] = true
+		data["fresh_point"] = []int{m.Point.X, m.Point.Y}
+		data["fresh_conf"] = m.Confidence
+		data["fresh_scale"] = m.Scale
+		break
+	}
+	data["tap"] = []int{tx, ty}
+	if tapErr := h.Client.Tap(tx, ty); tapErr != nil {
+		data["err"] = tapErr.Error()
+		return false, data
+	}
+	return true, data
+}
+
+// leaveConfirmDialog backs out of the confirm dialog after an unaffordable
+// dismissal so the next resource chip is reachable, but only on evidence that the
+// dialog is still up (its CONFIRM control is drawn).
+//
+// Closing the popup reveals the confirm dialog again, and the dialog covers the
+// tray: without this the flow tapped "elixir" into the dialog's body, the
+// following CONFIRM press raised the SAME gold prompt, and the elixir option was
+// never evaluated at all — the exact "switch to elixir" the user asked for.
+//
+// Back() on a screen that is already back at the tray would close the wall
+// selection, which the next chip's tray gate then catches (wall_tray_absent, no
+// input), so this recovery can only make the following attempt safer.
+func leaveConfirmDialog(h *WallUpgradeHooks, confirmRect Rect) {
+	screen, err := h.Client.CaptureToMat()
+	if err != nil {
+		h.Logger.Warn().Err(err).Msg("could not capture before leaving the confirm dialog; sending no Back")
+		return
+	}
+	drawn, bright, green := confirmButtonDrawn(screen, confirmRect)
+	screen.Close()
+	if !drawn {
+		return
+	}
+	h.step("asset_driven_leave_confirm_dialog", map[string]any{
+		"confirm_bright": bright, "confirm_green": green,
+	})
+	if err := h.Client.Back(); err != nil {
+		h.Logger.Warn().Err(err).Msg("Back failed while leaving the confirm dialog")
+	}
+	h.sleep(1000 * time.Millisecond)
+}
+
 // defensiveDualTapAndLogClose handles both capture-failure exit paths in
 // the asset-driven single-tap-each-X dismiss flow: the initial modal
 // capture failing (`modalErr`) and the final verify-after-taps capture
@@ -1367,7 +1778,7 @@ func defensiveDualTapAndLogClose(h *WallUpgradeHooks, xcx, xcy int, xPopupAlt *R
 		acx, acy := xPopupAlt.Center()
 		_ = h.Client.Tap(acx, acy)
 	}
-	time.Sleep(1000 * time.Millisecond)
+	h.sleep(1000 * time.Millisecond)
 	h.step("asset_driven_modal_close_failed", map[string]any{
 		"name":             btnName,
 		"reason":           reason,
@@ -1390,6 +1801,26 @@ func (h *WallUpgradeHooks) step(name string, data map[string]any) {
 	if h.OnStep == nil {
 		return
 	}
+	h.OnStep(name, data)
+}
+
+// stepScreen is step() for the phases whose payload carries a frame.
+//
+// The clone is taken ONLY when a receiver is wired, because a receiver takes
+// ownership of it and closes it. With no receiver the clone was unreachable the
+// moment step() returned, and gocv.Mat has no finalizer: production (which wires
+// no OnStep) leaked one full-screen Mat — ~1.9 MB at 860x732 — per phase, several
+// per wall upgrade, for the whole run. Cloning here instead of at the call sites
+// also keeps the no-instrumentation path free of the allocation entirely.
+func (h *WallUpgradeHooks) stepScreen(name string, frame gocv.Mat, data map[string]any) {
+	if h.OnStep == nil {
+		h.step(name, data)
+		return
+	}
+	if data == nil {
+		data = make(map[string]any, 1)
+	}
+	data["screen"] = frame.Clone()
 	h.OnStep(name, data)
 }
 
@@ -1419,21 +1850,24 @@ func (h *WallUpgradeHooks) step(name string, data map[string]any) {
 //
 // Returns (false, 0) for any out-of-bounds rect or empty rect.
 func hasModalInRect(screen gocv.Mat, rect Rect) (bool, int) {
-	bounds := rect.ImageRect()
-	if bounds.Min.X < 0 {
-		bounds.Min.X = 0
-	}
-	if bounds.Min.Y < 0 {
-		bounds.Min.Y = 0
-	}
-	if bounds.Max.X > screen.Cols() {
-		bounds.Max.X = screen.Cols()
-	}
-	if bounds.Max.Y > screen.Rows() {
-		bounds.Max.Y = screen.Rows()
-	}
+	px := modalBrightPixelsIn(screen, rect)
+	return px > modalBrightPixels, px
+}
+
+// modalBrightPixels is the near-white pixel count above which a rect is treated
+// as holding a popup's X-button glyph. See hasModalInRect for how it was
+// measured (45x40 ref-px rect, X border routinely 50+ px, empty screens single
+// digits).
+const modalBrightPixels = 15
+
+// modalBrightPixelsIn returns the raw near-white pixel count inside rect. Split
+// out of hasModalInRect so a caller can compare one rect's count ACROSS frames
+// (the pre-tap baseline against the post-tap verify) without re-deriving the
+// threshold. Returns 0 for an out-of-bounds or empty rect.
+func modalBrightPixelsIn(screen gocv.Mat, rect Rect) int {
+	bounds := clampRectToFrame(screen, rect)
 	if bounds.Empty() {
-		return false, 0
+		return 0
 	}
 	sub := screen.Region(bounds)
 	defer sub.Close()
@@ -1449,8 +1883,246 @@ func hasModalInRect(screen gocv.Mat, rect Rect) (bool, int) {
 	mask := gocv.NewMat()
 	defer mask.Close()
 	gocv.InRangeWithScalar(sub, lower, upper, &mask)
-	brightPixels := gocv.CountNonZero(mask)
-	return brightPixels > 15, brightPixels
+	return gocv.CountNonZero(mask)
+}
+
+// clampRectToFrame clamps rect to the frame and returns the image rectangle the
+// pixel counters below read. A rect that clamps empty (off-frame, degenerate or
+// inverted) answers with an empty rectangle, which every caller treats as "no
+// evidence" instead of handing Mat.Region an illegal ROI — which aborts the
+// process rather than returning an error.
+func clampRectToFrame(screen gocv.Mat, rect Rect) image.Rectangle {
+	bounds := rect.ImageRect()
+	if bounds.Min.X < 0 {
+		bounds.Min.X = 0
+	}
+	if bounds.Min.Y < 0 {
+		bounds.Min.Y = 0
+	}
+	if bounds.Max.X > screen.Cols() {
+		bounds.Max.X = screen.Cols()
+	}
+	if bounds.Max.Y > screen.Rows() {
+		bounds.Max.Y = screen.Rows()
+	}
+	return bounds
+}
+
+// The buy-with-gems popup and the confirm dialog's CONFIRM control are told
+// apart by COLOUR, not by brightness, because on this client the confirm
+// dialog's own (bright) panel covers the rect the assets park the popup's close
+// button on. Both floors below are measured on the live 1280x720 frames in
+// output/wall_pick — the four states the asset-driven flow runs through — read
+// inside the rect the shipped assets map each control onto.
+const (
+	// popupRedPixelsMin is the red-pixel floor for x_popup_roi. Measured:
+	//
+	//	step6 popup        2016 red   (the popup's round red X fills two thirds)
+	//	step5 confirm page    0 red   (the confirm dialog's own X is elsewhere)
+	//	step3 panel         183 red
+	//	step1 village         2 red
+	//
+	// 400 sits an order of magnitude below the popup and above every other
+	// measured state, so the test reads as "the popup's close control is on
+	// screen". The brightness test this replaces read 3172 bright px in the
+	// same rect on the CONFIRM page and 580 on the popup — backwards — which is
+	// what made an affordable wall, sat on its confirm dialog, look like a wall
+	// that had just raised a gem-buy prompt.
+	popupRedPixelsMin = 400
+
+	// confirmBrightMin / confirmGreenMin are the CONFIRM-control floors: the
+	// control is a saturated green face with a white caption, so BOTH have to be
+	// cleared (green alone is the village's grass, bright alone is any caption on
+	// a dark panel). Measured inside the mapped confirm rect, which
+	// assets/wall_upgrade_confirm.json maps to (796,586)-(998,667) here:
+	//
+	//	step5 confirm page   bright 1859  green 4831
+	//	step3 upgrade panel  bright 1147  green 1937   (an Upgrade chip in the same band)
+	//	step1 village        bright   49  green 2638
+	//	step6 popup          bright    0  green    0   (the popup covers the dialog)
+	confirmBrightMin = 400
+	confirmGreenMin  = 400
+)
+
+// redFacePixelsIn counts the strongly red pixels inside rect. CoC paints the
+// buy-with-gems popup's close control as a red disc with a white glyph, and no
+// other pixel in the wall-flow states comes near that saturation.
+func redFacePixelsIn(screen gocv.Mat, rect Rect) int {
+	return colourFacePixelsIn(screen, rect, func(b, g, r int) bool {
+		return r > 150 && r-g > 60 && r-b > 60
+	})
+}
+
+// greenFacePixelsIn counts the saturated green pixels inside rect — a button
+// face rather than the desaturated green of the village grass.
+func greenFacePixelsIn(screen gocv.Mat, rect Rect) int {
+	return colourFacePixelsIn(screen, rect, func(b, g, r int) bool {
+		return g > 140 && g-r > 40 && g-b > 40
+	})
+}
+
+// colourFacePixelsIn counts the pixels inside rect that satisfy pred (channels
+// in gocv's BGR order). The rect is clamped to the frame first.
+func colourFacePixelsIn(screen gocv.Mat, rect Rect, pred func(b, g, r int) bool) int {
+	bounds := clampRectToFrame(screen, rect)
+	if bounds.Empty() {
+		return 0
+	}
+	sub := screen.Region(bounds)
+	defer sub.Close()
+	n := 0
+	for y := 0; y < sub.Rows(); y++ {
+		for x := 0; x < sub.Cols(); x++ {
+			p := sub.GetVecbAt(y, x)
+			if pred(int(p[0]), int(p[1]), int(p[2])) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// xPopupPresent reports whether the buy-with-gems popup is on screen: its red
+// close control is drawn inside xPopupRect AND the rect holds more red than the
+// pre-tap baseline did.
+//
+// The absolute floor is what tells the popup apart from the confirm dialog; the
+// growth gate is what stops a rect parked on permanent screen chrome from
+// witnessing a popup that is not there. assets/wall_upgrade_x_roi.json maps
+// x_popup_roi_alt to the dark-elixir readout in this client's resource HUD, which
+// reads the same (red) count on the baseline and on every later frame, so growth
+// stays zero and it stays down; a genuine popup is red where the chrome was not.
+func xPopupPresent(screen gocv.Mat, xPopup Rect, baselineRed int) (up bool, red int) {
+	red = redFacePixelsIn(screen, xPopup)
+	return red >= popupRedPixelsMin && red > baselineRed, red
+}
+
+// confirmButtonDrawn reports whether the confirm dialog's CONFIRM control is
+// drawn inside the mapped rect, along with the two counts behind that verdict.
+//
+// This is the asset-driven flow's asset sanity check: the box the picker wrote
+// has to land ON the control it names. The shipped wall_upgrade_confirm.json
+// mapped 94 live px above this client's CONFIRM button (the drag had been picked
+// against a taller dialog), so the blind tap pressed the dialog's flavour text,
+// nothing upgraded, and the popup check then found no popup — a silent spawn the
+// loop reported as a successful upgrade. Refusing the tap unless the face is
+// drawn there is the same rule the tray gate below already applies to the chips.
+func confirmButtonDrawn(screen gocv.Mat, confirm Rect) (drawn bool, bright, green int) {
+	bright = modalBrightPixelsIn(screen, confirm)
+	green = greenFacePixelsIn(screen, confirm)
+	return bright >= confirmBrightMin && green >= confirmGreenMin, bright, green
+}
+
+// wallTrayChipConfig bounds the search for a wall-upgrade tray chip. The tray's
+// gold and elixir upgrade chips are square-ish painted faces (the shipped
+// assets/wall_upgrade_buttons.json rects are 76x74 reference px), so the
+// wide-and-flat aspect window DefaultActionButtonConfig uses for panel action
+// buttons would reject them. Everything else — the bright-saturated mask, the
+// frame-relative width bounds, the beat-the-neighbours winner rule — is shared
+// with FindActionButton, so the "is this a painted control" verdict stays one
+// implementation.
+func wallTrayChipConfig() vision.ActionButtonConfig {
+	cfg := vision.DefaultActionButtonConfig()
+	cfg.MinAspect = 0.45
+	cfg.MaxAspect = 2.2
+	// A chip is a small object on screen; the defaults' 0.12 frame-width floor
+	// is tuned for a panel's full-width action button and would reject it.
+	cfg.MinFrameWidthFrac = 0.03
+	cfg.MaxFrameWidthFrac = 0.30
+	cfg.MaxFrameHeightFrac = 0.30
+	return cfg
+}
+
+// locateWallTrayChip looks for a painted upgrade chip near the rect the assets
+// predict. The window is that rect grown by 40% of its own size on each side,
+// which absorbs the small reflow a panel can show between the reference frame the
+// assets were picked on and the live frame, while staying far too tight to reach
+// a builder-menu row elsewhere on screen.
+//
+// Returns the located rect (LIVE frame), the bright-saturated pixel count inside
+// the mapped rect (the diagnostic the user can compare against the JSONL), and
+// whether a chip was found. When !found the located rect is the mapped one, so
+// callers can use the return value as a fallback tap point unconditionally.
+func locateWallTrayChip(screen gocv.Mat, mapped Rect) (located Rect, facePx int, found bool) {
+	located = mapped
+	facePx = vision.FacePixels(screen, mapped.ImageRect())
+
+	r := mapped.ImageRect()
+	if r.Empty() || screen.Cols() == 0 || screen.Rows() == 0 {
+		return
+	}
+	growX, growY := r.Dx()*2/5, r.Dy()*2/5
+	window := image.Rect(r.Min.X-growX, r.Min.Y-growY, r.Max.X+growX, r.Max.Y+growY)
+	window = window.Intersect(image.Rect(0, 0, screen.Cols(), screen.Rows()))
+	if window.Empty() {
+		return
+	}
+	btn, ok := vision.FindActionButton(screen, window, wallTrayChipConfig())
+	if !ok {
+		return
+	}
+	return Rect{X1: btn.Rect.Min.X, Y1: btn.Rect.Min.Y, X2: btn.Rect.Max.X, Y2: btn.Rect.Max.Y}, facePx, true
+}
+
+// locateWallTray is the asset-driven flow's presence gate. Both upgrade chips
+// must be locatable in the live frame before a single blind tap fires.
+//
+// Why a gate at all: the flow used to tap the mapped gold, confirm and elixir
+// centres unconditionally. On the live 1280x720 run those taps landed on
+// builder-menu ROWS — the mapped gold centre (641,552) is inside the menu's row
+// band, and the run's own screenshots show the "Upgrade Hero Hunter to Level 4?"
+// and storage detail panels the taps opened instead of a tray. A tap that lands
+// on a menu row activates unrelated UI: at best a wasted iteration, at worst a
+// purchase or a builder assignment nobody asked for.
+//
+// The gate is deliberately colour-based rather than position-based, which is
+// what makes it survive the thing that broke the assets: CoC reflows panels by
+// content and aspect (docs/RESOLUTION.md) while painting its chips in the same
+// two saturated faces. A menu row drawn where a chip belongs has white text on a
+// dark panel, zero saturated pixels, and fails the gate.
+//
+// wallTrayGate is the evidence the asset-driven flow burns before its first
+// blind tap: where each mapped chip rect landed in the live frame (or the
+// mapped rect itself when nothing was found, so it doubles as the tap point) and
+// how much painted face the mapped rect holds.
+type wallTrayGate struct {
+	GoldChip     Rect
+	ElixirChip   Rect
+	GoldMapped   Rect
+	ElixirMapped Rect
+	GoldFacePx   int
+	ElixirFacePx int
+	GoldFound    bool
+	ElixirFound  bool
+}
+
+// Present reports whether both upgrade chips are on screen as painted faces.
+func (g wallTrayGate) Present() bool { return g.GoldFound && g.ElixirFound }
+
+// Data renders the gate's evidence for an OnStep payload. No *gocv.Mat here, so
+// the payload stays loggable — stepScreen is what carries frames.
+func (g wallTrayGate) Data() map[string]any {
+	return map[string]any{
+		"gold_face_px":   g.GoldFacePx,
+		"elixir_face_px": g.ElixirFacePx,
+		"gold_found":     g.GoldFound,
+		"elixir_found":   g.ElixirFound,
+		"gold_mapped":    g.GoldMapped.ImageRect(),
+		"elixir_mapped":  g.ElixirMapped.ImageRect(),
+		"gold_located":   g.GoldChip.ImageRect(),
+		"elixir_located": g.ElixirChip.ImageRect(),
+	}
+}
+
+func locateWallTray(screen gocv.Mat, gold, elixir Rect) wallTrayGate {
+	gChip, gFace, gFound := locateWallTrayChip(screen, gold)
+	eChip, eFace, eFound := locateWallTrayChip(screen, elixir)
+	return wallTrayGate{
+		GoldChip: gChip, ElixirChip: eChip,
+		GoldMapped: gold, ElixirMapped: elixir,
+		GoldFacePx: gFace, ElixirFacePx: eFace,
+		GoldFound: gFound, ElixirFound: eFound,
+	}
 }
 
 // checkConfirmRed inspects the cost-text ROI for red pixels (unaffordable
@@ -1473,6 +2145,17 @@ func checkConfirmRed(screen gocv.Mat, roi image.Rectangle, logger zerolog.Logger
 	}
 	if roi.Max.Y > screen.Rows() {
 		roi.Max.Y = screen.Rows()
+	}
+
+	// The clamp above can leave an INVERTED rect: the cost band sits below a
+	// confirm button (Point.Y + 5..55 px), so on a button in the bottom rows
+	// Min.Y ends up past the frame edge while Max.Y was pulled back to it. An
+	// inverted rect is not a legal cgo ROI, so the check must refuse it instead
+	// of handing it to Region (OpenCV throws on the ROI and gocv does not catch
+	// C++ exceptions, which aborts the process). "No red seen" is the safe
+	// answer: the caller then falls through to the tap-and-probe path.
+	if roi.Max.X <= roi.Min.X || roi.Max.Y <= roi.Min.Y {
+		return false
 	}
 
 	sub := screen.Region(roi)
@@ -1519,6 +2202,15 @@ func checkUpgradeTrayRedWithCount(screen gocv.Mat, roi image.Rectangle, logger z
 		roi.Max.Y = screen.Rows()
 	}
 
+	// See checkConfirmRed for why an inverted rect after clamping must be
+	// refused: this band is anchored BELOW the matched icon (y_min_off 30,
+	// y_max_off 80), so any candidate within ~50 px of the tray's bottom edge
+	// clamps to Min.Y > Max.Y. That is the normal case for the bottom-most wall
+	// row in the legacy template flow — the one flow that still calls this.
+	if roi.Max.X <= roi.Min.X || roi.Max.Y <= roi.Min.Y {
+		return false, 0
+	}
+
 	sub := screen.Region(roi)
 	defer sub.Close()
 
@@ -1540,31 +2232,31 @@ func checkUpgradeTrayRedWithCount(screen gocv.Mat, roi image.Rectangle, logger z
 }
 
 // wallUpgradeButtonsConfig is the JSON schema for
-// assets/wall_upgrade_buttons.json. Gold and Elixir are both Rects
-// (x1/y1/x2/y2 shape) — the same Rect struct used by the
-// wall_upgrade_confirm.json and wall_upgrade_x_roi.json loaders for
-// consistent typing across the three wall-upgrade asset files.
+// assets/wall_upgrade_buttons.json. Gold and Elixir are both assetRects — the
+// same type used by the wall_upgrade_confirm.json and wall_upgrade_x_roi.json
+// loaders for consistent typing across the wall-upgrade asset files.
 //
 // Lifecycle: loaded once per sequence at the start of
 // RunWallUpgradeLoop. Per the user's "They appear in same spot
 // every time", the values are constant for the duration of the
 // bot's run.
 type wallUpgradeButtonsConfig struct {
-	Gold   Rect `json:"gold"`
-	Elixir Rect `json:"elixir"`
+	Gold   assetRect `json:"gold"`
+	Elixir assetRect `json:"elixir"`
 }
 
 // loadWallUpgradeButtons reads assets/wall_upgrade_buttons.json and
-// returns the gold + elixir Rects (physical-pixel coords) plus
-// ok=true if both shapes parsed cleanly AND neither rect is the
-// all-zero sentinel. When the file is missing or malformed, ok=false
-// and the caller falls back to the legacy template path.
+// returns the gold + elixir Rects in LIVE pixels (mapped from the file's
+// reference frame via Rect.Live) plus ok=true if both shapes parsed
+// cleanly AND neither rect is the all-zero sentinel. When the file is
+// missing or malformed, ok=false and the caller falls back to the legacy
+// template path.
 //
 // The x1/y1/x2/y2 keys must all be present in BOTH gold and elixir —
 // partial configs (e.g. only gold set, elixir empty) trigger the
 // Empty() guard and reject rather than running with a degenerate
 // elixir centroid that would tap into random screen territory.
-func loadWallUpgradeButtons(logger zerolog.Logger) (gold, elixir Rect, ok bool) {
+func loadWallUpgradeButtons(cal *game.Calibration, logger zerolog.Logger) (gold, elixir Rect, ok bool) {
 	data, err := os.ReadFile(paths.Resolve("wall_upgrade_buttons.json"))
 	if err != nil {
 		return
@@ -1574,16 +2266,24 @@ func loadWallUpgradeButtons(logger zerolog.Logger) (gold, elixir Rect, ok bool) 
 		return
 	}
 	if cfg.Gold.Empty() || cfg.Elixir.Empty() {
+		if cfg.Gold.source == "physical-only" || cfg.Elixir.source == "physical-only" {
+			logger.Error().Msg("assets/wall_upgrade_buttons.json holds a physical-only box: live-device pixels cannot be mapped through the HUD law, so the asset-driven flow is off. Re-pick it so both blocks are written: make refmap && ./tools/select_wall_upgrade_buttons.py")
+		}
 		return
 	}
-	gold = cfg.Gold
-	elixir = cfg.Elixir
+	gold = cfg.Gold.rect.Live(cal)
+	elixir = cfg.Elixir.rect.Live(cal)
 	gcx, gcy := gold.Center()
 	ecx, ecy := elixir.Center()
+	rgcx, rgcy := cfg.Gold.rect.Center()
+	recx, recy := cfg.Elixir.rect.Center()
 	logger.Info().
+		Str("gold_source", cfg.Gold.source).Str("elixir_source", cfg.Elixir.source).
 		Int("gold_cx", gcx).Int("gold_cy", gcy).
 		Int("elixir_cx", ecx).Int("elixir_cy", ecy).
-		Msg("Loaded hardcoded wall-upgrade button positions (from assets/wall_upgrade_buttons.json)")
+		Int("ref_gold_cx", rgcx).Int("ref_gold_cy", rgcy).
+		Int("ref_elixir_cx", recx).Int("ref_elixir_cy", recy).
+		Msg("Loaded wall-upgrade button rects (assets/wall_upgrade_buttons.json; ref coords mapped to live geometry)")
 	ok = true
 	return
 }
@@ -1595,18 +2295,19 @@ func loadWallUpgradeButtons(logger zerolog.Logger) (gold, elixir Rect, ok bool) 
 // Decoded by loadWallUpgradeConfirmRect for the asset-driven flow
 // (gold/elixir → confirm rect Center → blind-confirm tap).
 type wallUpgradeConfirmConfig struct {
-	ConfirmButton Rect `json:"confirm_button"`
+	ConfirmButton assetRect `json:"confirm_button"`
 }
 
 // loadWallUpgradeConfirmRect reads assets/wall_upgrade_confirm.json and
-// returns the post-upgrade Confirm-button rect (physical-pixel coords)
-// plus ok=true if it parsed cleanly and is non-empty.
+// returns the post-upgrade Confirm-button rect in LIVE pixels (mapped
+// from the file's reference frame) plus ok=true if it parsed cleanly and
+// is non-empty.
 //
 // Absent or malformed JSON returns ok=false; the asset-driven flow
 // gate fails and the bot falls through to probe-and-discard or
 // template-matching. Empty rect also fails loud — a degenerate
 // confirm-button rect would silently tap the screen origin.
-func loadWallUpgradeConfirmRect(logger zerolog.Logger) (Rect, bool) {
+func loadWallUpgradeConfirmRect(cal *game.Calibration, logger zerolog.Logger) (Rect, bool) {
 	var r Rect
 	data, err := os.ReadFile(paths.Resolve("wall_upgrade_confirm.json"))
 	if err != nil {
@@ -1617,13 +2318,20 @@ func loadWallUpgradeConfirmRect(logger zerolog.Logger) (Rect, bool) {
 		return r, false
 	}
 	if cfg.ConfirmButton.Empty() {
+		if cfg.ConfirmButton.source == "physical-only" {
+			logger.Error().Msg("assets/wall_upgrade_confirm.json holds a physical-only box; re-pick it so both blocks are written (make refmap && ./tools/select_wall_upgrade_buttons.py)")
+		}
 		return r, false
 	}
-	cx, cy := cfg.ConfirmButton.Center()
+	mapped := cfg.ConfirmButton.rect.Live(cal)
+	cx, cy := mapped.Center()
+	rcx, rcy := cfg.ConfirmButton.rect.Center()
 	logger.Info().
+		Str("source", cfg.ConfirmButton.source).
 		Int("cx", cx).Int("cy", cy).
-		Msg("Loaded hardcoded post-upgrade Confirm rect (from assets/wall_upgrade_confirm.json)")
-	return cfg.ConfirmButton, true
+		Int("ref_cx", rcx).Int("ref_cy", rcy).
+		Msg("Loaded post-upgrade Confirm rect (assets/wall_upgrade_confirm.json; ref coords mapped to live geometry)")
+	return mapped, true
 }
 
 // wallUpgradeXPopupConfig is the JSON schema for
@@ -1642,14 +2350,14 @@ func loadWallUpgradeConfirmRect(logger zerolog.Logger) (Rect, bool) {
 // it. Loose coupling preserved so the legacy path doesn't silently
 // regress.
 type wallUpgradeXPopupConfig struct {
-	XPopupROI    Rect  `json:"x_popup_roi"`
-	XPopupROIAlt *Rect `json:"x_popup_roi_alt,omitempty"`
+	XPopupROI    assetRect  `json:"x_popup_roi"`
+	XPopupROIAlt *assetRect `json:"x_popup_roi_alt,omitempty"`
 }
 
 // loadWallUpgradeXPopupRect reads assets/wall_upgrade_x_roi.json and
-// returns the gem-buy-popup X-button rect (physical-pixel coords)
-// plus an OPTIONAL alternate rect (nil if not configured) plus
-// ok=true if the primary parsed cleanly and is non-empty.
+// returns the gem-buy-popup X-button rect in LIVE pixels (mapped from the
+// file's reference frame) plus an OPTIONAL alternate rect (nil if not
+// configured) plus ok=true if the primary parsed cleanly and is non-empty.
 //
 // Three-argument return shape replaces the prior two-argument `Rect, bool`
 // signature to thread the optional XPopupROIAlt through to the retry
@@ -1658,14 +2366,14 @@ type wallUpgradeXPopupConfig struct {
 // for an absent key).
 //
 // Retvals:
-//   - primary: x_popup_roi rect, used for hasModalInRect detection AND
-//     as the first candidate tap point in the retry loop.
-//   - alt:     x_popup_roi_alt rect (nullable), appended as 5 more
-//     candidate tap points after primary's 5.
+//   - primary: x_popup_roi rect (LIVE pixels), used for hasModalInRect
+//     detection AND as the first candidate tap point in the retry loop.
+//   - alt:     x_popup_roi_alt rect (nullable, LIVE pixels), the second
+//     dismissal target after primary.
 //
 // Absent primary or malformed JSON returns ok=false; the asset-driven
 // flow gate fails and the bot falls through to the probe-and-discard flow.
-func loadWallUpgradeXPopupRect(logger zerolog.Logger) (primary Rect, alt *Rect, ok bool) {
+func loadWallUpgradeXPopupRect(cal *game.Calibration, logger zerolog.Logger) (primary Rect, alt *Rect, ok bool) {
 	data, err := os.ReadFile(paths.Resolve("wall_upgrade_x_roi.json"))
 	if err != nil {
 		return
@@ -1675,32 +2383,82 @@ func loadWallUpgradeXPopupRect(logger zerolog.Logger) (primary Rect, alt *Rect, 
 		return
 	}
 	if cfg.XPopupROI.Empty() {
+		if cfg.XPopupROI.source == "physical-only" {
+			logger.Error().Msg("assets/wall_upgrade_x_roi.json holds a physical-only box; re-pick it so both blocks are written (make refmap && ./tools/select_wall_upgrade_buttons.py)")
+		}
 		return
 	}
-	cx, cy := cfg.XPopupROI.Center()
+	cx, cy := cfg.XPopupROI.rect.Live(cal).Center()
+	rcx, rcy := cfg.XPopupROI.rect.Center()
 	logger.Info().
+		Str("source", cfg.XPopupROI.source).
 		Int("cx", cx).Int("cy", cy).
-		Msg("Loaded hardcoded gem-buy popup X ROI (from assets/wall_upgrade_x_roi.json)")
+		Int("ref_cx", rcx).Int("ref_cy", rcy).
+		Msg("Loaded gem-buy popup X ROI (assets/wall_upgrade_x_roi.json; ref coords mapped to live geometry)")
 	if cfg.XPopupROIAlt == nil {
 		// No alt configured — fine; the dual-rect verifier treats
 		// nil as "do not check alt" and the retry chain stays
 		// at 5 primary candidates only.
 	} else if cfg.XPopupROIAlt.Empty() {
-		// Alt present in JSON but degenerate (e.g. {"x1":0,...} or
-		// a partially-dragged picker drag). Silently demote to nil
-		// so the verifier treats it as "no alt" instead of a zero-area
-		// rect that hasModalInRect would always return (false, 0)
-		// for — which would mask a real chained popup as non-existent.
-		// Loud warning so the user re-picks.
-		logger.Warn().Msg("assets/wall_upgrade_x_roi.json: x_popup_roi_alt is degenerate (zero area or partial drag). Ignoring. Re-pick with: ./tools/picker.py -o assets/wall_upgrade_x_roi.json --rect x_popup_roi_alt")
+		// Alt present in JSON but degenerate ({"x1":0,…}, a partial
+		// picker drag, or a physical-only block). Demote to nil so the
+		// verifier treats it as "no alt" instead of a zero-area rect that
+		// hasModalInRect would always return (false, 0) for — which would
+		// mask a real chained popup as non-existent. Loud warning so the
+		// user re-picks.
+		logger.Warn().Msg("assets/wall_upgrade_x_roi.json: x_popup_roi_alt is degenerate (zero area, partial drag, or physical-only). Ignoring. Re-pick with: ./tools/select_wall_upgrade_buttons.py")
 		cfg.XPopupROIAlt = nil
 	} else {
-		acx, acy := cfg.XPopupROIAlt.Center()
+		acx, acy := cfg.XPopupROIAlt.rect.Live(cal).Center()
 		logger.Info().
+			Str("source", cfg.XPopupROIAlt.source).
 			Int("cx", acx).Int("cy", acy).
-			Msg("Loaded alternate gem-buy popup X ROI (from assets/wall_upgrade_x_roi.json)")
+			Msg("Loaded alternate gem-buy popup X ROI (from assets/wall_upgrade_x_roi.json; ref coords mapped to live geometry)")
 	}
-	return cfg.XPopupROI, cfg.XPopupROIAlt, true
+	return cfg.XPopupROI.rect.Live(cal), xPopupAltLive(cal, cfg.XPopupROIAlt), true
+}
+
+// xPopupAltLive maps the optional alternate X rect, preserving nil (the alt is
+// absent-or-degenerate, which every consumer reads as "do not check alt").
+func xPopupAltLive(cal *game.Calibration, alt *assetRect) *Rect {
+	if alt == nil {
+		return nil
+	}
+	mapped := alt.rect.Live(cal)
+	return &mapped
+}
+
+// wallUpgradeBuilderConfig is the JSON schema for assets/builder_button.json:
+// the builder-head button in the village top bar, the tap that opens the upgrades
+// menu. Its absence is not an error — the loop falls back to the authored
+// reference point — but it is the one input to this sequence that a user can see
+// move between client builds, so the picking session covers it.
+type wallUpgradeBuilderConfig struct {
+	BuilderButton assetRect `json:"builder_button"`
+}
+
+// loadWallUpgradeBuilderButton returns the LIVE tap point for the builder-head
+// button, or ok=false when the asset is absent (the caller then uses the authored
+// reference point). The box the user dragged is tapped at its centre.
+func loadWallUpgradeBuilderButton(cal *game.Calibration, logger zerolog.Logger) (x, y int, ok bool) {
+	data, err := os.ReadFile(paths.Resolve("builder_button.json"))
+	if err != nil {
+		return
+	}
+	var cfg wallUpgradeBuilderConfig
+	if json.Unmarshal(data, &cfg) != nil || cfg.BuilderButton.Empty() {
+		if cfg.BuilderButton.source == "physical-only" {
+			logger.Error().Msg("assets/builder_button.json holds a physical-only box; re-pick it so both blocks are written (make refmap && ./tools/select_wall_upgrade_buttons.py)")
+		}
+		return
+	}
+	mapped := cfg.BuilderButton.rect.Live(cal)
+	x, y = mapped.Center()
+	logger.Info().
+		Str("source", cfg.BuilderButton.source).
+		Int("x", x).Int("y", y).
+		Msg("Loaded builder-head button rect (assets/builder_button.json; ref coords mapped to live geometry)")
+	return x, y, true
 }
 
 // wallUpgradeModalConfig is the JSON schema for assets/wall_upgrade_modal.json
@@ -1719,10 +2477,12 @@ type wallUpgradeModalConfig struct {
 	} `json:"x_button"`
 }
 
-// loadWallUpgradeXButton reads assets/wall_upgrade_modal.json and
-// returns the X-button tap position. Defaults to (800, 100) on the
-// 860x732 reference resolution (which scales via the calibration) when
-// the file is missing or the XButton coords are zero.
+// loadWallUpgradeXButton reads assets/wall_upgrade_modal.json and returns the
+// X-button tap position in LIVE pixels. The file (and the default) is
+// REFERENCE-frame, so the point is mapped through the calibration's HUD law —
+// right-anchored on x because ref 800 sits past the 0.88 band, top-anchored on
+// y. Default (800, 100) is the modal X's authored position against the 860x732
+// dataset, which maps to (1201, 133) at 1280x720/k=1.325.
 //
 // Sentinel note: (X==0 || Y==0) is treated as "no override" rather
 // than "tap the origin". If the user genuinely wants to tap the
@@ -1733,19 +2493,18 @@ type wallUpgradeModalConfig struct {
 // Only used by the probe-and-discard flow (buttons-only mode).
 // loadWallUpgradeXPopupRect's Rect.Center() supersedes this when
 // the x_popup rect asset is available.
-func loadWallUpgradeXButton(logger zerolog.Logger, scaleX, scaleY float64) (x, y int) {
-	x, y = int(800*scaleX), int(100*scaleY)
+func loadWallUpgradeXButton(cal *game.Calibration, logger zerolog.Logger) (x, y int) {
+	refX, refY := 800, 100
 	data, err := os.ReadFile(paths.Resolve("wall_upgrade_modal.json"))
-	if err != nil {
-		return
+	if err == nil {
+		var cfg wallUpgradeModalConfig
+		if json.Unmarshal(data, &cfg) == nil && (cfg.XButton.X != 0 || cfg.XButton.Y != 0) {
+			refX, refY = cfg.XButton.X, cfg.XButton.Y
+			logger.Info().Int("ref_x", refX).Int("ref_y", refY).Msg("Loaded custom modal X-button position (from assets/wall_upgrade_modal.json)")
+		}
 	}
-	var cfg wallUpgradeModalConfig
-	if json.Unmarshal(data, &cfg) != nil {
-		return
+	if cal == nil {
+		return refX, refY
 	}
-	if cfg.XButton.X != 0 || cfg.XButton.Y != 0 {
-		x, y = cfg.XButton.X, cfg.XButton.Y
-		logger.Info().Int("x", x).Int("y", y).Msg("Loaded custom modal X-button position (from assets/wall_upgrade_modal.json)")
-	}
-	return
+	return cal.Hud(refX, refY)
 }

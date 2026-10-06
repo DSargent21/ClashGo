@@ -173,12 +173,111 @@ consistent with the rest of the toolkit.
 | ---------------------------------------- | --------------------------------- | ------- |
 | `tools/pinpoint.py`                      | `picker.py --point <KEY> --tap` (e.g. `--preset modal-x --tap`) | Deprecated — kept for offline use |
 | `tools/internal/select_builder_roi.py`   | `picker.py --preset menu`         | Deprecated |
-| `tools/select_wall_upgrade_buttons.py`   | `picker.py --preset buttons`      | Deprecated |
+| `tools/select_wall_upgrade_buttons.py`   | `tools/wall_pick.sh` (browser session, no OpenCV) | Active — kept as the no-browser alternative |
 | `tools/internal/calibrate_battle_loot.py`| `picker.py --preset battle-loot`  | Deprecated |
 
 The legacy scripts still work but won't gain new features. New asset JSON
 schemas should be picked via `picker.py` from the start so the team
 has a single mental model.
+
+## The wall-upgrade flow: `tools/wall_pick.sh`
+
+The wall assets are the one family whose **coordinates are consumed through the
+HUD law** (`internal/game.Calibration`) rather than read verbatim, so a picker
+must record a `reference` block that maps back onto the box the user drew.
+Dividing the drag by a scale factor is *not* that inverse — it is the deprecated
+per-axis law — which is why `picker.py --preset buttons` (flat x1/y1/x2/y2 of the
+raw drag) produced an asset whose boxes moved on every run, and why the loop's
+blind taps landed on builder-menu rows on the live 1280x720 device.
+
+There are two inverses because the flow consumes two laws. Every control is read
+as an `assetRect` through `HudRect`, which picks one anchor per axis from the
+rect's centre (`HudRectReferenceSnap`). `assets/builder_menu_roi.json` is instead
+mapped **corner by corner**, because that panel's top edge is pinned under the top
+bar while its bottom edge is mid-screen (`HudCornersReferenceSnap`). The two laws
+agree on the device a box was dragged on and diverge on any other, so inverting
+the wrong one writes a file that looks right and drifts on the next geometry.
+
+```bash
+./tools/wall_pick.sh            # guided capture of all seven states, then opens the page
+./tools/wall_pick.sh serve      # local picking server: page + Save button + captures
+./tools/wall_pick.sh 3          # re-capture one step only
+./tools/wall_pick.sh capture 3  # capture one step and nothing else
+./tools/wall_pick.sh page       # rebuild + open the page from what is captured
+./tools/wall_pick.sh apply      # paste the page's boxes on stdin; writes the assets
+```
+
+Capture comes first because a box only means something against the frame it was
+drawn on, and every frame has to come from one run at one screen size. The session
+prints what must be on screen for each step (village, builder menu, wall tray,
+confirm dialog, gem popup), waits for Enter, and captures. Picking then happens in
+a browser — no OpenCV, no Python — where each frame carries the same note, and the
+reported coordinates are native device pixels whatever zoom the panel applies.
+Paste the page's output into `apply`.
+
+### The picking server
+
+`./tools/wall_pick.sh serve` runs `cmd/wallserve`, which serves that same page
+over loopback with a **Save** button. It exists because the picks are the input to
+a conversion the browser cannot do: a drag is device pixels and an asset file is
+860x732 reference values, so something on this side has to receive them, and a
+file:// page can send nothing anywhere. Serving also lets the page drive the
+device — each card has a capture button, so the whole session can be one window
+with no terminal prompts.
+
+```
+GET  /            the picking page
+GET  /frame/{n}   one captured frame, for refreshing a card in place
+POST /capture     {"step":N}   run the capture session for that step
+POST /save        {"picks":...}  write <dir>/picks.txt
+POST /apply       {"picks":...}  write picks.txt, convert, and write the assets
+```
+
+`save picks` writes `output/wall_pick/picks.txt` — one `key x1 y1 x2 y2` line per
+box behind a `#` header, which `cmd/refmap` skips, so the file can be piped
+straight back into the converter. `save & write assets` does that and then the
+conversion, showing the converter's own report in the page: the per-box offset
+between the drag and what the reference frame can express. A box the reference
+frame cannot reach is refused rather than written, and a wide-offset box is
+warned about before the file is overwritten.
+
+It shells out to this script for both capture and conversion rather than
+reimplementing either, so it needs no OpenCV and there is still one tested path
+for each. It binds loopback only, and `-dir` keeps a probe server's captures and
+picks out of the real session's directory.
+
+`apply` takes the frame size from the captured PNG header and the display scale
+from the device config (`device.display_scale`, the same number the bot pins), so
+it needs nothing on screen and no `-k` to remember. It routes every key to its
+asset file, which is why a multi-file set requires `-write`: stdout would have to
+interleave several JSON documents. `assets/builder_menu_roi.json` is written as a
+top-level block pair, not wrapped under its own key — the wrapped form unmarshals
+into nothing and the loader now reports that instead of silently keeping its
+default ROI.
+
+`cmd/refmap` is the converter underneath, and is usable on its own:
+
+```bash
+make refmap ARGS="-describe"                          # list the schemas
+printf 'gold 591 503 692 601\n' | \
+  make refmap ARGS="-w 1280 -h 720 -schema buttons"    # print one asset file
+```
+
+It writes `{"physical": …, "reference": …}` per key, tells you how far the
+recorded box sits from the drag, and refuses a box whose centre falls in a band
+seam the reference frame cannot express (nudge it ~80 px and retry). The loaders
+prefer `reference`, still read the flat shape for files picked at 860x732, and
+reject a physical-only box instead of mapping live pixels as reference ones.
+
+`tools/select_wall_upgrade_buttons.py` is the same seven steps as a keyboard
+drag session over a fresh screencap per step, for a machine that has cv2 and
+prefers not to use a browser:
+
+```bash
+make refmap
+python3 tools/select_wall_upgrade_buttons.py            # GUI drag session
+python3 tools/select_wall_upgrade_buttons.py --check    # plan + dependency check
+```
 
 ## Output schema reference
 

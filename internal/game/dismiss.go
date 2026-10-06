@@ -21,7 +21,9 @@
 //     Matched through the same scorer ClassifyState uses, so a stale or misread
 //     state produces no input at all; and
 //  2. the point a tap lands on is a probe the classifier verified (the pixel that
-//     made the state fire) or a template-located button.
+//     made the state fire), a template-located button, or — for the one overlay
+//     whose only exit is a touch outside its panel — a point measured to be
+//     outside that panel and clear of the HUD (see overlayOutsideTapStates).
 //
 // Failing either check means NO input: the caller's stuck-watchdog / restart
 // ladder owns that case, because a tap nobody could aim is not progress.
@@ -85,6 +87,37 @@ var overlayBackStates = map[GameState]string{
 	StateGemDialog:      "its primary button buys gems; the cancel action must not be a tap",
 	StateShieldInfo:     "same overlay family as the gem popup: cancel, never a predicted X coordinate",
 	StateChatOpen:       "already Back-dismissed before this change; listed so this file is the whole surface",
+	StateOfferPopup:     "offer modal: no close X on the frame, and its one button (KNOW MORE!) leaves the game for the store; Back is the cancel action",
+}
+
+// overlayOutsideTapStates maps the overlays whose only safe exit is a touch
+// OUTSIDE their panel to that touch point, in reference coordinates with the
+// state rule's own anchor.
+//
+// This is the one dismissal whose point is deliberately not one of the
+// classifier's probes, which is why it cannot live in overlayControlProbes — that
+// table's invariant (every tap point is a probe of the rule that fired) is what
+// makes a tap evidence-backed. It is not a blind tap either: gate 1 above still
+// applies, so the point only goes out on a frame whose own rule says the overlay
+// is up.
+//
+// The point exists because CoC's "Update Available!" login prompt has exactly one
+// control, the green Update button, and pressing it leaves the game for the app
+// store — the same trap as the gem popup's primary button. What dismisses the
+// prompt is a touch anywhere outside the panel (measured on this project's device,
+// 2026-09-29); the panel itself swallows touches that land on it. So the point is
+// chosen to sit outside the panel and clear of the HUD chrome, which
+// TestUpdatePromptOutsideTapIsClearOfControls asserts against the rule's own
+// probes and against every authored button window.
+var overlayOutsideTapStates = map[GameState]image.Point{
+	// Left of the centred panel, at mid-height. Mapped at 1280x720 this is
+	// (229,352): left of the panel's measured left edge (342) and right of the
+	// HUD's left button column (x < 103 in reference space). At the reference
+	// geometry it is (120,360), which clears the panel there under either model
+	// of how the prompt is laid out — it is outside both the centre map's panel
+	// edge (205) and the fixed-pixel panel's (130) that the smaller dialog in
+	// this family renders as.
+	StateUpdatePrompt: {120, 360},
 }
 
 // welcomeBackOkayRegion is the window (reference coordinates) the Welcome Back
@@ -159,6 +192,31 @@ func DismissOverlay(dev DismissDevice, cal *Calibration, cl *Classifier, state G
 			return false
 		}
 		logger.Debug().Str("state", state.String()).Str("why", why).Msg("dismiss: overlay closed with Back")
+		time.Sleep(overlayDismissSettle)
+		return true
+	}
+
+	if pt, outsideTap := overlayOutsideTapStates[state]; outsideTap {
+		rule, ok := classifierRuleFor(cl, state)
+		if !ok {
+			logger.Warn().Str("state", state.String()).
+				Msg("dismiss: no classifier rule to carry the outside-tap anchor; no tap fired")
+			return false
+		}
+		x, y := cal.AnchorPoint(pt.X, pt.Y, rule.Anchor)
+		if x < 0 || y < 0 || x >= frame.Cols() || y >= frame.Rows() {
+			logger.Warn().Str("state", state.String()).Int("x", x).Int("y", y).
+				Msg("dismiss: the outside-panel tap point maps off this frame; no tap fired")
+			return false
+		}
+		logger.Info().
+			Str("state", state.String()).
+			Int("x", x).Int("y", y).
+			Msg("dismiss: tapping outside the panel to dismiss it (its only button leaves the game)")
+		if err := dev.TapRandomized(x, y); err != nil {
+			logger.Warn().Err(err).Str("state", state.String()).Msg("dismiss: tap failed")
+			return false
+		}
 		time.Sleep(overlayDismissSettle)
 		return true
 	}

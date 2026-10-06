@@ -59,10 +59,13 @@ const (
 	StateLogo
 	StateConnectionLost
 	StateConfirmExit
+	StateUpdatePrompt
+	StateOfferPopup
 )
 
 var stateNames = map[GameState]string{
 	StateUnknown:        "Unknown",
+	StateOfferPopup:     "OfferPopup",
 	StateMainVillage:    "MainVillage",
 	StateBuilderBase:    "BuilderBase",
 	StateBattle:         "Battle",
@@ -85,6 +88,7 @@ var stateNames = map[GameState]string{
 	StateLogo:           "Logo",
 	StateConnectionLost: "ConnectionLost",
 	StateConfirmExit:    "ConfirmExit",
+	StateUpdatePrompt:   "UpdatePrompt",
 }
 
 func (s GameState) String() string {

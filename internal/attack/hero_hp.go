@@ -160,13 +160,12 @@ func isWardenName(name string) bool {
 	return strings.Contains(strings.ToLower(name), "warden")
 }
 
-// Track adds a deployed hero that still holds its ability tap (SpotTaps <
-// maxHeroSpotTaps: one tap places, one more fires the ability) so the battle
-// watcher can fire it on low HP. Heroes whose budget is spent, fallback-
-// labeled bonus troops, non-hero slots, and already-tracked (X, SlotY)
-// positions are ignored.
+// Track adds a deployed hero that has not yet fired its ability
+// (AbilityFired false) so the battle watcher can fire it on low HP. Heroes
+// whose ability already went off, fallback-labeled bonus troops, non-hero
+// slots, and already-tracked (X, SlotY) positions are ignored.
 func (m *HeroHPMonitor) Track(slot *TrackedSlot) {
-	if m == nil || slot == nil || slot.Category != "Hero" || slot.FallbackLabeled || slot.State != SlotDeployed || slot.SpotTaps >= maxHeroSpotTaps {
+	if m == nil || slot == nil || slot.Category != "Hero" || slot.FallbackLabeled || slot.State != SlotDeployed || slot.AbilityFired {
 		return
 	}
 	for _, h := range m.heroes {
@@ -244,12 +243,12 @@ func (e *Executor) fireHeroAbility(h *WatchedHero) bool {
 		return false
 	}
 	if h.Slot != nil {
-		if h.Slot.SpotTaps >= maxHeroSpotTaps {
-			// The ability already fired through another path (explicit
-			// ability phase or the sweep); never tap a third time.
+		if h.Slot.AbilityFired {
+			// The ability already fired through another path (the deferred
+			// ability pass); never tap the hero twice for one activation.
 			return false
 		}
-		h.Slot.SpotTaps++
+		h.Slot.AbilityFired = true
 	}
 	y := h.SlotY
 	if h.Warden {
@@ -260,7 +259,7 @@ func (e *Executor) fireHeroAbility(h *WatchedHero) bool {
 	if err := e.client.TapFast(h.X, y, 4.0); err != nil {
 		e.logger.Warn().Err(err).Int("x", h.X).Msg("hero ability tap failed; will retry next frame")
 		if h.Slot != nil {
-			h.Slot.SpotTaps-- // nothing was delivered; keep the budget honest
+			h.Slot.AbilityFired = false // nothing was delivered; keep the flag honest
 		}
 		return false
 	}

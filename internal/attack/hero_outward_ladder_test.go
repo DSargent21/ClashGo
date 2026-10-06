@@ -104,11 +104,12 @@ func TestOutwardHeroLadderStepsAwayFromCentreWhenTheLineIsUnusable(t *testing.T)
 	}
 }
 
-// TestHeroDropCandidatesRetriesMoveOutward is the end-to-end property: whatever
-// the leading candidate is, the retry after it must be further from the middle
-// of the field — that is the difference between recovering a hero on a field tap
-// (keeping the ability) and losing it to the sweep.
-func TestHeroDropCandidatesRetriesMoveOutward(t *testing.T) {
+// TestHeroDropCandidatesOrdersOutwardFirst is the end-to-end property, restated
+// 2026-10-05: the whole candidate list is sorted outward-first — the pin keeps
+// no privileged lead (its lead was refused 11/12 live in run1/probe3), so the
+// first tap is the farthest-out ground and every later candidate is a step back
+// toward the middle rather than another tap on the refused point.
+func TestHeroDropCandidatesOrdersOutwardFirst(t *testing.T) {
 	const w, h = 1280, 720
 	hm := &HeroManager{
 		targetEdge:   "BottomLeft",
@@ -127,15 +128,21 @@ func TestHeroDropCandidatesRetriesMoveOutward(t *testing.T) {
 
 	cands := hm.heroDropCandidates(&TrackedSlot{UnitName: "Dragon Duke"}, "dragon duke")
 	if len(cands) < 2 {
-		t.Fatalf("expected the pin plus outward retries, got %d candidates", len(cands))
+		t.Fatalf("expected the outward ladder plus alternates, got %d candidates", len(cands))
 	}
-	if cands[0] != (image.Point{X: 230, Y: 469}) {
-		t.Fatalf("first candidate = %v, want the user's pin (230,469)", cands[0])
+	pin := image.Pt(230, 469)
+	mid := image.Pt(w/2, h/2)
+	// Strictly ordered: farthest from the field centre first.
+	for i := 1; i < len(cands); i++ {
+		prev, cur := dist2(cands[i-1], mid), dist2(cands[i], mid)
+		if cur > prev {
+			t.Fatalf("candidates are not outward-first: %v (%d) is closer in than %v (%d) at index %d",
+				cands[i], cur, cands[i-1], prev, i)
+		}
 	}
-	pinDist := distFromFieldCentre(cands[0], w, h)
-	if d := distFromFieldCentre(cands[1], w, h); d <= pinDist {
-		t.Fatalf("first retry %v is not further out than the pin %v (%0.0f vs %0.0f); a refusal is regional, so this would be refused too",
-			cands[1], cands[0], d, pinDist)
+	if dist2(cands[0], mid) <= dist2(pin, mid) {
+		t.Fatalf("first candidate = %v, not further out than the pin %v; the pin-led tap was the refused one",
+			cands[0], pin)
 	}
 	for i, c := range cands {
 		if c.Y < BandTop() || c.Y > UICutoff(h) {

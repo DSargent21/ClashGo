@@ -57,11 +57,11 @@ type detectedDigit struct {
 
 func NewLootRecognizer(cal *Calibration, ts *TemplateStore, logger zerolog.Logger) *LootRecognizer {
 	lr := &LootRecognizer{
-		cal:              cal,
-		scale:            1.0,
-		templates:        ts,
-		digitTemplates:   make([]gocv.Mat, 10),
-		logger:           logger.With().Str("component", "loot_recognizer").Logger(),
+		cal:            cal,
+		scale:          1.0,
+		templates:      ts,
+		digitTemplates: make([]gocv.Mat, 10),
+		logger:         logger.With().Str("component", "loot_recognizer").Logger(),
 	}
 	if cal != nil {
 		lr.scale = cal.DisplayScale()

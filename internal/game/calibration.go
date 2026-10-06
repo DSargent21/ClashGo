@@ -394,6 +394,210 @@ func (c *Calibration) hudAxis(p, refSize int) AxisAnchor {
 	return AnchorMid
 }
 
+// ---------------------------------------------------------------------------
+// The inverse: recovering the reference coordinate for a point or rect already
+// measured on a live frame.
+//
+// Everything above answers "where does this authored coordinate land on this
+// device". The picker tools need the other direction: a human drags a box on the
+// running device and the asset file has to record a reference rect that maps
+// BACK onto the box they drew. Without an inverse, a picker either records the
+// raw drag and the loaders re-map it (which moves the box), or it divides by a
+// per-axis ratio — the deprecated law this file exists to replace — and lands
+// somewhere else again. tools/select_wall_upgrade_buttons.py did the former:
+// assets/wall_upgrade_buttons.json holds raw drag coordinates while
+// internal/bot's loader reads the same numbers as 860x732 reference values, so
+// the picked boxes were re-mapped on every run.
+//
+// The law is piecewise (the anchor is chosen from the source coordinate's band),
+// so the inverse is solved by trying each anchor and keeping a candidate that
+// maps back exactly. That also makes it a verification: a coordinate the law
+// cannot reach answers false instead of returning a near miss, and the picker can
+// tell the user to nudge the box rather than writing an asset that does not fit.
+
+// axisPreimageNearest scans the reference axis for the value MapAxis maps
+// closest onto target, returning that value and what it actually maps to.
+//
+// A scan rather than the closed form, because the law is NOT surjective: every
+// anchor multiplies the reference coordinate by k, so as the reference steps by
+// one the physical value steps by k > 1 and skips roughly a quarter of the
+// integers. At 1280x720 about 45% of sampled physical points have no exact
+// preimage at all (TestHudReferenceInvertsHudExactly measures it), which is a
+// property of the mapping, not a rounding bug — so the tools need the nearest
+// reachable coordinate and an honest report of how far the drag had to move.
+//
+// found is false only for a degenerate axis or a target outside the frame.
+func (c *Calibration) axisPreimageNearest(target, refSize, size int, a AxisAnchor) (ref, mapped int, found bool) {
+	if refSize <= 0 || size <= 0 || target < 0 || target >= size {
+		return 0, 0, false
+	}
+	bestDelta := -1
+	for p := 0; p <= refSize; p++ {
+		m := c.MapAxis(p, refSize, size, a)
+		d := m - target
+		if d < 0 {
+			d = -d
+		}
+		if bestDelta >= 0 && d >= bestDelta {
+			continue
+		}
+		bestDelta, ref, mapped, found = d, p, m, true
+		if d == 0 {
+			break
+		}
+	}
+	return ref, mapped, found
+}
+
+// HudPointReference returns a reference point that Hud maps exactly onto (x, y),
+// or false when no reference point does (see axisPreimageNearest for why that
+// happens). Hud re-derives each axis anchor from the candidate itself, so the
+// only sound test is the round trip through the real mapping.
+func (c *Calibration) HudPointReference(x, y int) (rx, ry int, ok bool) {
+	for _, a := range []AxisAnchor{AnchorLow, AnchorHigh, AnchorMid} {
+		candX, mappedX, okX := c.axisPreimageNearest(x, RefWidth, c.PhysicalW, a)
+		if !okX || mappedX != x {
+			continue
+		}
+		for _, b := range []AxisAnchor{AnchorLow, AnchorHigh, AnchorMid} {
+			candY, mappedY, okY := c.axisPreimageNearest(y, RefHeight, c.PhysicalH, b)
+			if !okY || mappedY != y {
+				continue
+			}
+			if gx, gy := c.Hud(candX, candY); gx == x && gy == y {
+				return candX, candY, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// HudRectReferenceSnap returns a reference rect that HudRect maps onto a
+// rectangle within tol pixels of target, together with what it actually maps to.
+//
+// tol is how far the recorded box is allowed to sit from the user's drag; 1 is
+// the useful value, because the mapping skips individual pixels (see
+// axisPreimageNearest) and a picker cannot ask a human to drag to an exact
+// pixel anyway. The caller compares mapped against target to tell the user where
+// the recorded box landed.
+//
+// HudRect picks its anchor from the rectangle's centre and then maps BOTH edges
+// with it, so both edges are inverted with one anchor per axis and every
+// combination is verified through HudRect itself. That verification is what
+// rejects the anchor choices whose edges would move independently.
+func (c *Calibration) HudRectReferenceSnap(target image.Rectangle, tol int) (ref, mapped image.Rectangle, ok bool) {
+	if target.Empty() || tol < 0 {
+		return image.Rectangle{}, image.Rectangle{}, false
+	}
+	best := tol + 1
+	for _, ax := range []AxisAnchor{AnchorLow, AnchorHigh, AnchorMid} {
+		x1, _, ok1 := c.axisPreimageNearest(target.Min.X, RefWidth, c.PhysicalW, ax)
+		x2, _, ok2 := c.axisPreimageNearest(target.Max.X, RefWidth, c.PhysicalW, ax)
+		if !ok1 || !ok2 {
+			continue
+		}
+		for _, ay := range []AxisAnchor{AnchorLow, AnchorHigh, AnchorMid} {
+			y1, _, ok3 := c.axisPreimageNearest(target.Min.Y, RefHeight, c.PhysicalH, ay)
+			y2, _, ok4 := c.axisPreimageNearest(target.Max.Y, RefHeight, c.PhysicalH, ay)
+			if !ok3 || !ok4 {
+				continue
+			}
+			cand := image.Rect(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+			got := c.HudRect(cand)
+			// The rect as a whole is what has to fit: HudRect anchors both edges
+			// off the centre, so edges that each land within tol can still produce
+			// a rect that overlaps the drag by more than tol.
+			delta := RectDelta(got, target)
+			if delta > tol || delta >= best {
+				continue
+			}
+			best, ref, mapped, ok = delta, cand, got, true
+		}
+	}
+	return ref, mapped, ok
+}
+
+// HudCornersReferenceSnap is the inverse for a rect its consumer maps CORNER BY
+// CORNER through Hud instead of through HudRect, which is how the builder-menu
+// ROI is read (see internal/bot's builder_menu_roi.json loader).
+//
+// The two laws are not interchangeable, and a picker has to invert the one its
+// consumer applies. HudRect picks a single anchor per axis from the rectangle's
+// centre, so a rect spanning a band boundary is unexpressible under it: the menu
+// panel's top edge belongs to the top band (it is pinned under the top bar) while
+// its bottom edge is mid-screen. Inverting the wrong law produces the same live
+// rect on the device it was dragged on — both laws agree there — and then diverges
+// on any other geometry, which is why the mismatch is only visible in the file.
+func (c *Calibration) HudCornersReferenceSnap(target image.Rectangle, tol int) (ref, mapped image.Rectangle, ok bool) {
+	if target.Empty() || tol < 0 {
+		return image.Rectangle{}, image.Rectangle{}, false
+	}
+	x1, mx1, ok1 := c.cornerPreimage(target.Min.X, RefWidth, c.PhysicalW, tol)
+	y1, my1, ok2 := c.cornerPreimage(target.Min.Y, RefHeight, c.PhysicalH, tol)
+	x2, mx2, ok3 := c.cornerPreimage(target.Max.X, RefWidth, c.PhysicalW, tol)
+	y2, my2, ok4 := c.cornerPreimage(target.Max.Y, RefHeight, c.PhysicalH, tol)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return image.Rectangle{}, image.Rectangle{}, false
+	}
+	// Ordered the way the loader orders its two mapped corners, so `mapped` is
+	// comparable to the drag it came from.
+	ref = image.Rect(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+	mapped = image.Rect(min(mx1, mx2), min(my1, my2), max(mx1, mx2), max(my1, my2))
+	if RectDelta(mapped, target) > tol {
+		return image.Rectangle{}, image.Rectangle{}, false
+	}
+	return ref, mapped, true
+}
+
+// cornerPreimage scans one axis for the reference coordinate whose OWN-band
+// mapping lands closest to target, within tol.
+//
+// It maps through hudAxis(p, refSize) rather than taking an anchor as a
+// parameter, so every candidate is a fixed point of the same function Hud uses:
+// a coordinate whose band disagrees with the anchor it was derived under does not
+// survive, which is what stops the inverse returning an edge-anchored value for
+// something that sits near the middle of the screen (both map to the same live
+// pixel on one device, and to different ones on the next).
+//
+// The scan starts at reference 0 because the low-band candidate is the smaller
+// of two coordinates that collide on a live pixel, and it is the one the asset
+// files were authored with.
+func (c *Calibration) cornerPreimage(target, refSize, size, tol int) (ref, mapped int, ok bool) {
+	if refSize <= 0 || size <= 0 || target < 0 || target >= size {
+		return 0, 0, false
+	}
+	best := tol + 1
+	for p := 0; p <= refSize; p++ {
+		m := c.MapAxis(p, refSize, size, c.hudAxis(p, refSize))
+		d := m - target
+		if d < 0 {
+			d = -d
+		}
+		if d >= best {
+			continue
+		}
+		best, ref, mapped, ok = d, p, m, true
+		if d == 0 {
+			break
+		}
+	}
+	return ref, mapped, ok
+}
+
+// RectDelta is the largest per-edge distance between two rects, which is the
+// distance a tap point derived from either one can move. Exported because the
+// picking tools report it: it is the same number that decides whether a snap is
+// acceptable, so it must not have a second implementation on the tool side.
+func RectDelta(a, b image.Rectangle) int {
+	d := func(x, y int) int {
+		if x > y {
+			return x - y
+		}
+		return y - x
+	}
+	return max(max(d(a.Min.X, b.Min.X), d(a.Min.Y, b.Min.Y)), max(d(a.Max.X, b.Max.X), d(a.Max.Y, b.Max.Y)))
+}
+
 // Length scales a pixel distance (a radius, a spacing, a jitter bound) by the
 // display scale. Distances are not edge-anchored: they grow with K on both axes
 // whatever they measure.

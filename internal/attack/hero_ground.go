@@ -320,6 +320,18 @@ func axisCandidates(intent image.Point, axis int, vertical bool, h, w int) []ima
 	return bandPoints(out, h)
 }
 
+// orderOutwardFirst re-orders hero ground candidates from the outside of the
+// field inward: the farther a point sits from the screen centre, the farther it
+// is from the base's no-deploy pocket, which hugs the middle of the map. It is
+// the first-tap ordering for battles whose red line is UNKNOWN (see the call in
+// HeroManager.heroDropCandidates); with a real outline the clearance order wins.
+func orderOutwardFirst(cands []image.Point, w, h int) {
+	mid := image.Pt(w/2, h/2)
+	sort.SliceStable(cands, func(i, j int) bool {
+		return dist2(cands[i], mid) > dist2(cands[j], mid)
+	})
+}
+
 // clampInt bounds v to [lo, hi].
 func clampInt(v, lo, hi int) int {
 	if v < lo {
@@ -415,8 +427,10 @@ func outwardHeroLadder(pin image.Point, line []image.Point, w, h, n int) []image
 	if len(line) >= 2 {
 		idx := nearestLineIndex(line, pin)
 		step := -2
+		endIdx := 0
 		if dist2(line[len(line)-1], mid) > dist2(line[0], mid) {
 			step = 2 // the far end is the last point, so walk up the line
+			endIdx = len(line) - 1
 		}
 		for i := idx + step; len(out) < n && i >= 0 && i < len(line); i += step {
 			p := line[i]
@@ -425,6 +439,10 @@ func outwardHeroLadder(pin image.Point, line []image.Point, w, h, n int) []image
 			}
 			out = append(out, p)
 			seen[p] = true
+		}
+		if len(out) < n && !seen[line[endIdx]] {
+			out = append(out, line[endIdx])
+			seen[line[endIdx]] = true
 		}
 	}
 

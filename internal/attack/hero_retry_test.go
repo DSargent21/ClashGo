@@ -18,12 +18,12 @@ import (
 // Hero card tap ceiling — the "it keeps tapping the Archer Queen" defect
 // (2026-09-26)
 //
-// A hero card is tapped at most TWICE per battle: once to place the hero and
-// once to fire its ability. The old main-phase "displaced retry" spent the
-// second tap on placement (its pinned-tile verify kept false-failing), which
-// left the ability pass to fire a THIRD tap, and the sweep/verifier a fourth.
-// The ceiling is enforced in one place — TapExecutor.consumeHeroSpotTap — so
-// every deploy path shares it.
+// A hero is placed at most twice per battle (the drop plus one rescue) and
+// activated exactly once. The old main-phase "displaced retry" spent the second
+// tap on placement (its pinned-tile verify kept false-failing), which left the
+// ability pass to fire a THIRD tap, and the sweep/verifier a fourth. The
+// placement ceiling is enforced in one place — TapExecutor.consumeHeroSpotTap —
+// and the activation in exactly one other, TrackedSlot.AbilityFired.
 // ---------------------------------------------------------------------------
 
 // newHeroTapHarness builds a HeroManager over the closed-client tap harness.
@@ -91,12 +91,19 @@ func TestHeroDeploy_OnePlacementTapThenAbility(t *testing.T) {
 	if !hm.executor.TapHeroAbility(slot) {
 		t.Fatal("the ability tap (card tap #2) must be allowed")
 	}
-	// Anything beyond two is refused, and fires nothing.
+	// The slot manager marks a hero deployed on confirmation; this harness has
+	// no slot manager, so stand in for it — the second-placement refusal below
+	// is gated on exactly that state.
+	slot.State = SlotDeployed
+
+	// Anything beyond two is refused, and fires nothing: the ability is a
+	// one-shot, and a hero the slot manager already confirmed deployed has no
+	// placement tap left either.
 	if hm.executor.TapHeroAbility(slot) {
-		t.Error("a third hero card tap must be refused")
+		t.Error("a repeated ability tap must be refused")
 	}
 	if hm.executor.TapSlot(slot, 8) {
-		t.Error("a further hero card tap must be refused")
+		t.Error("a second placement tap on an already-deployed hero must be refused")
 	}
 	if got := len(tl.slotTaps()); got != 2 {
 		t.Fatalf("total hero card taps = %d, want 2 (place + ability)", got)
@@ -130,10 +137,10 @@ func TestHeroDeploy_FieldTapUsesDeployLine(t *testing.T) {
 }
 
 // TestHeroDeploy_NoRetryTapWhenVerifyFails: an unconfirmed drop must not become
-// a second PLACEMENT tap. It may re-arm the card once (a refusal deselects it,
-// so any retry field tap would otherwise be aimed at nothing — see
-// maxHeroRearms), and it must leave the placement budget and the ability's tap
-// intact for the sweep/ability pass.
+// a second PLACEMENT tap — and when there is NO new ground to re-aim at, no
+// re-arm either: a card re-tap that cannot be followed by a field tap is exactly
+// the stray "random tap" this bot must never fire. The placement budget and the
+// ability's tap stay intact for the sweep/ability pass.
 func TestHeroDeploy_NoRetryTapWhenVerifyFails(t *testing.T) {
 	line := DeployLine{Points: []image.Point{{X: 200, Y: 300}, {X: 500, Y: 450}}}
 	slot := heroSlotNamed("grand warden", 650)
@@ -147,11 +154,14 @@ func TestHeroDeploy_NoRetryTapWhenVerifyFails(t *testing.T) {
 		t.Fatal("deploySingleHero must not claim success on an unconfirmed drop")
 	}
 
-	if got := len(tl.slotTaps()); got != 2 {
-		t.Errorf("an unconfirmed drop must fire 1 placement card tap + 1 re-arm, got %d", got)
+	if got := len(tl.slotTaps()); got != 1 {
+		t.Errorf("an unconfirmed drop with no new ground must fire exactly 1 card tap (the placement), got %d", got)
 	}
 	if slot.SpotTaps != 1 {
-		t.Errorf("placement budget spent = %d, want 1: the re-arm is not a placement", slot.SpotTaps)
+		t.Errorf("placement budget spent = %d, want 1", slot.SpotTaps)
+	}
+	if slot.SpotRearms != 0 {
+		t.Errorf("re-arms = %d, want 0: a re-arm that leads to no field tap is a stray tap", slot.SpotRearms)
 	}
 	if got := len(tl.fieldTaps()); got != 1 {
 		t.Errorf("an unconfirmed drop must fire exactly 1 field tap, got %d", got)
@@ -161,23 +171,35 @@ func TestHeroDeploy_NoRetryTapWhenVerifyFails(t *testing.T) {
 	}
 }
 
-// TestHeroSpotTapCeiling_SharedAcrossPaths proves the counter is per-slot and
-// shared: taps from the deploy path and the ability path draw from one budget.
+// TestHeroSpotTapCeiling_SharedAcrossPaths proves both caps are per-slot and
+// independent: placement stops at two (the drop plus one rescue) and the
+// ability fires exactly once, whichever path asks first.
+//
+// This is the fix for the live defect the user reported as "it doesn't activate
+// heroes properly": when the sweep rescued a hero it spent both placement taps,
+// so the deferred ability pass found no budget and skipped the activation. The
+// caps being separate is what lets a rescued hero still fire its ability.
 func TestHeroSpotTapCeiling_SharedAcrossPaths(t *testing.T) {
 	slot := heroSlotNamed("dragon duke", 400)
 	hm, tl := newHeroTapHarness(t, DeployLine{}, []*TrackedSlot{slot})
 
 	if !hm.executor.TapSlot(slot, 4) {
-		t.Fatal("tap #1 must be allowed")
+		t.Fatal("placement tap #1 must be allowed")
+	}
+	if !hm.executor.TapSlot(slot, 4) {
+		t.Fatal("placement tap #2 (the one rescue) must be allowed while the hero is not confirmed deployed")
+	}
+	if hm.executor.TapSlot(slot, 4) {
+		t.Fatal("a third placement tap must be refused")
 	}
 	if !hm.executor.TapHeroAbility(slot) {
-		t.Fatal("tap #2 must be allowed")
+		t.Fatal("the ability must still fire after two placement taps; it has its own one-shot flag")
 	}
-	if hm.executor.TapSlot(slot, 4) || hm.executor.TapHeroAbility(slot) {
-		t.Fatal("taps beyond the second must be refused")
+	if hm.executor.TapHeroAbility(slot) {
+		t.Fatal("a second ability tap must be refused")
 	}
-	if got := len(tl.slotTaps()); got != 2 {
-		t.Fatalf("recorded card taps = %d, want 2", got)
+	if got := len(tl.slotTaps()); got != 3 {
+		t.Fatalf("recorded card taps = %d, want 3 (two placements + one ability)", got)
 	}
 }
 
@@ -299,9 +321,74 @@ func TestRearmDoesNotStealTheAbility(t *testing.T) {
 	if got := len(tl.slotTaps()); got != 2+maxHeroRearms {
 		t.Fatalf("total card taps = %d, want %d (placement + re-arm + ability)", got, 2+maxHeroRearms)
 	}
-	// After the ability: the shared counter holds exactly one placement and one
-	// ability, which is the 2-tap contract — the re-arm is accounted elsewhere.
-	if slot.SpotTaps != maxHeroSpotTaps {
-		t.Fatalf("placement+ability taps = %d, want %d", slot.SpotTaps, maxHeroSpotTaps)
+	// After the ability: the placement counter still holds exactly the one
+	// placement (the re-arm and the ability are accounted elsewhere), and the
+	// ability's own one-shot flag is set — the contract the 2-tap rule protects
+	// is "exactly one placement and exactly one ability".
+	if slot.SpotTaps != 1 {
+		t.Fatalf("placement taps = %d, want 1", slot.SpotTaps)
+	}
+	if !slot.AbilityFired {
+		t.Fatal("AbilityFired must be set after the ability tap")
+	}
+	if hm.executor.TapHeroAbility(slot) {
+		t.Fatal("a second ability tap must be refused: one activation per hero per battle")
+	}
+}
+
+// TestConfirmHeroWave_EarlyExitWhenAllPlaced pins the deploy-window saving: a
+// wave whose drops register on the first beat must not pay for the follow-up
+// beat (heroConfirmFollowMs plus a capture) re-reading cards that already
+// transitioned — the 400ms lives inside the seven-second deploy window.
+func TestConfirmHeroWave_EarlyExitWhenAllPlaced(t *testing.T) {
+	t.Setenv("CLASHGO_HERO_DEBUG", "") // production beat count; the exit must beat it
+	line := DeployLine{Points: []image.Point{{X: 200, Y: 300}, {X: 500, Y: 450}}}
+	slot := heroSlotNamed("archer queen", 287)
+	hm, _ := newHeroTapHarness(t, line, []*TrackedSlot{slot})
+	reads := 0
+	hm.ratioHook = func() (float64, bool) {
+		reads++
+		return 0.11, true // consumed at once: the wave's placement registers on beat 0
+	}
+	d := HeroDeployment{Unit: strategy.Unit{Name: "Archer Queen"}, Slot: slot}
+	pre := gocv.NewMat()
+	defer pre.Close()
+	if !hm.deploySingleHero(d, pre) {
+		t.Fatal("a hero whose card reads consumed on the first beat must confirm")
+	}
+	if reads != 1 {
+		t.Fatalf("confirm reads = %d, want 1 (the wave must exit once every fired hero is placed)", reads)
+	}
+}
+
+// TestConfirmHeroWave_DebugEnvAddsLateBeat pins the diagnostic seam: without
+// CLASHGO_HERO_DEBUG the confirmation wave keeps its normal two beats
+// (production timing untouched); with it, a third, late beat reads every
+// pending card so a live run can show when a refused drop registers on its own
+// versus never (batch-drop diagnosis, 2026-10-02).
+func TestConfirmHeroWave_DebugEnvAddsLateBeat(t *testing.T) {
+	countReads := func(t *testing.T, dbg string) int {
+		t.Helper()
+		t.Setenv("CLASHGO_HERO_DEBUG", dbg)
+		line := DeployLine{Points: []image.Point{{X: 200, Y: 300}, {X: 500, Y: 450}}}
+		slot := heroSlotNamed("grand warden", 650)
+		hm, _ := newHeroTapHarness(t, line, []*TrackedSlot{slot})
+		reads := 0
+		hm.ratioHook = func() (float64, bool) {
+			reads++
+			return 0.74, true // never transitions: every beat reads the card still full
+		}
+		d := HeroDeployment{Unit: strategy.Unit{Name: "Grand Warden"}, Slot: slot}
+		pre := gocv.NewMat()
+		defer pre.Close()
+		hm.deploySingleHero(d, pre) // unconfirmed; no new ground, so no rescue reads
+		return reads
+	}
+
+	if got := countReads(t, ""); got != 2 {
+		t.Errorf("confirm reads without CLASHGO_HERO_DEBUG = %d, want 2 (production beat count)", got)
+	}
+	if got := countReads(t, t.TempDir()); got != 3 {
+		t.Errorf("confirm reads with CLASHGO_HERO_DEBUG = %d, want 3 (the late diagnostic beat)", got)
 	}
 }

@@ -74,6 +74,12 @@ type Executor struct {
 	// False for standalone tools and tests (no config wiring).
 	fullArmyRequired bool
 
+	// perfMode is the CLI -perf switch (PerformanceConfig.PerfMode): the lean
+	// attack path — one troop-bar frame instead of three before the first drop,
+	// and no post-attack evidence PNGs. It sheds observability work only; every
+	// tap and every device interaction is identical.
+	perfMode bool
+
 	// heroWatch polls deployed heroes' HP strips (low HP, or proactively for
 	// the warden) and fires each unspent ability once. It is armed as heroes
 	// deploy, so both the deploy watcher and the battle-end wait can consume
@@ -245,6 +251,11 @@ func (e *Executor) SetFullArmyRequired(required bool) {
 	e.fullArmyRequired = required
 }
 
+// SetPerfMode toggles the lean attack path (see the perfMode field).
+func (e *Executor) SetPerfMode(v bool) {
+	e.perfMode = v
+}
+
 func (e *Executor) runtimeContext() context.Context {
 	if e.runtimeCtx != nil {
 		return e.runtimeCtx
@@ -398,6 +409,9 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 		if mBarY > int(float64(h)*0.92) {
 			mBarY = int(float64(h) * 0.92)
 		}
+		// The pins above are live pixels now; see the identical line in
+		// DeployDynamicV2 for why the config must stop advertising 860x732.
+		pCfg.Width, pCfg.Height = w, h
 		e.logger.Info().Int("bar_y", mBarY).Msg("using ULTIMATE PRECISION config")
 	}
 
@@ -2275,6 +2289,12 @@ func (e *Executor) GetTemplates() map[string]gocv.Mat {
 	return e.templates
 }
 
+// ScaleEdge maps an edge from the reference geometry it was authored at onto
+// the live frame. Callers must pass a config that still carries the REFERENCE
+// size: once DeployDynamicV2 has mapped the pins to live pixels it records the
+// live size into the config, which makes this the identity — that is the single
+// place the double-scaling bug is prevented, so don't "restore" Width/Height
+// there.
 func ScaleEdge(e ManualEdge, refW, refH, curW, curH int) ManualEdge {
 	if refW == 0 || refH == 0 {
 		return e

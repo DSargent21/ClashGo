@@ -407,6 +407,153 @@ func (f *Formula) ClampY(minY, maxY int) int {
 	return clamped
 }
 
+// TranslateIntoRect moves EVERY coordinate of the formula by one shared
+// (dx, dy) so the formula's whole bounding box lands inside
+// [minX, maxX] x [minY, maxY], and reports how many coordinates moved.
+//
+// It exists for the red deployment ring, and it is deliberately a translation
+// and not a per-point clamp. ClampY answers a frame-edge question — a point
+// behind the top HUD or under the troop bar is chrome, and a tap there never
+// deploys. The ring is a different thing: the no-deploy band belongs to the
+// MAP, and a point in the view's outer band is refused by the game with "You
+// cannot deploy troops on the Red area!" while the tap call still reports
+// success. When the red boundary could not be established, the caller passes
+// the frame's central box (attack.SafeGroundRect), whose legality does not
+// depend on having solved detection.
+//
+// One offset for the whole formula, because a formula is a shape: the
+// relationship between a hero's landing point and the buildings it is meant to
+// hit IS the strategy, and per-point clamping destroys exactly that. Measured
+// on `Auto EDrag Rush` at 1280x720, target BottomRight, with the central ground
+// at x 256..1024: every line unit's points sit on the 85% column x=1088, so a
+// per-point clamp folded thirteen taps from a spread line onto the single
+// column x=1024 — a legal plan on paper that deploys the whole army on one
+// tile line. Translating instead moves that column to x=1023 and keeps its
+// length, direction and unit-to-unit spacing: still the authored line, just
+// further in from the view's edge.
+//
+// The offset is the smallest one that fits, per axis, so a formula already
+// inside the box is not moved at all. A box too small for the formula's span
+// gets it centred, which cannot make it fit — the caller is expected to report
+// the offsets rather than let a line that no longer fits pass for the authored
+// one. ClampY runs first and this second, so the stricter bound wins.
+//
+// A degenerate rect (inverted or empty on either axis) is ignored rather than
+// collapsing every coordinate onto one spot.
+func (f *Formula) TranslateIntoRect(minX, maxX, minY, maxY int) int {
+	if f == nil || maxX <= minX || maxY <= minY {
+		return 0
+	}
+	// The rect is half-open like image.Rectangle: Max is the first coordinate
+	// OUTSIDE it, so the last legal one is Max-1. A formula parked exactly on
+	// Max passes a >= test and still fails image.Rectangle.In, which is the
+	// check the deploy path uses to call a point legal.
+	lastX, lastY := maxX-1, maxY-1
+
+	bbox, ok := formulaBBox(f)
+	if !ok {
+		return 0
+	}
+	dx := rectAxisOffset(bbox.Min.X, bbox.Max.X-1, minX, lastX)
+	dy := rectAxisOffset(bbox.Min.Y, bbox.Max.Y-1, minY, lastY)
+	if dx == 0 && dy == 0 {
+		return 0
+	}
+
+	moved := 0
+	shift := func(p *Point) {
+		if p == nil {
+			return
+		}
+		p.X += dx
+		p.Y += dy
+		moved++
+	}
+	for name, e := range f.Units {
+		shift(e.P)
+		shift(e.P1)
+		shift(e.P2)
+		for i := range e.Lines {
+			shift(&e.Lines[i].P1)
+			shift(&e.Lines[i].P2)
+		}
+		f.Units[name] = e
+	}
+	return moved
+}
+
+// BBox is the bounding box of every coordinate in the formula, or ok=false when
+// the formula holds no coordinates at all.
+//
+// Exported because the deploy path needs to say out loud whether a translated
+// formula actually ended up inside the box it was moved into: when the formula's
+// span is larger than the box no offset can make it fit, and a plan whose ends
+// still sit in the unverified outer band must not read as a clean rescue.
+func (f *Formula) BBox() (image.Rectangle, bool) {
+	if f == nil {
+		return image.Rectangle{}, false
+	}
+	return formulaBBox(f)
+}
+
+// formulaBBox is the bounding box of every coordinate in the formula, or ok=false
+// when the formula holds no coordinates at all.
+func formulaBBox(f *Formula) (image.Rectangle, bool) {
+	minX, minY := math.MaxInt32, math.MaxInt32
+	maxX, maxY := math.MinInt32, math.MinInt32
+	seen := false
+	visit := func(p *Point) {
+		if p == nil {
+			return
+		}
+		seen = true
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.Y > maxY {
+			maxY = p.Y
+		}
+	}
+	for _, e := range f.Units {
+		visit(e.P)
+		visit(e.P1)
+		visit(e.P2)
+		for i := range e.Lines {
+			visit(&e.Lines[i].P1)
+			visit(&e.Lines[i].P2)
+		}
+	}
+	if !seen {
+		return image.Rectangle{}, false
+	}
+	return image.Rect(minX, minY, maxX+1, maxY+1), true
+}
+
+// rectAxisOffset is the translation that brings the [min, max] span inside the
+// INCLUSIVE range [lo, hi]: none when it already fits, the exact overflow when
+// it overhangs one end, and a centring when the span is wider than the box.
+// That last case is a real loss — no offset makes an over-long span fit — so the
+// caller reports the offsets instead of letting a broken line pass for the
+// authored one.
+func rectAxisOffset(min, max, lo, hi int) int {
+	if max-min > hi-lo {
+		return (lo+hi)/2 - (min+max)/2
+	}
+	switch {
+	case min < lo:
+		return lo - min
+	case max > hi:
+		return hi - max
+	}
+	return 0
+}
+
 func projectPoint(p *Point, k float64, srcW, srcH, dstW, dstH int) {
 	if p == nil {
 		return

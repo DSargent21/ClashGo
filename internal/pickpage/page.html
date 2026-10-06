@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>wall-flow picking session</title>
+<style>
+  :root { --bg:#101216; --panel:#181c22; --line:#2b323c; --ink:#e6e9ee; --dim:#8b95a5; --accent:#e8c469; --go:#7ddf8f; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { position:sticky; top:0; z-index:10; background:#0c0e12; border-bottom:1px solid var(--line); padding:10px 14px; }
+  header h1 { margin:0 0 6px; font-size:15px; color:var(--accent); }
+  header p { margin:0 0 4px; color:var(--dim); font-size:12px; }
+  header ol { margin:6px 0 0; padding-left:22px; color:var(--dim); font-size:12px; }
+  header ol b { color:var(--ink); }
+  header .k { color:var(--accent); }
+  .wrap { padding:14px; display:grid; gap:22px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .card.picked { border-color:#3c6b47; }
+  .head { padding:10px 12px; border-bottom:1px solid var(--line); display:grid; gap:3px; }
+  .row1 { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .step { color:var(--accent); font-weight:700; }
+  .title { font-weight:700; font-size:15px; }
+  .state { color:var(--dim); font-size:12px; }
+  .state b { color:#9ad0ff; }
+  .out { color:var(--dim); font-size:12px; }
+  .status { margin-left:auto; font-size:12px; color:var(--dim); }
+  .status.done { color:var(--go); font-weight:700; }
+  .stage { position:relative; background:#000; min-height:60px; }
+  .stage img { display:block; width:100%; height:auto; image-rendering:pixelated; user-select:none; -webkit-user-drag:none; }
+  .stage canvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+  .stage.missing img, .stage.missing canvas { display:none; }
+  .missing-msg { padding:14px; color:var(--dim); font-size:12px; display:grid; gap:8px; }
+  .missing-msg code { color:var(--accent); }
+  .foot { padding:8px 12px; border-top:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:12px; }
+  .box { color:#9ad0ff; }
+  .btn { background:#232a33; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:4px 9px; font:inherit; font-size:12px; cursor:pointer; }
+  .btn:hover { background:#2d3642; }
+  .btn.primary { background:#2c4a33; border-color:#3c6b47; }
+  .btn:disabled { opacity:0.5; cursor:default; }
+  textarea { width:100%; min-height:110px; background:#0c0e12; color:#9ad0ff; border:1px solid var(--line);
+             border-radius:6px; padding:10px; font:12px/1.5 ui-monospace,Menlo,monospace; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; display:grid; gap:8px; }
+  .panel h2 { margin:0; font-size:14px; color:var(--accent); }
+  .panel p { margin:0; color:var(--dim); font-size:12px; }
+  .panel .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  pre.report { margin:0; background:#0c0e12; border:1px solid var(--line); border-radius:6px; padding:10px;
+               font:12px/1.5 ui-monospace,Menlo,monospace; color:#9ad0ff; white-space:pre-wrap; max-height:340px; overflow:auto; }
+  .note { color:var(--dim); font-size:12px; margin:0; }
+  .note b { color:var(--ink); }
+  .ok { color:var(--go); }
+  .bad { color:#ff8f8f; }
+</style>
+</head>
+<body>
+<header>
+  <h1>wall-upgrade picking session — 7 boxes</h1>
+  <p><b>Drag one box over the control named on each card.</b> Click and drag on the image; the box snaps to
+     device pixels. Picks are remembered if this page is rebuilt.</p>
+  <ol>
+    <li>Work down the cards. A card without a frame has a <b>capture</b> button when this page is served by
+        <span class="k">wallserve</span>; otherwise put the game in that state and run
+        <span class="k">./tools/wall_pick.sh &lt;step&gt;</span>.</li>
+    <li>Box 7 is optional: skip it if this client shows only one popup.</li>
+    <li>Then press <span class="k">save picks</span> (writes them to a file) or
+        <span class="k">save &amp; write assets</span> (also converts and writes them).</li>
+  </ol>
+</header>
+
+<div class="wrap" id="cards"></div>
+
+<div class="panel">
+  <h2>picks</h2>
+  <p>One line per box: <code>key x1 y1 x2 y2</code>, in native device pixels.</p>
+  <textarea id="out" spellcheck="false"></textarea>
+  <div class="bar">
+    <button class="btn primary" id="apply">save &amp; write assets</button>
+    <button class="btn" id="save">save picks</button>
+    <button class="btn" id="copy">copy picks</button>
+    <button class="btn" id="clear">clear every box</button>
+  </div>
+  <p class="note" id="hint"></p>
+  <pre class="report" id="report" hidden></pre>
+</div>
+
+<div class="panel">
+  <h2>import picks</h2>
+  <p>Paste <code>key x1 y1 x2 y2</code> lines here to load boxes you saved or picked earlier, then press
+     <b>load</b>.</p>
+  <textarea id="in" spellcheck="false" placeholder="gold 591 503 692 601"></textarea>
+  <div class="bar">
+    <button class="btn" id="load">load</button>
+    <span class="note" id="loadmsg"></span>
+  </div>
+</div>
+
+<script>
+const FRAMES = __FRAMES__;
+const SERVER = __SERVER__;
+
+// The session in order. `select` is what to draw the box around, `state` is what
+// the game has to be showing in that frame for the box to be possible at all —
+// the two are separate on purpose: a card can be picked long after capture, but
+// it can only be captured while the game is in that state.
+const STEPS = [
+  { n:1, key:"builder_button", url:"assets/builder_button.json", optional:false,
+    title:"builder-head button",
+    select:"the builder-head icon (the button that opens the upgrades menu)",
+    state:"the village with the upgrades menu CLOSED" },
+
+  { n:2, key:"physical", url:"assets/builder_menu_roi.json", optional:false,
+    title:"the upgrades menu panel",
+    select:"the whole scrollable menu panel — outer edges, from just under the top bar down past the last row",
+    state:"the upgrades menu OPEN (tap the builder-head icon)" },
+
+  { n:3, key:"gold", url:"assets/wall_upgrade_buttons.json", optional:false,
+    title:"GOLD upgrade chip",
+    select:"the gold-cost upgrade button in the wall tray",
+    state:"the wall-upgrade tray OPEN — tap the 'Wall x128' row in the upgrades menu, or a wall in the village" },
+
+  { n:4, key:"elixir", url:"assets/wall_upgrade_buttons.json", optional:false,
+    title:"ELIXIR upgrade chip",
+    select:"the elixir-cost upgrade button, beside the gold one",
+    state:"the same wall-upgrade tray, still OPEN" },
+
+  { n:5, key:"confirm_button", url:"assets/wall_upgrade_confirm.json", optional:false,
+    title:"Confirm button",
+    select:"the Confirm / Yes button of the dialog that appears after tapping an upgrade chip",
+    state:"the confirm dialog OPEN" },
+
+  { n:6, key:"x_popup_roi", url:"assets/wall_upgrade_x_roi.json", optional:false,
+    title:"X of the buy-with-gems popup",
+    select:"the close X in the top corner of the buy-more-gems popup",
+    state:"the buy-with-gems popup OPEN" },
+
+  { n:7, key:"x_popup_roi_alt", url:"assets/wall_upgrade_x_roi.json", optional:true,
+    title:"X of the chained popup (optional)",
+    select:"the close X of the SECOND popup, if this client chains one after the first",
+    state:"the second popup OPEN — leave this card empty if only one ever appears" },
+];
+
+const STORE_KEY = "wall_pick_boxes_v1";
+const boxes = loadSaved();
+
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {}; } catch (e) { return {}; }
+}
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(boxes)); } catch (e) { /* file:// or private mode */ }
+}
+
+function report(text, ok) {
+  const el = document.getElementById("report");
+  el.hidden = false;
+  el.textContent = text;
+  el.style.color = ok ? "#7ddf8f" : "#ff8f8f";
+}
+
+function post(url, body) {
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  }).then(async (r) => {
+    const text = await r.text();
+    if (!r.ok) throw new Error(text || ("HTTP " + r.status));
+    return text;
+  });
+}
+
+function render() {
+  const root = document.getElementById("cards");
+  root.innerHTML = "";
+  for (const s of STEPS) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.id = "card-" + s.n;
+    card.innerHTML =
+      '<div class="head">' +
+        '<div class="row1">' +
+          '<span class="step">' + s.n + '/7</span>' +
+          '<span class="title">' + s.title + '</span>' +
+          '<span class="status" id="status-' + s.n + '"></span>' +
+        '</div>' +
+        '<div class="state">SELECT: <b>' + s.select + '</b></div>' +
+        '<div class="state">FRAME MUST SHOW: <b>' + s.state + '</b></div>' +
+        '<div class="out">writes ' + s.url + '</div>' +
+      '</div>' +
+      '<div class="stage" id="stage-' + s.n + '">' +
+        '<img id="img-' + s.n + '" alt="">' +
+        '<canvas id="cv-' + s.n + '"></canvas>' +
+        '<div class="missing-msg">' +
+          '<span>No frame captured for this step.</span>' +
+          '<span>Put the game in the state above' +
+            (SERVER ? ', then press capture:' : ', then run <code>./tools/wall_pick.sh ' + s.n + '</code> and reload this page.') +
+          '</span>' +
+          (SERVER ? '<span><button class="btn" data-capture="' + s.n + '">capture step ' + s.n + '</button></span>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="foot">' +
+        '<span class="box" id="box-' + s.n + '">not picked</span>' +
+        '<button class="btn" data-clear="' + s.n + '">clear this box</button>' +
+        (SERVER ? '<button class="btn" data-capture="' + s.n + '">re-capture frame</button>' : '') +
+      '</div>';
+    root.appendChild(card);
+
+    const img = card.querySelector("#img-" + s.n);
+    const stage = card.querySelector("#stage-" + s.n);
+    const cv = card.querySelector("#cv-" + s.n);
+    const ctx = cv.getContext("2d");
+
+    if (!FRAMES[s.n]) {
+      stage.classList.add("missing");
+    } else {
+      img.addEventListener("error", () => stage.classList.add("missing"));
+      img.addEventListener("load", () => {
+        stage.classList.remove("missing");
+        cv.width = img.naturalWidth;
+        cv.height = img.naturalHeight;
+        ctx.lineWidth = 3;
+        ctx.font = "bold 22px monospace";
+        ctx.strokeStyle = "#ffd45e";
+        ctx.fillStyle = "#ffd45e";
+        paint(s.n);
+      });
+      img.src = FRAMES[s.n];
+    }
+
+    let drag = null;
+    const native = (ev) => {
+      const r = cv.getBoundingClientRect();
+      return {
+        x: Math.round((ev.clientX - r.left) * (cv.width / r.width)),
+        y: Math.round((ev.clientY - r.top) * (cv.height / r.height)),
+      };
+    };
+    cv.addEventListener("pointerdown", (ev) => {
+      if (stage.classList.contains("missing")) return;
+      cv.setPointerCapture(ev.pointerId);
+      const p = native(ev);
+      drag = { x1:p.x, y1:p.y, x2:p.x, y2:p.y };
+      draw(s.n, drag);
+    });
+    cv.addEventListener("pointermove", (ev) => {
+      if (!drag) return;
+      const p = native(ev);
+      drag.x2 = p.x; drag.y2 = p.y;
+      draw(s.n, drag);
+    });
+    const finish = () => {
+      if (!drag) return;
+      const b = {
+        x1: Math.min(drag.x1, drag.x2), y1: Math.min(drag.y1, drag.y2),
+        x2: Math.max(drag.x1, drag.x2), y2: Math.max(drag.y1, drag.y2),
+      };
+      drag = null;
+      if (b.x2 - b.x1 < 2 || b.y2 - b.y1 < 2) return;   // stray click
+      boxes[s.key] = b;
+      save();
+      paint(s.n);
+      update();
+    };
+    cv.addEventListener("pointerup", finish);
+    cv.addEventListener("pointercancel", () => { drag = null; paint(s.n); });
+  }
+  update();
+}
+
+function draw(n, b) {
+  const img = document.getElementById("img-" + n);
+  const cv = document.getElementById("cv-" + n);
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!img.naturalWidth) return;
+  const x1 = Math.min(b.x1, b.x2), y1 = Math.min(b.y1, b.y2);
+  const w = Math.abs(b.x2 - b.x1), h = Math.abs(b.y2 - b.y1);
+  ctx.strokeRect(x1, y1, w, h);
+  const label = x1 + "," + y1 + " " + w + "x" + h;
+  const tw = ctx.measureText(label).width + 10;
+  ctx.fillStyle = "rgba(0,0,0,0.65)";
+  ctx.fillRect(x1, Math.max(0, y1 - 28), tw, 26);
+  ctx.fillStyle = "#ffd45e";
+  ctx.fillText(label, x1 + 5, Math.max(20, y1 - 8));
+}
+
+function paint(n) {
+  const key = STEPS.find((s) => s.n === n).key;
+  const cv = document.getElementById("cv-" + n);
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const b = boxes[key];
+  if (b) draw(n, { x1:b.x1, y1:b.y1, x2:b.x2, y2:b.y2 });
+}
+
+function lines() {
+  return STEPS.filter((s) => boxes[s.key]).map((s) => {
+    const b = boxes[s.key];
+    return s.key + " " + b.x1 + " " + b.y1 + " " + b.x2 + " " + b.y2;
+  });
+}
+
+function update() {
+  for (const s of STEPS) {
+    const el = document.getElementById("box-" + s.n);
+    const st = document.getElementById("status-" + s.n);
+    const card = document.getElementById("card-" + s.n);
+    const b = boxes[s.key];
+    if (b) {
+      el.textContent = s.key + " " + b.x1 + " " + b.y1 + " " + b.x2 + " " + b.y2;
+      st.textContent = "picked " + (b.x2 - b.x1) + "\u00d7" + (b.y2 - b.y1);
+      st.className = "status done";
+      card.className = "card picked";
+    } else if (s.optional) {
+      el.textContent = "not picked (optional)";
+      st.textContent = "optional";
+      st.className = "status";
+      card.className = "card";
+    } else {
+      el.textContent = "not picked";
+      st.textContent = "";
+      st.className = "status";
+      card.className = "card";
+    }
+  }
+  document.getElementById("out").value = lines().join("\n");
+  const have = lines().length;
+  document.getElementById("hint").textContent =
+    have + " of 6 required boxes picked" + (boxes["x_popup_roi_alt"] ? " (plus the optional alt X)" : "") +
+    (have >= 6 ? " — ready to save" : "");
+}
+
+document.addEventListener("click", async (ev) => {
+  const data = ev.target.dataset || {};
+
+  if (data.clear) {
+    const key = STEPS.find((s) => s.n === Number(data.clear)).key;
+    delete boxes[key];
+    save();
+    const cv = document.getElementById("cv-" + data.clear);
+    cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+    update();
+    return;
+  }
+
+  if (data.capture) {
+    const n = Number(data.capture);
+    ev.target.disabled = true;
+    ev.target.textContent = "capturing\u2026";
+    try {
+      report(await post("/capture", { step: n }), true);
+      if (FRAMES[String(n)]) {
+        // Already had a frame: swap just its image in, so nothing else reloads.
+        const img = document.getElementById("img-" + n);
+        const stage = document.getElementById("stage-" + n);
+        img.src = "/frame/" + n + "?t=" + Date.now();
+        stage.classList.remove("missing");
+      } else {
+        location.reload();
+      }
+    } catch (e) {
+      report("capture failed: " + e.message, false);
+    } finally {
+      ev.target.disabled = false;
+      ev.target.textContent = "capture step " + n;
+    }
+  }
+});
+
+document.getElementById("clear").addEventListener("click", () => {
+  for (const k of Object.keys(boxes)) delete boxes[k];
+  save();
+  for (const s of STEPS) {
+    const cv = document.getElementById("cv-" + s.n);
+    if (cv) cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+  }
+  update();
+});
+
+document.getElementById("copy").addEventListener("click", async () => {
+  const el = document.getElementById("out");
+  el.select();
+  try {
+    await navigator.clipboard.writeText(el.value);
+  } catch (e) {
+    document.execCommand("copy");                 // file:// with clipboard blocked
+  }
+  const b = document.getElementById("copy");
+  b.textContent = "copied";
+  setTimeout(() => { b.textContent = "copy picks"; }, 1500);
+});
+
+document.getElementById("save").addEventListener("click", async () => {
+  try {
+    report(await post("/save", { picks: document.getElementById("out").value }), true);
+  } catch (e) {
+    report("save failed: " + e.message, false);
+  }
+});
+
+document.getElementById("apply").addEventListener("click", async () => {
+  const btn = document.getElementById("apply");
+  btn.disabled = true;
+  btn.textContent = "writing\u2026";
+  try {
+    report(await post("/apply", { picks: document.getElementById("out").value }), true);
+  } catch (e) {
+    report("apply failed: " + e.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "save & write assets";
+  }
+});
+
+document.getElementById("load").addEventListener("click", () => {
+  const msg = document.getElementById("loadmsg");
+  const known = new Set(STEPS.map((s) => s.key));
+  let added = 0, bad = 0;
+  for (const raw of document.getElementById("in").value.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const f = line.split(/[,\s]+/);
+    if (f.length !== 5 || !known.has(f[0])) { bad++; continue; }
+    const nums = f.slice(1).map(Number);
+    if (nums.some((x) => !Number.isFinite(x))) { bad++; continue; }
+    boxes[f[0]] = {
+      x1: Math.min(nums[0], nums[2]), y1: Math.min(nums[1], nums[3]),
+      x2: Math.max(nums[0], nums[2]), y2: Math.max(nums[1], nums[3]),
+    };
+    added++;
+  }
+  save();
+  for (const s of STEPS) paint(s.n);
+  update();
+  msg.textContent = added + " loaded" + (bad ? ", " + bad + " line(s) ignored" : "");
+});
+
+render();
+</script>
+</body>
+</html>

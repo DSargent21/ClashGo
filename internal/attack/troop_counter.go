@@ -1029,18 +1029,30 @@ func (tc *TroopCounter) readGlyphsWithOpts(roi gocv.Mat, origin image.Point, row
 
 		values := make([]int, 0, len(run))
 		readable := true
-		for _, idx := range run {
+		fail := -1
+		for k, idx := range run {
 			g := glyphs[idx]
 			if !thresholds.accepts(g.digit, g.conf, g.margin) {
 				readable = false
+				fail = k
 				break
 			}
 			values = append(values, g.digit)
 		}
 		if !readable {
+			// The numbers are the whole diagnosis: "not read confidently" is
+			// identical for a glyph below the floor and a glyph with a tie
+			// margin, and the two need opposite fixes (see glyphThresholds).
+			bad := glyphs[run[fail]]
 			tc.logger.Debug().
 				Int("x", origin.X+glyphs[i].rect.Min.X).
 				Int("glyphs", len(run)).
+				Int("digit", bad.digit).
+				Float64("conf", bad.conf).
+				Float64("margin", bad.margin).
+				Float64("floor", thresholds.floor).
+				Float64("need_margin", thresholds.margin).
+				Float64("strong", thresholds.strong).
 				Msg("glyph run not read confidently; reporting the card count as unreadable")
 			for _, idx := range run {
 				consumed[idx] = true

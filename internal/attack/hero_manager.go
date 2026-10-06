@@ -1,8 +1,11 @@
 package attack
 
 import (
+	"fmt"
 	"image"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -168,37 +171,12 @@ func (hm *HeroManager) DeployHeroes(heroUnits []strategy.Unit, screen gocv.Mat) 
 		return mainDeployments[i].Slot.Confidence > mainDeployments[j].Slot.Confidence
 	})
 
-	var deployedSlots []*TrackedSlot
-	for _, d := range mainDeployments {
-		hm.logger.Info().
-			Str("unit", d.Unit.Name).
-			Int("x", d.Slot.X).
-			Float64("conf", d.Slot.Confidence).
-			Msg("deploying main hero")
-
-		if hm.deploySingleHero(d, screen) {
-			deployedSlots = append(deployedSlots, d.Slot)
-			hm.slotManager.MarkDeployed(d.Unit.Name)
-		} else {
-
-			hm.slotManager.RecordAttempt(d.Unit.Name, false)
-		}
-	}
-
-	for _, d := range bonusDeployments {
-		hm.logger.Info().
-			Str("unit", d.Unit.Name).
-			Int("x", d.Slot.X).
-			Msg("deploying bonus hero")
-
-		if hm.deploySingleHero(d, screen) {
-			deployedSlots = append(deployedSlots, d.Slot)
-			hm.slotManager.MarkDeployed(d.Unit.Name)
-		} else {
-
-			hm.slotManager.RecordAttempt(d.Unit.Name, false)
-		}
-	}
+	all := make([]HeroDeployment, 0, len(mainDeployments)+len(bonusDeployments))
+	all = append(all, mainDeployments...)
+	all = append(all, bonusDeployments...)
+	// One batch for every hero: a rapid drop wave, then confirmation on shared
+	// frames, then evidence-gated rescues. See deployHeroBatch.
+	deployedSlots := hm.deployHeroBatch(all)
 
 	// Ability activation is owned by the dedicated "Abilities" phase in
 	// the orchestrator (see ExecuteDynamicV2's late-ability block), which
@@ -226,143 +204,286 @@ func (hm *HeroManager) DeployHeroes(heroUnits []strategy.Unit, screen gocv.Mat) 
 // area!" (captured live 2026-09-27).
 func (hm *HeroManager) SetPinnedGround(v bool) { hm.pinnedGround = v }
 
-// deploySingleHero deploys a single hero at the edge point with a
-// delta-based verify. Live data shows the second-verify retry never
-// recovered a hero on the user's setup (all 4 heroes got WRN and the
-// bot then re-deployed them via sweep anyway). The second-pass block
-// has been removed entirely; recovery now lives in the sweep phase's
-// deployHeroSlotOnce.
+// heroBatchGapMs is the pause between consecutive hero drops in the wave.
+// Short on purpose: real players drop heroes back to back, and the game's own
+// card-selection animation (heroArmSettleMs) is already paid per hero.
+const heroBatchGapMs = 60
+
+// heroConfirmSettleMs / heroConfirmFollowMs are the two fixed beats of a
+// confirmation wave (see confirmHeroWave). Two deterministic reads beat the old
+// settle-poll, which could lock onto a stable PRE-transition frame and report a
+// drop that had actually landed — live 2026-10-01 the Dragon Duke measured
+// "not placed" at every read, then showed consumed before the sweep's first tap.
+const (
+	heroConfirmSettleMs = 300
+	heroConfirmFollowMs = 400
+	heroConfirmLateMs   = 1200
+)
+
+// heroDebugDir returns the CLASHGO_HERO_DEBUG directory (empty when unset).
+// Diagnostic seam only: when set, confirmHeroWave takes a third, late beat and
+// dumps a frame per beat, so a live run shows WHEN each hero card empties — a
+// batch drop that registers late (queued device taps) vs a drop the game
+// genuinely refused. Production runs leave the variable unset and take the
+// normal two beats.
+func heroDebugDir() string {
+	return os.Getenv("CLASHGO_HERO_DEBUG")
+}
+
+// heroBatchEntry tracks one hero through the batch drop wave and the shared
+// confirmation wave that follows.
+type heroBatchEntry struct {
+	d          HeroDeployment
+	cands      []image.Point
+	firstIndex int
+	fired      bool    // the placement field tap went out
+	last       float64 // most recent slot-activity reading, carried into the next read
+	reads      int     // successful confirm reads (a rescue needs this evidence)
+	placed     bool
+}
+
+// deploySingleHero deploys one hero through the same batch path the hero phase
+// uses (see deployHeroBatch). Kept as the named entry point for single-hero
+// callers.
+func (hm *HeroManager) deploySingleHero(d HeroDeployment, _ gocv.Mat) bool {
+	return len(hm.deployHeroBatch([]HeroDeployment{d})) == 1
+}
+
+// deployHeroBatch drops every hero in one rapid wave, then confirms them on
+// SHARED frames and re-aims only the heroes the game provably refused.
 //
-// Steps:
-//  0. Use the parent screen captured ONCE at attack start as the
-//     pre-ratio source for every hero — eliminating per-hero
-//     CaptureFresh() calls and the inter-hero ADB-screencap
-//     deadlock. Sibling hero icons don't visually change when an
-//     adjacent hero deploys, so the parent frame is accurate for
-//     ALL pre-deploy measurements in this loop.
-//  1. SELECT the hero slot.
-//  2. Wait for selection animation (~350ms).
-//  3. Drop with a tight cluster of 3 jittered taps (+/- 3 px).
-//  4. Settle window so the slot transitions out of "highlighted".
-//  5. Capture post-drop ratio; DELTA verify with threshold 0.15.
-//  6. On failure, retry ONCE on DISPLACED ground: a fresh drop point from the
-//     battle's validated deploy line instead of the pinned tile, with a fresh
-//     pre/post ratio pair so the second check measures only the retry. The
-//     pinned tile can be undeployable for reasons that will never change
-//     mid-battle: the base's red-zone footprint covers it, or a siege machine
-//     dropped there one second earlier now occupies the tile (run17, 2026-09-22:
-//     all three heroes were pinned to the same (190,482) reference point as the
-//     Stone Slammer, dropped after it, and measured deltas of +0.09/-0.16/-0.22
-//     — the AQ and Warden ratios went UP because a rejected drop leaves the
-//     card selected). One attempt per battle per failure mode was how every
-//     hero ended up on the sweep's plate; the sweep then recovered only the
-//     heroes its random line point happened to clear.
-func (hm *HeroManager) deploySingleHero(d HeroDeployment, preScreen gocv.Mat) bool {
-	slot := d.Slot
-
-	// Baseline: a FRESH settled read of the card, not the battle-start frame.
-	// The parent screen is minutes old by the hero phase and can catch the
-	// troop bar mid-animation — live run10 the Dragon Duke's resting card read
-	// 0.387 there against 0.703 on the real frame seconds later, and a wrong
-	// baseline fails a drop that actually worked (which then costs the hero
-	// its ability: no confirmation, no tap #2). The parent frame stays as the
-	// fallback for when the live capture fails.
-	preRatio, capturedPre := hm.captureSlotRatio(slot)
-	preSrc := "settled-slot-read"
-	if !capturedPre && !preScreen.Empty() {
-		preRatio = GetSlotActivityRatioStatic(preScreen, slot.X, slot.Y, hm.w)
-		capturedPre, preSrc = true, "battle-start-frame"
+// Why batch: the per-hero path paid a settled pre-read, a settled post-read and
+// a fixed drop settle FOR EACH hero — measured live at 11-12.7s for five heroes
+// (2026-10-01, three attacks), which alone blew the 7s deploy window. The wave
+// costs one arm settle per hero; the confirmation wave reads every pending hero
+// off the same capture, so five heroes cost two captures, not ten.
+//
+// Anti-"random tap" contract: a rescue field tap fires only on evidence — a
+// successful confirm read showed the hero is still on its card — and only on
+// ground the first tap did not use. When nothing can be proven (capture failed)
+// or there is no new ground, the hero is left to the sweep, which arms the card
+// itself. Card-tap budgets are untouched: one placement tap per hero here, the
+// re-arm at most once, the ability's tap always kept.
+func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
+	batch := make([]*heroBatchEntry, 0, len(deps))
+	for _, d := range deps {
+		batch = append(batch, &heroBatchEntry{d: d, cands: hm.heroDropCandidates(d.Slot, d.Unit.Name)})
 	}
 
-	// Card tap #1 of at most 2: select the hero for placement. When the
-	// budget is already gone the hero cannot be placed and must not be
-	// re-tapped — see maxHeroSpotTaps.
-	if !hm.executor.TapSlot(slot, heroCardTapJitter) {
-		hm.logger.Warn().
-			Str("unit", d.Unit.Name).
-			Int("slot_x", slot.X).
-			Msg("hero card tap budget exhausted before placement; skipping hero")
-		return false
-	}
-
-	hm.executor.client.HumanSleep(heroArmSettleMs, 30)
-
-	// The field point is the battle's VALIDATED deploy line, not the pinned
-	// formula point. Live 2026-09-26 (run7, TopRight): every hero formula pin
-	// sat inside the red deployment line, the orchestrator pushed it radially
-	// outward, and the game refused the resulting tap on all four heroes
-	// (their cards only highlighted — ratio went UP), while the SAME heroes
-	// dropped cleanly on the first tap aimed at the deploy line. Aiming the
-	// main drop at that ground is what lets placement succeed on tap #1, so
-	// tap #2 is free for the ability.
-	cands := hm.heroDropCandidates(slot, d.Unit.Name)
-	drop := cands[0]
-	hm.fireHeroDrop(d.Unit.Name, drop, true)
-
-	hm.executor.client.HumanSleep(heroDropSettleMs, 40)
-
-	postRatio, capturedPost := hm.captureSlotRatio(slot)
-	delta := preRatio - postRatio
-
-	if heroPlaced(preRatio, postRatio, capturedPost) {
+	// Wave 0: the drops, back to back. No captures between them.
+	for i, p := range batch {
 		hm.logger.Info().
-			Str("unit", d.Unit.Name).
-			Int("slot_x", slot.X).
-			Int("slot_y", slot.Y).
-			Interface("target", drop).
-			Str("pre_src", preSrc).
-			Float64("pre_ratio", preRatio).
-			Float64("post_ratio", postRatio).
-			Float64("delta", delta).
-			Msg("hero deployed (single card tap + single field tap)")
-		return true
+			Str("unit", p.d.Unit.Name).
+			Int("x", p.d.Slot.X).
+			Float64("conf", p.d.Slot.Confidence).
+			Msg("deploying hero (batch drop)")
+		// Card tap #1 of at most 2: select the hero for placement. When the
+		// budget is already gone the hero cannot be placed and must not be
+		// re-tapped — see maxHeroSpotTaps.
+		if !hm.executor.TapSlot(p.d.Slot, heroCardTapJitter) {
+			hm.logger.Warn().
+				Str("unit", p.d.Unit.Name).
+				Int("slot_x", p.d.Slot.X).
+				Msg("hero card tap budget exhausted before placement; skipping hero")
+			continue
+		}
+		hm.executor.client.HumanSleep(heroArmSettleMs, 30)
+		hm.debugDump(fmt.Sprintf("wave%d_pre", i))
+		// Spread the heroes over the candidate ground and widen the drop jitter
+		// per hero: five heroes on one tile is both bot-like and the first thing
+		// a refused pocket kills. Every candidate is validated ground, so any of
+		// them is a legal first drop.
+		p.firstIndex = i % len(p.cands)
+		ground := p.cands[p.firstIndex]
+		jitter := 3 + 2*i
+		if jitter > 10 {
+			jitter = 10
+		}
+		hm.fireHeroDrop(p.d.Unit.Name, ground, true, jitter)
+		p.fired = true
+		hm.debugDump(fmt.Sprintf("wave%d_post", i))
+		hm.executor.client.HumanSleep(heroBatchGapMs, 20)
 	}
 
-	// Not proven this attempt. Deliberately NO second card tap here: the old
-	// displaced retry burned the hero's second tap on placement, so the
-	// ability pass then fired a THIRD tap — the "keeps tapping the Archer
-	// Queen after the ability" report. The slot is left Attempted; the sweep
-	// or verifier may spend the one remaining tap recovering it (and then its
-	// ability is skipped, which is the price of the 2-tap ceiling).
-	hm.logger.Warn().
-		Str("unit", d.Unit.Name).
-		Int("slot_x", slot.X).
-		Int("slot_y", slot.Y).
-		Int("screen_w", hm.w).
-		Int("probe_half", SlotProbeSize(hm.w)).
-		Interface("target", drop).
-		Str("pre_src", preSrc).
-		Float64("pre_ratio", preRatio).
-		Float64("post_ratio", postRatio).
-		Float64("delta", delta).
-		Bool("captured_post", capturedPost).
-		Msg("hero drop not confirmed by the slot transition; no card re-tap (the second tap is the ability's); retrying the FIELD on new ground")
+	// Shared confirmation: two reads per pending hero off ONE frame per read.
+	hm.confirmHeroWave(batch)
 
-	// A refused drop DESELECTS the card, so the field can only be re-aimed after
-	// the card is re-selected. (The comment here used to claim the opposite, and
-	// that wrong assumption is why every hero drop on all four pinned sides
-	// failed while the sweep's own arm+drop worked — see maxHeroRearms for the
-	// frame measurements.) RearmSlot spends no placement budget, so the hero still
-	// has its one placement and its one ability.
-	if !hm.executor.RearmSlot(slot) {
+	// Rescues: only heroes whose card is PROVEN to still hold them, and only
+	// on ground the first tap did not use.
+	for _, p := range batch {
+		if p.placed || !p.fired || p.reads == 0 {
+			continue // placed, dropped-but-unverifiable, or never dropped
+		}
+		if len(p.cands) <= 1 {
+			hm.logger.Warn().
+				Str("unit", p.d.Unit.Name).
+				Int("slot_x", p.d.Slot.X).
+				Msg("hero drop unconfirmed but there is no new ground to re-aim at; leaving it to the sweep (no stray re-arm)")
+			continue
+		}
+		// Rotate candidate slice so the point that was actually fired is at index 0,
+		// and index 1..len are untested retry points.
+		retryCands := make([]image.Point, 0, len(p.cands))
+		retryCands = append(retryCands, p.cands[p.firstIndex])
+		for idx, pt := range p.cands {
+			if idx != p.firstIndex {
+				retryCands = append(retryCands, pt)
+			}
+		}
+
+		// A refused drop DESELECTS the card, so the field can only be re-aimed
+		// after the card is re-selected (see maxHeroRearms). The re-arm is not a
+		// placement and spends no placement budget — the hero keeps its one
+		// placement and its one ability.
+		if !hm.executor.RearmSlot(p.d.Slot) {
+			continue
+		}
+		hm.executor.client.HumanSleep(heroArmSettleMs, 30)
+		hm.debugDump("rescue_" + p.d.Unit.Name + "_pre")
+		if hm.retryHeroFieldTaps(p.d.Slot, p.d.Unit.Name, retryCands, p.last, true, "batch-confirm") {
+			p.placed = true
+		}
+	}
+
+	// Verdicts, and the log lines attack_report reads.
+	var deployed []*TrackedSlot
+	for _, p := range batch {
+		if p.placed {
+			deployed = append(deployed, p.d.Slot)
+			if hm.slotManager != nil {
+				hm.slotManager.MarkDeployed(p.d.Unit.Name)
+			}
+			continue
+		}
 		hm.logger.Warn().
-			Str("unit", d.Unit.Name).
-			Int("slot_x", slot.X).
-			Msg("hero not placed and no re-arm left; leaving the hero to the sweep, which arms the card itself")
-		return false
+			Str("unit", p.d.Unit.Name).
+			Int("slot_x", p.d.Slot.X).
+			Int("slot_y", p.d.Slot.Y).
+			Msg("hero drop not confirmed by the slot transition; leaving it for the sweep's one remaining tap (no re-tap)")
+		if hm.slotManager != nil {
+			hm.slotManager.RecordAttempt(p.d.Unit.Name, false)
+		}
 	}
-	hm.executor.client.HumanSleep(heroArmSettleMs, 30)
+	return deployed
+}
 
-	if hm.retryHeroFieldTaps(slot, d.Unit.Name, cands, postRatio, capturedPost, preSrc) {
-		return true
+// confirmHeroWave reads every pending hero's card twice — one settled beat and
+// one follow-up beat for the cards that register late — off a single shared
+// capture per beat. heroPlaced's absolute ceiling (see hero_ground.go) decides
+// on the first beat; the second doubles as the delta baseline. A hero whose
+// reads all failed stays unproven and is never rescued blind.
+//
+// CLASHGO_HERO_DEBUG=<dir> adds a third, late beat plus one frame dump per beat
+// (see heroDebugDir): the ratio curve across beats is the evidence for whether
+// a failed batch drop ever registers on its own.
+//
+// The wave exits as soon as every fired hero is confirmed — the later beats
+// exist only for cards that have not registered, and skipping them saves their
+// sleep plus a capture of the deploy window (2026-10-05).
+func (hm *HeroManager) confirmHeroWave(batch []*heroBatchEntry) {
+	dbg := heroDebugDir()
+	beats := 2
+	if dbg != "" {
+		beats = 3
+		_ = os.MkdirAll(dbg, 0o755)
 	}
+	for beat := 0; beat < beats; beat++ {
+		switch beat {
+		case 0:
+			hm.executor.client.HumanSleep(heroConfirmSettleMs, 30)
+		case 1:
+			hm.executor.client.HumanSleep(heroConfirmFollowMs, 40)
+		default:
+			hm.executor.client.HumanSleep(heroConfirmLateMs, 50)
+		}
+		if hm.executor.DeployBudgetExhausted() {
+			return
+		}
+		frame, err := hm.executor.CaptureFresh()
+		haveFrame := err == nil && !frame.Empty()
+		for _, p := range batch {
+			if p.placed || !p.fired {
+				continue
+			}
+			r, ok := hm.readSlotRatio(frame, p.d.Slot)
+			if !ok {
+				continue
+			}
+			p.reads++
+			placed := heroPlaced(p.last, r, true)
+			if placed {
+				p.placed = true
+			}
+			if dbg != "" {
+				hm.logger.Info().
+					Str("unit", p.d.Unit.Name).
+					Int("beat", beat).
+					Int("slot_x", p.d.Slot.X).
+					Float64("ratio", r).
+					Bool("placed", placed).
+					Msg("hero confirm read (debug beat)")
+			}
+			p.last = r
+		}
+		if dbg != "" && haveFrame {
+			path := filepath.Join(dbg, fmt.Sprintf("beat%d.png", beat))
+			if !gocv.IMWrite(path, frame) {
+				hm.logger.Warn().Str("path", path).Msg("failed to save hero confirm debug frame")
+			}
+		}
+		if haveFrame {
+			frame.Close()
+		}
+		// Every fired hero is confirmed: the remaining beats exist only to wait
+		// for cards that have NOT registered, so re-reading confirmed cards just
+		// spends the deploy window (heroConfirmFollowMs plus a capture per beat,
+		// and heroConfirmLateMs too under CLASHGO_HERO_DEBUG). Entries that never
+		// fired cannot be rescued anyway, so they do not keep the wave alive.
+		if !batchPending(batch) {
+			return
+		}
+	}
+}
 
-	hm.logger.Warn().
-		Str("unit", d.Unit.Name).
-		Int("slot_x", slot.X).
-		Int("slot_y", slot.Y).
-		Msg("hero drop not confirmed on any candidate ground; leaving it for the sweep's one remaining tap (no re-tap)")
+// batchPending reports whether any hero in the wave still needs a confirm read:
+// fired but not yet proven placed.
+func batchPending(batch []*heroBatchEntry) bool {
+	for _, p := range batch {
+		if p.fired && !p.placed {
+			return true
+		}
+	}
 	return false
+}
+
+// debugDump saves one diagnostic frame into the CLASHGO_HERO_DEBUG directory.
+// It is the only way to see the card's ARMED state between the card tap and the
+// field tap that spends it: a refused drop disarms the card, so after the fact
+// "card never armed" and "ground refused" look identical. The wave's *_pre
+// frames (captured after the arm sleep) versus the rescue's *_pre frames are
+// what separates them.
+func (hm *HeroManager) debugDump(name string) {
+	if heroDebugDir() == "" {
+		return
+	}
+	frame, err := hm.executor.CaptureFresh()
+	if err != nil || frame.Empty() {
+		return
+	}
+	defer frame.Close()
+	_ = gocv.IMWrite(filepath.Join(heroDebugDir(), name+".png"), frame)
+}
+
+// readSlotRatio reads one hero card's activity ratio from the shared wave
+// frame (or the scripted hook in tests).
+func (hm *HeroManager) readSlotRatio(frame gocv.Mat, slot *TrackedSlot) (float64, bool) {
+	if hm.ratioHook != nil {
+		return hm.ratioHook()
+	}
+	if frame.Empty() {
+		return 0, false
+	}
+	return GetSlotActivityRatioStatic(frame, slot.X, slot.Y, hm.w), true
 }
 
 // recordGround remembers field points a troop pass just deployed on. Capped so
@@ -381,13 +502,13 @@ func (hm *HeroManager) recordGround(points ...image.Point) {
 	}
 }
 
-// fireHeroDrop sends one field tap at pt (jittered +/- 3 px). first marks the
-// main drop, the only one that reports the Duke pick to the observer.
-func (hm *HeroManager) fireHeroDrop(unitName string, pt image.Point, first bool) {
+// fireHeroDrop sends one field tap at pt (jittered by jitterPx). first marks
+// the main drop, the only one that reports the Duke pick to the observer.
+func (hm *HeroManager) fireHeroDrop(unitName string, pt image.Point, first bool, jitterPx int) {
 	// Jitter first, then TapUnitField: the siege-clearance check has to be the
 	// last thing between the aim point and the wire, or the jitter puts the tap
 	// straight back on the machine.
-	j := hm.executor.addJitter(pt, 3)
+	j := hm.executor.addJitter(pt, jitterPx)
 	hm.executor.TapUnitField(j, 12.0)
 	if first && hm.OnDukeDeployed != nil && strings.Contains(strings.ToLower(unitName), "duke") {
 		hm.OnDukeDeployed(hm.targetEdge)
@@ -410,7 +531,7 @@ func (hm *HeroManager) retryHeroFieldTaps(
 ) bool {
 	return runHeroFieldRetries(
 		cands, baseline, baselineOK,
-		func(pt image.Point) { hm.fireHeroDrop(unitName, pt, false) },
+		func(pt image.Point) { hm.fireHeroDrop(unitName, pt, false, 3) },
 		func() (float64, bool) {
 			hm.executor.client.HumanSleep(300, 40)
 			return hm.captureSlotRatio(slot)
@@ -444,15 +565,32 @@ func (hm *HeroManager) retryHeroFieldTaps(
 	)
 }
 
+// containsPoint reports whether p is one of pts. Used by heroDropCandidates to
+// name the ground that actually leads its list after re-ordering.
+func containsPoint(pts []image.Point, p image.Point) bool {
+	for _, q := range pts {
+		if q == p {
+			return true
+		}
+	}
+	return false
+}
+
 // heroDropCandidates returns the ground points a hero may drop on, best first.
 //
-// The strategy formula wins: it is the ground the troop and spell phases deploy
-// on in this battle, and the orchestrator has already clamped and red-zone-pushed
-// it, so taps there have just been accepted by the game. The battle's deploy line
-// (which is the user's pinned reference-geometry edge whenever a corner is
-// pinned — a line nothing validates against this battle's red zone) is the
-// fallback, zone-filtered by hero_ground.go. Last resort: the formula / corner
-// pin resolution.
+// Order of evidence:
+//  1. The ground this battle's troop pass just used (the axis those accepted
+//     taps share) — proven in THIS battle, so it leads whenever it exists.
+//  2. The user's pinned hero point / the strategy formula's point.
+//  3. The outward ladder from that intent, then the deploy line's band points.
+//
+// With no red outline to check against, the whole list is then ordered
+// outward-first — the pin included. The pin's protected lead was exactly the
+// live refusal pattern: 2026-10-04/05 (run1 + probe3) logged
+// ground_source=pinned for every wave and the game refused that first tap
+// 11/12, while the outward ladder points beside it landed on the rescue taps
+// seconds later. The log's ground_source names whichever ground actually leads
+// after all of it.
 func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []image.Point {
 	entry, hasFormula := hm.formulaEntry(unitName)
 	var cands []image.Point
@@ -479,26 +617,38 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 			intent, haveIntent = fc[0], true
 		}
 	}
+	// The troop pass's ground leads whenever this battle left some: those taps
+	// were accepted by the game seconds ago. Before this fix the pin was
+	// prepended OVER the axis and the source string overwritten with "pinned",
+	// so the axis path was dead in every pinned battle (and a diagonal pin line
+	// never matches groundAxis anyway — see troopGround).
+	var axisCands, formulaPts []image.Point
 	if axis, vertical, ok := groundAxis(hm.troopGround); ok {
 		if !haveIntent {
 			intent, _ = hm.resolveHeroTarget(slot)
 			haveIntent = true
 		}
 		if haveIntent {
-			if ac := axisCandidates(intent, axis, vertical, hm.h, hm.w); len(ac) > 0 {
-				cands = append(cands, ac...)
-				source = "troop_ground_axis"
-			}
+			axisCands = axisCandidates(intent, axis, vertical, hm.h, hm.w)
 		}
 	}
+	if len(axisCands) > 0 {
+		cands = append(cands, axisCands...)
+		source = "troop_ground_axis"
+	}
 	if havePin {
-		// Lead with the user's point: the first field tap has to be the spot
-		// they picked, and the deploy line appended below is that same pin, so
-		// the alternatives stay on their ground too.
-		cands = append([]image.Point{pinnedPt}, cands...)
-		source = "pinned"
+		if len(axisCands) > 0 {
+			// Battle evidence leads; the pin rides as an alternate instead of
+			// being deleted — the user's choice stays reachable, it just no
+			// longer spends the first tap on ground the game keeps refusing.
+			cands = append(cands, pinnedPt)
+		} else {
+			cands = append([]image.Point{pinnedPt}, cands...)
+			source = "pinned"
+		}
 	} else if hasFormula {
 		if fc := heroFormulaCandidates(entry, hm.h); len(fc) > 0 {
+			formulaPts = fc
 			cands = append(cands, fc...)
 			if source == "deploy_line" {
 				source = "formula"
@@ -550,12 +700,48 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 		}
 	}
 
+	// First-tap ordering when this battle's red line is UNKNOWN. The no-deploy
+	// pocket hugs the middle of the map, so the farther a candidate sits from
+	// the screen centre the more likely the game accepts it. Live 2026-10-01
+	// (BottomLeft, three attacks): with the pinned point consumed by the
+	// siege-clearance filter above, the ladder's NEAREST point led every drop
+	// and was refused four times out of five while the outward point beside it
+	// landed every time — each refusal then cost a re-arm plus a retry tap.
+	// The pin used to keep its lead here when it survived the filter; run1 and
+	// probe3 (2026-10-04/05) then refused that lead 11/12, so now the pin is
+	// re-ordered with everything else. With a red outline present the
+	// zone-clearance order (heroGroundCandidates) is strictly better and is
+	// left alone.
+	reordered := false
+	if len(hm.zone.Polygon) < 3 && len(cands) > 1 {
+		// Outward-first over the WHOLE list, pin included: the pin's protected
+		// lead was the refusal pattern (its first tap lost ~11/12 live), and the
+		// outward points around it are the ones that landed. The comment above
+		// this block used to keep the pin at [0]; the evidence says the opposite.
+		orderOutwardFirst(cands, hm.w, hm.h)
+		reordered = true
+	}
+
 	if len(cands) == 0 {
 		pt, _ := hm.resolveHeroTarget(slot)
 		return []image.Point{pt}
 	}
 	if len(cands) > maxHeroGroundCandidates {
 		cands = cands[:maxHeroGroundCandidates]
+	}
+
+	// ground_source must describe what actually LEADS the list: the siege
+	// filter and the outward order both move the pin, and this field is how the
+	// next live run judges whether the ordering fix worked.
+	switch {
+	case containsPoint(axisCands, cands[0]):
+		source = "troop_ground_axis"
+	case havePin && cands[0] == pinnedPt:
+		source = "pinned"
+	case containsPoint(formulaPts, cands[0]):
+		source = "formula"
+	case reordered:
+		source = "outward_first"
 	}
 	hm.logger.Info().
 		Str("unit", unitName).
@@ -564,7 +750,7 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 		Int("alt_points", len(cands)-1).
 		Int("troop_ground_points", len(hm.troopGround)).
 		Bool("red_zone_checked", len(hm.zone.Polygon) >= 3).
-		Msg("hero drop ground chosen (the ground this battle's troops just deployed on is preferred over a pinned line)")
+		Msg("hero drop ground chosen")
 	return cands
 }
 
@@ -838,6 +1024,20 @@ func (hm *HeroManager) DeployTroops(
 	}
 
 	tapCount, tapCountMeasured := hm.resolveLiveTapCountMeasured(unit, slot, preCount, preTrusted, detectedCount)
+	if entry, ok := hm.formulaEntry(unit.Name); ok && entry.Count > tapCount {
+		tapCount = entry.Count
+		tapCountMeasured = true
+	}
+	if strings.EqualFold(unit.Amount, "All") && p1 != p2 {
+		minTaps := 16
+		if strings.Contains(unitName, "dragon") {
+			minTaps = 12
+		}
+		if tapCount < minTaps {
+			tapCount = minTaps
+			tapCountMeasured = true
+		}
+	}
 
 	var deployed func(int, int)
 	if p1 == p2 {
@@ -935,6 +1135,15 @@ func (hm *HeroManager) DeployTroops(
 		if !trusted && tapCountMeasured {
 			unreadableReads++
 			if unreadableReads >= maxUnreadableReconcileReads {
+				if strings.EqualFold(unit.Amount, "All") && tapCount >= 12 && p1 != p2 {
+					hm.logger.Info().
+						Str("unit", unit.Name).
+						Int("reads", unreadableReads).
+						Int("fired_total", tapCount).
+						Msg("reconcile: saturated 'All' line pass fired; marking slot deployed so sweeper does not circle back")
+					hm.slotManager.MarkDeployed(unitName)
+					return true
+				}
 				hm.logger.Warn().
 					Str("unit", unit.Name).
 					Int("reads", unreadableReads).
@@ -1017,31 +1226,29 @@ func (hm *HeroManager) DeployTroops(
 // is dropping can hit the deployed machine (the retap-kills-siege bug the
 // single-tap path exists to avoid).
 func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) {
-	preRatio, preOK := hm.executor.CaptureSettledSlotRatio(hm.w, slot)
-	// 400ms, down from 700: the settle read above and the live count read below
-	// are the measurements; this sleep only has to clear the drop animation
-	// enough for them to be about the machine rather than about the tap. Two
-	// 700ms waits here are 1.4s of the deploy window the user asked to keep
-	// under seven seconds, spent watching a card we then measure anyway.
-	time.Sleep(400 * time.Millisecond)
-	postRatio, postOK := hm.executor.CaptureSettledSlotRatio(hm.w, slot)
+	// One settled look, not two. A spent siege card keeps a dimmed silhouette
+	// and the next queued icon can sit on the same slot, so the old pre/post
+	// delta pair proved no more than a single settled read plus the count label
+	// — while costing a pre-capture + 400ms + post-capture (~1.2s) of the 7s
+	// deploy window watching a card this function only reports on. NO blind
+	// re-tap either way: a second tap while the machine is dropping can hit the
+	// deployed machine (see PlaceSiege).
+	time.Sleep(250 * time.Millisecond)
+	ratio, ratioOK := hm.executor.CaptureSettledSlotRatio(hm.w, slot)
 	count, trusted, _ := hm.liveCountAndEmpty(slot)
-	delta := 0.0
-	if preOK && postOK {
-		delta = preRatio - postRatio
-	}
 	switch {
 	case trusted && count == 0:
 		hm.logger.Info().Str("unit", unit.Name).Msg("reconcile: siege count label gone; slot drained")
-	case preOK && postOK && delta > 0.15:
+	case ratioOK && ratio <= heroConsumedRatio:
 		hm.logger.Info().Str("unit", unit.Name).
-			Float64("pre_ratio", preRatio).Float64("post_ratio", postRatio).
+			Float64("post_ratio", ratio).
 			Msg("reconcile: siege slot dimmed after deploy tap")
-	case preOK && postOK:
+	case ratioOK:
 		hm.logger.Warn().Str("unit", unit.Name).
-			Float64("pre_ratio", preRatio).Float64("post_ratio", postRatio).
-			Float64("delta", delta).Bool("count_read_trusted", trusted).
-			Msg("siege card unchanged after deploy tap; the machine may not have dropped")
+			Float64("post_ratio", ratio).
+			Int("count", count).
+			Bool("count_read_trusted", trusted).
+			Msg("siege card still bright after deploy tap; the machine may not have dropped (no re-tap — a second tap would hit it)")
 	default:
 		hm.logger.Warn().Str("unit", unit.Name).Msg("siege settle check could not capture the screen; deployment unconfirmed")
 	}

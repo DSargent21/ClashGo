@@ -72,12 +72,14 @@ func main() {
 		deviceOverride string
 		outDir         string
 		rmLogs         bool
+		displayScale   float64
 	)
 	flag.StringVar(&mode, "mode", "check", "check|dry-run|run")
 	flag.BoolVar(&autoYes, "yes", false, "skip confirmation prompt before live run")
 	flag.StringVar(&deviceOverride, "device", "", "override device ID (otherwise uses config)")
 	flag.StringVar(&outDir, "out", "", "output directory for screenshots (default ./output/wall_upgrade_tests/<ts>)")
 	flag.BoolVar(&rmLogs, "rm-logs", false, "remove output directory before running")
+	flag.Float64Var(&displayScale, "k", 0, "pin the display scale (default: config's device.display_scale, else derived)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -132,8 +134,17 @@ func main() {
 		fmt.Printf("\n❌ ScreenSize: %v\n", err)
 		os.Exit(1)
 	}
+	// Pin the display scale the bot pins, so this tool runs the geometry the
+	// bot runs. The derived diagonal ratio differs from the measured value
+	// (1.2993 vs 1.325 at 1280x720 — docs/RESOLUTION.md), and the wall rect
+	// assets are mapped into live pixels with it: a report in a geometry the
+	// bot never runs is worse than no report.
 	cal := game.NewCalibration(w, h)
 	cal.Verified = true
+	if pinned, source, departs := config.ResolveDisplayScale(displayScale); pinned > 0 {
+		cal.SetDisplayScale(pinned)
+		fmt.Printf("   display scale: k=%.4f (%s)%s\n", pinned, source, map[bool]string{true: " ⚠ departs from the bot's geometry", false: ""}[departs])
+	}
 	ts, err := game.NewTemplateStore(paths.Resolve("templates"))
 	if err != nil {
 		fmt.Printf("\n❌ NewTemplateStore: %v\n", err)

@@ -14,9 +14,9 @@
       "note": "A village frame from a later session, kept alongside the first so a rule cannot be tuned to one capture's exact scenery: the two differ in buildings, camera offset and time of day."
     },
     {
-      "file": "corpus/boot_logo_720p.png",
-      "state": "Logo",
-      "note": "The CoC castle logo, which sits static for one to three minutes while the session connects. It must read as Logo rather than the village: an unrecognised boot screen used to make the stuck-watchdog force-restart the game in a loop."
+      "file": "corpus/village_offer_720p.png",
+      "state": "Unknown",
+      "note": "The village with the builder-apprentice offer dialog up. Was corpus/boot_logo_720p.png, expected Logo: recorded believing the dialog's castle-like artwork was the post-boot connecting splash. OCR proves it is the village (Attack!/SHOP HUD under the 'Hey Chief!' offer). Expected Unknown is DELIBERATE and pins the regression this frame exists for: the dialog covers the village's evidence probes, so no rule models it \u2014 what it must never do again is read as Logo at priority 92 and stall the bot in the 5-minute boot grace (it passed 2 of Logo's 3 probes; Logo now needs all three). The dismissal gap (an unmodelled obstruction dialog falls to the 35s stuck-watchdog and a game restart) is the documented safe direction."
     },
     {
       "file": "corpus/battle_pre_deploy_720p.png",
@@ -44,6 +44,11 @@
       "note": "The in-game lost-connection dialog (TRY AGAIN) over a dimmed battle HUD, captured at the 18:03 battle-end timeout. It classified as Unknown because the rule's reference probes were measured on a dialog that does not scale with k; the wait loop then sat out its full deadline on a battle whose result could never arrive. This is also the frame the TRY AGAIN tap coordinate is measured from."
     },
     {
+      "file": "corpus/update_available_720p.png",
+      "state": "UpdatePrompt",
+      "note": "CoC's login-time \"Update Available! / A new version of Clash of Clans is available\" prompt over the dimmed village: a centred light-gray panel with one green Update button and no other control. Captured at the 13:21 boot it blocked for two minutes. Before this rule existed the frame classified as Logo (two of that rule's probes hit, score 292), so the bot sat out the 5-minute boot-splash grace and force-restarted into the same prompt, because the check comes back on every relaunch. Both the rule's three probes and the outside-panel dismissal point are measured from this frame. (Real frames are gitignored: this fixture lives on the developer's disk and the gate skips when it is absent.)"
+    },
+    {
       "file": "corpus/result_overlay_720p.png",
       "state": "BattleEnd",
       "note": "Victory overlay (70% damage, RETURN HOME). The battle-end wait returns on exactly this state, so a regression here wedges a session on the results screen instead of returning home."
@@ -67,6 +72,16 @@
       "file": "screen_ocr.png",
       "state": "Battle",
       "note": "Reference-geometry battle frame, also used by the loot OCR fixtures. The reference Battle rule carries authored MinPass 1 (the escalation to 2 probes applies only off the reference geometry), so this fixture pins that the reference bar still fires."
+    },
+    {
+      "file": "corpus/village_event_720p.png",
+      "state": "MainVillage",
+      "note": "A village frame (event widgets up) that the Logo rule misread at priority 92 and stalled on for the 5-minute boot grace (live 2026-10-01, bot idle 2+ minutes while the Attack! button was on screen). The centre-mapped light-band and dark-ground probes pass on ordinary village scenery; with Logo's MinPass raised to 3 the frame reads MainVillage."
+    },
+    {
+      "file": "corpus/offer_goldpass_720p.png",
+      "state": "OfferPopup",
+      "note": "The centred in-game offer modal (55% OFF YOUR FIRST GOLD PASS! / KNOW MORE!) live-captured 2026-10-04 at 1280x720 while it sat over the village. Without a rule it read Unknown and the bot spun through three emergency game restarts against it (run log tmp/audit4). The probes are the button-face flanks and the white title band measured on this frame; dismissal is the Back key (game.overlayBackStates) because the modal carries no close X and its one button opens the store."
     }
   ]
 }
