@@ -11,6 +11,15 @@
 // TR / TL) automatically. Use `-verify` to see the 2x2 mirror grid
 // before running the bot.
 //
+// ONE BATTLE COVERS ALL FOUR (the "sides" ring). For a strategy phase whose
+// pattern is `FourSides` — the Valkyrie ring — the mirror is the wrong tool:
+// the whole point is to place the SAME card on every side of the base in a
+// single battle, not to pick a side per attack. Those units take a click pair
+// per side (press `m` between sides) and are saved as `"type": "sides"`, which
+// the deploy path spreads the card across instead of sweeping one line. Spells
+// in such a strategy use `pattern: "Point"` and take a single click, so the
+// whole spell card drops on the one spot the user pinned.
+//
 // Goal: replace the legacy corner-based pCfg.Edges / red-zone-detection /
 // Duke-adjacent-override chain (which kept attacking in the corner and
 // stacking heroes on the same pixel) with deterministic, user-pinned
@@ -44,7 +53,8 @@
 //	-include-event : append _event_troop + _event_spell planned rows.
 //	-target-edge   : override auto-pick target edge (right/left/top/bottom).
 //
-// Author-mode keys: ENTER=commit, BACKSPACE/u=undo, c=clear, m=sub-line,
+// Author-mode keys: ENTER=commit, BACKSPACE/u=undo, c=clear, m=sub-line (or
+// next side of a ring),
 //
 //	s=save+quit, q/ESC=quit-without-save.
 package main
@@ -205,6 +215,7 @@ func main() {
 	fmt.Println("=== DESIGN ATTACK FORMULA ===")
 	fmt.Println("Left-click: drop point. ENTER: commit & next.")
 	fmt.Println("u/Backspace: undo click. c: clear current. m: (line units) finalize sub-line & start next, or bump count on last sub-line.")
+	fmt.Println("RING (pattern FourSides, e.g. Valkyries): click P1 then P2 for one side, press m, repeat for the other sides, ENTER to commit the ring.")
 	fmt.Println("s: save. q/ESC: quit (no save unless s).")
 	fmt.Println()
 
@@ -345,7 +356,8 @@ func main() {
 //
 //	"Line" (and missing pattern default) → 2 clicks  (sub-line mode via `m`)
 //	"Point"                              → 1 click
-//	"FourSides"                          → 1 click (bot fans taps around it)
+//	"FourSides"                          → 2 clicks per side, `m` between sides
+//	                                       (saved as a "sides" ring)
 //
 // includeEvent appends _event_troop (point, 1 click) and _event_spell
 // (line, 2 clicks) rows at the very end so the user can pin where
@@ -367,9 +379,12 @@ func buildPlan(s *strategy.DynamicStrategy, includeEvent bool) []plannedUnit {
 			seen[name] = true
 			needs := 1
 			switch strings.ToLower(ph.Pattern) {
-			case "line", "":
+			case "line", "foursides", "":
+				// FourSides is drawn the same way as a line — a P1/P2 pair — but
+				// repeated once per side with `m` between them, so the unit is
+				// saved as a "sides" ring rather than a single sweep.
 				needs = 2
-			case "point", "foursides":
+			case "point":
 				needs = 1
 			default:
 				needs = 2
@@ -425,10 +440,21 @@ func commit(st *state) error {
 		return fmt.Errorf("no current unit")
 	}
 	u := st.planned[st.idx]
-	if len(st.clicks) < u.Needs {
+	// A two-click unit whose sides/sub-lines are already FINALIZED with `m` has
+	// nothing left in st.clicks — pressing `m` after the last pair clears them.
+	// Requiring clicks here made both documented flows (a 3+2 rage split, and a
+	// 4-side ring) fail on ENTER with "needs 2 clicks, have 0" unless the user
+	// remembered to leave the final pair un-finalized.
+	finalized := len(st.subLines) > 0 && len(st.clicks) < u.Needs
+	if len(st.clicks) < u.Needs && !finalized {
 		return fmt.Errorf("unit %q needs %d clicks, have %d", u.Name, u.Needs, len(st.clicks))
 	}
 	e := formula.UnitEntry{}
+	// A FourSides unit is a ring: one authored line per side, all of them
+	// deployed in the same battle. It is written as "sides" so the deploy path
+	// spreads the card across every sub-line instead of sweeping one, and so
+	// the corner mirror leaves it alone (the user already drew every side).
+	isSides := strings.EqualFold(u.Pattern, "FourSides")
 
 	if u.Needs == 2 && len(st.subLines) > 0 {
 		// Multi-sub-line path. Each sub-line contributes one LinePoint
@@ -442,10 +468,20 @@ func commit(st *state) error {
 			st.subLines = append(st.subLines, subLineEntry{Clicks: append([]image.Point(nil), st.clicks[:2]...), Count: 1})
 			st.clicks = st.clicks[:0]
 		}
-		e.Type = "lines"
+		if isSides {
+			e.Type = "sides"
+		} else {
+			e.Type = "lines"
+		}
 		e.Lines = make([]formula.LinePoint, 0, len(st.subLines))
 		for _, sl := range st.subLines {
-			if len(sl.Clicks) < 2 || sl.Count <= 0 {
+			if len(sl.Clicks) < 2 {
+				continue
+			}
+			// A ring ignores the per-line count (the live card count decides how
+			// many taps each side gets), so the m-bump default of 1 is harmless
+			// here; a spell's sub-lines need a positive count to fire at all.
+			if sl.Count <= 0 && !isSides {
 				continue
 			}
 			e.Lines = append(e.Lines, formula.LinePoint{
@@ -455,7 +491,13 @@ func commit(st *state) error {
 				Jitter: 5,
 			})
 		}
+		if isSides && len(e.Lines) < 2 {
+			return fmt.Errorf("unit %q is a four-sides ring; author at least 2 sides (P1+P2, then m, then the next pair)", u.Name)
+		}
 	} else if u.Needs == 2 {
+		if isSides {
+			return fmt.Errorf("unit %q is a four-sides ring; click P1+P2 and press m for each side (at least 2), then ENTER", u.Name)
+		}
 		e.Type = "line"
 		e.P1 = &formula.Point{X: st.clicks[0].X, Y: st.clicks[0].Y}
 		e.P2 = &formula.Point{X: st.clicks[1].X, Y: st.clicks[1].Y}
@@ -503,14 +545,19 @@ func drawOverlay(m gocv.Mat, st *state) {
 	if st.idx < len(st.planned) {
 		u := st.planned[st.idx]
 		kind := "line (2 clicks: P1=start, P2=end; press m to add sub-line)"
-		if u.Needs == 1 {
+		subHint := "Sub-lines so far: %d  (m adds another; m on empty bumps last count)"
+		switch {
+		case u.Needs == 1:
 			kind = "point (1 click)"
+		case strings.EqualFold(u.Pattern, "FourSides"):
+			kind = "ring: 2 clicks per SIDE (P1=line start, P2=line end), m between sides"
+			subHint = "Sides so far: %d  (draw left/top/right/bottom, then m, then the next pair)"
 		}
 		lines = []string{
 			fmt.Sprintf("Unit %d/%d: %s  [%s]", st.idx+1, len(st.planned), u.Name, u.Phase),
 			fmt.Sprintf("Pattern: %s  Kind: %s", u.Pattern, kind),
 			fmt.Sprintf("Clicks so far: %d / %d", len(st.clicks), u.Needs),
-			fmt.Sprintf("Sub-lines so far: %d  (m adds another; m on empty bumps last count)", len(st.subLines)),
+			fmt.Sprintf(subHint, len(st.subLines)),
 			"ENTER=commit  m=sub-line  u/BSp=undo  c=clear  s=save",
 		}
 	} else {

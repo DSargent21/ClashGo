@@ -83,11 +83,163 @@ The one-stop CLI for authoring + verifying formulas lives at `cmd/design_attack/
 |------|--------|
 | Left-click | Drop point (1 click for points, 2 clicks for lines) |
 | ENTER | Commit current unit + advance to next |
-| `m` | (Line units only) Add sub-line OR bump count on the last sub-line (rage 3+2 pattern) |
+| `m` | (Line/ring units) Add sub-line OR bump count on the last sub-line (rage 3+2 pattern); on a ring unit, adds the next side |
 | `u` / BACKSPACE | Undo last click |
 | `c` | Clear current unit's clicks + sub-lines |
 | `s` | Save and quit |
 | `q` / ESC | Quit without saving |
+
+## The 4-side ring (`"type": "sides"`) — Valkyries and other `FourSides` phases
+
+Some armies place the SAME card on every side of the base in one battle instead
+of picking a side per attack. `valk_spam.yaml` is the shipped example: the
+Valkyrie phase is `pattern: "FourSides"`.
+
+The corner mirror is the wrong tool for those phases — the point is to wrap the
+base, not to reflect one flank onto the other three. So the picker authors them
+differently:
+
+- **Troops (`FourSides` phase)** → **two clicks per side**, `m` between sides,
+  and the row is saved as `"type": "sides"`. The deploy path spreads the card's
+  live count across every sub-line, so 15 Valkyries on a 4-side ring fire
+  `4/4/4/3`. The per-line `count` in the JSON is ignored for a ring: the live
+  card count decides.
+- **Spells (`Point` phase)** → **one click**, saved as `"type": "point"`. The
+  whole spell card drops on that spot (the casts are spread in a tight ring
+  around it so they do not all land on one tile).
+
+A `"sides"` entry is **not mirrored** — `formula.MirrorForCorner` skips it,
+because the user already drew every side they want troops on. A ring authored
+for one corner therefore deploys identically for all four, and `target_edge`
+only moves the point entries (heroes, siege, spells).
+
+### Authoring the valk ring
+
+```bash
+# 1. Get into a battle in CoC, with the whole base visible (do NOT zoom in).
+go run ./cmd/design_attack -live -device localhost:5555 \
+  -strategy assets/strategies/valk_spam.yaml \
+  -out assets/strategies/valk_spam_formula.json
+```
+
+The walk is, in order:
+
+| Step | Unit | How to click |
+|------|------|--------------|
+| 1 | `valkyrie` | P1 then P2 for the **left** side → `m` → **top** side → `m` → **right** side → `m` → **bottom** side → ENTER |
+| 2 | `barbarian king` | 1 click |
+| 3 | `archer queen` | 1 click |
+| 4 | `grand warden` | 1 click |
+| 5 | `dragon duke` | 1 click |
+| 6 | `stone slammer` | 1 click |
+| 7 | `earthquake spell` | 1 click — the single spot the whole spell card drops on |
+
+Controls: left-click drops a point, `u`/BACKSPACE undoes the last click, `c`
+clears the current unit, `s` saves and quits. A ring needs at least **2** sides,
+but 4 is what wraps a base.
+
+`cmd/design_attack -auto` writes a starting ring (one line down each screen edge,
+inside the 20–80% band) plus a point per other unit, so you can eyeball the shape
+before spending clicks:
+
+```bash
+go run ./cmd/design_attack -auto -live -device localhost:5555 \
+  -strategy assets/strategies/valk_spam.yaml \
+  -out assets/strategies/valk_spam_formula.json
+```
+
+Then verify the geometry against a saved battle frame — the tool draws the ring
+and colours every point by class:
+
+```bash
+./build/bin/bot_cli -deploy-only \
+  -strategy assets/strategies/valk_spam.yaml -device localhost:5555 -once
+# afterwards, inspect last_attack_taps.png in the config dir:
+#   white  = troops / siege    green = king + queen    magenta = spells
+#   blue ring = the point fell outside the deployable band (a bug — re-author)
+```
+
+### The browser picker (`tools/line_picker.html`)
+
+`cmd/design_attack` needs a desktop window and a walk through every unit. When all
+you want is "here is the battle screen, draw the four Valkyrie lines and click
+where the Earthquake goes", use the browser picker instead:
+
+```bash
+python3 tools/line_picker.py                       # capture live + build the page
+python3 tools/line_picker.py --shot battle.png     # or draw on a saved frame
+python3 tools/line_picker.py --device localhost:5555 --ring-unit valkyrie \
+    --spell-unit "earthquake spell"
+```
+
+It captures one frame with `adb exec-out screencap -p`, inlines it into a
+self-contained page under `tmp/line_picker_live.html` (open it, or register it
+with the preview panel), and carries the other units over from the existing
+formula so the result is a complete document. Every coordinate it reports is a
+**device pixel** — the frame is inlined as a JPEG at the device's own
+dimensions, so nothing is resampled or scaled.
+
+- **`1` drag** to draw one line per side. Each drag is one side; the bot fires
+  the card evenly along all of them.
+- **`2` click** to put one spot under every ticked hero/siege unit, all together,
+  instead of each on its own point. It snaps onto the nearest drawn side line.
+- **`3` click** for the single spot the whole spell card drops on.
+- **`4` drag** to re-pick the tap band (see below).
+- `u` / `c` undo the last action / clear. Anything outside the band is drawn red
+  and named in the sidebar with the reason it is a problem.
+- **Download formula.json** saves the document; the page also exposes the same
+  JSON as `window.__picker.json()`.
+- Re-running the script seeds the page from the existing formula, so a fresh
+  screenshot does not throw away the sides you already drew.
+
+#### The tap band (`tap_band`)
+
+The blue box is the row range a tap reaches: below the top resource HUD and
+above the troop bar. The bot's built-in range is `yTopMin`..`UICutoff(h)`
+(`internal/attack/deploy_line.go`) — one guess applied to every device and zoom,
+and measurably too conservative in the middle of the frame, where the field is
+clear well above `yTopMin`. So a formula may carry its own band, and the deploy
+path **clamps to it instead of the built-in range**:
+
+```json
+{
+  "screen": { "w": 1280, "h": 720 },
+  "tap_band": { "y_top": 61, "y_bottom": 599 },
+  "units": { ... }
+}
+```
+
+Two rules matter when reading a log:
+
+- The band is honoured **only when it describes the live frame.** The chrome it
+tracks is edge-anchored while `ProjectUniform` moves points about the frame
+centre, so a band written on another geometry has no correct projection; the
+bot says so and uses the built-in range rather than clamping live points to rows
+nobody measured.
+- A band reaching **under the troop bar** is logged loudly and still used. It is
+your measurement from the screenshot; silently reverting it is how a deploy ends
+up somewhere neither of you chose.
+
+Watch for `using the formula's own tap_band` (honoured) versus `using the
+built-in band` (rejected, with the reason) in the deploy log.
+
+### Reading the deploy log for a ring
+
+A ring deploys per side, so the log carries one line per side plus a summary:
+
+```
+INF deploying troops along one side of the ring side=1 count=4 p1={256,144} p2={1024,144}
+INF deploying troops along one side of the ring side=2 count=4 p1={1024,144} p2={1024,576}
+INF deploying troops along one side of the ring side=3 count=3 p1={1024,576} p2={256,576}
+INF deploying troops along one side of the ring side=4 count=3 p1={256,576} p2={256,144}
+INF ring deploy: card spread across all authored sides sides=4 requested=14 fired=14
+```
+
+`fired` below `requested` means a side got a zero share (fewer units than sides);
+`src=formula` on the `deploying troop` line means the ring was used rather than a
+fallback edge line. If you instead see `FourSides rapid spam`, the formula was
+not found or did not carry a `sides` entry — the bot fell back to the legacy
+`pCfg.Edges` corners.
 
 ## Per-corner authoring walkthrough
 
@@ -207,7 +359,7 @@ type Formula struct {
 }
 
 type UnitEntry struct {
-    Type   string         `json:"type,omitempty"`  // "point" | "line" | "lines"
+    Type   string         `json:"type,omitempty"`  // "point" | "line" | "lines" | "sides"
     P      *Point         `json:"p,omitempty"`     // for point
     P1, P2 *Point         `json:"p1,p2,omitempty"`  // for line
     Lines  []LinePoint    `json:"lines,omitempty"`  // for lines (rage 3+2)
@@ -219,9 +371,9 @@ type Point struct { X, Y int }
 type LinePoint struct { P1, P2 Point; Count, Jitter int }
 ```
 
-`CornerOverrides` is **omitted from JSON when nil** (so old formulas without the field round-trip cleanly). Each per-corner value is a per-unit map with the same schema as `Units`.
+`TapBand` and `CornerOverrides` are **omitted from JSON when nil** (so old formulas round-trip cleanly). Each `corner_overrides` value is a per-unit map with the same schema as `Units`.
 
-`type` is what the picker writes, so it is the field to trust: a single tap is `point` (or a legacy `p1`/`p2`-less entry), a straight sweep is `line`, and a multi-cast sweep like the rage 3+2 split is `lines` — one `LinePoint` per sub-line, each with its own `count`. `_rage_inner` is a separate, optional key, never a sub-line: when it is absent the deployer derives the inner line (`deriveInwardLine`). The shipped `assets/strategies/auto_edrag_rush_formula.json` therefore has ten `units` and no `_rage_inner`.
+`type` is what the picker writes, so it is the field to trust: a single tap is `point` (or a legacy `p1`/`p2`-less entry), a straight sweep is `line`, a multi-cast sweep like the rage 3+2 split is `lines` — one `LinePoint` per sub-line, each with its own `count` — and a 4-side ring is `sides`, whose sub-lines are all deployed in the same battle (the mirror skips it, and the live card count is split evenly across the sides). `_rage_inner` is a separate, optional key, never a sub-line: when it is absent the deployer derives the inner line (`deriveInwardLine`). The shipped `assets/strategies/auto_edrag_rush_formula.json` therefore has ten `units` and no `_rage_inner`.
 
 ## Reference: `formula.MirrorForCorner` reflection rules
 

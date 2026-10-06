@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -333,6 +334,88 @@ func TestTypeInference(t *testing.T) {
 	}
 }
 
+// A "sides" entry is a ring: the unit is deployed along EVERY sub-line in one
+// battle. It must not be mistaken for "lines" (a single spell's sub-lines),
+// because the spell deployer routes "lines" into its rage/pass logic while the
+// troop deployer has to spread the card across the whole ring.
+func TestIsSides_IsNotLines(t *testing.T) {
+	ring := UnitEntry{Type: "sides", Lines: []LinePoint{
+		{P1: Point{X: 0, Y: 0}, P2: Point{X: 10, Y: 0}},
+		{P1: Point{X: 10, Y: 0}, P2: Point{X: 10, Y: 10}},
+	}}
+	if !ring.IsSides() {
+		t.Error("a \"sides\" entry must report IsSides()")
+	}
+	if ring.IsLines() {
+		t.Error("a \"sides\" entry must NOT report IsLines(): the spell path would treat the ring as one spell's sub-lines")
+	}
+	if ring.IsPoint() || ring.IsLine() {
+		t.Error("a \"sides\" entry is neither a point nor a line")
+	}
+
+	// The converse: a rage-style "lines" entry is not a ring, and a Lines-only
+	// entry with no Type keeps its historical inference.
+	rage := UnitEntry{Type: "lines", Lines: ring.Lines}
+	if rage.IsSides() {
+		t.Error("a \"lines\" entry must not report IsSides()")
+	}
+	if !rage.IsLines() {
+		t.Error("a \"lines\" entry must report IsLines()")
+	}
+	untyped := UnitEntry{Lines: ring.Lines}
+	if untyped.IsSides() || !untyped.IsLines() {
+		t.Errorf("an untyped Lines entry must stay inferred as \"lines\" (sides=%v lines=%v)", untyped.IsSides(), untyped.IsLines())
+	}
+}
+
+// Mirroring a ring is wrong twice over: the ring already covers every side, and
+// a reflect swaps its sub-lines between opposite sides so the per-side shares
+// land on ground the user never drew them for. Valkyries deployed from a
+// BottomRight-authored ring must therefore come out identical for every corner.
+func TestMirrorForCorner_LeavesSidesRingUntouched(t *testing.T) {
+	ring := []LinePoint{
+		{P1: Point{X: 200, Y: 150}, P2: Point{X: 1080, Y: 150}},
+		{P1: Point{X: 1080, Y: 150}, P2: Point{X: 1080, Y: 560}},
+		{P1: Point{X: 1080, Y: 560}, P2: Point{X: 200, Y: 560}},
+		{P1: Point{X: 200, Y: 560}, P2: Point{X: 200, Y: 150}},
+	}
+	base := func() *Formula {
+		return &Formula{
+			Screen: ScreenSize{W: 1280, H: 720},
+			Units: map[string]UnitEntry{
+				"valkyrie": {Type: "sides", Lines: append([]LinePoint(nil), ring...)},
+				// A point beside it, to prove the mirror still works on the
+				// rest of the formula rather than being skipped wholesale.
+				"stone slammer": {Type: "point", P: &Point{X: 1080, Y: 220}},
+			},
+		}
+	}
+
+	for _, corner := range []string{"BottomLeft", "TopRight", "TopLeft"} {
+		f := base()
+		f.MirrorForCorner(corner)
+		got := f.Units["valkyrie"]
+		if len(got.Lines) != len(ring) {
+			t.Fatalf("corner %s: ring lost sub-lines (%d of %d)", corner, len(got.Lines), len(ring))
+		}
+		for i, want := range ring {
+			if got.Lines[i] != want {
+				t.Errorf("corner %s: ring sub-line %d moved from %v to %v — a ring is absolute geometry", corner, i, want, got.Lines[i])
+			}
+		}
+		if p := f.Units["stone slammer"].P; *p == (Point{X: 1080, Y: 220}) {
+			t.Errorf("corner %s: the point entry beside the ring was not mirrored", corner)
+		}
+	}
+
+	// BottomRight is the identity, so the ring is trivially unchanged there too.
+	f := base()
+	f.MirrorForCorner("BottomRight")
+	if got := f.Units["valkyrie"].Lines[0]; got != ring[0] {
+		t.Errorf("BottomRight must be the identity mirror, got %v want %v", got, ring[0])
+	}
+}
+
 func TestLoadFile_RoundTripPreservesGeometry(t *testing.T) {
 	original := Formula{
 		Name:   "roundtrip",
@@ -376,6 +459,54 @@ func TestLoadFile_EmptyUnitsNormalizedToMap(t *testing.T) {
 	}
 }
 
+// A formula's own tap_band is the y-range a tap reaches on the screen it was
+// drawn on. It has to survive Save/Load or the deploy path silently falls back
+// to the built-in band and moves every point the user measured into place.
+func TestTapBand_RoundTripsAndIsOmittedWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+
+	withBand := filepath.Join(dir, "with.json")
+	f := &Formula{
+		Screen:  ScreenSize{W: 1280, H: 720},
+		TapBand: &TapBand{YTop: 61, YBottom: 599},
+		Units:   map[string]UnitEntry{"valkyrie": {Type: "point", P: &Point{X: 10, Y: 20}}},
+	}
+	if err := f.Save(withBand); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	back, err := LoadFile(withBand)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if back.TapBand == nil {
+		t.Fatal("tap_band did not survive the round trip; the deploy path would clamp to its built-in band instead")
+	}
+	if back.TapBand.YTop != 61 || back.TapBand.YBottom != 599 {
+		t.Errorf("tap_band = %+v, want 61..599", *back.TapBand)
+	}
+
+	// A formula without one must not grow a zero-valued band, which the deploy
+	// path would read as a degenerate range and reject noisily.
+	noBand := filepath.Join(dir, "without.json")
+	if err := (&Formula{Screen: ScreenSize{W: 1280, H: 720}, Units: map[string]UnitEntry{}}).Save(noBand); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	raw, err := os.ReadFile(noBand)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(raw), "tap_band") {
+		t.Errorf("a formula with no band must not emit a tap_band key:\n%s", raw)
+	}
+	plain, err := LoadFile(noBand)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if plain.TapBand != nil {
+		t.Errorf("absent tap_band must load as nil, got %+v", *plain.TapBand)
+	}
+}
+
 func TestSave_NilFormulaErrors(t *testing.T) {
 	var f *Formula
 	if err := f.Save(filepath.Join(t.TempDir(), "x.json")); err == nil {
@@ -387,14 +518,25 @@ func TestShippedFormulaFile_MirrorRoundTripsEveryUnit(t *testing.T) {
 	// The real shipped file: mirror to every corner and back must restore
 	// the exact original JSON — catches any aliasing/mutation bug in the
 	// wild data, not just synthetic fixtures.
-	for _, p := range []string{"../../assets/strategies/auto_edrag_rush_formula.json", "assets/strategies/auto_edrag_rush_formula.json"} {
+	// Both shipped formulas: the EDrag one is mirrored per corner, the valk one
+	// carries a "sides" ring that the mirror must leave alone. A double mirror
+	// has to be the identity for either shape.
+	files := []string{
+		"../../assets/strategies/auto_edrag_rush_formula.json",
+		"assets/strategies/auto_edrag_rush_formula.json",
+		"../../assets/strategies/valk_spam_formula.json",
+		"assets/strategies/valk_spam_formula.json",
+	}
+	found := false
+	for _, p := range files {
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
+		found = true
 		var original Formula
 		if err := json.Unmarshal(raw, &original); err != nil {
-			t.Fatalf("parse shipped formula: %v", err)
+			t.Fatalf("parse shipped formula %s: %v", p, err)
 		}
 		for _, corner := range []string{"BottomRight", "BottomLeft", "TopRight", "TopLeft"} {
 			f := original // struct copy; shared *Point fields exercise aliasing
@@ -403,10 +545,11 @@ func TestShippedFormulaFile_MirrorRoundTripsEveryUnit(t *testing.T) {
 			got, _ := json.Marshal(f.Units)
 			want, _ := json.Marshal(original.Units)
 			if string(got) != string(want) {
-				t.Errorf("corner %s: double mirror did not restore shipped units", corner)
+				t.Errorf("%s corner %s: double mirror did not restore shipped units", p, corner)
 			}
 		}
-		return
 	}
-	t.Skip("shipped formula not found from test cwd")
+	if !found {
+		t.Skip("shipped formula not found from test cwd")
+	}
 }

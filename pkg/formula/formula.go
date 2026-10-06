@@ -19,7 +19,14 @@
 //	    "rage spell":       {"type":"lines", "lines":[
 //	      {"p1":{"x":80,"y":200},"p2":{"x":130,"y":280},"count":3,"jitter":3},
 //	      {"p1":{"x":80,"y":280},"p2":{"x":130,"y":380},"count":2,"jitter":3}
-//	    ]}
+//	    ]},
+//	    "valkyrie":         {"type":"sides", "lines":[
+//	      {"p1":{"x":256,"y":144},"p2":{"x":1024,"y":144}},
+//	      {"p1":{"x":1024,"y":144},"p2":{"x":1024,"y":576}},
+//	      {"p1":{"x":1024,"y":576},"p2":{"x":256,"y":576}},
+//	      {"p1":{"x":256,"y":576},"p2":{"x":256,"y":144}}
+//	    ]},
+//	    "earthquake spell": {"type":"point", "p":{"x":640,"y":400}}
 //	  }
 //	}
 package formula
@@ -57,9 +64,11 @@ type LinePoint struct {
 //
 // Type discriminator (inferred from populated fields):
 //
-//	"point" - single tap target (heroes, siege)
+//	"point" - single tap target (heroes, siege, a spell dropped on one spot)
 //	"line"  - taps evenly distributed from P1 to P2 (balloons, EDrag)
 //	"lines" - rage-style split (each LinePoint is one sub-line)
+//	"sides" - taps spread across EVERY LinePoint in Lines (a troop ring that
+//	          covers all four sides in one battle, e.g. Valkyries)
 //	empty   - no entry; caller falls back to pCfg.Edges
 type UnitEntry struct {
 	Type string `json:"type,omitempty"`
@@ -87,10 +96,26 @@ func (e UnitEntry) IsLine() bool {
 	return e.Type == "line" || (e.Type == "" && e.P1 != nil && e.P2 != nil && len(e.Lines) == 0)
 }
 
-// IsLines returns true if the entry is "lines".
+// IsLines returns true if the entry is "lines" (a spell's sub-lines, e.g. the
+// rage 3+2 split, which the corner mirror still reflects).
+//
+// A "sides" entry also carries Lines, so it is excluded explicitly: its
+// sub-lines are an already-complete ring of sides rather than one spell's
+// sweep, and every Lines-reading path has to route them differently.
 func (e UnitEntry) IsLines() bool {
+	if e.IsSides() {
+		return false
+	}
 	return e.Type == "lines" || len(e.Lines) > 0
 }
+
+// IsSides returns true if the entry is "sides": the unit is deployed along
+// EVERY sub-line in Lines in a single battle (a Valkyrie ring on all four
+// sides). Distinct from "line" (one sweep) and "lines" (one spell's sub-lines)
+// because the coverage is already absolute — the user drew every side they want
+// troops on — so MirrorForCorner leaves it as authored instead of reflecting it
+// onto a corner it was never drawn for.
+func (e UnitEntry) IsSides() bool { return e.Type == "sides" }
 
 // Formula is the top-level deploy plan.
 //
@@ -122,9 +147,32 @@ type ScreenSize struct {
 	H int `json:"h"`
 }
 
+// TapBand is the y-range a tap can reach on the screen this formula was drawn
+// on: the rows between the top resource HUD and the troop bar.
+//
+// It exists because the deploy path's built-in band (yTopMin..UICutoff) is one
+// guess at where the game's chrome ends, applied to every device and every
+// zoom, and it is wrong on both counts — measured live, the field is clear well
+// above yTopMin in the centre of the frame while the loot counters reach much
+// lower at the edges. A band here comes from a human looking at the battle
+// screen (tools/line_picker.html), which is the only source in this system that
+// has actually seen where the field ends on this device, so it replaces the
+// built-in range for THIS formula's clamp.
+//
+// Only the y-band is expressed, and it is honoured only when the formula
+// describes the live frame — see attack.formulaBand for why a band cannot be
+// projected the way world coordinates are.
+//
+// Omitted from JSON when nil, so formulas without one round-trip unchanged.
+type TapBand struct {
+	YTop    int `json:"y_top"`
+	YBottom int `json:"y_bottom"`
+}
+
 type Formula struct {
 	Name            string                          `json:"name"`
 	Screen          ScreenSize                      `json:"screen"`
+	TapBand         *TapBand                        `json:"tap_band,omitempty"`
 	Units           map[string]UnitEntry            `json:"units"`
 	CornerOverrides map[string]map[string]UnitEntry `json:"corner_overrides,omitempty"`
 }
@@ -304,6 +352,12 @@ func (f *Formula) MirrorForCorner(targetEdge string) {
 	}
 
 	for name, e := range f.Units {
+		// A "sides" entry is absolute coverage: the user drew a line per side,
+		// so reflecting it would swap its sub-lines between opposite sides and
+		// scramble the per-side shares. Leave it as authored.
+		if e.IsSides() {
+			continue
+		}
 		if mirrorX {
 			e.P = mirrorPoint(e.P, 'x', w)
 			e.P1 = mirrorPoint(e.P1, 'x', w)

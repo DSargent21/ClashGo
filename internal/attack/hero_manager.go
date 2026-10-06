@@ -756,7 +756,16 @@ func (hm *HeroManager) DeployTroops(
 	unitName := strings.ToLower(strings.TrimSpace(unit.Name))
 	isFourSides := pattern == "FourSides" || phasePattern == "FourSides"
 
-	if isFourSides {
+	// The authored ring outranks BOTH legacy paths. The FourSides path fires taps
+	// at every pCfg.Edges corner WITHOUT ever consulting the formula, so leaving
+	// it in front of the formula lookup made a drawn ring silently inert: the
+	// user pins four sides, and the bot deploys the red-zone-derived corners
+	// instead. When a "sides" entry exists the shared geometry/tap path below
+	// takes it, where the live card count decides the per-side split.
+	ringEntry, hasRing := hm.formulaEntry(unit.Name)
+	hasRing = hasRing && ringEntry.IsSides() && len(ringEntry.Lines) > 0
+
+	if isFourSides && !hasRing {
 
 		cfg := hm.pCfg
 		if offset > 0 {
@@ -782,11 +791,25 @@ func (hm *HeroManager) DeployTroops(
 	}
 
 	var p1, p2 image.Point
-	// geometry sourcing: the user's pins, else the strategy formula, else the
-	// legacy edge pin. See SetPinnedGround for why the pins outrank the formula.
+	// sidesLines is set when the formula entry is a "sides" ring: this card is
+	// deployed along EVERY sub-line, one per side of the base, instead of down a
+	// single line. p1/p2 are still seeded from the first sub-line so the logging
+	// and the ground record below describe real ground.
+	var sidesLines []formula.LinePoint
+	// geometry sourcing, highest precedence first: an authored RING, then the
+	// user's pins, then the strategy formula, then the legacy edge pin. See
+	// SetPinnedGround for why the pins outrank the formula; the ring outranks the
+	// pins because precision_config pins a single LINE and a ring is four sides —
+	// letting the pin win made the drawn ring unreachable for anyone who had ever
+	// pinned a corner with cmd/pick_coords.
 	src := "edge"
 	hasFormula := false
-	if hm.pinnedGround && len(hm.deployLine.Points) >= 2 {
+	if hasRing {
+		sidesLines = ringEntry.Lines
+		p1 = ringEntry.Lines[0].P1.Image()
+		p2 = ringEntry.Lines[0].P2.Image()
+		hasFormula = true
+	} else if hm.pinnedGround && len(hm.deployLine.Points) >= 2 {
 		p1 = hm.deployLine.Points[0]
 		p2 = hm.deployLine.Points[len(hm.deployLine.Points)-1]
 		src = "pin"
@@ -814,7 +837,13 @@ func (hm *HeroManager) DeployTroops(
 
 	// Remember this pass's ground for the hero phase that follows: these taps
 	// were accepted by the game moments ago (see hero_manager.go's troopGround).
-	hm.recordGround(p1, p2)
+	if len(sidesLines) > 0 {
+		for _, lp := range sidesLines {
+			hm.recordGround(lp.P1.Image(), lp.P2.Image())
+		}
+	} else {
+		hm.recordGround(p1, p2)
+	}
 
 	// The fresh pre-deploy read is only worth its ~300ms when nothing
 	// trustworthy already measured this card. The orchestrator reads the whole
@@ -840,15 +869,19 @@ func (hm *HeroManager) DeployTroops(
 	tapCount, tapCountMeasured := hm.resolveLiveTapCountMeasured(unit, slot, preCount, preTrusted, detectedCount)
 
 	var deployed func(int, int)
-	if p1 == p2 {
+	switch {
+	case len(sidesLines) > 0:
+		deployed = func(c, j int) { hm.deployTroopSides(sidesLines, c, j) }
+	case p1 == p2:
 		deployed = func(c, j int) { hm.executor.TapDeployPoint(p1, c, j) }
-	} else {
+	default:
 		deployed = func(c, j int) { hm.executor.TapDeployLine(p1, p2, c, j) }
 	}
 	if src != "edge" {
 		hm.logger.Info().
 			Str("unit", unit.Name).
 			Str("src", src).
+			Int("sides", len(sidesLines)).
 			Int("count", tapCount).
 			Bool("count_measured", tapCountMeasured).
 			Int("live_count", preCount).
@@ -977,6 +1010,52 @@ func (hm *HeroManager) DeployTroops(
 		Msg("reconcile exhausted; leaving slot in SlotAttempted for sweep to retry")
 	hm.slotManager.RecordAttempt(unitName, false)
 	return false
+}
+
+// deployTroopSides fires `total` taps spread across the authored ring — one
+// sub-line per side of the base — instead of down a single line. It backs the
+// formula's "sides" entry (the Valkyrie ring), which MirrorForCorner leaves
+// alone because the user has already drawn every side they want troops on.
+//
+// The split is even, with the remainder going to the first sub-lines, so a card
+// of 15 units on 4 sides fires 4/4/4/3. A nonzero Count on a sub-line is NOT
+// consulted as a weight: the live card count is the only authority on how many
+// units exist, and the ring's point is to wrap the base evenly. Shapes that need
+// an uneven share belong in a "lines" entry, not here.
+//
+// A side whose share rounds to zero is skipped rather than fired anyway, so a
+// 3-unit card on a 4-line ring taps three sides and leaves the fourth alone
+// (firing a fourth tap would spend a unit that does not exist).
+func (hm *HeroManager) deployTroopSides(lines []formula.LinePoint, total, jitter int) {
+	if len(lines) == 0 || total <= 0 {
+		return
+	}
+	per := total / len(lines)
+	rem := total % len(lines)
+	fired := 0
+	for i, lp := range lines {
+		n := per
+		if i < rem {
+			n++
+		}
+		if n <= 0 {
+			continue
+		}
+		p1, p2 := lp.P1.Image(), lp.P2.Image()
+		hm.logger.Info().
+			Int("side", i+1).
+			Int("count", n).
+			Interface("p1", p1).
+			Interface("p2", p2).
+			Msg("deploying troops along one side of the ring")
+		hm.executor.TapDeployLine(p1, p2, n, jitter)
+		fired += n
+	}
+	hm.logger.Info().
+		Int("sides", len(lines)).
+		Int("requested", total).
+		Int("fired", fired).
+		Msg("ring deploy: card spread across all authored sides")
 }
 
 // DeploySiege deploys a siege machine.

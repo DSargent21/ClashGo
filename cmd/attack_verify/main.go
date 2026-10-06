@@ -325,10 +325,15 @@ func main() {
 	// ---- render overlay ----
 	out := img.Clone()
 	defer out.Close()
-	// The band the bot is willing to tap: it starts where the deploy line's own
-	// top bound does, not at 6% of the screen, so the picture cannot show a tap
-	// as "in band" that the deploy code refuses to make.
-	uiTop := attack.YTopMin()
+	// The band the bot is willing to tap. It is resolved from the FORMULA when the
+	// formula carries its own `tap_band`, because that is what the deploy path
+	// clamps to; drawing the built-in range instead would flag points the bot is
+	// happy to tap and hide the ones it will move.
+	bandTop, bandBottom := attack.YTopMin(), attack.UICutoff(h)
+	if hasFormula {
+		bandTop, bandBottom = attack.FormulaBand(formulaPtr, w, h, bandBottom, logger)
+	}
+	uiTop := bandTop
 	gocv.Rectangle(&out, image.Rect(0, uiTop, w, mBarY), color.RGBA{40, 40, 40, 255}, 1)
 
 	// Order matters: the mask goes down first (magenta fill), then the outline the
@@ -362,9 +367,9 @@ func main() {
 	cornerHits := 0
 	clampedOutsideBand := 0
 	if hasFormula {
-		// Same band the orchestrator uses: yTopMin (the deploy line's own top
-		// bound) up to the uiCutoff the bot computes for this screen.
-		clampedOutsideBand = formulaPtr.ClampY(attack.YTopMin(), int(float64(h)*0.85))
+		// Same band the orchestrator uses: the formula's own tap_band when it has
+		// one, else the built-in yTopMin..uiCutoff.
+		clampedOutsideBand = formulaPtr.ClampY(bandTop, bandBottom)
 		for name, entry := range formulaPtr.Units {
 			if strings.HasPrefix(name, "_") {
 				continue // helper entries (e.g. _rage_inner) are not directly tapped
@@ -373,7 +378,7 @@ func main() {
 			points := collectPoints(entry)
 			for _, pt := range points {
 				tapCount++
-				inBand := pt.Y >= attack.YTopMin() && pt.Y < mBarY
+				inBand := pt.Y >= bandTop && pt.Y < mBarY
 				if !inBand {
 					cornerHits++
 					// draw offenders in solid red with a warning ring
@@ -498,7 +503,7 @@ func main() {
 				continue
 			}
 			for _, pt := range collectPoints(entry) {
-				inBand := pt.Y >= attack.YTopMin() && pt.Y < mBarY
+				inBand := pt.Y >= bandTop && pt.Y < mBarY
 				blocked := redZone.Inside(pt.X, pt.Y)
 				verdict := "ok"
 				switch {
@@ -523,7 +528,7 @@ func main() {
 	}
 	if clampedOutsideBand > 0 {
 		warn("%d formula tap points project outside the live deployable band (y %d..%d: behind the top HUD or under the troop bar) and are clamped into it — re-author them for this geometry",
-			clampedOutsideBand, attack.YTopMin(), int(float64(h)*0.85))
+			clampedOutsideBand, bandTop, bandBottom)
 	}
 	if cornerHits > 0 {
 		warn("%d formula tap points fall OUTSIDE the deployable band even after clamping — these land on the HUD/corners in a real battle", cornerHits)
@@ -632,7 +637,7 @@ func collectPoints(e formula.UnitEntry) []image.Point {
 		pts = append(pts, e.P.Image())
 	case e.IsLine() && e.P1 != nil && e.P2 != nil:
 		pts = append(pts, e.P1.Image(), e.P2.Image())
-	case e.IsLines():
+	case e.IsLines() || e.IsSides():
 		for _, lp := range e.Lines {
 			pts = append(pts, lp.P1.Image(), lp.P2.Image())
 		}

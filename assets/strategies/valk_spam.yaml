@@ -1,6 +1,6 @@
 name: "Valkyrie Earthquake Spam"
-description: "Spam Valkyries on all 4 sides, followed by Heroes/Siege and Earthquakes"
-target_edge: "Random"
+description: "Spam Valkyries on all 4 sides, followed by Heroes/Siege and Earthquakes. The ring comes from valk_spam_formula.json: `valkyrie` is a \"sides\" entry (one authored line per side, all fired in the same battle) and `earthquake spell` is a single point, so the whole spell card drops on the one spot that was pinned. Author it with cmd/design_attack — the ring unit takes 2 clicks per side (press `m` between sides), the spell takes 1 click. target_edge is pinned to BottomRight rather than Random: the ring is absolute geometry that the corner mirror deliberately skips, and a Random corner would drag the hero/siege/spell points to a different corner every battle."
+target_edge: "BottomRight"
 # The Valkyrie ring plus heroes secures the win well before the stall
 # timer would fire; end the battle as soon as destruction hits 50%.
 end_at_percent: 50
@@ -30,8 +30,10 @@ phases:
     units: 
       - { name: "Earthquake Spell", amount: "All" }
       - { name: "Event Troop", amount: "All" }
-    pattern: "FourSides"
-    offset: 130 # Deeper in for EQs
+    # Point, not FourSides: the whole spell card drops on ONE pinned spot
+    # (formula `earthquake spell` → {"type":"point","p":{...}}) instead of
+    # ringing all four walls. Re-author the point with cmd/design_attack.
+    pattern: "Point"
     delay_after_ms: 100
 
   - name: "Abilities"

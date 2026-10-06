@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClashGO line picker</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #14161a; color: #e7e9ee;
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px 10px; background: #1c1f26; border-bottom: 1px solid #2c313c;
+    position: sticky; top: 0; z-index: 5;
+  }
+  header .grow { flex: 1 1 auto; }
+  #title { font-weight: 600; color: #9ecbff; margin-right: 6px; }
+  #status { color: #8b93a3; }
+  button, select {
+    font: inherit; color: #e7e9ee; background: #262b34;
+    border: 1px solid #39404d; border-radius: 5px; padding: 5px 9px; cursor: pointer;
+  }
+  button:hover, select:hover { background: #303743; }
+  button.on { background: #2f6f4f; border-color: #46a377; color: #eafff3; }
+  button.heroes.on { background: #4a3a6f; border-color: #8d76c9; color: #f2ecff; }
+  button.spell.on { background: #6f2f63; border-color: #c96fb4; color: #ffeaf9; }
+  button.band.on { background: #6a5320; border-color: #c9a44e; color: #fff6e2; }
+  button.warn { border-color: #6b3a3a; }
+  main { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; padding: 10px; }
+  #stage { flex: 0 1 auto; overflow: auto; max-height: calc(100vh - 80px); border: 1px solid #2c313c; }
+  canvas { display: block; cursor: crosshair; touch-action: none; }
+  aside { flex: 1 1 320px; min-width: 300px; max-width: 560px; display: flex; flex-direction: column; gap: 8px; }
+  .card { background: #1c1f26; border: 1px solid #2c313c; border-radius: 6px; padding: 8px 10px; }
+  .card h2 { margin: 0 0 6px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: #8b93a3; }
+  ol { margin: 0; padding-left: 20px; }
+  ol li { margin: 2px 0; }
+  .bad { color: #ff9b9b; }
+  .units { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+  .units label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  pre { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; color: #cfe3ff; font-size: 11.5px; }
+  .hint { color: #8b93a3; }
+  .k { color: #ffd479; }
+  .err { color: #ff9b9b; }
+  .ok { color: #86e0a8; }
+  .warnc { color: #ffcf7a; }
+</style>
+</head>
+<body>
+<header>
+  <span id="title">ClashGO line picker</span>
+  <button id="mode-line" class="on" title="Drag to draw one line per side the troops should cover (key 1)">1 &middot; Side line</button>
+  <button id="mode-heroes" class="heroes" title="Click once: every checked unit below deploys on that single spot (key 2)">2 &middot; One spot</button>
+  <button id="mode-spell" class="spell" title="Click the one spot the spell card drops on (key 3)">3 &middot; Spell</button>
+  <button id="mode-band" class="band" title="Drag vertically to re-pick the band a tap can reach (key 4)">4 &middot; Tap band</button>
+  <span class="grow"></span>
+  <button id="recapture" title="Pull the emulator's screen right now, keeping everything drawn">Recapture</button>
+  <button id="save" title="Write the formula into the repo">Save to repo</button>
+  <label class="hint">snap <input type="checkbox" id="snap" checked title="Snap a clicked spot onto the nearest drawn side line"></label>
+  <label class="hint">zoom
+    <select id="zoom">
+      <option value="fit">fit</option>
+      <option value="100">100%</option>
+      <option value="200">200%</option>
+    </select>
+  </label>
+  <button id="undo" title="Undo the last action (key U)">Undo</button>
+  <button id="clear" class="warn" title="Remove everything (key C)">Clear</button>
+  <button id="download" title="Save the formula JSON">Download</button>
+  <span id="status"></span>
+</header>
+
+<main>
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <aside>
+    <div class="card">
+      <h2>Ring sides &mdash; <span id="ring-unit"></span></h2>
+      <ol id="list"><li class="hint">nothing drawn yet</li></ol>
+    </div>
+    <div class="card">
+      <h2>One spot &mdash; heroes + siege</h2>
+      <div id="shared-out" class="hint">not placed yet</div>
+      <div class="units" id="shared-units"></div>
+      <div class="hint" style="margin-top:6px">Checked units deploy on the point above, all together, instead of on their own spot.</div>
+    </div>
+    <div class="card">
+      <h2>Spell spot &mdash; <span id="spell-unit"></span></h2>
+      <div id="spell-out" class="hint">not placed yet</div>
+    </div>
+    <div class="card">
+      <h2>Tap band</h2>
+      <div id="band-out"></div>
+      <div style="margin-top:6px"><button id="band-reset">Reset to the bot's band</button></div>
+    </div>
+    <div class="card">
+      <h2>Formula JSON</h2>
+      <pre id="json"></pre>
+      <div style="margin-top:8px; display:flex; gap:8px; align-items:center">
+        <button id="copy">Copy JSON</button>
+        <span id="copied" class="hint"></span>
+      </div>
+      <div id="warnings" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <h2>How to use</h2>
+      <div class="hint">
+        <span class="k">1 Drag</span> to draw one line per side the troops should cover &mdash; one drag per side.<br>
+        <span class="k">2 Click</span> to put every checked hero/siege on one shared spot (snaps onto the nearest side line).<br>
+        <span class="k">3 Click</span> for the single spot the spell card drops on.<br>
+        <span class="k">4 Drag</span> up or down to re-pick the tap band if it does not match this screen.<br>
+        <span class="k">Snap</span> keeps a clicked spot exactly on a drawn line.
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+// --- injected by tools/line_picker.py -------------------------------------
+const IMG_SRC      = "__SCREENSHOT_DATA_URI__";
+const OTHER_UNITS  = __OTHER_UNITS_JSON__;
+const RING_UNIT    = "__RING_UNIT__";
+const SPELL_UNIT   = "__SPELL_UNIT__";
+const FORMULA_NAME = "__FORMULA_NAME__";
+const SEED         = __SEED_JSON__;
+// Served by tools/line_picker.py --serve: the frame is a URL that re-captures on
+// every request, so Re-capture can pull the emulator without a rebuild. In file
+// mode the frame is inlined and both live buttons are hidden.
+const SERVER_MODE  = __SERVER_MODE__;
+const FRAME_URL    = "/frame.png";
+const SAVE_URL     = "/save";
+// The band the BOT clamps to, in device pixels: yTopMin and UICutoff(h) in
+// internal/attack/deploy_line.go. Points outside it are moved by the bot
+// before it taps, so they are what "outside the band" has to mean.
+const BOT_BAND_TOP = 110;
+const BOT_BAND_BOTTOM_FRACTION = 0.85;
+// How far a click may be from a drawn line and still snap onto it.
+const SNAP_MAX_PX = 60;
+// -------------------------------------------------------------------------
+
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const img = new Image();
+const stage = document.getElementById("stage");
+
+let W = 1280, H = 720;
+
+// Units carried over from the existing formula that deploy on a single point —
+// the heroes and the siege machine. They are the ones "one spot" applies to.
+const POINT_UNITS = Object.keys(OTHER_UNITS).filter(
+  (k) => (OTHER_UNITS[k] || {}).type === "point"
+);
+
+const state = {
+  mode: "line",              // line | heroes | spell | band
+  lines: [],                 // [{p1:{x,y}, p2:{x,y}}]
+  spell: null,               // {x,y}
+  shared: null,              // {x,y} — one spot for every checked unit
+  sharedUnits: POINT_UNITS.slice(),
+  snap: true,
+  band: null,                // {top,bottom}; null until the image size is known
+  drag: null,                // {start, cur}
+  hover: null,
+};
+
+const LINE_COLORS = ["#ffd479", "#86e0a8", "#8fb8ff", "#ff9de0", "#ffb08a", "#a8f0ff"];
+
+let seeded = false;
+img.onload = () => {
+  const wChanged = W !== img.naturalWidth || H !== img.naturalHeight;
+  W = img.naturalWidth;
+  H = img.naturalHeight;
+  if (wChanged) {
+    // A re-captured frame at a different size invalidates every coordinate, and
+    // the user's band went with it. Reset the band and say so rather than
+    // silently keeping numbers that now describe a different screen.
+    state.band = { top: BOT_BAND_TOP, bottom: Math.floor(H * BOT_BAND_BOTTOM_FRACTION) };
+    if (seeded) setStatus("frame is now " + W + "×" + H + "; the band was reset and the drawing kept its raw pixels");
+  }
+  if (!state.band) state.band = { top: BOT_BAND_TOP, bottom: Math.floor(H * BOT_BAND_BOTTOM_FRACTION) };
+  // Seed exactly once. A Re-capture reloads the image, and re-seeding would
+  // throw away everything drawn since the page loaded.
+  if (!seeded && SEED) load(SEED, { quiet: true });
+  seeded = true;
+  applyZoom();
+  redraw();
+  render();
+};
+img.src = IMG_SRC;
+
+function botBand() {
+  return { top: BOT_BAND_TOP, bottom: Math.floor(H * BOT_BAND_BOTTOM_FRACTION) };
+}
+
+function inBand(p) {
+  return !!state.band && p.y >= state.band.top && p.y <= state.band.bottom;
+}
+
+function inBotBand(p) {
+  const b = botBand();
+  return p.y >= b.top && p.y <= b.bottom;
+}
+
+function applyZoom() {
+  const mode = document.getElementById("zoom").value;
+  let cssW;
+  if (mode === "fit") {
+    // The panel's own width, not a guess at the sidebar's: main wraps, so the
+    // canvas may take the full width with the sidebar underneath it.
+    cssW = Math.min(W, Math.max(320, document.documentElement.clientWidth - 34));
+  } else {
+    cssW = W * (Number(mode) / 100);
+  }
+  cv.width = W;
+  cv.height = H;
+  cv.style.width = cssW + "px";
+  cv.style.height = (cssW * H / W) + "px";
+}
+
+// Everything the tool stores is in DEVICE pixels, so the emitted JSON drops
+// straight into a formula file with no scaling step.
+function canvasPoint(ev) {
+  const r = cv.getBoundingClientRect();
+  return {
+    x: clamp(Math.round((ev.clientX - r.left) * (W / r.width)), 0, W - 1),
+    y: clamp(Math.round((ev.clientY - r.top) * (H / r.height)), 0, H - 1),
+  };
+}
+
+function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// closestOnSegment projects p onto the segment a→b, clamped to its ends.
+function closestOnSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  t = clamp(t, 0, 1);
+  return { x: Math.round(a.x + t * dx), y: Math.round(a.y + t * dy) };
+}
+
+// snapToLines pulls a clicked spot onto the nearest drawn side, which is what
+// "put the heroes centred on one of the lines" needs — a free-hand click next to
+// a line is not on it, and a point a few pixels off reads as a different intent
+// when the bot projects it.
+function snapToLines(p) {
+  if (!state.snap || state.lines.length === 0) return { p: p, snapped: false };
+  let best = null, bestD = Infinity;
+  for (const ln of state.lines) {
+    const q = closestOnSegment(p, ln.p1, ln.p2);
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < bestD) { bestD = d; best = q; }
+  }
+  if (best && bestD <= SNAP_MAX_PX) return { p: best, snapped: true };
+  return { p: p, snapped: false };
+}
+
+function redraw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(img, 0, 0);
+
+  // The band the user picked: the region a tap can reach.
+  if (state.band) {
+    const { top, bottom } = state.band;
+    ctx.save();
+    ctx.fillStyle = "rgba(80, 130, 255, 0.16)";
+    ctx.fillRect(0, top, W, Math.max(0, bottom - top));
+    ctx.strokeStyle = "rgba(90, 160, 255, 0.9)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, top, W - 2, Math.max(0, bottom - top));
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(6, top + 4, 200, 18);
+    ctx.fillStyle = "#9ecbff";
+    ctx.font = "14px ui-monospace, monospace";
+    ctx.fillText("tap band  y " + top + ".." + bottom, 12, top + 18);
+    ctx.restore();
+
+    // The bot's own built-in band, drawn only where the picked one differs from
+    // it. It is a reference, not a clamp any more: a formula's tap_band replaces
+    // it, so these lines show how far the band was moved, and how much of the
+    // frame that buys.
+    const bot = botBand();
+    if (bot.top !== top || bot.bottom !== bottom) {
+      ctx.save();
+      ctx.setLineDash([9, 6]);
+      ctx.strokeStyle = "rgba(255, 176, 60, 0.95)";
+      ctx.lineWidth = 2;
+      [bot.top, bot.bottom].forEach((y, i) => {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(6, y + (i === 0 ? 4 : -22), 250, 18);
+        ctx.fillStyle = "#ffb03c";
+        ctx.font = "13px ui-monospace, monospace";
+        ctx.fillText("built-in band edge  y=" + y, 12, y + (i === 0 ? 18 : -8));
+      });
+      ctx.restore();
+    }
+  }
+
+  state.lines.forEach((ln, i) => {
+    const c = LINE_COLORS[i % LINE_COLORS.length];
+    ctx.save();
+    ctx.strokeStyle = c;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(ln.p1.x, ln.p1.y);
+    ctx.lineTo(ln.p2.x, ln.p2.y);
+    ctx.stroke();
+    [[ln.p1, "1"], [ln.p2, "2"]].forEach(([p, n]) => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = inBand(p) ? c : "#ff5a5a";
+      ctx.fill();
+      ctx.fillStyle = "#101318";
+      ctx.font = "bold 11px ui-monospace, monospace";
+      ctx.fillText(n, p.x - 3, p.y + 4);
+    });
+    ctx.fillStyle = c;
+    ctx.font = "bold 15px ui-monospace, monospace";
+    ctx.fillText(String(i + 1), ln.p1.x + 12, ln.p1.y - 8);
+    ctx.restore();
+  });
+
+  if (state.drag) {
+    const { start, cur } = state.drag;
+    ctx.save();
+    ctx.setLineDash([7, 5]);
+    if (state.mode === "band") {
+      ctx.strokeStyle = "#ffb03c";
+      ctx.lineWidth = 2;
+      [start.y, cur.y].forEach((y) => {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      });
+    } else {
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(cur.x, cur.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  if (state.shared) {
+    marker(state.shared, "#b691ff", state.sharedUnits.length + " unit(s)");
+  }
+  if (state.spell) {
+    marker(state.spell, "#ff5cf0", SPELL_UNIT);
+  }
+}
+
+function marker(p, color, label) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(p.x - 22, p.y); ctx.lineTo(p.x + 22, p.y);
+  ctx.moveTo(p.x, p.y - 22); ctx.lineTo(p.x, p.y + 22);
+  ctx.stroke();
+  ctx.fillStyle = inBand(p) ? color : "#ff5a5a";
+  ctx.font = "bold 13px ui-monospace, monospace";
+  ctx.fillText(label, p.x + 18, p.y - 14);
+  ctx.restore();
+}
+
+// --- sidebar ---------------------------------------------------------------
+
+function fmt(p) { return "(" + p.x + "," + p.y + ")"; }
+
+// Why a coordinate is a problem, in the bot's own terms.
+//
+// It measures against the band the BOT will use, which is the one picked in mode
+// 4 — a formula's tap_band replaces the built-in clamp (attack.FormulaBand).
+// Comparing against the built-in range instead would flag every point between
+// the two as doomed when the bot deploys it happily, which is worse than no
+// warning: it teaches the user to ignore the red.
+function bandNote(p) {
+  if (inBand(p)) return "";
+  const b = state.band || botBand();
+  return "outside the band you picked — the bot would clamp it to y="
+    + (p.y < b.top ? b.top : b.bottom);
+}
+
+function render() {
+  const list = document.getElementById("list");
+  if (state.lines.length === 0) {
+    list.innerHTML = '<li class="hint">nothing drawn yet</li>';
+  } else {
+    list.innerHTML = state.lines.map((ln, i) => {
+      const c = LINE_COLORS[i % LINE_COLORS.length];
+      const len = Math.round(Math.hypot(ln.p2.x - ln.p1.x, ln.p2.y - ln.p1.y));
+      const bad = bandNote(ln.p1) || bandNote(ln.p2) || (len < 60 ? "too short to spread a card" : "");
+      return '<li' + (bad ? ' class="bad"' : '') + ' style="color:' + c + '">'
+        + fmt(ln.p1) + " → " + fmt(ln.p2)
+        + ' <span class="hint">' + len + "px</span>"
+        + (bad ? ' <span class="err">— ' + bad + "</span>" : "")
+        + "</li>";
+    }).join("");
+  }
+
+  document.getElementById("shared-out").innerHTML = state.shared
+    ? fmt(state.shared) + (bandNote(state.shared) ? ' <span class="err">— ' + bandNote(state.shared) + "</span>" : "")
+    : '<span class="hint">not placed yet</span>';
+
+  document.getElementById("spell-out").innerHTML = state.spell
+    ? fmt(state.spell) + (bandNote(state.spell) ? ' <span class="err">— ' + bandNote(state.spell) + "</span>" : "")
+    : '<span class="hint">not placed yet</span>';
+
+  const bot = botBand();
+  document.getElementById("band-out").innerHTML = state.band
+    ? "y " + state.band.top + ".." + state.band.bottom
+      + (state.band.top === bot.top && state.band.bottom === bot.bottom
+        ? ' <span class="hint">(the bot\'s built-in band)</span>'
+        : ' <span class="ok">— the formula carries this, and the bot clamps to it</span>')
+    : "";
+
+  document.getElementById("json").textContent = JSON.stringify(formula(), null, 2);
+
+  const w = [];
+  if (state.lines.length === 0) w.push("no side lines drawn yet");
+  else if (state.lines.length < 2) w.push("a ring needs at least 2 sides; 4 wraps a base");
+  else if (state.lines.length < 4) w.push("only " + state.lines.length + " sides drawn — troops will not wrap the base");
+  if (!state.shared) w.push("no one-spot point for the heroes/siege");
+  if (!state.spell) w.push("no spell spot placed");
+  if (state.sharedUnits.length === 0) w.push("every unit is unchecked, so no unit takes the one spot");
+  const clamped = state.lines.flatMap((ln) => [ln.p1, ln.p2]).concat([state.shared, state.spell].filter(Boolean))
+    .filter((p) => !inBand(p)).length;
+  if (clamped) w.push(clamped + " point(s) sit outside the band you picked and will be clamped into it");
+  document.getElementById("warnings").innerHTML =
+    w.length ? '<span class="warnc">⚠ ' + w.join("<br>⚠ ") + "</span>" : '<span class="ok">✓ shape looks complete</span>';
+}
+
+function formula() {
+  const units = JSON.parse(JSON.stringify(OTHER_UNITS));
+  if (state.lines.length > 0) {
+    units[RING_UNIT] = {
+      type: "sides",
+      lines: state.lines.map((ln) => ({
+        p1: { x: ln.p1.x, y: ln.p1.y },
+        p2: { x: ln.p2.x, y: ln.p2.y },
+        count: 0,
+        jitter: 5,
+      })),
+    };
+  }
+  if (state.spell) {
+    units[SPELL_UNIT] = { type: "point", p: { x: state.spell.x, y: state.spell.y }, jitter: 5 };
+  }
+  if (state.shared) {
+    state.sharedUnits.forEach((k) => {
+      units[k] = { type: "point", p: { x: state.shared.x, y: state.shared.y }, jitter: 6 };
+    });
+  }
+  const doc = { name: FORMULA_NAME, screen: { w: W, h: H }, units: units };
+  if (state.band) doc.tap_band = { y_top: state.band.top, y_bottom: state.band.bottom };
+  return doc;
+}
+
+// load re-applies a previously exported document: the way to keep a drawing
+// across a fresh screenshot, or to fix one number and re-download.
+function load(doc) {
+  if (!doc || typeof doc !== "object" || !doc.units) {
+    setStatus("that JSON has no \"units\" object");
+    return false;
+  }
+  if (doc.screen && (doc.screen.w !== W || doc.screen.h !== H)) {
+    setStatus("loaded, but it was drawn on " + doc.screen.w + "x" + doc.screen.h + " and this frame is " + W + "x" + H);
+  }
+  const ring = doc.units[RING_UNIT];
+  if (ring && ring.type === "sides" && Array.isArray(ring.lines)) {
+    state.lines = ring.lines
+      .filter((l) => l && l.p1 && l.p2)
+      .map((l) => ({ p1: { x: l.p1.x, y: l.p1.y }, p2: { x: l.p2.x, y: l.p2.y } }));
+  }
+  const sp = doc.units[SPELL_UNIT];
+  if (sp && sp.p) state.spell = { x: sp.p.x, y: sp.p.y };
+  // One spot: only if every checked unit agrees, otherwise there is nothing to
+  // show and the per-unit points stay as they are.
+  const pts = state.sharedUnits.map((k) => (doc.units[k] || {}).p).filter(Boolean);
+  if (pts.length && pts.every((p) => p.x === pts[0].x && p.y === pts[0].y)) {
+    state.shared = { x: pts[0].x, y: pts[0].y };
+  } else if (pts.length) {
+    setStatus(pts.length + " units had different points; click 2 to set them all to one spot");
+  }
+  if (doc.tap_band && Number.isFinite(doc.tap_band.y_top) && Number.isFinite(doc.tap_band.y_bottom)) {
+    state.band = { top: doc.tap_band.y_top, bottom: doc.tap_band.y_bottom };
+  }
+  redraw();
+  render();
+  return true;
+}
+
+function setStatus(msg) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.style.color = "#ffcf7a";
+  clearTimeout(setStatus._t);
+  setStatus._t = setTimeout(() => { el.textContent = ""; el.style.color = "#8b93a3"; }, 6000);
+}
+
+// --- interaction -----------------------------------------------------------
+
+cv.addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0) return;
+  const p = canvasPoint(ev);
+  if (state.mode === "band") {
+    state.drag = { start: p, cur: p };
+    return;
+  }
+  if (state.mode === "spell") {
+    const r = snapToLines(p);
+    state.spell = r.p;
+    if (r.snapped) setStatus("spell spot snapped onto the nearest side line");
+    redraw(); render();
+    return;
+  }
+  if (state.mode === "heroes") {
+    if (state.sharedUnits.length === 0) { setStatus("tick at least one unit below first"); return; }
+    const r = snapToLines(p);
+    state.shared = r.p;
+    if (r.snapped) setStatus("one spot snapped onto the nearest side line");
+    redraw(); render();
+    return;
+  }
+  state.drag = { start: p, cur: p };
+});
+
+cv.addEventListener("mousemove", (ev) => {
+  const p = canvasPoint(ev);
+  state.hover = p;
+  document.getElementById("title").textContent = "ClashGO line picker — " + W + "×" + H + "  " + p.x + "," + p.y;
+  if (state.drag) {
+    state.drag.cur = p;
+    redraw();
+  }
+});
+
+window.addEventListener("mouseup", (ev) => {
+  if (!state.drag) return;
+  const p = canvasPoint(ev);
+  if (state.mode === "band") {
+    const top = clamp(Math.min(state.drag.start.y, p.y), 0, H - 1);
+    const bottom = clamp(Math.max(state.drag.start.y, p.y), 0, H - 1);
+    if (bottom - top >= 40) {
+      state.band = { top, bottom };
+      setStatus("tap band re-picked: y " + top + ".." + bottom);
+    } else {
+      setStatus("that band is too thin — drag further");
+    }
+  } else if (Math.hypot(p.x - state.drag.start.x, p.y - state.drag.start.y) >= 12) {
+    state.lines.push({ p1: state.drag.start, p2: p });
+  }
+  state.drag = null;
+  redraw(); render();
+});
+
+cv.addEventListener("contextmenu", (ev) => ev.preventDefault());
+
+document.getElementById("mode-line").addEventListener("click", () => setMode("line"));
+document.getElementById("mode-heroes").addEventListener("click", () => setMode("heroes"));
+document.getElementById("mode-spell").addEventListener("click", () => setMode("spell"));
+document.getElementById("mode-band").addEventListener("click", () => setMode("band"));
+document.getElementById("snap").addEventListener("change", (ev) => { state.snap = ev.target.checked; });
+
+document.getElementById("band-reset").addEventListener("click", () => {
+  state.band = botBand();
+  setStatus("band reset to the bot's own y " + state.band.top + ".." + state.band.bottom);
+  redraw(); render();
+});
+
+document.getElementById("undo").addEventListener("click", () => {
+  // Undo peels the most recent action, newest intent first: a spot placed after
+  // the lines is what a misclick usually adds.
+  if (state.spell) state.spell = null;
+  else if (state.shared) state.shared = null;
+  else state.lines.pop();
+  redraw(); render();
+});
+
+document.getElementById("clear").addEventListener("click", () => {
+  state.lines = []; state.spell = null; state.shared = null;
+  redraw(); render();
+});
+
+document.getElementById("zoom").addEventListener("change", () => { applyZoom(); redraw(); });
+window.addEventListener("resize", () => {
+  if (document.getElementById("zoom").value === "fit") { applyZoom(); redraw(); }
+});
+
+document.getElementById("recapture").addEventListener("click", () => {
+  if (!SERVER_MODE) return;
+  setStatus("pulling the emulator's screen ...");
+  // The drawing is untouched: only the background image is replaced.
+  img.src = FRAME_URL + "?t=" + Date.now();
+});
+
+document.getElementById("save").addEventListener("click", async () => {
+  if (!SERVER_MODE) return;
+  try {
+    const r = await fetch(SAVE_URL, { method: "POST", body: JSON.stringify(formula(), null, 2) });
+    setStatus(await r.text());
+  } catch (e) {
+    setStatus("save failed: " + e);
+  }
+});
+
+document.getElementById("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(formula(), null, 2));
+    flash("copied", "copied");
+  } catch (e) {
+    flash("copied", "select the JSON above");
+  }
+});
+
+document.getElementById("download").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(formula(), null, 2) + "\n"], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "valk_spam_formula.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+function flash(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  setTimeout(() => { el.textContent = ""; }, 1600);
+}
+
+function setMode(m) {
+  state.mode = m;
+  [["line", "mode-line"], ["heroes", "mode-heroes"], ["spell", "mode-spell"], ["band", "mode-band"]]
+    .forEach(([name, id]) => document.getElementById(id).classList.toggle("on", m === name));
+  cv.style.cursor = m === "line" || m === "band" ? "crosshair" : "cell";
+  if (m === "line") setStatus("drag to draw one line per side");
+  if (m === "heroes") setStatus("click the one spot the checked units share");
+  if (m === "spell") setStatus("click the spot the spell card drops on");
+  if (m === "band") setStatus("drag up or down to re-pick the tap band");
+}
+
+window.addEventListener("keydown", (ev) => {
+  if (ev.target.tagName === "SELECT" || ev.target.tagName === "INPUT") return;
+  switch (ev.key.toLowerCase()) {
+    case "1": setMode("line"); break;
+    case "2": setMode("heroes"); break;
+    case "3": setMode("spell"); break;
+    case "4": setMode("band"); break;
+    case "u": document.getElementById("undo").click(); break;
+    case "c": document.getElementById("clear").click(); break;
+  }
+});
+
+// --- read-only handle for the agent / CLI harness --------------------------
+
+// The agent reads the drawing straight out of the page, so what gets written to
+// the formula file is exactly what is on screen.
+window.__picker = {
+  get screen() { return { w: W, h: H }; },
+  get lines() { return state.lines.slice(); },
+  get spell() { return state.spell; },
+  get shared() { return state.shared; },
+  get band() { return state.band; },
+  get sharedUnits() { return state.sharedUnits.slice(); },
+  setSharedUnits(names) {
+    state.sharedUnits = names.filter((n) => POINT_UNITS.includes(n));
+    render();
+    return state.sharedUnits;
+  },
+  load: load,
+  formula: formula,
+  json: () => JSON.stringify(formula(), null, 2),
+  ringUnit: RING_UNIT,
+  spellUnit: SPELL_UNIT,
+  pointUnits: POINT_UNITS,
+};
+
+// --- one-time wiring -------------------------------------------------------
+
+document.getElementById("recapture").style.display = SERVER_MODE ? "" : "none";
+document.getElementById("save").style.display = SERVER_MODE ? "" : "none";
+document.getElementById("ring-unit").textContent = RING_UNIT;
+document.getElementById("spell-unit").textContent = SPELL_UNIT;
+document.getElementById("shared-units").innerHTML = POINT_UNITS.length === 0
+  ? '<span class="hint">no single-point units in the formula file (heroes/siege are missing)</span>'
+  : POINT_UNITS.map((k) => '<label><input type="checkbox" data-unit="' + k + '" checked> ' + k + "</label>").join("");
+document.querySelectorAll('#shared-units input[type=checkbox]').forEach((cb) => {
+  cb.addEventListener("change", () => {
+    state.sharedUnits = Array.from(document.querySelectorAll('#shared-units input[type=checkbox]'))
+      .filter((c) => c.checked).map((c) => c.dataset.unit);
+    render();
+  });
+});
+
+setMode("line");
+document.getElementById("title").textContent = "ClashGO line picker — " + W + "×" + H;
+</script>
+</body>
+</html>

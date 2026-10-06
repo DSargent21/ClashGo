@@ -16,6 +16,10 @@ const (
 	bandTopInset = 20
 	linePoints   = 15
 	lineSpacing  = 35
+	// minBandHeight is the shortest y-range a formula's own `tap_band` may be
+	// and still be honoured. A band this thin cannot spread a deploy line, so a
+	// value below it is a mis-authored file rather than a measurement.
+	minBandHeight = 40
 )
 
 // YTopMin is the top of the deployable band: the deploy line never places a

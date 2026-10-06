@@ -2,7 +2,8 @@
 
 Two armies ship today:
 - auto_edrag_rush.yaml  (Rage + Ice spells, formula-driven lines)
-- valk_spam.yaml        (Earthquake spell, FourSides ring)
+- valk_spam.yaml        (Earthquake spell, one formula point; Valkyries on a
+                         formula-driven "sides" ring covering all four sides)
 
 These tests pin the YAML <-> formula.json contract so a spell placement
 regression (renamed unit, missing formula entry, wrong pattern, invalid
@@ -187,18 +188,108 @@ def test_valk_spam_declares_earthquake_spell():
     )
 
 
-def test_valk_spam_earthquake_uses_foursides_with_deep_offset():
+def test_valk_spam_earthquake_drops_on_a_single_point():
+    """The valk army drops the WHOLE spell card on one pinned spot. FourSides
+    would ring all four walls instead, which is a different attack."""
     doc = _load_yaml("valk_spam.yaml")
     phases = _spell_phases(doc)
     assert len(phases) == 1, "valk_spam must have exactly one spell phase"
-    phase = phases[0]
-    assert phase["pattern"] == "FourSides", (
-        "Earthquake phase must use FourSides so EQs ring all four walls"
+    assert phases[0]["pattern"] == "Point", (
+        "Earthquake phase must use Point so the spell card lands on the one spot "
+        "the formula pins"
     )
-    assert phase.get("offset", 0) > 0, (
-        "Earthquake phase needs a positive offset — without it EQs land on the "
-        "outer red line instead of deeper in on the walls"
+
+
+def _ring_entry() -> dict:
+    f = _load_json("valk_spam_formula.json")
+    entry = f["units"].get("valkyrie")
+    assert entry is not None, (
+        "valk_spam_formula.json has no 'valkyrie' entry — the ring phase would "
+        "fall back to the legacy FourSides edge spam"
     )
+    return entry
+
+
+def test_valk_ring_is_a_sides_entry_not_a_single_line():
+    """`sides` is the ring type: the card is spread across EVERY sub-line in the
+    same battle. A `line` entry sweeps one flank, and a `lines` entry is a
+    spell's sub-lines — either one would silently drop the ring."""
+    entry = _ring_entry()
+    assert entry["type"] == "sides", (
+        f"valkyrie must be a \"sides\" ring, got {entry['type']!r}"
+    )
+    assert len(entry["lines"]) >= 4, (
+        f"ring carries {len(entry['lines'])} sides; wrapping the base needs 4"
+    )
+
+
+def test_valk_ring_wraps_the_base_not_one_flank():
+    """The point of a ring is coverage, and a base is wider than it is tall *in
+    sides*: every drawn side must sit in a different quadrant of the frame.
+
+    Quadrants rather than named edges (top/right/bottom/left) because the tool
+    draws free-hand: a diamond ring — the shape of a diamond-shaped base — has
+    two lines on the left and two on the right and covers no horizontal edge at
+    all, while still wrapping the base completely. An edge-name check would call
+    that shape broken.
+    """
+    f = _load_json("valk_spam_formula.json")
+    w, h = f["screen"]["w"], f["screen"]["h"]
+    quadrants = set()
+    for line in _ring_entry()["lines"]:
+        mid_x = (line["p1"]["x"] + line["p2"]["x"]) / 2
+        mid_y = (line["p1"]["y"] + line["p2"]["y"]) / 2
+        quadrants.add(("left" if mid_x < w / 2 else "right", "upper" if mid_y < h / 2 else "lower"))
+    want = {(x, y) for x in ("left", "right") for y in ("upper", "lower")}
+    assert quadrants == want, (
+        f"ring covers {sorted(quadrants)} but not {sorted(want - quadrants)} — "
+        "the Valkyries would bunch on part of the base instead of wrapping it"
+    )
+
+
+def test_valk_ring_sides_are_tappable_and_not_degenerate():
+    """Every ring point must be inside the frame and inside the band the formula
+    was drawn against.
+
+    The band matters because the deploy path clamps to it: a point outside it is
+    not where the user drew it, and the attack lands somewhere they never chose.
+    That contract lives in the file, so it is checked here rather than left to
+    the live log to notice.
+    """
+    f = _load_json("valk_spam_formula.json")
+    w, h = f["screen"]["w"], f["screen"]["h"]
+    band = f.get("tap_band")
+    assert band, (
+        "valk_spam_formula.json declares no tap_band, so the bot clamps to its "
+        "built-in range and moves any point the user drew outside it"
+    )
+    for i, line in enumerate(_ring_entry()["lines"]):
+        length = math.hypot(
+            line["p2"]["x"] - line["p1"]["x"], line["p2"]["y"] - line["p1"]["y"]
+        )
+        assert length > 100, f"ring side {i} is only {length:.0f}px long"
+        for pt in (line["p1"], line["p2"]):
+            assert 0 <= pt["x"] < w and 0 <= pt["y"] < h, (
+                f"ring side {i}: point {pt} outside the {w}x{h} frame"
+            )
+            assert band["y_top"] <= pt["y"] <= band["y_bottom"], (
+                f"ring side {i}: point {pt} is outside the declarated tap_band "
+                f"{band['y_top']}..{band['y_bottom']}; the bot would clamp it"
+            )
+
+
+def test_valk_other_points_are_inside_the_tap_band_too():
+    """The same clamp applies to every point unit, not just the ring: a hero or
+    spell spot outside the band is moved before it is tapped."""
+    f = _load_json("valk_spam_formula.json")
+    band = f["tap_band"]
+    for name, entry in f["units"].items():
+        if entry.get("type") != "point":
+            continue
+        pt = entry["p"]
+        assert band["y_top"] <= pt["y"] <= band["y_bottom"], (
+            f"{name} at {pt} is outside the tap_band {band['y_top']}..{band['y_bottom']}"
+        )
 
 
 def test_valk_spam_earthquake_runs_after_troops():
@@ -267,21 +358,20 @@ def test_edrag_formula_declares_the_frame_its_points_are_authored_in():
     assert checked > 0, "formula declares no points at all"
 
 
-def test_no_spell_unit_lacks_both_formula_and_pattern_fallback():
-    """Every spell unit across all armies must be reachable by at least one
-    placement path: formula entry (edrag) or a configured legacy pattern
-    (valk FourSides)."""
-    edrag_formula = _load_json("auto_edrag_rush_formula.json")
-    valk = _load_yaml("valk_spam.yaml")
-
-    edrag = _load_yaml("auto_edrag_rush.yaml")
-    for u in _spell_units(edrag):
-        assert u["name"].lower() in edrag_formula["units"], (
-            f"{u['name']} has neither formula entry nor legacy fallback"
-        )
-
-    # valk spells rely on the FourSides phase pattern, verified above.
-    assert all(p["pattern"] == "FourSides" for p in _spell_phases(valk))
+def test_no_spell_unit_lacks_a_formula_entry():
+    """Every spell unit across all armies must be reachable by a formula entry.
+    Without one the spell falls through to the legacy pCfg grid, which knows
+    nothing about the side this attack was drawn for."""
+    for yaml_name, json_name in (
+        ("auto_edrag_rush.yaml", "auto_edrag_rush_formula.json"),
+        ("valk_spam.yaml", "valk_spam_formula.json"),
+    ):
+        formula = _load_json(json_name)
+        for u in _spell_units(_load_yaml(yaml_name)):
+            assert u["name"].lower() in formula["units"], (
+                f"{yaml_name}: {u['name']} has no entry in {json_name} — it would "
+                "deploy on the legacy grid instead of the drawn geometry"
+            )
 
 
 # ---------------------------------------------------------------------------

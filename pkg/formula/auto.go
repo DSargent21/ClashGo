@@ -19,7 +19,8 @@ import (
 //   - Line troop   (Line pattern, "balloon"/"dragon"/etc)    → full edge line endpoints, count=10, jitter 3.
 //   - Rage spell   (Line pattern, name contains "rage")      → 2 sub-lines: first 15%-60% (3 taps), second 40%-85% (2 taps).
 //   - Other spell  (Line pattern, name contains "spell")     → single edge line pulled slightly inward, count=5, jitter 3.
-//   - FourSides    → point cluster at map center, jitter 5.
+//   - FourSides    → "sides" ring: one line down each of the four edges, so
+//     the card wraps the base instead of stacking on one flank.
 //
 // The 20-80 percent rule guarantees auto-pick geometry mathematically
 // never lands in a screen corner (the regression that motivated this
@@ -162,9 +163,7 @@ func autoUnit(name, pattern, phaseName string, p1, p2 image.Point, w, h int, her
 
 	switch {
 	case isFourSides:
-		e.Type = "point"
-		e.P = &Point{X: w / 2, Y: h / 2}
-		e.Jitter = 5
+		e = sideRingEntry(w, h)
 	case isPoint && strings.Contains(phaseName, "siege"):
 		e.Type = "point"
 		e.P = &Point{X: w / 2, Y: h / 2}
@@ -208,6 +207,30 @@ func autoUnit(name, pattern, phaseName string, p1, p2 image.Point, w, h int, her
 		}
 	}
 	return e
+}
+
+// sideRingEntry builds the default "sides" ring for a FourSides phase: one line
+// down each of the four screen edges, inside the 20-80% band, walked as a
+// closed loop. It is the starting point `-auto` writes for a Valkyrie-style
+// ring — the user then re-pins each side against the base they actually attack
+// (the red line is never the same distance in on two sides).
+//
+// The lines are NOT mirrored per corner: a ring already covers every side, so
+// MirrorForCorner skips it.
+func sideRingEntry(w, h int) UnitEntry {
+	m := 0.20
+	x1, x2 := int(float64(w)*m), int(float64(w)*(1-m))
+	y1, y2 := int(float64(h)*m), int(float64(h)*(1-m))
+	pt := func(x, y int) Point { return Point{X: x, Y: y} }
+	return UnitEntry{
+		Type: "sides",
+		Lines: []LinePoint{
+			{P1: pt(x1, y1), P2: pt(x2, y1), Jitter: 5}, // top
+			{P1: pt(x2, y1), P2: pt(x2, y2), Jitter: 5}, // right
+			{P1: pt(x2, y2), P2: pt(x1, y2), Jitter: 5}, // bottom
+			{P1: pt(x1, y2), P2: pt(x1, y1), Jitter: 5}, // left
+		},
+	}
 }
 
 func lerpPoint(a, b image.Point, t float64) image.Point {

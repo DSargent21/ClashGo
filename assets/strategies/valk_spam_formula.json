@@ -1,0 +1,114 @@
+{
+  "name": "authored with tools/line_picker.html (1280x720)",
+  "screen": {
+    "w": 1280,
+    "h": 720
+  },
+  "tap_band": {
+    "y_top": 10,
+    "y_bottom": 612
+  },
+  "units": {
+    "barbarian king": {
+      "type": "point",
+      "p": {
+        "x": 278,
+        "y": 176
+      },
+      "jitter": 6
+    },
+    "archer queen": {
+      "type": "point",
+      "p": {
+        "x": 278,
+        "y": 176
+      },
+      "jitter": 6
+    },
+    "grand warden": {
+      "type": "point",
+      "p": {
+        "x": 278,
+        "y": 176
+      },
+      "jitter": 6
+    },
+    "dragon duke": {
+      "type": "point",
+      "p": {
+        "x": 278,
+        "y": 176
+      },
+      "jitter": 6
+    },
+    "stone slammer": {
+      "type": "point",
+      "p": {
+        "x": 278,
+        "y": 176
+      },
+      "jitter": 6
+    },
+    "valkyrie": {
+      "type": "sides",
+      "lines": [
+        {
+          "p1": {
+            "x": 493,
+            "y": 13
+          },
+          "p2": {
+            "x": 64,
+            "y": 340
+          },
+          "count": 0,
+          "jitter": 5
+        },
+        {
+          "p1": {
+            "x": 64,
+            "y": 340
+          },
+          "p2": {
+            "x": 365,
+            "y": 555
+          },
+          "count": 0,
+          "jitter": 5
+        },
+        {
+          "p1": {
+            "x": 771,
+            "y": 10
+          },
+          "p2": {
+            "x": 1198,
+            "y": 332
+          },
+          "count": 0,
+          "jitter": 5
+        },
+        {
+          "p1": {
+            "x": 1198,
+            "y": 332
+          },
+          "p2": {
+            "x": 886,
+            "y": 568
+          },
+          "count": 0,
+          "jitter": 5
+        }
+      ]
+    },
+    "earthquake spell": {
+      "type": "point",
+      "p": {
+        "x": 623,
+        "y": 311
+      },
+      "jitter": 5
+    }
+  }
+}

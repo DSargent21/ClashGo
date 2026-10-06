@@ -14,6 +14,7 @@ import (
 	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/Ducky705/ClashGO/pkg/formula"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
+	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
 
@@ -330,11 +331,12 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		// [yTopMin, uiCutoff] range DeployLineCalculator refuses to place line
 		// points outside — and say so, because the durable fix is re-authoring
 		// the point, not moving the tap.
-		if clamped := formulaPtr.ClampY(yTopMin, uiCutoff); clamped > 0 {
+		bandTop, bandBottom := FormulaBand(formulaPtr, w, h, uiCutoff, e.logger)
+		if clamped := formulaPtr.ClampY(bandTop, bandBottom); clamped > 0 {
 			e.logger.Warn().
 				Int("points_clamped", clamped).
-				Int("band_top", yTopMin).
-				Int("band_bottom", uiCutoff).
+				Int("band_top", bandTop).
+				Int("band_bottom", bandBottom).
 				Msg("formula points projected outside the deployable band (behind the top HUD or under the troop bar) and were clamped into it; re-author them at the target geometry")
 		}
 
@@ -370,11 +372,11 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		// band clamp above exists to prevent. Re-clamp and say so: a point that
 		// had to be pulled back means the red-line push and the band disagree,
 		// and the reader needs to know the tap is not where the push put it.
-		if reclamped := formulaPtr.ClampY(yTopMin, uiCutoff); reclamped > 0 {
+		if reclamped := formulaPtr.ClampY(bandTop, bandBottom); reclamped > 0 {
 			e.logger.Warn().
 				Int("points_reclamped", reclamped).
-				Int("band_top", yTopMin).
-				Int("band_bottom", uiCutoff).
+				Int("band_top", bandTop).
+				Int("band_bottom", bandBottom).
 				Msg("red-line push moved formula points out of the deployable band (behind the top HUD or under the troop bar); pulled them back into it")
 		}
 		e.logger.Info().
@@ -1106,6 +1108,68 @@ func (e *Executor) dumpAttackEvidence(f *formula.Formula, targetEdge string, w, 
 		Msg("evidence capture: saved last_attack_overview.png + last_attack_taps.png")
 }
 
+// FormulaBand resolves the y-range a formula's points are clamped into.
+//
+// The built-in [yTopMin, uiCutoff] is a conservative guess at where the game's
+// chrome ends. A formula may instead carry its own `tap_band`, authored by a
+// human looking at the battle screen (tools/line_picker.html) — and that
+// measurement wins, because the built-in one is applied to every device and
+// zoom while the chrome it describes is not the same on all of them.
+//
+// It is honoured ONLY when the formula describes the live frame. The band is a
+// property of the screen's chrome, which is edge-anchored, whereas
+// ProjectUniform moves world coordinates about the frame centre: a band written
+// for another geometry has no correct projection, so applying it would clamp
+// live points to rows nobody measured. Falling back to the built-in range and
+// saying so is the honest failure.
+//
+// A band reaching under the troop bar is logged loudly and still used. The user
+// picked it watching the screenshot; quietly reverting their measurement is how
+// a deploy ends up somewhere neither of you chose.
+//
+// Exported because cmd/attack_verify draws the same clamp: a verification tool
+// that predicts a clamp the deploy path will not make shows taps that never
+// happen, which is worse than showing nothing.
+func FormulaBand(f *formula.Formula, liveW, liveH, uiCutoff int, logger zerolog.Logger) (int, int) {
+	if f == nil || f.TapBand == nil {
+		return yTopMin, uiCutoff
+	}
+	b := f.TapBand
+	if b.YBottom-b.YTop < minBandHeight || b.YTop < 0 || b.YBottom >= liveH {
+		logger.Warn().
+			Int("band_top", b.YTop).
+			Int("band_bottom", b.YBottom).
+			Int("screen_h", liveH).
+			Int("min_height", minBandHeight).
+			Msg("formula.tap_band is not a usable range (empty, negative, too thin, or past the bottom of the frame); using the built-in band")
+		return yTopMin, uiCutoff
+	}
+	if f.Screen.W != liveW || f.Screen.H != liveH {
+		logger.Warn().
+			Int("band_top", b.YTop).
+			Int("band_bottom", b.YBottom).
+			Int("authored_w", f.Screen.W).
+			Int("authored_h", f.Screen.H).
+			Int("live_w", liveW).
+			Int("live_h", liveH).
+			Msg("formula.tap_band was drawn on another frame so it cannot be projected with this formula's points; using the built-in band")
+		return yTopMin, uiCutoff
+	}
+	if b.YBottom > uiCutoff {
+		logger.Warn().
+			Int("band_bottom", b.YBottom).
+			Int("troop_bar_top", uiCutoff).
+			Msg("formula.tap_band reaches under the troop bar; taps below the bar hit chrome and the unit never deploys")
+	}
+	logger.Info().
+		Int("band_top", b.YTop).
+		Int("band_bottom", b.YBottom).
+		Int("builtin_top", yTopMin).
+		Int("builtin_bottom", uiCutoff).
+		Msg("using the formula's own tap_band instead of the built-in clamp range")
+	return b.YTop, b.YBottom
+}
+
 // formulaEntryPoints flattens a UnitEntry into the tap points the deploy
 // path would fire (shared by the evidence annotator).
 func formulaEntryPoints(e formula.UnitEntry) []image.Point {
@@ -1115,7 +1179,7 @@ func formulaEntryPoints(e formula.UnitEntry) []image.Point {
 		pts = append(pts, e.P.Image())
 	case e.IsLine() && e.P1 != nil && e.P2 != nil:
 		pts = append(pts, e.P1.Image(), e.P2.Image())
-	case e.IsLines():
+	case e.IsLines() || e.IsSides():
 		for _, lp := range e.Lines {
 			pts = append(pts, lp.P1.Image(), lp.P2.Image())
 		}
@@ -1259,7 +1323,7 @@ func entryEndpoints(entry formula.UnitEntry, idx int) (image.Point, image.Point,
 		return p, p, true
 	case entry.IsLine() && entry.P1 != nil && entry.P2 != nil:
 		return entry.P1.Image(), entry.P2.Image(), true
-	case entry.IsLines() && idx < len(entry.Lines):
+	case (entry.IsLines() || entry.IsSides()) && idx < len(entry.Lines):
 		// LinePoint carries coordinates by value, so "present" is decided by
 		// the entry actually listing a segment at this index, not by a nil
 		// check.

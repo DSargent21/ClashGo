@@ -1198,7 +1198,11 @@ func (sw *Sweeper) resolveSweepLine(slot *TrackedSlot, isEventTroop bool) (image
 			return pt, pt, true
 		case entry.IsLine() && entry.P1 != nil && entry.P2 != nil:
 			return entry.P1.Image(), entry.P2.Image(), true
-		case entry.IsLines() && len(entry.Lines) > 0:
+		case (entry.IsLines() || entry.IsSides()) && len(entry.Lines) > 0:
+			// "lines" is a spell's sub-lines and "sides" a troop ring; the sweep
+			// re-fires what the phases could not place, and there is only ever
+			// one retry line to hand it. The first sub-line is the same side the
+			// main pass started on, so the retry lands with the ground it began.
 			lp := entry.Lines[0]
 			return lp.P1.Image(), lp.P2.Image(), true
 		}
