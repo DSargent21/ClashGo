@@ -447,7 +447,13 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 				}()
 				b.Stop()
 			}()
+			return
 		}
+
+		// The bot is running. Watch for it ending its OWN session (the
+		// attack cap in bot.go cancels the runtime context), which nothing
+		// else clears a.bot for — see watchBotSessionEnd.
+		a.watchBotSessionEnd(b)
 	}(bootCtx)
 
 	return BotStatus{Running: true, Message: "Bot initialization started in background"}
@@ -556,6 +562,92 @@ func (a *App) StopBot() BotStatus {
 	}()
 
 	return BotStatus{Running: false, Message: "Bot stopped"}
+}
+
+// watchBotSessionEnd flips the app back to "stopped" when the bot ends its
+// own session instead of the user pressing Stop.
+//
+// Why this is needed: the bot stops itself after the configured
+// attack.max_attack_per_session (bot.go cancels its runtime context, which
+// closes Bot.Done()). Nothing in the App observed that, so `a.bot` stayed
+// non-nil, IsRunning() kept answering true, and React — which only ever
+// hears about state changes from StartBot / StopBot / bot_error — left the
+// sidebar on "STOP BOT" over a village the bot had finished with. Observed
+// live (2026-09-29, max_attack_per_session=1): one attack completed at
+// 11:12:23, then 6.5 minutes of an apparently frozen session until the user
+// pressed Stop and started again.
+//
+// The user-stop path is deliberately not raced: StopBot calls
+// bot.Cancel() and nulls a.bot while still holding a.mu, so by the time
+// this watcher can take the lock, `a.bot != b` and it returns without
+// touching anything.
+func (a *App) watchBotSessionEnd(b *bot.Bot) {
+	// Same detached teardown StopBot runs: release the ADB transport, flush
+	// stats, and drop the history cache so the next poll re-reads
+	// attack_history.json from disk.
+	teardown := func() {
+		b.Stop()
+		a.saveStats()
+		a.cachedHistoryMu.Lock()
+		a.cachedHistory = nil
+		a.cachedHistoryMu.Unlock()
+	}
+	a.watchSessionEnd(b.Done(), a.currentBotIs(b), b.Stats, teardown)
+}
+
+// currentBotIs returns the "is this still the app's running bot?" check
+// watchSessionEnd runs under a.mu. It is a method so the shutdown-ordering
+// tests exercise the same comparison production uses.
+func (a *App) currentBotIs(b *bot.Bot) func() bool {
+	return func() bool { return a.bot == b }
+}
+
+// watchSessionEnd is the injected core of watchBotSessionEnd, so the two
+// shutdown orderings can be tested without a live bot (see
+// app_test.go::TestApp_SessionEnd...). stillCurrent MUST be safe to call
+// while a.mu is held.
+//
+//   - stillCurrent() == true  → the bot ended its own session: bank its
+//     stats, invalidate the start placeholder (IsRunning() goes false and a
+//     later StartBot is accepted), then tear the bot down off the lock.
+//   - stillCurrent() == false → StopBot (or a failed start) already owns the
+//     teardown; touch nothing, or the bot would be stopped twice and its
+//     final stats double-counted.
+func (a *App) watchSessionEnd(done <-chan struct{}, stillCurrent func() bool, stats func() bot.BotStats, teardown func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error().Interface("panic", r).Msg("recovered panic while watching for the bot session end")
+			}
+		}()
+
+		<-done
+
+		a.mu.Lock()
+		if !stillCurrent() {
+			a.mu.Unlock()
+			return
+		}
+		a.lastStats = mergeStats(a.lastStats, stats())
+		if a.cancel != nil {
+			a.cancel()
+		}
+		a.clearStartStateLocked()
+		a.mu.Unlock()
+
+		// React's 2 s IsRunning() poll notices the cleared bot reference
+		// on its next tick, so no event is needed to flip the sidebar.
+		log.Info().Msg("bot finished its session (attack cap reached); marking it stopped")
+
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error().Interface("panic", r).Msg("recovered panic during async session-end teardown")
+				}
+			}()
+			teardown()
+		}()
+	}()
 }
 
 // IsRunning returns if the bot is currently running

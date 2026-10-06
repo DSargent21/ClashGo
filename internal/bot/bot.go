@@ -64,13 +64,16 @@ type Bot struct {
 	chestDismissInFlight    atomic.Bool
 	splashDismissInFlight   atomic.Bool
 	connLostDismissInFlight atomic.Bool
-	lastArmyCampGuardLog    time.Time
-	startedAt               time.Time
-	lastAction              time.Time
-	lastSequenceStart       time.Time
-	lastNav                 time.Time
-	lastCapture             time.Time
-	lastIdlePan             time.Time
+	// updatePromptTaps counts the outside-panel dismiss taps this session has
+	// spent on the "Update Available!" login prompt (see dismissUpdatePrompt).
+	updatePromptTaps     atomic.Int32
+	lastArmyCampGuardLog time.Time
+	startedAt            time.Time
+	lastAction           time.Time
+	lastSequenceStart    time.Time
+	lastNav              time.Time
+	lastCapture          time.Time
+	lastIdlePan          time.Time
 	// lastAttackEnd is stamped when a battle fully returns home; the
 	// inter-attack cooldown (cfg.Attack.MinSecondsBetweenAttacks) is
 	// measured from it. Written by the attack goroutine only.
@@ -683,7 +686,15 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 	// endless force-stop/relaunch loop on the collect splash. Give the whole
 	// boot-splash chain a generous window; the dismiss taps in processFrame
 	// advance through it.
-	if state == game.StateLogo || state == game.StateTapToContinue || state == game.StateNewsSplash {
+	//
+	// StateUpdatePrompt belongs to the same group for the same reason: it is a
+	// login-time screen with an exit that is a single touch, and while it is up
+	// no other state can be reached. Restarting the game does not clear it (the
+	// prompt comes back on every relaunch), so the 35s generic timeout would
+	// only turn one un-dismissed prompt into a restart loop; the dismissal in
+	// processFrame gets the whole window to land instead.
+	if state == game.StateLogo || state == game.StateTapToContinue || state == game.StateNewsSplash ||
+		state == game.StateUpdatePrompt {
 		bootStuck := time.Since(b.lastAction)
 		const bootSplashTimeout = 5 * time.Minute
 		if bootStuck > bootSplashTimeout {
@@ -998,6 +1009,26 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
+	// Update-available login prompt ("Update Available! / A new version of
+	// Clash of Clans is available...", one green Update button). CoC checks for
+	// a new build at login, and when one exists the prompt greets EVERY
+	// relaunch, so a boot that cannot clear it is a boot loop — measured
+	// 2026-09-29: connected 13:21:43 -> village 13:23:48, and the frames in
+	// between classified as Logo, which parked them under the boot-splash grace
+	// in checkStuck until the watchdog force-restarted into the same prompt.
+	//
+	// The dismissal deliberately does NOT press the panel's only button: Update
+	// leaves the game for the app store. game.DismissOverlay taps outside the
+	// panel instead (game.overlayOutsideTapStates), still gated on the prompt
+	// being on the frame it captures. Same no-recordActivity reasoning as the
+	// splash and connection handlers: the adb tap reports success even when the
+	// prompt survives, so a tap that does not clear it must still reach the
+	// watchdog rather than mask the hang as progress.
+	if state == game.StateUpdatePrompt {
+		b.dismissUpdatePrompt()
+		return
+	}
+
 	if gc.State == game.StateBattleEnd || gc.State == game.StateReturnHome {
 		b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
 		go b.attackExec.ReturnHome()
@@ -1132,6 +1163,71 @@ func (b *Bot) templateMatch(screen gocv.Mat, name string, threshold float32) boo
 	return len(matches) > 0
 }
 
+// maxUpdatePromptDismissAttempts bounds how many outside-panel taps one session
+// spends on the "Update Available!" login prompt.
+//
+// The prompt is driven by an external fact — a newer CoC build exists — that no
+// touch can change. If a touch does not clear it, tapping again on every capture
+// is a storm of 150-odd taps on the village behind the panel across the 5-minute
+// boot grace, which is exactly the "random tapping" the dismissal path exists to
+// remove. So the attempts are counted and the bot says so instead. Three leaves
+// room for a first touch lost to the prompt's entrance animation, which the
+// handler's 800 ms lead-in is already sized against.
+const maxUpdatePromptDismissAttempts = 3
+
+// updatePromptDismissAllowed reports whether this session may spend another
+// outside-panel tap on the update prompt, given how many it has already spent.
+func updatePromptDismissAllowed(attempt int) bool {
+	return attempt <= maxUpdatePromptDismissAttempts
+}
+
+// dismissUpdatePrompt taps outside the "Update Available!" panel to clear it,
+// at most maxUpdatePromptDismissAttempts times per session.
+//
+// connLostDismissInFlight is this loop's single "overlay dismissal in flight"
+// latch (shared with the connection-lost and quit-confirm handlers), so two
+// dismissals can never overlap.
+func (b *Bot) dismissUpdatePrompt() {
+	if !b.connLostDismissInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	attempt := int(b.updatePromptTaps.Add(1))
+	if !updatePromptDismissAllowed(attempt) {
+		b.connLostDismissInFlight.Store(false)
+		// Log the transition to "given up" once, not on every later frame.
+		if attempt == maxUpdatePromptDismissAttempts+1 {
+			b.logger.Error().
+				Int("attempts", maxUpdatePromptDismissAttempts).
+				Msg("update-available prompt survived every dismissal attempt; " +
+					"tapping outside does not clear this build of the game — it needs a manual update. " +
+					"Handing it back to the stuck-watchdog and firing no further taps")
+		}
+		return
+	}
+
+	b.logger.Warn().Int("attempt", attempt).
+		Msg("update-available prompt detected; tapping outside the panel to dismiss...")
+	go func() {
+		defer b.connLostDismissInFlight.Store(false)
+		time.Sleep(800 * time.Millisecond)
+		if !game.DismissOverlay(b.client, b.cal, b.classifier, game.StateUpdatePrompt, b.templates, b.logger) {
+			b.logger.Warn().Msg("update-available prompt not dismissed from verified evidence; will retry on next detection")
+			return
+		}
+		b.logger.Info().Msg("update-available prompt dismissed")
+	}()
+}
+
+// sessionCapReached reports whether the configured per-session attack cap has
+// been hit. A cap of 0 (or negative) means UNLIMITED: the session keeps
+// attacking until the user stops it, which is what the GUI's single Start
+// button implies — one Start, one run, the Stop button ends it. Only a positive
+// cap ever ends a session by itself. Both call sites below share this predicate
+// so the two can never disagree about what "at the cap" means.
+func sessionCapReached(cap_ int, attacks int32) bool {
+	return cap_ > 0 && attacks >= int32(cap_)
+}
+
 func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// Panic guard for the long-running attack goroutine (spawned from
 	// processFrame outside the frame-loop recover). A panic anywhere in
@@ -1155,7 +1251,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		defer b.client.ClosePersistentShell()
 	}
 
-	if b.attackCount.Load() >= int32(b.cfg.Attack.MaxAttackPerSession) {
+	if sessionCapReached(b.cfg.Attack.MaxAttackPerSession, b.attackCount.Load()) {
 		return
 	}
 
@@ -1604,7 +1700,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// Cap check stays after wall upgrades so the graceful shutdown (2s
 	// grace then cancel) never interrupts an in-progress wall loop; the
 	// count itself was already incremented when the report was recorded.
-	if int(b.attackCount.Load()) >= b.cfg.Attack.MaxAttackPerSession {
+	if sessionCapReached(b.cfg.Attack.MaxAttackPerSession, b.attackCount.Load()) {
 		b.logger.Info().
 			Int32("attacks", b.attackCount.Load()).
 			Int("cap", b.cfg.Attack.MaxAttackPerSession).

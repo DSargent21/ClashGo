@@ -629,13 +629,15 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// a dedicated "Abilities" phase and pattern:Ability units declared
 	// inline inside the Heroes phase — auto_edrag_rush uses the latter
 	// shape). They are fired only when an explicit "Abilities" phase is
-	// reached, or after the last phase — never mid-deploy. Tapping the
+	// reached, or — for the inline shape — at the very END of the deploy,
+	// after the sweep and the verifier, never mid-deploy. Tapping the
 	// hero icon a second time re-selects the hero's card, which poisons
 	// the next slot-selection tap until that card is deployed or
 	// deselected; deferring the pass keeps it from eating the next
 	// unit's selection (valk_run6: abilities fired 60ms after the hero
 	// drops and the EQ phase then tapped the siege slot instead of the
-	// earthquake card).
+	// earthquake card). Running it after every placement step means no
+	// slot-selection tap can follow it at all.
 	var pendingAbilities []UnitPlan
 	fireAbilities := func() {
 		if len(pendingAbilities) == 0 {
@@ -984,12 +986,6 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			Msg("deploy window is over the seven-second goal; see the per-phase elapsed lines above for where it went")
 	}
 
-	// Abilities declared inline (e.g. auto_edrag_rush's pattern:Ability
-	// units inside the Heroes phase, with a Spells phase after) never hit
-	// an "Abilities" phase — fire whatever is still pending here, after
-	// every deploy phase, so spells still go first.
-	fireAbilities()
-
 	// 10. Sweep remaining. Pass formulaPtr so the sweep path honors
 	// user-pinned _event_troop / _event_spell coords the same way
 	// DeployHeroes / DeployTroops already do. Without this the bot
@@ -1017,8 +1013,23 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// must never fail an otherwise-good attack.
 	e.dumpAttackEvidence(formulaPtr, targetEdge, w, h, remainingCount)
 
+	// Hero abilities go LAST, after every placement step there is (the
+	// phase loop, the sweep, the verifier's re-deploy). The user's contract:
+	// both heroes down, then spells, then abilities — with the hero ->
+	// ability gap spanning the whole deploy, because the activation taps are
+	// slow to land and firing them early also buys nothing. Doing it here
+	// means no slot-selection tap can ever follow the ability tap (the
+	// valk_run6 mis-select class cannot happen), and a hero that only the
+	// sweep or the verifier recovered still gets its ability.
+	// Abilities declared inline (auto_edrag_rush's pattern:Ability units
+	// inside the Heroes phase, with a Spells phase after) never hit an
+	// "Abilities" phase, so this is their only firing point.
+	fireAbilities()
+
 	// Catch any hero deployed outside the main hero phase (sweep recovery,
-	// event troops) so the battle-end wait can still fire its ability.
+	// event troops) so the battle-end wait can still fire its ability. Runs
+	// after the pass above: a hero whose ability already fired has spent its
+	// 2-tap budget and is not watched again.
 	e.armHeroWatch(slotMgr)
 
 	return remainingCount, nil

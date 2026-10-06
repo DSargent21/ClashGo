@@ -71,6 +71,68 @@ func TestClassify_ConfirmExitDialogDetected(t *testing.T) {
 	}
 }
 
+// TestConfirmExitRuleRequiresEveryProbe keeps the quit-confirm rule's
+// evidence bar equal to its own probe count. Those probes have to stay
+// inseparable: DismissOverlay taps exactly one control for this state — the
+// orange Cancel face — and refuses to fire when that probe cannot be re-read
+// on the frame (game.overlayControlProbes). A rule that matches while its
+// control is absent can therefore only ever produce the loop of 2026-09-29:
+// state=ConfirmExit every frame, "no verified control on this frame; no tap
+// fired", watchdog restart, same dialog after the relaunch. Adding a probe
+// without raising MinPass (or lowering MinPass) re-opens exactly that, so this
+// asserts the count rather than the numbers.
+func TestConfirmExitRuleRequiresEveryProbe(t *testing.T) {
+	c := newChestClassifier(t)
+
+	probes := overlayControlProbes[StateConfirmExit]
+	if len(probes) == 0 {
+		t.Fatal("ConfirmExit has no dismissal control; the rule below cannot be checked against one")
+	}
+
+	for _, rule := range c.GetRules() {
+		if rule.State != StateConfirmExit {
+			continue
+		}
+		if rule.MinPass != len(rule.Checks) {
+			t.Errorf("ConfirmExit MinPass=%d over %d probes: a match may be missing the dismissal control %v, which is the detected-but-undismissable deadlock",
+				rule.MinPass, len(rule.Checks), probes)
+		}
+		for _, p := range probes {
+			found := false
+			for _, chk := range rule.Checks {
+				if chk.X == p.X && chk.Y == p.Y {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("ConfirmExit dismissal control (%d,%d) is not one of the rule's probes; the rule could fire on a dialog it cannot dismiss", p.X, p.Y)
+			}
+		}
+		return
+	}
+	t.Fatal("no ConfirmExit rule")
+}
+
+// TestClassify_ConfirmExitNeedsCancelProbe is the regression test for the
+// false positive above. CoC's "Update Available! / please update your game"
+// dialog hits two of the rule's three probes (the green button face and the
+// light-gray body: live 729,446 and 640,326 on this project's 1280x720
+// device), and at MinPass 2 that was enough to classify as the quit dialog.
+// Those two alone must not.
+func TestClassify_ConfirmExitNeedsCancelProbe(t *testing.T) {
+	c := newChestClassifier(t)
+
+	m := stuckVillageFrame()
+	defer m.Close()
+	setRGB(m, 497, 431, 0xD6, 0xF4, 0x76) // green Okay face (the update dialog's button area)
+	setRGB(m, 430, 340, 0xE8, 0xE8, 0xE0) // light-gray body
+
+	if state, _ := c.ClassifyState(m); state == StateConfirmExit {
+		t.Fatalf("ConfirmExit fired without its orange Cancel face (state=%s); the bot would refuse to tap it forever", state)
+	}
+}
+
 // TestClassify_ConnectionLostDialogDetected covers the game's disconnect
 // dialog. It renders its own RETURN HOME button, so the old template-only
 // BattleEnd rule (MinPass 0) matched it and the bot tapped dead

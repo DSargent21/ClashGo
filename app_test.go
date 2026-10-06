@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/paths"
@@ -38,6 +40,102 @@ func TestApp_GetStrategies(t *testing.T) {
 	strats := a.GetStrategies()
 	if strats == nil {
 		t.Error("GetStrategies returned nil")
+	}
+}
+
+// TestApp_SessionEndMarksBotStopped covers the bug where a bot that ended
+// its own session (attack cap reached) left the app believing it was still
+// running: `a.bot` stayed set, IsRunning() kept answering true, and the
+// sidebar sat on "STOP BOT" over a finished session while React — which
+// only learns about changes from StartBot / StopBot / bot_error — never
+// flipped. Dropping the bot reference is what makes IsRunning() false and
+// a later StartBot accepted.
+//
+// The bot here is a zero-valued *bot.Bot: the watcher only ever compares
+// its pointer and calls the injected stats/teardown callbacks, so nothing
+// touches the real bot internals (no ADB, no BlueStacks).
+func TestApp_SessionEndMarksBotStopped(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	// The state StartBot installs for a booted, running bot.
+	b := &bot.Bot{}
+	a.bot = b
+	a.botCtx, a.cancel = context.WithCancel(context.Background())
+	a.lastStats = bot.BotStats{AttacksCompleted: 1, TotalGold: 500}
+
+	done := make(chan struct{})
+	tornDown := make(chan struct{})
+	a.watchSessionEnd(done, a.currentBotIs(b),
+		func() bot.BotStats { return bot.BotStats{AttacksCompleted: 1, TotalGold: 500} },
+		func() { close(tornDown) },
+	)
+
+	// The bot's runtime context is cancelled the moment the session ends.
+	close(done)
+
+	select {
+	case <-tornDown:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session end never reached teardown")
+	}
+
+	// IsRunning() reads a.bot, so this is the user-visible "the sidebar can
+	// leave STOP BOT now" assertion.
+	if a.IsRunning() {
+		t.Error("IsRunning() still true after the bot ended its own session")
+	}
+	if a.bot != nil {
+		t.Error("a.bot not cleared; a later StartBot would still be refused as already running")
+	}
+	if a.cancel != nil || a.botCtx != nil {
+		t.Error("start placeholder (cancel/botCtx) not cleared; StartBot would keep reporting still starting up")
+	}
+	if a.lastStats.AttacksCompleted != 2 || a.lastStats.TotalGold != 1000 {
+		t.Errorf("final stats not banked: got attacks=%d gold=%d, want attacks=2 gold=1000",
+			a.lastStats.AttacksCompleted, a.lastStats.TotalGold)
+	}
+}
+
+// TestApp_SessionEndAfterUserStopIsNoop is the ordering guard for the other
+// side of the race: StopBot cancels the bot and nulls a.bot while holding
+// a.mu, which also closes Bot.Done(). The session-end watcher must then
+// find the bot is no longer the current one and do nothing — otherwise the
+// bot gets torn down twice and its final stats are banked twice.
+func TestApp_SessionEndAfterUserStopIsNoop(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	b := &bot.Bot{}
+	a.bot = nil // StopBot already detached it
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.botCtx, a.cancel = ctx, cancel
+	a.lastStats = bot.BotStats{TotalGold: 500}
+
+	done := make(chan struct{})
+	teardownRan := make(chan struct{})
+	a.watchSessionEnd(done, a.currentBotIs(b),
+		func() bot.BotStats {
+			t.Error("stats read for a bot StopBot already owns")
+			return bot.BotStats{}
+		},
+		func() { close(teardownRan) },
+	)
+
+	close(done)
+
+	select {
+	case <-teardownRan:
+		t.Fatal("watcher tore down a bot StopBot already stopped")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	if a.lastStats.TotalGold != 500 {
+		t.Errorf("stats double-counted on a user stop: gold=%d, want 500", a.lastStats.TotalGold)
+	}
+	if a.cancel == nil {
+		t.Error("watcher cancelled the app's start placeholder; StopBot/StartBot own that")
 	}
 }
 

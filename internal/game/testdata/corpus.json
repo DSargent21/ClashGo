@@ -44,6 +44,11 @@
       "note": "The in-game lost-connection dialog (TRY AGAIN) over a dimmed battle HUD, captured at the 18:03 battle-end timeout. It classified as Unknown because the rule's reference probes were measured on a dialog that does not scale with k; the wait loop then sat out its full deadline on a battle whose result could never arrive. This is also the frame the TRY AGAIN tap coordinate is measured from."
     },
     {
+      "file": "corpus/update_available_720p.png",
+      "state": "UpdatePrompt",
+      "note": "CoC's login-time \"Update Available! / A new version of Clash of Clans is available\" prompt over the dimmed village: a centred light-gray panel with one green Update button and no other control. Captured at the 13:21 boot it blocked for two minutes. Before this rule existed the frame classified as Logo (two of that rule's probes hit, score 292), so the bot sat out the 5-minute boot-splash grace and force-restarted into the same prompt, because the check comes back on every relaunch. Both the rule's three probes and the outside-panel dismissal point are measured from this frame. (Real frames are gitignored: this fixture lives on the developer's disk and the gate skips when it is absent.)"
+    },
+    {
       "file": "corpus/result_overlay_720p.png",
       "state": "BattleEnd",
       "note": "Victory overlay (70% damage, RETURN HOME). The battle-end wait returns on exactly this state, so a regression here wedges a session on the results screen instead of returning home."

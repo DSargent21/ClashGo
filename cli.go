@@ -126,7 +126,7 @@ func parseFlags(cfg *config.BotConfig) {
 	minDE := flag.Int("de", cfg.Search.MinLootDarkElixir, "Minimum dark elixir to attack")
 	strategy := flag.String("strategy", cfg.Attack.StrategyFile, "Path to strategy YAML file")
 	deviceID := flag.String("device", cfg.Device.DeviceID, "ADB device ID")
-	maxAttacks := flag.Int("max-attacks", cfg.Attack.MaxAttackPerSession, "Stop cleanly after this many completed attacks")
+	maxAttacks := flag.Int("max-attacks", cfg.Attack.MaxAttackPerSession, "Stop cleanly after this many completed attacks (0 = unlimited, run until interrupted)")
 	noRestart := flag.Bool("no-restart", false, "Keep current game session; do not restart Clash of Clans at bot startup")
 	once := flag.Bool("once", false, "Run a single attack, then exit cleanly (sets MaxAttackPerSession=1 and triggers graceful shutdown when the attack finishes)")
 	flag.BoolVar(&deployOnly, "deploy-only", false, "Skip the search/attack-button pipeline and deploy immediately on the current screen. Assumes you're already on the attack screen with troops loaded. Pairs with --once for a single manual deploy. Disables game restart on startup so your deploy screen isn't force-stopped.")
