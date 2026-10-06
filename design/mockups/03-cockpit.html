@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ClashGO — 03 Cockpit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#eef0f3; --p1:#ffffff; --p2:#f7f8fa; --p3:#eceff3;
+    --line:#dde1e7; --line-2:#c9cfd8;
+    --tx:#0f1419; --tx-2:#4a5460; --tx-3:#5f6977;
+    --acc:#0b7a44; --acc-d:#085f34;
+    --gold:#8f6510; --elixir:#a832bd; --de:#4c4f66;
+    --warn:#8f5605; --err:#c02f2f; --info:#2b6cb0;
+    --sans:'Inter',system-ui,-apple-system,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased;overflow:hidden}
+  .app{display:flex;height:100vh;width:100vw}
+  .hidden{display:none}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .lbl{font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--tx-3)}
+  svg.i{width:16px;height:16px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round;flex:0 0 16px}
+
+  /* ── Left nav ─────────────────────────────────────── */
+  .nav{width:204px;flex:0 0 204px;background:var(--p1);border-right:1px solid var(--line);display:flex;flex-direction:column}
+  .navhead{height:46px;display:flex;align-items:center;gap:9px;padding:0 14px;border-bottom:1px solid var(--line);flex:0 0 46px}
+  .mark{width:24px;height:24px;border-radius:6px;background:var(--tx);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600}
+  .navhead .nm{font-size:13px;font-weight:600;letter-spacing:-.01em}
+  .navhead .v{font-family:var(--mono);font-size:10px;color:var(--tx-3)}
+  .navgrp{padding:14px 10px 4px}
+  .navitem{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;font-size:13px;color:var(--tx-2);cursor:pointer;transition:.12s}
+  .navitem:hover{background:var(--p3);color:var(--tx)}
+  .navitem.on{background:var(--tx);color:#fff;font-weight:450}
+  .navitem .badge{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--tx-3)}
+  .navitem.on .badge{color:rgba(255,255,255,.6)}
+  .navsp{flex:1}
+  .navfoot{padding:10px;border-top:1px solid var(--line)}
+
+  /* ── Center ───────────────────────────────────────── */
+  .center{flex:1;display:flex;flex-direction:column;min-width:0}
+  .chead{height:46px;flex:0 0 46px;background:var(--p1);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:12px}
+  .chead h1{font-size:14px;font-weight:600;letter-spacing:-.01em}
+  .chead .sub{font-size:12px;color:var(--tx-3)}
+  .chead .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{height:30px;padding:0 13px;border-radius:7px;border:1px solid var(--line-2);background:var(--p1);font-size:12.5px;color:var(--tx-2);cursor:pointer;display:inline-flex;align-items:center;gap:7px;font-family:var(--sans)}
+  .btn:hover{background:var(--p3)}
+  .btn.pri{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:500}
+  .btn.pri:hover{background:var(--acc-d)}
+  .btn.danger{background:var(--err);border-color:var(--err);color:#fff;font-weight:500}
+  .cbody{flex:1;overflow-y:auto;padding:16px 18px 20px}
+  .cbody::-webkit-scrollbar{width:10px}
+  .cbody::-webkit-scrollbar-thumb{background:#cfd5dd;border-radius:8px;border:3px solid var(--bg)}
+
+  /* Stage */
+  .stage{background:var(--p1);border:1px solid var(--line);border-radius:10px;padding:14px;display:grid;grid-template-columns:auto 1fr;gap:16px;margin-bottom:14px}
+  .phone{width:150px;height:196px;border-radius:14px;background:linear-gradient(170deg,#2a3140,#171c26);position:relative;overflow:hidden;flex:0 0 150px;border:1px solid #0e1119}
+  .phone:before{content:'';position:absolute;left:50%;transform:translateX(-50%);top:0;width:46px;height:9px;background:#0b0e14;border-radius:0 0 7px 7px}
+  .phone .field{position:absolute;inset:12px 10px 10px;border-radius:8px;background:radial-gradient(120% 90% at 50% 30%,#3d4a5c,#222a37 70%,#1a2029)}
+  .phone .hud{position:absolute;left:8px;right:8px;top:16px;display:flex;justify-content:space-between;align-items:center}
+  .phone .chipm{font-family:var(--mono);font-size:8.5px;color:#c8d3e2;background:rgba(0,0,0,.4);padding:2px 5px;border-radius:4px;letter-spacing:.04em}
+  .phone .state{position:absolute;left:0;right:0;bottom:10px;text-align:center;font-family:var(--mono);font-size:9.5px;color:#8ee0b0;letter-spacing:.1em;text-transform:uppercase}
+  .phone .reticle{position:absolute;width:56px;height:56px;border:1px solid rgba(143,224,180,.55);left:50%;top:46%;transform:translate(-50%,-50%);border-radius:4px}
+  .phone .reticle:before,.phone .reticle:after{content:'';position:absolute;background:rgba(143,224,180,.8)}
+  .phone .reticle:before{left:50%;top:-7px;bottom:-7px;width:1px}
+  .phone .reticle:after{top:50%;left:-7px;right:-7px;height:1px}
+  .stageinfo{display:flex;flex-direction:column;min-width:0}
+  .stageinfo .state-h{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+  .statebadge{font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:5px;background:#e6f6ec;color:var(--acc-d)}
+  .stageinfo h2{font-size:16px;font-weight:600;letter-spacing:-.01em;margin-bottom:10px}
+  .mgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 20px;margin-top:4px}
+  .m .k{font-size:10px;color:var(--tx-3);letter-spacing:.06em;text-transform:uppercase;font-weight:600}
+  .m .v{font-family:var(--mono);font-size:12.5px;margin-top:2px}
+  .spark{margin-top:12px;height:44px;background:var(--p2);border:1px solid var(--line);border-radius:6px;padding:6px 8px;display:flex;align-items:flex-end;gap:2px}
+  .spark i{flex:1;background:#cbd5e1;border-radius:1px 1px 0 0;min-height:2px}
+  .spark i.hi{background:var(--warn)} .spark i.lo{background:var(--acc)}
+
+  /* Timeline */
+  .sechead{display:flex;align-items:center;gap:10px;margin:4px 0 9px}
+  .sechead h3{font-size:12px;font-weight:600;color:var(--tx-2);letter-spacing:-.005em}
+  .sechead .r{margin-left:auto;display:flex;gap:6px}
+  .fchip{font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--line);color:var(--tx-3);cursor:pointer;background:var(--p1)}
+  .fchip.on{background:var(--tx);color:#fff;border-color:var(--tx)}
+  .tl{background:var(--p1);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .row{display:grid;grid-template-columns:62px 40px 1fr 96px 108px;gap:10px;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .1s}
+  .row:last-child{border-bottom:0}
+  .row:hover{background:var(--p2)}
+  .row.sel{background:#eef4ff;box-shadow:inset 2px 0 0 var(--info)}
+  .row .tm{font-family:var(--mono);font-size:11px;color:var(--tx-3)}
+  .stpips{display:flex;gap:2.5px}
+  .stpips i{width:7px;height:7px;border-radius:50%;background:var(--line-2)}
+  .stpips i.on{background:var(--gold)}
+  /* d1/d2 are spans, so they need block to stack — inline they run
+     together into "TH16 · BARCH Hybridclean deploy · 52s". */
+  .row .d1{display:block;font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .d2{display:block;font-size:11px;color:var(--tx-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .row .g{font-family:var(--mono);font-size:12px;text-align:right;color:var(--gold)}
+  .row .s{font-family:var(--mono);font-size:11px;text-align:right;color:var(--tx-3)}
+  .warnpill{font-size:10px;padding:1px 6px;border-radius:4px;background:#fdf0dd;color:var(--warn);font-weight:600}
+
+  /* ── Inspector ────────────────────────────────────── */
+  .insp{width:322px;flex:0 0 322px;background:var(--p1);border-left:1px solid var(--line);display:flex;flex-direction:column}
+  .itabs{height:46px;flex:0 0 46px;border-bottom:1px solid var(--line);display:flex;align-items:stretch;padding:0 6px;gap:2px}
+  .itab{padding:0 11px;display:flex;align-items:center;font-size:12.5px;color:var(--tx-3);cursor:pointer;border-bottom:2px solid transparent}
+  .itab:hover{color:var(--tx-2)}
+  .itab.on{color:var(--tx);border-bottom-color:var(--tx);font-weight:500}
+  .ibody{flex:1;overflow-y:auto;padding:16px}
+  .ibody::-webkit-scrollbar{width:8px}
+  .ibody::-webkit-scrollbar-thumb{background:#d5dae1;border-radius:8px;border:2px solid var(--p1)}
+  .icard{border:1px solid var(--line);border-radius:9px;padding:13px;margin-bottom:12px;background:var(--p1)}
+  .icard.tint{background:var(--p2)}
+  .kv{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--line)}
+  .kv:last-child{border-bottom:0}
+  .kv .k{font-size:12px;color:var(--tx-2)}
+  .kv .v{font-family:var(--mono);font-size:12px}
+  .bar{height:7px;background:var(--p3);border-radius:4px;overflow:hidden;margin-top:5px}
+  .bar i{display:block;height:100%;border-radius:4px}
+  .slotmap{display:flex;gap:3px;margin-top:7px}
+  .slotmap i{flex:1;height:16px;border-radius:3px;background:var(--p3);position:relative}
+  .slotmap i.on{background:#bfe3cd}
+  .slotmap i.bad{background:#f6cfcf}
+  .errbox{background:#fdf1f1;border:1px solid #f4d3d3;border-radius:7px;padding:9px 11px;font-family:var(--mono);font-size:11px;color:var(--err);line-height:1.6;margin-top:8px}
+  .frow{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}
+  .frow:last-child{border-bottom:0}
+  .frow .fl{flex:1}
+  .frow .fl .n{font-size:12.5px}
+  .frow .fl .d{font-size:11px;color:var(--tx-3);margin-top:2px;line-height:1.45}
+  .inp{width:112px;border:1px solid var(--line-2);background:var(--p1);border-radius:7px;padding:6px 9px;font-family:var(--mono);font-size:12px;color:var(--tx);text-align:right;outline:none}
+  .inp:focus{border-color:var(--info);box-shadow:0 0 0 3px rgba(43,108,176,.1)}
+  select.inp{text-align:left;font-family:var(--sans)}
+  .sw{width:36px;height:20px;border-radius:10px;background:var(--acc);position:relative;cursor:pointer;flex:0 0 36px}
+  .sw:after{content:'';position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+  .sw.off{background:var(--line-2)} .sw.off:after{right:18px}
+
+  /* ── Status bar ───────────────────────────────────── */
+  .status{height:46px;flex:0 0 46px;background:var(--p1);border-top:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:10px;min-width:0;overflow:hidden}
+  .status .seg{display:flex;align-items:center;gap:8px;padding-right:10px;border-right:1px solid var(--line);height:26px;flex:0 0 auto;white-space:nowrap}
+  .status .seg:last-child{border-right:0}
+  .sb{font-family:var(--mono);font-size:11.5px;color:var(--tx-2);display:flex;align-items:center;gap:6px}
+  .sb b{color:var(--tx);font-weight:500}
+  .led{width:7px;height:7px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 3px rgba(15,157,88,.14)}
+  .led.w{background:var(--warn);box-shadow:0 0 0 3px rgba(194,117,10,.14)}
+  .dial{display:flex;align-items:center;gap:7px;margin-left:auto;flex:0 0 auto;white-space:nowrap}
+  /* The status bar shares the ~674px center column with the run, and the
+     window can shrink to 1024px, so shed the dial's label before the
+     control itself ever gets clipped. */
+  @media (max-width:1120px){ .dial .lab{display:none} }
+  .dial .lab{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-3)}
+  .dialg{display:flex;background:var(--p3);border-radius:7px;padding:2px;gap:2px}
+  .dialg span{padding:3px 7px;border-radius:5px;font-size:11.5px;color:var(--tx-3);cursor:pointer}
+  .dialg span.on{background:var(--p1);color:var(--tx);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .mini-sw{width:30px;height:17px;border-radius:9px;background:var(--acc);position:relative;cursor:pointer;flex:0 0 30px}
+  .mini-sw:after{content:'';position:absolute;top:2px;right:2px;width:13px;height:13px;border-radius:50%;background:#fff}
+  .mini-sw.off{background:var(--line-2)} .mini-sw.off:after{right:15px}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Left nav -->
+  <div class="nav">
+    <div class="navhead">
+      <div class="mark">C</div>
+      <div><div class="nm">ClashGO</div><div class="v">0.2.0</div></div>
+    </div>
+    <div class="navgrp">
+      <div class="lbl" style="padding:0 10px 6px">Operate</div>
+      <div class="navitem on" data-tab="run"><svg class="i" viewBox="0 0 24 24"><path d="M6 4l12 8-12 8z"/></svg>Live run<span class="badge">●</span></div>
+      <div class="navitem" data-tab="history"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v4h4"/><path d="M12 7v5l3 2"/></svg>Attack history<span class="badge">84</span></div>
+    </div>
+    <div class="navgrp">
+      <div class="lbl" style="padding:6px 10px">Review</div>
+      <div class="navitem" data-tab="analytics"><svg class="i" viewBox="0 0 24 24"><path d="M3 20V10M9 20V4M15 20v-7M21 20v-11"/></svg>Analytics</div>
+    </div>
+    <div class="navgrp">
+      <div class="lbl" style="padding:6px 10px">Configure</div>
+      <div class="navitem" data-tab="config"><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>Search &amp; attack</div>
+      <div class="navitem" data-tab="settings"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8"/></svg>System</div>
+    </div>
+    <div class="navsp"></div>
+    <div class="navfoot">
+      <div class="navitem" style="padding:7px 10px"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Console<span class="badge">2k</span></div>
+    </div>
+  </div>
+
+  <!-- Center -->
+  <div class="center">
+    <div class="chead">
+      <h1 id="ctitle">Live run</h1>
+      <span class="sub" id="csub">BARCH Hybrid · started 10:09:52</span>
+      <div class="right">
+        <span class="btn"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v4h4"/></svg>Pause</span>
+        <span class="btn danger" id="runbtn"><svg class="i" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>Stop bot</span>
+      </div>
+    </div>
+
+    <div class="cbody" id="centerPane">
+      <!-- RUN -->
+      <div data-pane="run">
+        <div class="stage">
+          <div class="phone">
+            <div class="field"></div>
+            <div class="reticle"></div>
+            <div class="hud"><span class="chipm">860×732</span><span class="chipm">5 Hz</span></div>
+            <div class="state">main_village</div>
+          </div>
+          <div class="stageinfo">
+            <div class="state-h"><span class="statebadge">Army full</span><span class="lbl">Detected 2 frames ago</span></div>
+            <h2>Home screen · army 280/280 · gold 1,204,500</h2>
+            <div class="mgrid">
+              <div class="m"><div class="k">State</div><div class="v">MAIN_VILLAGE</div></div>
+              <div class="m"><div class="k">Capture</div><div class="v">142.6 ms</div></div>
+              <div class="m"><div class="k">Fails (consec.)</div><div class="v" style="color:var(--acc)">0</div></div>
+              <div class="m"><div class="k">Next action</div><div class="v">TAP SEARCH</div></div>
+            </div>
+            <div class="spark" id="spark"></div>
+            <div class="lbl" style="margin-top:5px">Capture latency · last 60 samples (ms)</div>
+          </div>
+        </div>
+
+        <div class="sechead">
+          <h3>Run timeline</h3>
+          <div class="r">
+            <span class="fchip on">All 84</span><span class="fchip">3★</span><span class="fchip">Flagged</span><span class="fchip">Skipped</span>
+          </div>
+        </div>
+        <div class="tl" id="tl"></div>
+      </div>
+
+      <!-- HISTORY -->
+      <div data-pane="history" class="hidden">
+        <div class="sechead"><h3>All 84 attacks this session</h3><div class="r"><span class="fchip on">Gold ↓</span><span class="fchip">Stars ↓</span><span class="fchip">Time ↓</span></div></div>
+        <div class="tl" id="tl2"></div>
+      </div>
+
+      <!-- ANALYTICS -->
+      <div data-pane="analytics" class="hidden">
+        <div class="sechead"><h3>Performance by strategy</h3></div>
+        <div class="tl">
+          <div class="row" style="grid-template-columns:34px 1fr 130px 96px 108px;cursor:default">
+            <div class="lbl">#</div><div class="lbl">Strategy</div><div class="lbl">Gold / attack</div><div class="lbl" style="text-align:right">Total</div><div class="lbl" style="text-align:right">3★ rate</div>
+          </div>
+          <div class="row" style="grid-template-columns:34px 1fr 130px 96px 108px;cursor:default">
+            <div class="tm">01</div>
+            <div><div class="d1">BARCH Hybrid</div><div class="d2">54 attacks</div></div>
+            <div><div class="bar" style="width:120px"><i style="width:100%;background:var(--gold)"></i></div></div>
+            <div class="g">2,112,000</div><div class="s" style="color:var(--tx)">38.9%</div>
+          </div>
+          <div class="row" style="grid-template-columns:34px 1fr 130px 96px 108px;cursor:default">
+            <div class="tm">02</div>
+            <div><div class="d1">Queen Charge</div><div class="d2">19 attacks</div></div>
+            <div><div class="bar" style="width:120px"><i style="width:78%;background:var(--gold)"></i></div></div>
+            <div class="g">611,400</div><div class="s" style="color:var(--err)">10.5%</div>
+          </div>
+          <div class="row" style="grid-template-columns:34px 1fr 130px 96px 108px;cursor:default">
+            <div class="tm">03</div>
+            <div><div class="d1">Hybrid Lava</div><div class="d2">11 attacks</div></div>
+            <div><div class="bar" style="width:120px"><i style="width:74%;background:var(--gold)"></i></div></div>
+            <div class="g">461,100</div><div class="s" style="color:var(--acc)">45.5%</div>
+          </div>
+        </div>
+        <div class="sechead" style="margin-top:18px"><h3>Star distribution</h3></div>
+        <div class="tl" style="padding:16px" id="hist"></div>
+      </div>
+    </div>
+
+    <!-- Status bar. Deliberately holds only what is NOT already in the
+         System panel to the right: run control, live connection health,
+         and the autonomy dial. CPU, uptime and the ADB port all live in
+         that panel, so repeating them here was duplication that also
+         pushed the dial off the end of a 1200px window. -->
+    <div class="status">
+      <div class="seg"><span class="btn danger" id="statusRun" style="height:26px;padding:0 11px;font-size:12px">Stop bot</span></div>
+      <div class="seg"><span class="sb"><span class="led"></span>ADB <b>5555</b></span></div>
+      <div class="seg"><span class="sb">capture <b>142.6ms</b></span></div>
+      <div class="dial">
+        <span class="lab">Autonomy</span>
+        <div class="dialg" id="dial"><span data-v="0">Manual</span><span data-v="1">Guided</span><span data-v="2" class="on">Auto</span></div>
+        <span class="lab" style="margin-left:4px">Stall</span><span class="sb" style="color:var(--tx)">30s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Inspector -->
+  <div class="insp">
+    <div class="itabs">
+      <div class="itab on" data-itab="detail">Detail</div>
+      <div class="itab" data-itab="config">Config</div>
+      <div class="itab" data-itab="console">Console</div>
+    </div>
+    <div class="ibody">
+      <!-- detail -->
+      <div data-ipane="detail">
+        <div class="icard">
+          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:9px">
+            <span class="mono" style="font-size:12px;color:var(--tx-3)">14:22:07</span>
+            <span class="warnpill" id="dBadge">3★</span>
+          </div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:2px" id="dTitle">TH16 · 3 stars</div>
+          <div style="font-size:11.5px;color:var(--tx-3)" id="dSub">BARCH Hybrid · 52s</div>
+          <div style="margin-top:12px">
+            <div class="kv"><span class="k">Gold stolen</span><span class="v" style="color:var(--gold)">218,400</span></div>
+            <div class="bar"><i style="width:100%;background:var(--gold)"></i></div>
+            <div class="kv" style="margin-top:9px"><span class="k">Elixir stolen</span><span class="v" style="color:var(--elixir)">196,200</span></div>
+            <div class="bar"><i style="width:90%;background:var(--elixir)"></i></div>
+            <div class="kv" style="margin-top:9px"><span class="k">Dark elixir</span><span class="v" style="color:var(--de)">1,980</span></div>
+            <div class="bar"><i style="width:34%;background:var(--de)"></i></div>
+            <div class="kv" style="margin-top:9px"><span class="k">Bonus (window)</span><span class="v">14,200</span></div>
+          </div>
+        </div>
+        <div class="icard tint">
+          <div class="lbl" style="margin-bottom:8px">Deploy slots</div>
+          <div class="slotmap" id="slots"></div>
+          <div class="kv" style="margin-top:9px"><span class="k">Slots used</span><span class="v">14 / 14</span></div>
+          <div class="kv"><span class="k">Undeployed</span><span class="v" id="dUndep">0</span></div>
+          <div class="kv"><span class="k">Red line length</span><span class="v">148 px</span></div>
+        </div>
+        <div id="errBox" class="errbox hidden">stall_timer: no deploys for 22s — match abandoned, 1 hero slot lost</div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <span class="btn" style="flex:1;justify-content:center">Replay</span>
+          <span class="btn" style="flex:1;justify-content:center">Open in logs</span>
+        </div>
+      </div>
+
+      <!-- config -->
+      <div data-ipane="config" class="hidden">
+        <div class="icard">
+          <div class="lbl" style="margin-bottom:4px">Search thresholds</div>
+          <div class="frow">
+            <div class="fl"><div class="n">Minimum gold</div><div class="d">137 bases skipped at this floor</div></div>
+            <input class="inp" value="400,000">
+          </div>
+          <div class="frow">
+            <div class="fl"><div class="n">Minimum elixir</div><div class="d">All three floors clear together</div></div>
+            <input class="inp" value="400,000">
+          </div>
+          <div class="frow">
+            <div class="fl"><div class="n">Minimum dark elixir</div><div class="d">0 disables</div></div>
+            <input class="inp" value="2,000">
+          </div>
+          <div class="frow">
+            <div class="fl"><div class="n">Search enabled</div></div><div class="sw"></div>
+          </div>
+        </div>
+        <div class="icard">
+          <div class="lbl" style="margin-bottom:4px">Attack</div>
+          <div class="frow">
+            <div class="fl"><div class="n">Strategy</div><div class="d">Applies on the next attack</div></div>
+            <select class="inp"><option>BARCH</option><option>Queen Charge</option><option>Hybrid Lava</option></select>
+          </div>
+          <div class="frow">
+            <div class="fl"><div class="n">Stall timer</div><div class="d">Abandon undeployed matches</div></div>
+            <input class="inp" value="30">
+          </div>
+          <div class="frow">
+            <div class="fl"><div class="n">Wall upgrades</div><div class="d">Between attacks only</div></div><div class="sw"></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <span class="btn pri" style="flex:1;justify-content:center">Save parameters</span>
+        </div>
+        <div style="text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--tx-3);margin-top:9px">saved 14:21:58</div>
+      </div>
+
+      <!-- console -->
+      <div data-ipane="console" class="hidden">
+        <div class="icard" style="padding:0;overflow:hidden">
+          <div style="display:flex;gap:5px;padding:9px 11px;border-bottom:1px solid var(--line);background:var(--p2)">
+            <span class="fchip on" style="padding:2px 7px">All</span><span class="fchip" style="padding:2px 7px">Debug</span><span class="fchip" style="padding:2px 7px">Warn</span><span class="fchip" style="padding:2px 7px">Error</span>
+          </div>
+          <div id="inspLog" style="font-family:var(--mono);font-size:10.5px;line-height:1.8;padding:10px 11px;height:330px;overflow-y:auto"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const ATT = [
+  {t:'14:22:07', th:'TH16', s:3, g:218400, e:196200, d:1980, str:'BARCH Hybrid', dur:'52s', used:14, bad:0},
+  {t:'14:19:41', th:'TH15', s:3, g:204100, e:188300, d:2140, str:'BARCH Hybrid', dur:'49s', used:14, bad:0},
+  {t:'14:16:58', th:'TH16', s:2, g:198600, e:174900, d:1620, str:'Queen Charge', dur:'71s', used:12, bad:2},
+  {t:'14:14:22', th:'TH16', s:3, g:196800, e:181400, d:1890, str:'BARCH Hybrid', dur:'50s', used:14, bad:0},
+  {t:'14:11:55', th:'TH15', s:2, g:191300, e:168700, d:1540, str:'Hybrid Lava', dur:'66s', used:13, bad:1},
+  {t:'14:09:30', th:'TH16', s:3, g:187900, e:165200, d:1760, str:'Queen Charge', dur:'58s', used:14, bad:0},
+  {t:'14:07:12', th:'TH16', s:2, g:182400, e:171600, d:1410, str:'BARCH Hybrid', dur:'63s', used:14, bad:0},
+  {t:'14:04:48', th:'TH14', s:3, g:178200, e:159800, d:1280, str:'Hybrid Lava', dur:'47s', used:14, bad:0},
+  {t:'14:02:19', th:'TH16', s:1, g:171500, e:152300, d:1190, str:'BARCH Hybrid', dur:'88s', used:14, bad:3},
+  {t:'13:59:51', th:'TH15', s:2, g:168700, e:148900, d:1320, str:'Queen Charge', dur:'69s', used:13, bad:1}
+];
+const pips = n => Array.from({length:3},(_,i)=>`<i class="${i<n?'on':''}"></i>`).join('');
+const row = (a,i,sel) => `<div class="row ${sel?'sel':''}" data-i="${i}">
+  <span class="tm">${a.t}</span>
+  <span class="stpips">${pips(a.s)}</span>
+  <span><span class="d1">${a.th} · ${a.str}</span><span class="d2">${a.bad? a.bad+' undeployed slot'+(a.bad>1?'s':'')+' · '+a.dur : 'clean deploy · '+a.dur}</span></span>
+  <span class="g">${a.g.toLocaleString()}</span>
+  <span class="s">${a.bad?'<span class="warnpill">flagged</span>':a.s+'★'}</span>
+</div>`;
+// The first row of the *visible* list is pre-selected; the history list
+// renders the same rows without a selection so only one row is ever lit.
+document.getElementById('tl').innerHTML = ATT.map((a,i)=>row(a,i,i===0)).join('');
+document.getElementById('tl2').innerHTML = ATT.concat([
+  {t:'13:57:20',th:'TH16',s:2,g:164300,e:147100,d:1290,str:'BARCH Hybrid',dur:'61s',used:14,bad:0},
+  {t:'13:54:02',th:'TH15',s:3,g:159800,e:141900,d:1140,str:'Queen Charge',dur:'55s',used:14,bad:0}
+]).map((a,i)=>row(a,i,false)).join('');
+
+function showDetail(i){
+  const a = ATT[i];
+  document.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
+  const r = document.querySelector(`.row[data-i="${i}"]`); if (r) r.classList.add('sel');
+  document.getElementById('dTitle').textContent = `${a.th} · ${a.s} stars`;
+  document.getElementById('dSub').textContent = `${a.str} · ${a.dur}`;
+  const b = document.getElementById('dBadge');
+  b.textContent = a.s + '★'; b.style.background = a.s===3?'#e6f6ec':a.s===2?'#eef1f5':'#fdf0dd';
+  b.style.color = a.s===3?'#0b7a44':a.s===2?'#4a5460':'#8f5605';
+  document.getElementById('dUndep').textContent = a.bad;
+  document.getElementById('dUndep').style.color = a.bad?'#d03b3b':'';
+  document.getElementById('slots').innerHTML = Array.from({length:14},(_,k)=>`<i class="${k<a.used?'on':''} ${a.bad&&k>=a.used?'bad':''}"></i>`).join('');
+  const e = document.getElementById('errBox');
+  if (a.bad) { e.classList.remove('hidden'); e.textContent = a.s===1 ? 'red_line: computed path rejected by verifier — 24 hogs lost to splash damage' : `stall_timer: ${a.bad} slot(s) left undeployed, hero saved, match conceded after ${a.dur}`; }
+  else e.classList.add('hidden');
+  document.querySelector('.itabs [data-itab="detail"]').click();
+}
+document.getElementById('tl').addEventListener('click', e => { const r = e.target.closest('.row'); if (r) showDetail(+r.dataset.i); });
+document.getElementById('tl2').addEventListener('click', e => { const r = e.target.closest('.row'); if (r) showDetail(+r.dataset.i); });
+
+document.querySelector('.itabs').addEventListener('click', e => {
+  const t = e.target.closest('.itab'); if (!t) return;
+  document.querySelectorAll('.itab').forEach(x => x.classList.toggle('on', x === t));
+  document.querySelectorAll('[data-ipane]').forEach(p => p.classList.toggle('hidden', p.dataset.ipane !== t.dataset.itab));
+});
+
+const TITLES = {run:['Live run','BARCH Hybrid · started 10:09:52'], history:['Attack history','84 attacks this session'], analytics:['Analytics','Strategy and star performance'], config:['Search & attack','Thresholds and strategy'], settings:['System','Connection and runtime']};
+document.querySelector('.nav').addEventListener('click', e => {
+  const b = e.target.closest('.navitem'); if (!b || !b.dataset.tab) return;
+  document.querySelectorAll('.navitem').forEach(x => x.classList.toggle('on', x === b));
+  const t = b.dataset.tab;
+  // Config and System live in the right-hand inspector, so selecting them
+  // must not blank the centre column: only touch the panes when the target
+  // IS one of the centre panes.
+  const CENTER = ['run','history','analytics'];
+  if (CENTER.includes(t)) {
+    CENTER.forEach(p => {
+      const el = document.querySelector(`[data-pane="${p}"]`); if (el) el.classList.toggle('hidden', p !== t);
+    });
+  }
+  if (t === 'config') document.querySelector('[data-itab="config"]').click();
+  if (t === 'settings') document.querySelector('[data-itab="console"]').click();
+  document.getElementById('ctitle').textContent = TITLES[t][0];
+  document.getElementById('csub').textContent = TITLES[t][1];
+});
+
+document.getElementById('spark').innerHTML = Array.from({length:60},(_,i)=>{
+  const v = 118 + Math.sin(i/3.1)*11 + ((i*37)%23) + (i===41?46:0);
+  const pct = Math.min(100, (v-100)/80*100);
+  const cls = i===41?'hi':v<130?'lo':'';
+  return `<i class="${cls}" style="height:${Math.max(6,pct)}%"></i>`;
+}).join('');
+
+const H = [['3★',28,33.3,'#c88a12'],['2★',31,36.9,'#4c4f66'],['1★',19,22.6,'#9aa3ae'],['0★',6,7.1,'#d03b3b']];
+document.getElementById('hist').innerHTML = H.map(h=>`
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:11px">
+    <span class="mono" style="width:30px;font-size:12px;color:var(--tx-2)">${h[0]}</span>
+    <div style="flex:1"><div class="bar" style="margin:0"><i style="width:${h[2]}%;background:${h[3]}"></i></div></div>
+    <span class="mono" style="width:34px;text-align:right;font-size:12px">${h[1]}</span>
+    <span class="mono" style="width:56px;text-align:right;font-size:11px;color:var(--tx-3)">${h[2]}%</span>
+  </div>`).join('');
+
+const LOGS = [
+  ['#5f6977','14:22:07.412','#4a5460','deploy slot 3 → barbarian king (x1)'],
+  ['#5f6977','14:22:07.388','#5f6977','slot_map[3] = hero_king, scale 0.94'],
+  ['#0b7a44','14:22:07.104','#0b7a44','attack complete — 3★ 218,400 gold'],
+  ['#5f6977','14:22:06.902','#4a5460','recording attack_history.json entry 84'],
+  ['#5f6977','14:22:04.551','#4a5460','returned home, army full (280/280)'],
+  ['#8f5605','14:22:01.220','#8f5605','stall timer 18s remaining'],
+  ['#5f6977','14:21:58.003','#4a5460','searching for next base'],
+  ['#d03b3b','14:21:55.870','#d03b3b','capture failed: EOF on adb transport'],
+  ['#0b7a44','14:21:56.140','#0b7a44','transport reconnected (CNXN ok)'],
+  ['#5f6977','14:21:52.330','#4a5460','base skipped — 312,000 < 400,000'],
+  ['#5f6977','14:21:49.776','#4a5460','deploy slot 1 → hog rider (x24)']
+];
+document.getElementById('inspLog').innerHTML = LOGS.map(l=>`<div style="white-space:pre;overflow:hidden;text-overflow:ellipsis"><span style="color:${l[0]}">${l[1]}</span>  <span style="color:${l[2]}">${l[3]}</span></div>`).join('');
+
+document.getElementById('dial').addEventListener('click', e => {
+  const s = e.target.closest('span'); if (!s) return;
+  s.parentNode.querySelectorAll('span').forEach(n => n.classList.toggle('on', n === s));
+});
+document.querySelectorAll('.mini-sw').forEach(s => s.addEventListener('click', () => s.classList.toggle('off')));
+
+// Populate the inspector for the pre-selected row so the right pane is
+// never empty on first paint.
+showDetail(0);
+</script>
+</body>
+</html>

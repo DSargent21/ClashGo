@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ClashGO — UI layout explorations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600&family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f7f5f0; --card:#fff; --ink:#17161a; --ink-2:#4b4a52; --muted:#5f5d68;
+    --rule:#e3e0d8; --rule-2:#d0ccc0; --accent:#3f5c3a; --warn:#8a5a12;
+    --serif:'Newsreader',Georgia,serif; --sans:'Inter',system-ui,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;-webkit-font-smoothing:antialiased;padding:44px 32px 80px}
+  .wrap{max-width:1080px;margin:0 auto}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:var(--serif);font-size:42px;font-weight:500;letter-spacing:-.02em;line-height:1.1;margin:14px 0 14px;max-width:20ch}
+  .lede{font-size:15px;line-height:1.68;color:var(--ink-2);max-width:66ch}
+  .lede b{color:var(--ink);font-weight:600}
+  hr{border:0;border-top:1px solid var(--ink);margin:34px 0 26px}
+  h2{font-family:var(--serif);font-size:22px;font-weight:500;margin:0 0 4px}
+  .h2k{margin-bottom:20px}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:26px 24px}
+  .item{background:var(--card);border:1px solid var(--rule-2);border-radius:9px;overflow:hidden;display:flex;flex-direction:column}
+  .frame{position:relative;width:100%;aspect-ratio:1200/850;background:#111;overflow:hidden;border-bottom:1px solid var(--rule-2);cursor:zoom-in}
+  .frame iframe{position:absolute;top:0;left:0;width:1200px;height:850px;border:0;transform-origin:0 0}
+  .frame .lbl{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.62);color:#fff;font-family:var(--mono);font-size:9px;letter-spacing:.12em;padding:3px 7px;border-radius:4px;pointer-events:none}
+  .meta{padding:16px 17px 17px;display:flex;flex-direction:column;flex:1}
+  .num{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.14em}
+  .meta h3{font-family:var(--serif);font-size:21px;font-weight:500;margin:5px 0 7px;letter-spacing:-.01em}
+  .meta p{font-size:13px;line-height:1.62;color:var(--ink-2);margin-bottom:11px}
+  .tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:11px}
+  .tag{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;padding:2.5px 7px;border-radius:3px;border:1px solid var(--rule-2);color:var(--muted)}
+  .tag.ins{background:#eef3ec;border-color:#cddcc8;color:var(--accent)}
+  .trade{font-size:12.5px;line-height:1.6;color:var(--muted);border-top:1px solid var(--rule);padding-top:10px;margin-top:auto}
+  .trade b{color:var(--warn);font-weight:600}
+  .trade .g{color:var(--accent)}
+  .open{display:inline-block;margin-top:12px;font-size:12.5px;color:var(--ink);text-decoration:none;border:1px solid var(--ink);border-radius:4px;padding:6px 13px;font-weight:500}
+  .open:hover{background:var(--ink);color:#fff}
+  .item.wide{grid-column:1/-1}
+
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--rule-2);border-radius:9px;overflow:hidden;margin-bottom:34px}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--rule);font-size:13px}
+  thead th{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:500;background:#f2f0ea}
+  tbody tr:last-child td{border-bottom:0}
+  td.n{font-weight:500;white-space:nowrap}
+  .best{color:var(--accent);font-weight:600}
+  .mid{color:var(--warn)}
+  .note{font-size:12.5px;line-height:1.65;color:var(--muted);max-width:70ch;margin-bottom:30px}
+  .note code{font-family:var(--mono);font-size:11.5px;background:#eeeae0;padding:1px 5px;border-radius:3px}
+  .fallback{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:20px;background:#f1efe9;font-size:12.5px;color:var(--muted);line-height:1.6}
+  .fallback b{display:block;font-size:13px;color:var(--ink);margin-bottom:5px;font-weight:600}
+  .banner{background:#fdf6e6;border:1px solid #e8d9ae;border-radius:7px;padding:11px 14px;font-size:12.5px;line-height:1.6;color:#7a5c14;margin-bottom:22px;display:none}
+  .banner code{font-family:var(--mono);font-size:11.5px;background:rgba(0,0,0,.06);padding:1px 5px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kicker">ClashGO · design explorations · 5 layouts</div>
+  <h1>Five layouts for the bot's control room.</h1>
+  <p class="lede">All five render the same data at the real window size — <b>1200×850</b>, from <code>main.go</code> — with the same four sections, the same Start/Stop control and the same ADB status. They are clickable: use the nav in each one. Layouts <b>01</b> and <b>02</b> are the two reference-driven directions; <b>03</b>–<b>05</b> explore other structures.</p>
+
+  <div class="banner" id="banner">
+    <b>These thumbnails need this page opened as a file, not served one file at a time.</b>
+    Open <code>design/mockups/00-index.html</code> directly in your browser (double-click it, or
+    <code>open design/mockups/00-index.html</code>), or serve the folder with
+    <code>cd design/mockups &amp;&amp; python3 -m http.server 8000</code>. The links below open each
+    layout full size either way.
+  </div>
+
+  <hr>
+
+  <h2>The candidates</h2>
+  <div class="h2k kicker">Click any preview to open it full size</div>
+
+  <div class="grid">
+
+    <div class="item">
+      <div class="frame" onclick="location.href='01-ledger.html'"><iframe src="01-ledger.html" loading="lazy" scrolling="no" style="transform:scale(calc(100% / 1200 * 0.5))"></iframe><span class="lbl">01 — LEDGER</span></div>
+      <div class="meta">
+        <div class="num">01 · inspired by vals.ai</div>
+        <h3>The Ledger</h3>
+        <div class="tags"><span class="tag ins">Reference-driven</span><span class="tag">Top nav, no rail</span><span class="tag">Ranked table</span><span class="tag">Highest density</span></div>
+        <p>An editorial lab report. Hairline rules instead of shadows, a serif headline that states the <em>finding</em> rather than the page name, and every attack as a ranked row with inline yield meters and tabular-numeral variance. The console becomes a footnote.</p>
+        <div class="trade"><span class="g">Wins at:</span> scanning 84 attacks, spotting outliers, feeling credible.<br><b>Costs you:</b> the live log is demoted, and a 5-column table is tight at 1200px.</div>
+        <a class="open" href="01-ledger.html">Open full size →</a>
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="frame" onclick="location.href='02-command-deck.html'"><iframe src="02-command-deck.html" loading="lazy" scrolling="no" style="transform:scale(calc(100% / 1200 * 0.5))"></iframe><span class="lbl">02 — DECK</span></div>
+      <div class="meta">
+        <div class="num">02 · inspired by the Freebuff app</div>
+        <h3>Command Deck</h3>
+        <div class="tags"><span class="tag ins">Reference-driven</span><span class="tag">Icon rail</span><span class="tag">Session tabs</span><span class="tag">Command bar</span></div>
+        <p>The agent-app language transplanted: a 48px rail, a strip of run-session tabs, a run stream of expandable attack cards, and a persistent slash-command bar as the app's spine. Start/stop is a command, not a button in a sidebar.</p>
+        <div class="trade"><span class="g">Wins at:</span> starting and stopping runs; feeling like a modern product.<br><b>Costs you:</b> Config gets demoted to a command, and the dark palette must be reconciled with the gold/elixir identity.</div>
+        <a class="open" href="02-command-deck.html">Open full size →</a>
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="frame" onclick="location.href='03-cockpit.html'"><iframe src="03-cockpit.html" loading="lazy" scrolling="no" style="transform:scale(calc(100% / 1200 * 0.5))"></iframe><span class="lbl">03 — COCKPIT</span></div>
+      <div class="meta">
+        <div class="num">03 · three-pane agentic standard</div>
+        <h3>Cockpit</h3>
+        <div class="tags"><span class="tag">Nav / run / inspector</span><span class="tag">Autonomy dial</span><span class="tag">Always-visible status</span></div>
+        <p>Left nav stays labeled (no hover-collapse), the center shows the live run with the emulator state and a latency sparkline, and a 322px inspector carries attack detail ⇄ config. The bottom bar is permanent: stop, ADB, latency, CPU, and the autonomy dial.</p>
+        <div class="trade"><span class="g">Wins at:</span> watching the bot work while tuning it; the most extensible shell.<br><b>Costs you:</b> three panes at 1200px leaves ~660px in the center, and it's the least distinctive of the five.</div>
+        <a class="open" href="03-cockpit.html">Open full size →</a>
+      </div>
+    </div>
+
+    <div class="item">
+      <div class="frame" onclick="location.href='04-telemetry-wall.html'"><iframe src="04-telemetry-wall.html" loading="lazy" scrolling="no" style="transform:scale(calc(100% / 1200 * 0.5))"></iframe><span class="lbl">04 — WALL</span></div>
+      <div class="meta">
+        <div class="num">04 · dark instrument panel</div>
+        <h3>Telemetry Wall</h3>
+        <div class="tags"><span class="tag">Heatmap</span><span class="tag">Sparklines</span><span class="tag">Permanent log</span><span class="tag">Slide-over config</span></div>
+        <p>A dense grid of live instruments: five KPI tiles with sparklines, a capture-latency heatmap across the whole session, a 40-attack gold series, strategy attribution, and a log column that never stops streaming. Config slides over so you can tune without losing the wall.</p>
+        <div class="trade"><span class="g">Wins at:</span> long sessions; absorbs new metrics (SQLite stats, win-rate over time) without a redesign.<br><b>Costs you:</b> the highest build cost, and it leans hardest into the dark-on-dark layering the app has fought before.</div>
+        <a class="open" href="04-telemetry-wall.html">Open full size →</a>
+      </div>
+    </div>
+
+    <div class="item wide">
+      <div class="frame" onclick="location.href='05-dispatch.html'"><iframe src="05-dispatch.html" loading="lazy" scrolling="no" style="transform:scale(calc(100% / 1200 * 0.5))"></iframe><span class="lbl">05 — DISPATCH</span></div>
+      <div class="meta">
+        <div class="num">05 · one scrolling document</div>
+        <h3>The Dispatch</h3>
+        <div class="tags"><span class="tag">No tabs</span><span class="tag">Timeline view</span><span class="tag">Prose entries</span><span class="tag">Collapsed controls</span></div>
+        <p>No navigation at all. The bot appends to a single document that reads top to bottom: a summary masthead, then one prose entry per notable attack with the reasoning written out, then a live entry with a blinking caret. Parameters collapse into one line at the top. This is the agentic-UX <b>Timeline View</b> pattern taken literally — the whole four hours is auditable start to finish.</p>
+        <div class="trade"><span class="g">Wins at:</span> catching up after being away; the reasoning is legible to a human, not just a log line.<br><b>Costs you:</b> worst for live control, and long sessions create an unbounded scroll that will need virtualization.</div>
+        <a class="open" href="05-dispatch.html">Open full size →</a>
+      </div>
+    </div>
+
+  </div>
+
+  <hr>
+
+  <h2>Comparison</h2>
+  <div class="h2k kicker">The four things this app actually has to do</div>
+  <table>
+    <thead><tr><th>Layout</th><th>Live monitoring</th><th>Reviewing history</th><th>Tuning config</th><th>Distinctiveness</th><th>Build cost</th><th>Fits 1200px</th></tr></thead>
+    <tbody>
+      <tr><td class="n">01 The Ledger</td><td class="mid">Fair</td><td class="best">Best</td><td>Good</td><td>High</td><td>Low</td><td class="mid">Fair</td></tr>
+      <tr><td class="n">02 Command Deck</td><td>Good</td><td>Good</td><td class="mid">Weak</td><td>High</td><td class="mid">Medium</td><td class="best">Best</td></tr>
+      <tr><td class="n">03 Cockpit</td><td class="best">Best</td><td>Good</td><td class="best">Best</td><td class="mid">Medium</td><td class="mid">Medium</td><td class="mid">Fair</td></tr>
+      <tr><td class="n">04 Telemetry Wall</td><td class="best">Best</td><td class="mid">Fair</td><td>Good</td><td>High</td><td class="mid">High</td><td class="best">Best</td></tr>
+      <tr><td class="n">05 The Dispatch</td><td class="mid">Weak</td><td class="best">Best</td><td class="mid">Fair</td><td>High</td><td>Low</td><td class="best">Best</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note"><b>Shared across all five, and worth keeping whichever you pick:</b> the Start/Stop control is never more than one click away and always shows what the bot is doing right now; the ADB state is a first-class citizen rather than a settings-page line; the loot thresholds live next to the data they filter; every attack row carries its strategy, its star result, and its undeployed-slot count, because that's the triad you actually debug with. The design language — type scale, color tokens, spacing and the 180ms motion budget — is written up in <code>design/README.md</code>.</p>
+</div>
+
+<script>
+// The live thumbnails need sibling files to be reachable. Some preview
+// environments serve one file at a time and 404 the rest, which would
+// leave five empty black rectangles. Detect that and say so rather than
+// showing broken frames.
+const frames = [...document.querySelectorAll('.frame')];
+frames.forEach(f => {
+  const fb = document.createElement('div');
+  fb.className = 'fallback';
+  fb.innerHTML = '<span><b>Preview unavailable here</b>Open the full-size link below this card.</span>';
+  fb.style.display = 'none';
+  f.appendChild(fb);
+  const fr = f.querySelector('iframe');
+  let loaded = false;
+  const fail = () => {
+    fr.style.display = 'none';
+    fb.style.display = 'grid';
+    document.getElementById('banner').style.display = 'block';
+  };
+  const check = () => {
+    loaded = true;
+    // A null contentDocument means the browser blocked *reading* the frame
+    // (file:// origins are opaque), not that it failed to load. On file://
+    // the thumbnails render fine but are unreadable to us, so leave them alone.
+    let inner = null;
+    try { inner = fr.contentDocument; } catch (e) { return; }
+    if (!inner || !inner.body) return;
+    const text = inner.body.innerText.trim();
+    if (text === 'Not found' || /^Error response/.test(text)) fail();
+  };
+  fr.addEventListener('load', check);
+  setTimeout(() => { if (!loaded) fail(); }, 2500);
+});
+</script>
+</body>
+</html>

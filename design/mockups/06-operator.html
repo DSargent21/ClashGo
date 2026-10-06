@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ClashGO — Operator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f4f6f8; --surface:#ffffff; --surface-2:#f9fafb; --surface-3:#eef1f4;
+  --line:#e2e7ec; --line-2:#d0d7de;
+  --ink:#11161c; --ink-2:#3d4650; --muted:#576170;
+  --green:#0a7a46; --green-bg:#e7f6ee;
+  --amber:#8a5a12; --amber-bg:#fdf3e3;
+  --red:#b3261e; --red-bg:#fdecea;
+  --blue:#1f5fa8;
+  --gold:#8a5a12; --gold-fill:#e8a33d;
+  --elixir:#8e2aa5; --elixir-fill:#c766d8;
+  --de:#454f7a;
+  --sans:'Inter',system-ui,-apple-system,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased;overflow:hidden}
+button,input,select{font-family:inherit;font-size:inherit;color:inherit}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.lbl{font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.hidden{display:none !important}
+
+.app{display:flex;flex-direction:column;height:100vh;width:100vw}
+
+/* ── Top bar: status + the one action, always here ───────────── */
+.topbar{height:56px;flex:0 0 56px;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 16px}
+.brand{display:flex;align-items:center;gap:9px}
+.mark{width:26px;height:26px;border-radius:7px;background:var(--ink);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px}
+.brand .nm{font-size:13.5px;font-weight:650;letter-spacing:-.01em}
+.brand .v{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.vdiv{width:1px;height:24px;background:var(--line)}
+
+/* run pill */
+.runpill{display:flex;align-items:center;gap:9px;height:32px;padding:0 12px;border-radius:8px;background:var(--green-bg);border:1px solid #cbeada}
+.runpill.idle{background:var(--surface-3);border-color:var(--line-2)}
+.runpill.warn{background:var(--amber-bg);border-color:#f3dfc0}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(10,122,70,.5);animation:pulse 2s infinite}
+.runpill.idle .dot{background:#9aa3ad;animation:none;box-shadow:none}
+.runpill.warn .dot{background:var(--amber);animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(10,122,70,.45)}70%{box-shadow:0 0 0 7px rgba(10,122,70,0)}100%{box-shadow:0 0 0 0 rgba(10,122,70,0)}}
+.runpill .st{font-size:12.5px;font-weight:650;letter-spacing:.04em}
+.runpill .state{font-size:12.5px;color:var(--ink-2);border-left:1px solid #cbeada;padding-left:9px}
+.runpill.idle .state{border-left-color:var(--line-2)}
+.runpill .dur{font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+.spacer{flex:1}
+
+/* health chip */
+.hbtn{display:flex;align-items:center;gap:7px;height:32px;padding:0 11px;border-radius:8px;border:1px solid var(--line-2);background:var(--surface);cursor:pointer;position:relative}
+.hbtn:hover{background:var(--surface-2)}
+.hbtn .led{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.hbtn .led.w{background:var(--amber)} .hbtn .led.e{background:var(--red)}
+.hbtn .ht{font-size:12px;font-weight:500}
+.hbtn .hs{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+.iconbtn{width:32px;height:32px;border-radius:8px;border:1px solid var(--line-2);background:var(--surface);display:grid;place-items:center;cursor:pointer;color:var(--ink-2)}
+.iconbtn:hover{background:var(--surface-2);color:var(--ink)}
+.iconbtn svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+
+.runbtn{height:34px;padding:0 16px;border-radius:8px;border:0;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;transition:filter .12s}
+.runbtn:hover{filter:brightness(1.07)}
+.runbtn.start{background:var(--green);color:#fff}
+.runbtn.stop{background:var(--red);color:#fff}
+.runbtn .sq{width:9px;height:9px;border-radius:2px;background:currentColor}
+.runbtn .tri{width:0;height:0;border-left:10px solid currentColor;border-top:6px solid transparent;border-bottom:6px solid transparent;margin-right:-2px}
+
+/* health popover */
+.pop{position:absolute;top:46px;right:16px;width:300px;background:var(--surface);border:1px solid var(--line-2);border-radius:11px;box-shadow:0 14px 38px rgba(17,22,28,.14);padding:14px 15px;z-index:60}
+.pop h4{font-size:12.5px;font-weight:650;margin-bottom:9px}
+.pop .pr{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-top:1px solid var(--line);font-size:12.5px}
+.pop .pr .k{color:var(--muted)} .pop .pr .v{font-family:var(--mono);font-weight:500}
+.pop .note{margin-top:10px;font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--muted);background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:8px 9px}
+
+/* ── Main: one screen, no navigation ─────────────────────────── */
+.main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 424px;gap:16px;padding:16px;min-height:0}
+.col{min-width:0;display:flex;flex-direction:column;gap:12px;min-height:0}
+
+/* Cycle rail — the bot's own state machine, made visible */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:11px}
+.cardhead{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.cardhead h3{font-size:12.5px;font-weight:650}
+.cardhead .r{margin-left:auto;display:flex;gap:6px;align-items:center}
+
+.rail{padding:16px 18px 14px}
+.steps{display:flex;align-items:flex-start;gap:0;position:relative}
+.step{flex:1;position:relative;text-align:left;padding-top:26px}
+.step .bead{position:absolute;top:0;left:0;width:14px;height:14px;border-radius:50%;background:var(--surface);border:2.5px solid var(--line-2);z-index:2}
+.step.done .bead{background:var(--green);border-color:var(--green)}
+.step.now .bead{background:var(--green);border-color:var(--green);box-shadow:0 0 0 4px rgba(10,122,70,.16)}
+.step:after{content:'';position:absolute;top:6px;left:14px;right:0;height:2.5px;background:var(--line)}
+.step:last-child:after{display:none}
+.step.done:after{background:var(--green)}
+.step .sn{font-size:12.5px;font-weight:600;color:var(--muted);white-space:nowrap}
+.step.now .sn{color:var(--ink)}
+.step.done .sn{color:var(--ink-2)}
+.step .sd{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:3px;white-space:nowrap}
+.railfoot{display:flex;align-items:center;gap:8px;margin-top:14px;padding-top:11px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-2)}
+.railfoot b{font-weight:600;color:var(--ink)}
+.railfoot .sep{color:var(--line-2)}
+
+/* KPI strip */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:13px 14px 12px;position:relative;overflow:hidden}
+.kpi .v{font-family:var(--mono);font-size:26px;font-weight:500;letter-spacing:-.02em;margin-top:7px;line-height:1;font-variant-numeric:tabular-nums}
+.kpi .v small{font-size:14px;color:var(--muted);font-weight:400}
+.kpi .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:6px}
+.kpi .sw{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:6px;vertical-align:1px}
+.kpi .g{color:var(--gold)} .kpi .e{color:var(--elixir)} .kpi .d{color:var(--de)} .kpi .s{color:var(--green)}
+
+/* History table */
+.hist{flex:1;display:flex;flex-direction:column;min-height:0}
+.chip{font-size:11.5px;padding:4px 10px;border-radius:6px;border:1px solid var(--line-2);background:var(--surface);color:var(--muted);cursor:pointer;white-space:nowrap}
+.chip:hover{background:var(--surface-2);color:var(--ink-2)}
+.chip.on{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:500}
+.tablewrap{flex:1;overflow-y:auto;min-height:0}
+.tablewrap::-webkit-scrollbar{width:9px}
+.tablewrap::-webkit-scrollbar-thumb{background:#ccd3da;border-radius:9px;border:3px solid var(--surface)}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+thead th{position:sticky;top:0;background:var(--surface);z-index:1}
+th{font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line)}
+th.r{text-align:right}
+tbody td{padding:9px 12px;border-bottom:1px solid var(--line);font-size:12.5px;vertical-align:middle}
+tbody tr:last-child td{border-bottom:0}
+tbody tr.row{cursor:pointer}
+tbody tr.row:hover{background:var(--surface-2)}
+tbody tr.row.sel{background:#f1f6ff}
+.c-time{width:74px} .c-th{width:48px} .c-star{width:54px} .c-g{width:86px} .c-e{width:86px} .c-de{width:70px} .c-fl{width:74px}
+td.r{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px}
+td.t{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.stars{display:flex;gap:2.5px}
+.stars svg{width:11px;height:11px}
+.fl{font-size:10px;font-weight:600;padding:2.5px 7px;border-radius:5px;white-space:nowrap}
+.fl.ok{background:var(--green-bg);color:var(--green)}
+.fl.warn{background:var(--amber-bg);color:var(--amber)}
+.fl.err{background:var(--red-bg);color:var(--red)}
+.detail td{background:var(--surface-2);padding:0 12px}
+.dbox{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;padding:11px 0 12px}
+.dbox .k{font-size:9.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.dbox .v{font-family:var(--mono);font-size:12.5px;margin-top:3px}
+.slots{display:flex;gap:3px;margin-top:5px}
+.slots i{flex:1;height:6px;border-radius:2px;background:#dfe4ea}
+.slots i.on{background:var(--green)} .slots i.bad{background:var(--red)}
+
+/* ── Right column ────────────────────────────────────────────── */
+.device{padding:12px}
+.screen{position:relative;width:100%;aspect-ratio:860/732;border-radius:8px;overflow:hidden;background:#10161d;border:1px solid var(--line-2)}
+.sky{position:absolute;inset:0 0 55% 0;background:linear-gradient(#2b4a63,#4a6b7f)}
+.ground{position:absolute;inset:45% 0 0 0;background:linear-gradient(#3f6b45,#2f5436)}
+.grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);background-size:34px 34px}
+.bld{position:absolute;background:#8b6f4e;border:2px solid #6d5539;border-radius:3px;box-shadow:0 2px 5px rgba(0,0,0,.3)}
+.bld.t{background:#c9b28a;border-color:#a08b66}
+.redline{position:absolute;left:16%;top:26%;width:66%;height:52%;border:2px dashed #ff5f5f;border-radius:6px;box-shadow:0 0 0 9999px rgba(255,95,95,.04) inset}
+.screen:not(.combat) .combat-only{display:none !important}
+.cross{position:absolute;left:50%;top:46%;width:34px;height:34px;transform:translate(-50%,-50%);border:1.5px solid rgba(255,255,255,.7);border-radius:50%}
+.cross:before,.cross:after{content:'';position:absolute;background:rgba(255,255,255,.8)}
+.cross:before{left:50%;top:-8px;bottom:-8px;width:1.5px;margin-left:-.75px}
+.cross:after{top:50%;left:-8px;right:-8px;height:1.5px;margin-top:-.75px}
+.hudl{position:absolute;left:8px;top:8px;display:flex;gap:5px}
+.hudp{font-family:var(--mono);font-size:9.5px;color:#fff;background:rgba(0,0,0,.5);padding:2.5px 6px;border-radius:4px;letter-spacing:.02em}
+.hudp.g{color:#ffd479} .hudp.e{color:#f0a8ff} .hudp.d{color:#b9c0ff}
+.troopbar{position:absolute;right:8px;bottom:7px;display:flex;gap:4px;background:rgba(0,0,0,.45);padding:5px;border-radius:6px}
+.troopbar i{width:20px;height:20px;border-radius:4px;background:#4f5b6b;border:1.5px solid #6c7887;display:block}
+.troopbar i.on{background:#8a6f4e;border-color:#d8bd8e}
+.livebadge{position:absolute;right:8px;top:8px;font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:#fff;background:rgba(0,0,0,.55);padding:2.5px 6px;border-radius:4px;display:flex;align-items:center;gap:5px}
+.livebadge .b{width:6px;height:6px;border-radius:50%;background:#ff5f5f;animation:pulse2 1.4s infinite}
+@keyframes pulse2{0%,100%{opacity:1}50%{opacity:.25}}
+.statebar{position:absolute;left:8px;bottom:7px;font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;color:#dfe7ef;background:rgba(0,0,0,.55);padding:3px 7px;border-radius:4px}
+.devfoot{display:flex;align-items:center;gap:8px;margin-top:9px;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.devfoot .sep{color:var(--line-2)}
+
+/* next up */
+.next{padding:12px 14px}
+.nextrow{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.nextrow:last-child{border-bottom:0}
+.nextrow .k{color:var(--muted)} .nextrow .v{font-family:var(--mono);font-weight:500}
+.ready{color:var(--green)} .ready:before{content:'✓ ';font-weight:700}
+
+/* console */
+.console{flex:1;display:flex;flex-direction:column;min-height:0}
+.logbody{flex:1;overflow-y:auto;padding:9px 12px;font-family:var(--mono);font-size:11px;line-height:1.85;background:var(--surface-2);border-radius:0 0 11px 11px;min-height:0}
+.logbody::-webkit-scrollbar{width:7px}
+.logbody::-webkit-scrollbar-thumb{background:#ccd3da;border-radius:7px}
+.logbody div{white-space:pre;overflow:hidden;text-overflow:ellipsis}
+.lt{color:#5f6a77} .li{color:var(--ink-2)} .lok{color:var(--green)} .lw{color:var(--amber)} .le{color:var(--red)} .ld{color:#66707c}
+
+/* ── Config sheet ────────────────────────────────────────────── */
+.scrim{position:fixed;inset:0;background:rgba(17,22,28,.28);opacity:0;pointer-events:none;transition:opacity .2s;z-index:70}
+.scrim.on{opacity:1;pointer-events:auto}
+.sheet{position:fixed;top:0;right:0;bottom:0;width:400px;background:var(--surface);border-left:1px solid var(--line-2);box-shadow:-16px 0 44px rgba(17,22,28,.12);transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1);z-index:80;display:flex;flex-direction:column}
+.sheet.open{transform:translateX(0)}
+.sheethead{height:56px;flex:0 0 56px;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:1px solid var(--line)}
+.sheethead h3{font-size:14px;font-weight:650}
+.sheethead .x{margin-left:auto;width:28px;height:28px;border-radius:7px;border:1px solid var(--line-2);background:var(--surface);display:grid;place-items:center;cursor:pointer;color:var(--muted);font-size:15px;line-height:1}
+.sheethead .x:hover{background:var(--surface-2);color:var(--ink)}
+.sheetbody{flex:1;overflow-y:auto;padding:4px 18px 18px}
+.sect{margin-top:18px}
+.sect .lbl{display:block;margin-bottom:4px}
+.sect .hint{font-size:11.5px;color:var(--muted);line-height:1.5;margin-bottom:6px}
+.frow{display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:1px solid var(--line)}
+.frow .fl{flex:1}
+.frow .fl .n{font-size:12.5px;font-weight:500}
+.frow .fl .d{font-size:11.5px;color:var(--muted);margin-top:2px}
+.inp{width:130px;background:var(--surface);border:1px solid var(--line-2);border-radius:7px;padding:7px 10px;font-family:var(--mono);font-size:12.5px;text-align:right;outline:none}
+.inp:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(31,95,168,.13)}
+select.inp{text-align:left;font-family:var(--sans)}
+.tg{width:38px;height:21px;border-radius:11px;background:var(--line-2);position:relative;cursor:pointer;flex:0 0 38px;border:0;padding:0}
+.tg:after{content:'';position:absolute;top:2.5px;left:2.5px;width:15px;height:15px;border-radius:50%;background:#fff;transition:transform .16s}
+.tg.on{background:var(--green)} .tg.on:after{transform:translateX(17px)}
+.sheetfoot{flex:0 0 auto;border-top:1px solid var(--line);padding:13px 18px;display:flex;gap:9px;align-items:center}
+.btn{height:34px;padding:0 15px;border-radius:8px;border:1px solid var(--line-2);background:var(--surface);font-size:12.5px;font-weight:500;cursor:pointer}
+.btn:hover{background:var(--surface-2)}
+.btn.pri{background:var(--ink);color:#fff;border-color:var(--ink)}
+.btn.pri:hover{background:#000}
+.btn.dgr{color:var(--red);border-color:#eec9c6}
+.btn.dgr:hover{background:var(--red-bg)}
+.saved{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--green)}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ══ TOP BAR ══ -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">C</div>
+      <div>
+        <div class="nm">ClashGO</div>
+        <div class="v">v0.2.0</div>
+      </div>
+    </div>
+    <div class="vdiv"></div>
+
+    <div class="runpill" id="runpill">
+      <span class="dot"></span>
+      <span class="st" id="pillState">RUNNING</span>
+      <span class="state" id="pillAction">Searching · 14 skipped</span>
+      <span class="dur" id="pillDur">4:12:06</span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button class="hbtn" id="healthBtn">
+      <span class="led" id="healthLed"></span>
+      <span class="ht">ADB 5555</span>
+      <span class="hs" id="healthLat">142ms</span>
+    </button>
+    <button class="iconbtn" id="cfgBtn" title="Config">
+      <svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/></svg>
+    </button>
+    <button class="runbtn stop" id="runBtn"><span class="sq"></span>Stop bot</button>
+
+    <!-- health popover -->
+    <div class="pop hidden" id="healthPop">
+      <h4>Connection health</h4>
+      <div class="pr"><span class="k">ADB server</span><span class="v" id="hpAdb">5555 · Connected</span></div>
+      <div class="pr"><span class="k">Capture latency</span><span class="v" id="hpLat">142.6 ms</span></div>
+      <div class="pr"><span class="k">Capture errors</span><span class="v">11 of 15,204</span></div>
+      <div class="pr"><span class="k">Consecutive failures</span><span class="v" id="hpFails" style="color:var(--green)">0</span></div>
+      <div class="pr"><span class="k">CPU</span><span class="v">4.2% · 1,841.6s</span></div>
+      <div class="pr"><span class="k">Transport</span><span class="v" style="color:var(--green)">Optimal</span></div>
+      <div class="note">Auto-reconnects on transport loss. 5+ consecutive failures turns this chip red.</div>
+    </div>
+  </header>
+
+  <!-- ══ ONE SCREEN ══ -->
+  <div class="main">
+
+    <!-- LEFT: cycle → numbers → history -->
+    <div class="col">
+
+      <!-- what it's doing right now -->
+      <div class="card">
+        <div class="cardhead">
+          <h3>Current cycle</h3>
+          <div class="r">
+            <span class="lbl" id="cycleCount">84 attacks · 137 skipped</span>
+          </div>
+        </div>
+        <div class="rail">
+          <div class="steps" id="steps">
+            <div class="step" data-i="0"><span class="bead"></span><div class="sn">Search</div><div class="sd">137 skipped</div></div>
+            <div class="step" data-i="1"><span class="bead"></span><div class="sn">Deploy</div><div class="sd">14 slots</div></div>
+            <div class="step" data-i="2"><span class="bead"></span><div class="sn">Battle</div><div class="sd">30s stall</div></div>
+            <div class="step" data-i="3"><span class="bead"></span><div class="sn">Result</div><div class="sd">stars + loot</div></div>
+            <div class="step" data-i="4"><span class="bead"></span><div class="sn">Retrain</div><div class="sd">280/280</div></div>
+          </div>
+          <div class="railfoot">
+            <span>Now: <b id="nowState">Searching for a base above 400k gold</b></span>
+            <span class="sep">·</span>
+            <span class="num" id="nowAge">2.4s in state</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- numbers, big and aligned -->
+      <div class="kpis">
+        <div class="kpi">
+          <div class="lbl"><span class="sw" style="background:var(--gold-fill)"></span>Gold</div>
+          <div class="v g">3.18<small>M</small></div>
+          <div class="sub">37,911 / attack</div>
+        </div>
+        <div class="kpi">
+          <div class="lbl"><span class="sw" style="background:var(--elixir-fill)"></span>Elixir</div>
+          <div class="v e">2.94<small>M</small></div>
+          <div class="sub">35,025 / attack</div>
+        </div>
+        <div class="kpi">
+          <div class="lbl"><span class="sw" style="background:#7b83c4"></span>Dark elixir</div>
+          <div class="v d">41,820</div>
+          <div class="sub">498 / attack</div>
+        </div>
+        <div class="kpi">
+          <div class="lbl">3-star rate</div>
+          <div class="v s">33.3<small>%</small></div>
+          <div class="sub" id="kpiStars">28 of 84 · down 4.1</div>
+        </div>
+      </div>
+
+      <!-- the data -->
+      <div class="card hist">
+        <div class="cardhead">
+          <h3>Attack history</h3>
+          <div class="r">
+            <span class="chip on" data-f="all" id="chipAll">All 84</span>
+            <span class="chip" data-f="three">3★</span>
+            <span class="chip" data-f="flag">Flagged</span>
+          </div>
+        </div>
+        <div class="tablewrap" id="tableWrap">
+          <table>
+            <colgroup>
+              <col class="c-time"><col class="c-th"><col class="c-star"><col>
+              <col class="c-g"><col class="c-e"><col class="c-de"><col class="c-fl">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Time</th><th>TH</th><th>Stars</th><th>Strategy</th>
+                <th class="r">Gold</th><th class="r">Elixir</th><th class="r">DE</th><th>Result</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: what it sees → what's next → what it says -->
+    <div class="col">
+
+      <div class="card">
+        <div class="cardhead">
+          <h3>Live capture</h3>
+          <div class="r"><span class="lbl">BlueStacks · 860×732</span></div>
+        </div>
+        <div class="device">
+          <div class="screen">
+            <div class="sky"></div><div class="ground"></div><div class="grid"></div>
+            <div class="bld t" style="left:44%;top:38%;width:11%;height:13%"></div>
+            <div class="bld" style="left:30%;top:30%;width:7%;height:8%"></div>
+            <div class="bld" style="left:57%;top:31%;width:7%;height:8%"></div>
+            <div class="bld" style="left:33%;top:56%;width:8%;height:9%"></div>
+            <div class="bld" style="left:55%;top:57%;width:8%;height:9%"></div>
+            <div class="bld" style="left:44%;top:66%;width:7%;height:8%"></div>
+            <div class="redline combat-only"></div>
+            <div class="cross combat-only"></div>
+            <div class="hudl">
+              <span class="hudp g">◆ 468,200</span>
+              <span class="hudp e">◆ 402,100</span>
+              <span class="hudp d">◆ 3,140</span>
+            </div>
+            <div class="livebadge"><span class="b"></span>LIVE 5 Hz</div>
+            <div class="statebar" id="screenState">BATTLE</div>
+            <div class="troopbar combat-only">
+              <i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+          </div>
+          <div class="devfoot">
+            <span id="capLat">142.6ms</span><span class="sep">·</span>
+            <span>2-frame confirm</span><span class="sep">·</span>
+            <span id="capRed">red line 148px</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardhead"><h3>Next up</h3><div class="r"><span class="lbl" id="nextEta">in ~2.4s</span></div></div>
+        <div class="next">
+          <div class="nextrow"><span class="k">Army</span><span class="v ready">280/280 ready</span></div>
+          <div class="nextrow"><span class="k">Floors</span><span class="v">400k / 400k / 2k</span></div>
+          <div class="nextrow"><span class="k">Strategy</span><span class="v">BARCH Hybrid</span></div>
+        </div>
+      </div>
+
+      <div class="card console">
+        <div class="cardhead">
+          <h3>Console</h3>
+          <div class="r">
+            <span class="chip on" data-l="all">All</span>
+            <span class="chip" data-l="info">Info</span>
+            <span class="chip" data-l="warn">Warn</span>
+            <span class="chip" data-l="error">Error</span>
+          </div>
+        </div>
+        <div class="logbody" id="log"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CONFIG (rarely needed → sheet, not a tab) ══ -->
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet">
+  <div class="sheethead">
+    <h3>Config</h3>
+    <button class="x" id="sheetClose">×</button>
+  </div>
+  <div class="sheetbody">
+    <div class="sect">
+      <span class="lbl">Search floors</span>
+      <div class="hint">A base is attacked only when all three clear. 137 bases skipped this run.</div>
+      <div class="frow"><div class="fl"><div class="n">Minimum gold</div></div><input class="inp" value="400,000"></div>
+      <div class="frow"><div class="fl"><div class="n">Minimum elixir</div></div><input class="inp" value="400,000"></div>
+      <div class="frow"><div class="fl"><div class="n">Minimum dark elixir</div><div class="d">0 disables</div></div><input class="inp" value="2,000"></div>
+      <div class="frow"><div class="fl"><div class="n">Search enabled</div><div class="d">Off halts at the home screen</div></div><button class="tg on"></button></div>
+    </div>
+
+    <div class="sect">
+      <span class="lbl">Attack</span>
+      <div class="hint">Applied on the next match — running changes take effect without a restart.</div>
+      <div class="frow"><div class="fl"><div class="n">Strategy</div></div><select class="inp"><option>BARCH Hybrid</option><option>Queen Charge</option><option>Hybrid Lava</option></select></div>
+      <div class="frow"><div class="fl"><div class="n">Stall timer</div><div class="d">Abandons an undeployed match</div></div><input class="inp" value="30"></div>
+      <div class="frow"><div class="fl"><div class="n">Wall upgrades</div><div class="d">Between attacks only</div></div><button class="tg on"></button></div>
+    </div>
+
+    <div class="sect">
+      <span class="lbl">Device</span>
+      <div class="frow"><div class="fl"><div class="n">ADB port</div></div><input class="inp" value="5555"></div>
+      <div class="frow"><div class="fl"><div class="n">Capture rate</div></div><input class="inp" value="5 Hz"></div>
+      <div class="frow"><div class="fl"><div class="n">Dark mode</div></div><button class="tg"></button></div>
+    </div>
+
+    <div class="sect">
+      <span class="lbl">Danger</span>
+      <div class="frow"><div class="fl"><div class="n">Reset statistics</div><div class="d">Clears counters and attack history</div></div><button class="btn dgr">Reset</button></div>
+      <div class="frow"><div class="fl"><div class="n">Updates</div><div class="d">0.3.0 available</div></div><button class="btn">Check</button></div>
+    </div>
+  </div>
+  <div class="sheetfoot">
+    <button class="btn pri" id="saveBtn">Save</button>
+    <button class="btn" id="revertBtn">Revert</button>
+    <span class="saved" id="savedNote">saved 14:21:58</span>
+  </div>
+</div>
+
+<script>
+// ── Data ────────────────────────────────────────────────────────
+const ATTACKS = [
+  {t:'14:22:07',th:'16',s:3,str:'BARCH Hybrid',g:218400,e:196200,d:1980,flag:'ok',   dur:'52s',used:14,bad:0,err:'—'},
+  {t:'14:19:41',th:'15',s:3,str:'BARCH Hybrid',g:204100,e:188300,d:2140,flag:'ok',   dur:'49s',used:14,bad:0,err:'—'},
+  {t:'14:16:58',th:'16',s:2,str:'Queen Charge', g:198600,e:174900,d:1620,flag:'err', dur:'71s',used:12,bad:2,err:'red line rejected'},
+  {t:'14:14:22',th:'16',s:3,str:'BARCH Hybrid',g:196800,e:181400,d:1890,flag:'ok',   dur:'50s',used:14,bad:0,err:'—'},
+  {t:'14:11:55',th:'15',s:2,str:'Hybrid Lava', g:191300,e:168700,d:1540,flag:'warn', dur:'66s',used:13,bad:1,err:'stall 22s'},
+  {t:'14:09:30',th:'16',s:3,str:'Queen Charge', g:187900,e:165200,d:1760,flag:'ok',   dur:'58s',used:14,bad:0,err:'—'},
+  {t:'14:07:12',th:'16',s:2,str:'BARCH Hybrid',g:182400,e:171600,d:1410,flag:'ok',   dur:'63s',used:14,bad:0,err:'—'},
+  {t:'14:04:48',th:'14',s:3,str:'Hybrid Lava', g:178200,e:159800,d:1280,flag:'ok',   dur:'47s',used:14,bad:0,err:'—'},
+  {t:'14:02:19',th:'16',s:1,str:'BARCH Hybrid',g:171500,e:152300,d:1190,flag:'err',  dur:'88s',used:14,bad:3,err:'red line rejected'},
+  {t:'13:59:51',th:'15',s:2,str:'Queen Charge', g:168700,e:148900,d:1320,flag:'warn', dur:'69s',used:13,bad:1,err:'stall 18s'},
+  {t:'13:57:20',th:'16',s:2,str:'BARCH Hybrid',g:164300,e:147100,d:1290,flag:'ok',   dur:'61s',used:14,bad:0,err:'—'},
+  {t:'13:54:02',th:'15',s:3,str:'Queen Charge', g:159800,e:141900,d:1140,flag:'ok',   dur:'55s',used:14,bad:0,err:'—'},
+  {t:'13:51:44',th:'14',s:3,str:'Hybrid Lava', g:156400,e:139700,d:1105,flag:'ok',   dur:'44s',used:14,bad:0,err:'—'},
+  {t:'13:48:31',th:'16',s:2,str:'BARCH Hybrid',g:152900,e:136400,d:980, flag:'ok',   dur:'59s',used:14,bad:0,err:'—'}
+];
+
+const starSvg = n => {
+  let out = '<div class="stars">';
+  for (let i = 1; i <= 3; i++) {
+    const fill = i <= n ? '#e8a33d' : '#dde2e8';
+    out += `<svg viewBox="0 0 24 24" fill="${fill}"><path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z"/></svg>`;
+  }
+  return out + '</div>';
+};
+const FLAG = {ok:['ok','Clean'], warn:['warn','Stall'], err:['err','Failed']};
+
+let filter = 'all';
+const rowsEl = document.getElementById('rows');
+
+function rowHtml(a, i) {
+  const [cls, txt] = FLAG[a.flag];
+  return `<tr class="row" data-i="${i}">
+    <td class="t">${a.t}</td>
+    <td class="mono" style="font-size:12px">TH${a.th}</td>
+    <td>${starSvg(a.s)}</td>
+    <td style="font-size:12.5px">${a.str}</td>
+    <td class="r" style="color:var(--gold)">${a.g.toLocaleString()}</td>
+    <td class="r" style="color:var(--elixir)">${a.e.toLocaleString()}</td>
+    <td class="r" style="color:var(--de)">${a.d.toLocaleString()}</td>
+    <td><span class="fl ${cls}">${txt}</span></td>
+  </tr>
+  <tr class="detail hidden" data-d="${i}">
+    <td colspan="8">
+      <div class="dbox">
+        <div><div class="k">Duration</div><div class="v">${a.dur}</div></div>
+        <div><div class="k">Slots used</div><div class="v">${a.used}/14</div>
+          <div class="slots">${Array.from({length:14},(_,k)=>`<i class="${k<a.used?'on':(a.bad?'bad':'')}"></i>`).join('')}</div></div>
+        <div><div class="k">Undeployed</div><div class="v" style="color:${a.bad?'var(--red)':'inherit'}">${a.bad}</div></div>
+        <div><div class="k">Deploy error</div><div class="v" style="font-size:11.5px;color:${a.err==='—'?'var(--muted)':'var(--red)'}">${a.err}</div></div>
+        <div><div class="k">Avg capture</div><div class="v">142.6 ms</div></div>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function renderRows() {
+  const list = ATTACKS
+    .map((a, i) => ({a, i}))
+    .filter(({a}) => filter === 'all' || (filter === 'three' && a.s === 3) || (filter === 'flag' && a.flag !== 'ok'));
+  rowsEl.innerHTML = list.map(({a, i}) => rowHtml(a, i)).join('');
+}
+renderRows();
+
+rowsEl.addEventListener('click', e => {
+  const row = e.target.closest('tr.row'); if (!row) return;
+  const idx = row.dataset.i;
+  const detail = rowsEl.querySelector(`tr.detail[data-d="${idx}"]`);
+  const open = !detail.classList.contains('hidden');
+  rowsEl.querySelectorAll('tr.detail').forEach(d => d.classList.add('hidden'));
+  rowsEl.querySelectorAll('tr.row').forEach(r => r.classList.remove('sel'));
+  if (!open) { detail.classList.remove('hidden'); row.classList.add('sel'); }
+});
+
+document.querySelectorAll('.hist .chip').forEach(c => c.addEventListener('click', () => {
+  document.querySelectorAll('.hist .chip').forEach(x => x.classList.toggle('on', x === c));
+  filter = c.dataset.f; renderRows();
+}));
+
+// ── Console ─────────────────────────────────────────────────────
+const LOGS = [
+  ['ld','14:22:07.412','deploy slot 3 → barbarian king'],
+  ['ld','14:22:07.388','slot_map[3] = hero_king, scale 0.94'],
+  ['lok','14:22:07.104','attack complete — 3★ 218,400 gold'],
+  ['li','14:22:06.902','recorded attack_history.json entry 84'],
+  ['li','14:22:04.551','returned home, army full (280/280)'],
+  ['lw','14:22:01.220','stall timer 18s remaining'],
+  ['li','14:21:58.003','searching for next base'],
+  ['ld','14:21:58.011','capture 860x732 rgba, 142.6ms'],
+  ['le','14:21:55.870','capture failed: EOF on adb transport'],
+  ['lok','14:21:56.140','transport reconnected (CNXN ok)'],
+  ['li','14:21:52.330','skipped — 312,000 gold < 400,000 floor'],
+  ['ld','14:21:49.780','red line computed: 412,318 → 288,402'],
+  ['li','14:21:41.020','attack complete — 2★ 182,400 gold'],
+  ['li','14:21:35.112','strategy barch_hybrid.yaml (14 slots)']
+];
+const logEl = document.getElementById('log');
+let logFilter = 'all';
+function renderLog() {
+  logEl.innerHTML = LOGS.filter(l => {
+    if (logFilter === 'all') return true;
+    if (logFilter === 'info') return l[0] === 'li' || l[0] === 'ld' || l[0] === 'lok';
+    if (logFilter === 'warn') return l[0] === 'lw';
+    if (logFilter === 'error') return l[0] === 'le';
+    return true;
+  }).map(l => `<div><span class="lt">${l[1]}</span>  <span class="${l[0]}">${l[2]}</span></div>`).join('');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+renderLog();
+document.querySelectorAll('.console .chip').forEach(c => c.addEventListener('click', () => {
+  document.querySelectorAll('.console .chip').forEach(x => x.classList.toggle('on', x === c));
+  logFilter = c.dataset.l; renderLog();
+}));
+
+// ── Sheet ───────────────────────────────────────────────────────
+const sheet = document.getElementById('sheet'), scrim = document.getElementById('scrim');
+const openSheet = o => { sheet.classList.toggle('open', o); scrim.classList.toggle('on', o); };
+document.getElementById('cfgBtn').onclick = () => openSheet(true);
+document.getElementById('sheetClose').onclick = () => openSheet(false);
+scrim.onclick = () => openSheet(false);
+document.querySelectorAll('.tg').forEach(t => t.onclick = () => t.classList.toggle('on'));
+document.getElementById('saveBtn').onclick = () => {
+  document.getElementById('savedNote').textContent = 'saved ' + new Date().toTimeString().slice(0,8);
+};
+document.getElementById('revertBtn').onclick = () => openSheet(false);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') openSheet(false); });
+
+// ── Health popover ──────────────────────────────────────────────
+const pop = document.getElementById('healthPop');
+document.getElementById('healthBtn').onclick = e => { e.stopPropagation(); pop.classList.toggle('hidden'); };
+document.addEventListener('click', e => { if (!e.target.closest('#healthPop') && !e.target.closest('#healthBtn')) pop.classList.add('hidden'); });
+
+// ── Run state ───────────────────────────────────────────────────
+let running = true;
+const runBtn = document.getElementById('runBtn');
+const pill = document.getElementById('runpill');
+runBtn.onclick = () => {
+  running = !running;
+  if (running) {
+    runBtn.className = 'runbtn stop';
+    runBtn.innerHTML = '<span class="sq"></span>Stop bot';
+    pill.className = 'runpill';
+    document.getElementById('pillState').textContent = 'RUNNING';
+  } else {
+    runBtn.className = 'runbtn start';
+    runBtn.innerHTML = '<span class="tri"></span>Start bot';
+    pill.className = 'runpill idle';
+    document.getElementById('pillState').textContent = 'STOPPED';
+    document.getElementById('pillAction').textContent = 'Idle at home screen';
+    document.getElementById('nowState').textContent = 'Stopped — press Start to resume';
+    document.getElementById('screenState').textContent = 'MAIN_VILLAGE';
+    document.querySelector('.screen').classList.remove('combat');
+    document.getElementById('nextEta').textContent = 'paused';
+  }
+};
+
+// ── The cycle: mirrors the bot's own state machine ──────────────
+const STEPS = [
+  {n:'Search',  d:'137 skipped', state:'Searching for a base above 400k gold', screen:'MAIN_VILLAGE'},
+  {n:'Deploy',  d:'14 slots',    state:'Deploying — slot 3 of 14',             screen:'BATTLE'},
+  {n:'Battle',  d:'30s stall',   state:'Battle running · stall timer armed',    screen:'BATTLE'},
+  {n:'Result',  d:'stars + loot',state:'Reading stars and loot',                screen:'BATTLE_END'},
+  {n:'Retrain', d:'280/280',     state:'Army ready · returning home',           screen:'ARMY_CAMP'}
+];
+let si = 0, age = 0;
+let attackCount = 84;          // single source: header + KPI both read this
+let threeStarCount = 28;
+const steps = [...document.querySelectorAll('.step')];
+const nowState = document.getElementById('nowState');
+const nowAge = document.getElementById('nowAge');
+const screenState = document.getElementById('screenState');
+const pillAction = document.getElementById('pillAction');
+const screenEl = document.querySelector('.screen');
+const nextEta = document.getElementById('nextEta');
+
+function paintSteps() {
+  steps.forEach((el, i) => {
+    el.classList.toggle('done', i < si);
+    el.classList.toggle('now', i === si && running);
+    if (i === si) el.querySelector('.sd').textContent = STEPS[i].d;
+  });
+  if (!running) {
+    nowState.textContent = 'Stopped — press Start to resume';
+    nowAge.textContent = '';
+    screenState.textContent = 'MAIN_VILLAGE';
+    screenEl.classList.remove('combat');
+    nextEta.textContent = 'paused';
+    return;
+  }
+  nowState.textContent = STEPS[si].state;
+  nowAge.textContent = age.toFixed(1) + 's in state';
+  nextEta.textContent = 'in ~' + Math.max(0, 2.4 - age).toFixed(1) + 's';
+  screenState.textContent = STEPS[si].screen;
+  // The red line, reticle and troop bar only exist during a fight — showing
+  // them on the home screen would contradict the state we're reporting.
+  screenEl.classList.toggle('combat', /BATTLE/.test(STEPS[si].screen));
+  pillAction.textContent = STEPS[si].n === 'Search'
+    ? 'Searching · 14 skipped'
+    : STEPS[si].n === 'Result' ? 'Reading result' : STEPS[si].n + ' in progress';
+}
+paintSteps();
+
+setInterval(() => {
+  if (!running) return;
+  age += 0.4;
+  if (age >= 2.4) {
+    age = 0;
+    si = (si + 1) % STEPS.length;
+    if (si === 0) prependAttack();
+  }
+  paintSteps();
+}, 400);
+
+// clock + latency drift, so the screen reads as live
+let secs = 15126;
+setInterval(() => {
+  if (!running) return;
+  secs++;
+  const h = String(Math.floor(secs/3600)), m = String(Math.floor(secs%3600/60)).padStart(2,'0'), s = String(secs%60).padStart(2,'0');
+  document.getElementById('pillDur').textContent = `${h}:${m}:${s}`;
+  const lat = (138 + Math.random()*16).toFixed(0);
+  document.getElementById('healthLat').textContent = lat + 'ms';
+  document.getElementById('capLat').textContent = (lat*1).toFixed(1) + 'ms';
+}, 1000);
+
+const STRATS = ['BARCH Hybrid','Hybrid Lava','Queen Charge'];
+// Seeded rows run 14:22:07 downward, so new attacks continue forward from
+// there on one synthetic clock — mixing wall-clock time in made the table
+// read 22:17 above 14:22.
+let clock = 14 * 3600 + 23 * 60 + 12;
+const fmtClock = s => [Math.floor(s/3600), Math.floor(s%3600/60), s%60]
+  .map(v => String(v).padStart(2,'0')).join(':');
+
+function prependAttack() {
+  clock += 12 + Math.floor(Math.random() * 28);
+  const t = fmtClock(clock);
+  const s = [3,3,3,2,2][Math.floor(Math.random()*5)];
+  if (s === 3) threeStarCount++;
+  const g = 150000 + Math.floor(Math.random()*70000);
+  const bad = Math.random() < 0.18;
+  ATTACKS.unshift({
+    t, th:['15','16','14','16'][Math.floor(Math.random()*4)], s,
+    str: STRATS[Math.floor(Math.random()*STRATS.length)],
+    g, e: Math.floor(g*0.9), d: 900+Math.floor(Math.random()*1300),
+    flag: bad ? 'warn' : 'ok', dur: (44+Math.floor(Math.random()*40))+'s',
+    used: bad ? 13 : 14, bad: bad ? 1 : 0, err: bad ? 'stall 19s' : '—'
+  });
+  if (ATTACKS.length > 40) ATTACKS.pop();
+  attackCount++;
+  document.getElementById('cycleCount').textContent = `${attackCount} attacks · 137 skipped`;
+  document.getElementById('chipAll').textContent = `All ${attackCount}`;
+  document.getElementById('kpiStars').textContent =
+    `${threeStarCount} of ${attackCount} · down 4.1`;
+  renderRows();
+}
+
+// live console append
+const EXTRA = [
+  ['li','searching for next base'],
+  ['ld','capture 860x732 rgba, 141.2ms'],
+  ['li','skipped — 288,400 gold < 400,000 floor'],
+  ['lok','army ready (280/280)'],
+  ['ld','red line computed: 402,298 → 311,447'],
+  ['lw','capture latency 268ms (threshold 300)']
+];
+let ei = 0;
+setInterval(() => {
+  if (!running) return;
+  const e = EXTRA[ei++ % EXTRA.length];
+  // same synthetic clock as the table, so log and history never disagree
+  const t = fmtClock(clock) + '.' + String(Math.floor(Math.random()*999)).padStart(3,'0');
+  LOGS.push([e[0], t, e[1]]);
+  if (LOGS.length > 60) LOGS.shift();
+  renderLog();
+}, 3400);
+</script>
+</body>
+</html>

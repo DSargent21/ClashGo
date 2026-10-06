@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ClashGO — 01 The Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#faf8f4; --paper-2:#f4f1ea; --band:#f0ece3;
+    --ink:#1b1a16; --ink-2:#4a463d; --muted:#6b6558; --faint:#6a6459;
+    --rule:#e2ddd2; --rule-2:#d6d0c2;
+    --gold:#945c1e; --elixir:#8a4d7c; --de:#3f3d52; --green:#4a6b44; --rose:#99443c; --navy:#3a4a63;
+    --serif:'Newsreader',Georgia,serif;
+    --sans:'Inter',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased;overflow:hidden}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .kicker{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);font-weight:500}
+  .app{display:flex;flex-direction:column;height:100vh;width:100vw}
+
+  /* ── Top nav ─────────────────────────────────────────── */
+  .topnav{height:46px;flex:0 0 46px;border-bottom:1px solid var(--rule);display:flex;align-items:stretch;background:var(--paper)}
+  .brand{display:flex;align-items:center;gap:8px;padding:0 18px;border-right:1px solid var(--rule)}
+  .mark{width:16px;height:16px;border:1.5px solid var(--ink);border-radius:2px;position:relative}
+  .mark:after{content:'';position:absolute;inset:3px 3px auto 3px;height:1.5px;background:var(--ink)}
+  .wordmark{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.16em}
+  .navlinks{display:flex;align-items:stretch}
+  .navlink{display:flex;align-items:center;padding:0 16px;font-size:12.5px;color:var(--ink-2);cursor:pointer;border-bottom:2px solid transparent;transition:.15s}
+  .navlink:hover{color:var(--ink)}
+  .navlink.on{color:var(--ink);border-bottom-color:var(--ink);font-weight:500}
+  .navright{margin-left:auto;display:flex;align-items:center;gap:0}
+  .stamp{padding:0 14px;display:flex;align-items:center;gap:7px;border-left:1px solid var(--rule);height:100%}
+  .pulse{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(109,143,99,.16);animation:b 2.4s infinite}
+  @keyframes b{0%,100%{opacity:1}50%{opacity:.35}}
+
+  /* ── Page ────────────────────────────────────────────── */
+  .page{flex:1;overflow-y:auto;padding:0 0 40px}
+  .inner{max-width:1100px;margin:0 auto;padding:0 24px}
+
+  /* ── Masthead ────────────────────────────────────────── */
+  .masthead{display:grid;grid-template-columns:1fr auto;gap:32px;align-items:end;padding:30px 0 22px;border-bottom:1px solid var(--ink)}
+  .masthead h1{font-family:var(--serif);font-size:33px;line-height:1.14;font-weight:500;letter-spacing:-.011em;margin:9px 0 8px;max-width:19ch}
+  .masthead h1 em{font-style:italic;color:var(--muted)}
+  .deck{font-size:13px;line-height:1.62;color:var(--ink-2);max-width:60ch}
+  .deck b{font-weight:600;color:var(--ink)}
+  .masthead .meta{text-align:right;white-space:nowrap;display:flex;flex-direction:column;gap:5px;align-items:flex-end;padding-bottom:3px}
+  .masthead .meta .big{font-family:var(--serif);font-size:25px;line-height:1;font-variant-numeric:tabular-nums}
+  .hdr-tabs{display:flex;gap:2px;margin-top:14px}
+  .hdr-tab{padding:5px 12px;font-size:12px;color:var(--muted);cursor:pointer;border:1px solid transparent;border-radius:2px}
+  .hdr-tab:hover{color:var(--ink)}
+  .hdr-tab.on{color:var(--ink);border-color:var(--rule-2);background:var(--paper-2);font-weight:500}
+
+  /* ── Ledger strip ────────────────────────────────────── */
+  .strip{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--rule);margin-bottom:26px}
+  .cell{padding:16px 18px 15px;border-right:1px solid var(--rule)}
+  .cell:last-child{border-right:0}
+  .cell .k{margin-bottom:9px}
+  .cell .v{font-family:var(--serif);font-size:26px;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+  .cell .v small{font-size:13px;color:var(--muted);font-family:var(--sans);letter-spacing:0}
+  .cell .d{margin-top:7px;font-family:var(--mono);font-size:10px;color:var(--muted)}
+  .cell .d.up{color:var(--green)} .cell .d.dn{color:var(--rose)}
+  .swatch{display:inline-block;width:7px;height:7px;border-radius:1px;margin-right:6px;vertical-align:middle}
+
+  /* ── Figure (legend band + table + footer band) ──────── */
+  .figure{border:1px solid var(--rule-2);background:var(--paper);margin-bottom:26px}
+  .fig-head{background:var(--band);border-bottom:1px solid var(--rule-2);padding:9px 16px;display:flex;align-items:center;gap:20px}
+  .fig-head .lg{display:flex;align-items:center;gap:14px}
+  .lg-item{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2)}
+  .fig-head .right{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  table{width:100%;border-collapse:collapse;table-layout:fixed}
+  thead th{text-align:left;padding:10px 12px;border-bottom:1px solid var(--rule-2);font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);font-weight:500}
+  tbody td{padding:9px 12px;border-bottom:1px solid var(--rule);vertical-align:middle;font-size:12.5px}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr{transition:background .12s}
+  tbody tr:hover{background:var(--paper-2)}
+  .c-rank{width:34px;color:var(--faint);font-family:var(--mono);font-size:11px}
+  .c-name{width:210px}
+  .c-bars{width:auto}
+  .c-num{width:104px;text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px}
+  .c-var{width:96px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .c-rk{width:62px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+  .nm{font-weight:500;display:block}
+  .sub{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px;display:block}
+  /* inline bar meters */
+  .meter{position:relative;height:9px;background-image:repeating-linear-gradient(90deg,var(--rule) 0 1px,transparent 1px 4px);border-radius:1px}
+  .meter i{position:absolute;left:0;top:0;bottom:0;border-radius:1px;display:block}
+  .meter.sm{height:5px;margin-top:4px}
+  .dual{display:flex;flex-direction:column;gap:0}
+  .fig-foot{background:var(--band);border-top:1px solid var(--rule-2);padding:9px 16px;display:flex;align-items:center;gap:10px}
+  .fig-foot .note{font-size:11.5px;color:var(--ink-2)}
+  .fig-foot .cta{margin-left:auto;display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink);background:var(--paper);border:1px solid var(--rule-2);padding:6px 11px;cursor:pointer;border-radius:2px}
+  .fig-foot .cta:hover{background:#fff}
+  .star-pips{display:inline-flex;gap:2.5px;vertical-align:middle;margin-right:7px}
+  .pip{width:6px;height:6px;border-radius:50%;background:var(--rule-2)}
+  .pip.on{background:var(--gold)}
+
+  /* ── Two-up ──────────────────────────────────────────── */
+  .two{display:grid;grid-template-columns:1.35fr 1fr;gap:22px;align-items:start}
+
+  /* ── Console as footnote ─────────────────────────────── */
+  .footnote{margin-top:6px;border-top:1px solid var(--ink);padding-top:16px}
+  .fn-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+  .fn-head h4{font-family:var(--serif);font-size:15px;font-weight:500}
+  .fn-filters{display:flex;gap:5px;margin-left:auto}
+  .chip{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:3px 7px;border:1px solid var(--rule-2);color:var(--muted);cursor:pointer;border-radius:2px}
+  .chip.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .console{border:1px solid var(--rule);background:var(--paper-2);font-family:var(--mono);font-size:10.5px;line-height:1.75;padding:11px 13px;height:172px;overflow-y:auto}
+  .console div{white-space:pre;overflow:hidden;text-overflow:ellipsis}
+  .t{color:var(--faint)} .info{color:var(--ink-2)} .ok{color:var(--green)} .warn{color:var(--gold)} .err{color:var(--rose)} .dbg{color:var(--faint)}
+
+  /* ── Config / Settings ───────────────────────────────── */
+  .form{max-width:660px}
+  .frow{display:grid;grid-template-columns:1fr 168px;gap:20px;align-items:center;padding:14px 0;border-bottom:1px solid var(--rule)}
+  .frow .fl{font-size:13px;font-weight:500}
+  .frow .fh{font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.5}
+  .inp{width:100%;border:1px solid var(--rule-2);background:#fff;padding:8px 10px;font-family:var(--mono);font-size:12.5px;color:var(--ink);border-radius:2px;outline:none;text-align:right}
+  .inp:focus{border-color:var(--ink)}
+  select.inp{text-align:left;font-family:var(--sans)}
+  .sw{width:38px;height:21px;border-radius:11px;background:var(--ink);position:relative;cursor:pointer;flex:0 0 38px;justify-self:end}
+  .sw:after{content:'';position:absolute;top:2.5px;right:2.5px;width:16px;height:16px;border-radius:50%;background:#fff}
+  .sw.off{background:var(--rule-2)} .sw.off:after{right:19.5px}
+  .actions{display:flex;gap:10px;margin-top:20px;align-items:center}
+  .btn{padding:9px 18px;font-size:12.5px;border-radius:2px;cursor:pointer;border:1px solid var(--ink);background:var(--ink);color:var(--paper);font-weight:500}
+  .btn.ghost{background:transparent;color:var(--ink)}
+  .btn.stop{background:var(--rose);border-color:var(--rose);color:#fff}
+  .saved{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--green)}
+
+  .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 40px;max-width:760px}
+  .srow{display:flex;justify-content:space-between;align-items:baseline;padding:11px 0;border-bottom:1px solid var(--rule)}
+  .srow .l{font-size:12.5px;color:var(--ink-2)}
+  .srow .v{font-family:var(--mono);font-size:12px}
+  .ok{color:var(--green)}
+  h2.sec{font-family:var(--serif);font-size:19px;font-weight:500;margin:30px 0 4px;padding-bottom:9px;border-bottom:1px solid var(--rule)}
+  h2.sec:first-child{margin-top:24px}
+  .sec-k{margin-bottom:12px}
+  .page::-webkit-scrollbar,.console::-webkit-scrollbar{width:8px}
+  .page::-webkit-scrollbar-thumb,.console::-webkit-scrollbar-thumb{background:var(--rule-2);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Top navigation (no left rail) -->
+  <nav class="topnav">
+    <div class="brand"><span class="mark"></span><span class="wordmark">CLASHGO</span></div>
+    <div class="navlinks" id="nav">
+      <div class="navlink on" data-tab="dashboard">Report</div>
+      <div class="navlink" data-tab="analytics">Rankings</div>
+      <div class="navlink" data-tab="config">Parameters</div>
+      <div class="navlink" data-tab="settings">Apparatus</div>
+    </div>
+    <div class="navright">
+      <div class="stamp"><span class="pulse"></span><span class="kicker" style="color:var(--ink)">Running</span></div>
+      <div class="stamp"><span class="kicker">ADB 5555</span></div>
+      <div class="stamp"><span class="kicker">Sep 28 2026</span></div>
+    </div>
+  </nav>
+
+  <div class="page" id="page">
+    <div class="inner">
+
+      <!-- ══ DASHBOARD ══ -->
+      <section data-page="dashboard">
+        <div class="masthead">
+          <div>
+            <div class="kicker">Run 4 · Session report · 84 attacks</div>
+            <h1>Attacks are profitable, but <em>star conversion is weak.</em></h1>
+            <p class="deck">4h 12m, <b>84 attacks</b>, 137 skips on the 400k floor. <b>3★ reached only 33.3%</b> — every zero-star was a Queen Charge on a TH16.</p>
+            <div class="hdr-tabs" id="hdrTabs">
+              <div class="hdr-tab on" data-h="attacks">Attacks</div>
+              <div class="hdr-tab" data-h="skipped">Bases skipped</div>
+              <div class="hdr-tab" data-h="console">Console</div>
+            </div>
+          </div>
+          <div class="meta">
+            <div class="kicker">Three-star rate</div>
+            <div class="big">33.3<span style="font-size:14px;color:var(--muted)">%</span></div>
+            <div class="kicker" style="color:var(--faint)">±4.1 vs prior run</div>
+            <div class="kicker" style="color:var(--faint);margin-top:8px">Gold / attack</div>
+            <div class="big" style="font-size:19px">37,911</div>
+          </div>
+        </div>
+
+        <div class="strip">
+          <div class="cell">
+            <div class="k kicker"><span class="swatch" style="background:var(--gold)"></span>Gold looted</div>
+            <div class="v">3.18<small>M</small></div>
+            <div class="d up">▲ 12.4% vs run 3</div>
+          </div>
+          <div class="cell">
+            <div class="k kicker"><span class="swatch" style="background:var(--elixir)"></span>Elixir looted</div>
+            <div class="v">2.94<small>M</small></div>
+            <div class="d up">▲ 8.1% vs run 3</div>
+          </div>
+          <div class="cell">
+            <div class="k kicker"><span class="swatch" style="background:var(--de)"></span>Dark elixir</div>
+            <div class="v">41,820</div>
+            <div class="d dn">▼ 3.2% vs run 3</div>
+          </div>
+          <div class="cell">
+            <div class="k kicker">Bases searched</div>
+            <div class="v">221</div>
+            <div class="d">137 skipped · 84 attacked</div>
+          </div>
+          <div class="cell">
+            <div class="k kicker">Uptime</div>
+            <div class="v">4:12<small>:06</small></div>
+            <div class="d">142.6ms avg capture</div>
+          </div>
+        </div>
+
+        <div class="figure">
+          <div class="fig-head">
+            <div class="lg">
+              <span class="lg-item"><span class="swatch" style="background:var(--gold)"></span>Gold</span>
+              <span class="lg-item"><span class="swatch" style="background:var(--elixir)"></span>Elixir</span>
+              <span class="lg-item"><span class="swatch" style="background:var(--de)"></span>Dark elixir</span>
+              <span class="lg-item"><span class="swatch" style="background:var(--green)"></span>3★</span>
+            </div>
+            <div class="right">Showing 10 of 84 attacks</div>
+          </div>
+          <table>
+            <colgroup><col style="width:34px"><col style="width:210px"><col><col style="width:104px"><col style="width:96px"><col style="width:62px"></colgroup>
+            <thead>
+              <tr><th>#</th><th>Attack</th><th>Yield</th><th style="text-align:right">Gold</th><th style="text-align:right">Δ session</th><th style="text-align:right">Rank</th></tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div class="fig-foot">
+            <span class="note">Gold scaled to session max · stars below</span>
+            <span class="cta">View all 84 attacks →</span>
+          </div>
+        </div>
+
+        <div class="figure hidden" id="skipFigure">
+          <div class="fig-head">
+            <div class="lg">
+              <span class="lg-item"><span class="swatch" style="background:var(--faint)"></span>Estimated gold below floor</span>
+            </div>
+            <div class="right" id="skipHead">Showing 8 of 137 skipped bases</div>
+          </div>
+          <table>
+            <colgroup><col style="width:34px"><col style="width:210px"><col><col style="width:104px"><col style="width:96px"><col style="width:62px"></colgroup>
+            <thead>
+              <tr><th>#</th><th>Base</th><th>Against the 400k floor</th><th style="text-align:right">Est. gold</th><th style="text-align:right">Short by</th><th style="text-align:right">Result</th></tr>
+            </thead>
+            <tbody id="skipBody"></tbody>
+          </table>
+          <div class="fig-foot">
+            <span class="note">A skip costs nothing — no army spent, clock keeps running. Closest miss: 12,100 gold.</span>
+            <span class="cta">Show only near-misses →</span>
+          </div>
+        </div>
+
+        <div class="footnote">
+          <div class="fn-head">
+            <h4>System console</h4>
+            <span class="kicker">Live · 5 Hz · last line 14:22:07</span>
+            <div class="fn-filters">
+              <span class="chip on">All</span><span class="chip">Debug</span><span class="chip">Info</span><span class="chip">Warn</span><span class="chip">Error</span>
+            </div>
+          </div>
+          <div class="console" id="console"></div>
+        </div>
+      </section>
+
+      <!-- ══ ANALYTICS ══ -->
+      <section data-page="analytics" class="hidden">
+        <div class="masthead">
+          <div>
+            <div class="kicker">Rankings · Strategy performance</div>
+            <h1>BARCH Hybrid is carrying <em>the entire run.</em></h1>
+            <p class="deck">Two strategies carry <b>78% of gold</b>. Hybrid Lava's <b>45.5%</b> three-star rate beats BARCH — it is under-used, not under-performing.</p>
+          </div>
+          <div class="meta">
+            <div class="kicker">Best $/attack</div>
+            <div class="big">39,104</div>
+            <div class="kicker" style="color:var(--faint)">BARCH Hybrid</div>
+          </div>
+        </div>
+
+        <div class="two">
+          <div class="figure">
+            <div class="fig-head"><div class="lg"><span class="lg-item">Strategy</span><span class="lg-item" style="color:var(--faint)">— ranked by gold per attack</span></div><div class="right">n = 84</div></div>
+            <table>
+              <colgroup><col style="width:34px"><col style="width:170px"><col><col style="width:104px"><col style="width:76px"></colgroup>
+              <thead><tr><th>#</th><th>Strategy</th><th>Gold / attack</th><th style="text-align:right">Total gold</th><th style="text-align:right">3★ rate</th></tr></thead>
+              <tbody>
+                <tr><td class="c-rank">1</td><td class="c-name"><span class="nm">BARCH Hybrid</span><span class="sub">54 attacks</span></td><td class="c-bars"><div class="meter"><i style="width:100%;background:var(--gold)"></i></div></td><td class="c-num">2,112,000</td><td class="c-rk">38.9%</td></tr>
+                <tr><td class="c-rank">2</td><td class="c-name"><span class="nm">Queen Charge</span><span class="sub">19 attacks</span></td><td class="c-bars"><div class="meter"><i style="width:78%;background:var(--gold)"></i></div></td><td class="c-num">611,400</td><td class="c-rk">10.5%</td></tr>
+                <tr><td class="c-rank">3</td><td class="c-name"><span class="nm">Hybrid Lava</span><span class="sub">11 attacks</span></td><td class="c-bars"><div class="meter"><i style="width:74%;background:var(--gold)"></i></div></td><td class="c-num">461,100</td><td class="c-rk">45.5%</td></tr>
+              </tbody>
+            </table>
+            <div class="fig-foot"><span class="note">All 6 zero-stars came from Queen Charge</span></div>
+          </div>
+
+          <div class="figure">
+            <div class="fig-head"><div class="lg"><span class="lg-item">Star distribution</span></div><div class="right">84 attacks</div></div>
+            <div style="padding:20px 18px">
+              <div class="fn-head" style="margin-bottom:14px"><div class="kicker" style="color:var(--ink);font-size:11px">Three stars · 28</div></div>
+              <div class="meter" style="height:11px"><i style="width:33.3%;background:var(--green)"></i></div>
+              <div class="fn-head" style="margin:18px 0 10px"><div class="kicker" style="color:var(--ink);font-size:11px">Two stars · 31</div></div>
+              <div class="meter" style="height:11px"><i style="width:36.9%;background:var(--navy)"></i></div>
+              <div class="fn-head" style="margin:18px 0 10px"><div class="kicker" style="color:var(--ink);font-size:11px">One star · 19</div></div>
+              <div class="meter" style="height:11px"><i style="width:22.6%;background:var(--faint)"></i></div>
+              <div class="fn-head" style="margin:18px 0 10px"><div class="kicker" style="color:var(--ink);font-size:11px">Zero stars · 6</div></div>
+              <div class="meter" style="height:11px"><i style="width:7.1%;background:var(--rose)"></i></div>
+            </div>
+            <div class="fig-foot"><span class="note">5 Queen Charge vs TH16 · 1 wall stall</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ CONFIG ══ -->
+      <section data-page="config" class="hidden">
+        <div class="masthead">
+          <div>
+            <div class="kicker">Parameters · Search &amp; attack</div>
+            <h1>Thresholds the bot will <em>actually enforce.</em></h1>
+            <p class="deck">All three floors must clear together. Raising the gold floor trades attack count for yield.</p>
+          </div>
+        </div>
+        <div class="form">
+          <h2 class="sec">Search filters</h2>
+          <div class="sec-k kicker">Minimum estimated loot per base</div>
+          <div class="frow">
+            <div><div class="fl">Minimum gold</div><div class="fh">Skipped without deploying.</div></div>
+            <input class="inp" value="400,000" />
+          </div>
+          <div class="frow">
+            <div><div class="fl">Minimum elixir</div><div class="fh">All three must clear together.</div></div>
+            <input class="inp" value="400,000" />
+          </div>
+          <div class="frow">
+            <div><div class="fl">Minimum dark elixir</div><div class="fh">≈ one TH14 base · 0 disables.</div></div>
+            <input class="inp" value="2,000" />
+          </div>
+          <div class="frow">
+            <div><div class="fl">Search enabled</div><div class="fh">Off halts at the home screen.</div></div>
+            <div class="sw"></div>
+          </div>
+
+          <h2 class="sec">Attack</h2>
+          <div class="frow">
+            <div><div class="fl">Strategy</div><div class="fh">Loaded from <span class="mono" style="font-size:11px">assets/strategies/</span> · applies next attack.</div></div>
+            <select class="inp"><option>BARCH Hybrid</option><option>Queen Charge</option><option>Hybrid Lava</option><option>Standard Protocol</option></select>
+          </div>
+          <div class="frow">
+            <div><div class="fl">Stall timer</div><div class="fh">Abandons an undeployed match · 0 disables.</div></div>
+            <input class="inp" value="30" />
+          </div>
+          <div class="frow">
+            <div><div class="fl">Wall upgrades</div><div class="fh">Between attacks only · suspends in combat.</div></div>
+            <div class="sw"></div>
+          </div>
+
+          <div class="actions">
+            <span class="btn stop">Stop bot</span>
+            <span class="btn ghost">Revert</span>
+            <span class="saved">✓ saved 14:21:58</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ SETTINGS ══ -->
+      <section data-page="settings" class="hidden">
+        <div class="masthead">
+          <div>
+            <div class="kicker">Apparatus · Connection &amp; runtime</div>
+            <h1>Everything the bot depends on, <em>in one table.</em></h1>
+            <p class="deck">One persistent ADB socket, auto-reconnect on loss. Consecutive failures are what turn the pill red.</p>
+          </div>
+          <div class="meta">
+            <div class="kicker">Transport</div>
+            <div class="big" style="color:var(--green);font-size:19px">Optimal</div>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div>
+            <h2 class="sec">Connection</h2>
+            <div class="srow"><span class="l">Connection status</span><span class="v ok">Optimal</span></div>
+            <div class="srow"><span class="l">ADB server port</span><span class="v">5555</span></div>
+            <div class="srow"><span class="l">Capture latency</span><span class="v">142.6 ms</span></div>
+            <div class="srow"><span class="l">Captures this session</span><span class="v">15,204</span></div>
+            <div class="srow"><span class="l">Capture errors</span><span class="v">11</span></div>
+            <div class="srow"><span class="l">Consecutive failures</span><span class="v ok">0</span></div>
+          </div>
+          <div>
+            <h2 class="sec">Runtime</h2>
+            <div class="srow"><span class="l">CPU time (absolute)</span><span class="v">1,841.6 s</span></div>
+            <div class="srow"><span class="l">CPU usage</span><span class="v">4.2%</span></div>
+            <div class="srow"><span class="l">Session uptime</span><span class="v">4:12:06</span></div>
+            <div class="srow"><span class="l">Attack rate</span><span class="v">19.9 / hour</span></div>
+            <div class="srow"><span class="l">Capture rate</span><span class="v">5.0 Hz</span></div>
+            <div class="srow"><span class="l">Log buffer</span><span class="v">2,000 lines</span></div>
+          </div>
+        </div>
+
+        <h2 class="sec">Appearance</h2>
+        <div class="frow" style="max-width:660px">
+          <div><div class="fl">Dark mode</div><div class="fh">This layout is built for paper.</div></div>
+          <div class="sw off"></div>
+        </div>
+
+        <h2 class="sec">Danger zone</h2>
+        <div class="frow" style="max-width:660px">
+          <div><div class="fl">Reset statistics</div><div class="fh">Clears lifetime counters.</div></div>
+          <span class="btn ghost" style="border-color:var(--rose);color:var(--rose)">Reset</span>
+        </div>
+        <div class="frow" style="max-width:660px">
+          <div><div class="fl">Version</div><div class="fh">ClashGO 0.2.0 · update 0.3.0 available</div></div>
+          <span class="btn ghost">Check</span>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Data ────────────────────────────────────────────────
+const ATTACKS = [
+  {t:'14:22:07', s:'BARCH Hybrid', th:'TH16', st:3, g:218400, e:196200, r:1},
+  {t:'14:19:41', s:'BARCH Hybrid', th:'TH15', st:3, g:204100, e:188300, r:2},
+  {t:'14:16:58', s:'Queen Charge',  th:'TH16', st:2, g:198600, e:174900, r:4},
+  {t:'14:14:22', s:'BARCH Hybrid', th:'TH16', st:3, g:196800, e:181400, r:3},
+  {t:'14:11:55', s:'Hybrid Lava',  th:'TH15', st:2, g:191300, e:168700, r:6},
+  {t:'14:09:30', s:'Queen Charge',  th:'TH16', st:3, g:187900, e:165200, r:5},
+  {t:'14:07:12', s:'BARCH Hybrid', th:'TH16', st:2, g:182400, e:171600, r:7},
+  {t:'14:04:48', s:'Hybrid Lava',  th:'TH14', st:3, g:178200, e:159800, r:8},
+  {t:'14:02:19', s:'BARCH Hybrid', th:'TH16', st:1, g:171500, e:152300, r:10},
+  {t:'13:59:51', s:'Queen Charge',  th:'TH15', st:2, g:168700, e:148900, r:9}
+];
+const MAXG = 218400;
+const rows = document.getElementById('rows');
+rows.innerHTML = ATTACKS.map((a,i)=>{
+  const gp = (a.g/MAXG*100).toFixed(1);
+  const sp = ((a.st/3)*100).toFixed(1);
+  const dev = ((a.g-37911)/37911*100);
+  const cls = dev>=0?'ok':'dn';
+  const pips = [1,2,3].map(n=>`<span class="pip ${n<=a.st?'on':''}"></span>`).join('');
+  return `<tr>
+    <td class="c-rank">${String(i+1).padStart(2,'0')}</td>
+    <td class="c-name"><span class="nm"><span class="star-pips">${pips}</span>${a.s}</span><span class="sub">${a.t} · ${a.th}</span></td>
+    <td class="c-bars"><div class="dual">
+      <div class="meter"><i style="width:${gp}%;background:${a.s==='BARCH Hybrid'?'var(--gold)':a.s==='Queen Charge'?'var(--elixir)':'var(--navy)'}"></i></div>
+      <div class="meter sm"><i style="width:${sp}%;background:var(--de)"></i></div>
+    </div></td>
+    <td class="c-num">${a.g.toLocaleString()}</td>
+    <td class="c-var ${cls}" style="color:${dev>=0?'var(--green)':'var(--rose)'}">${dev>=0?'+':'−'}${Math.abs(dev).toFixed(1)}%</td>
+    <td class="c-rk">${a.r}/84</td>
+  </tr>`;
+}).join('');
+
+// ── Console ─────────────────────────────────────────────
+const LOGS = [
+  ['t','14:22:07.412','INFO ','deploy slot 3 → barbarian king (x1)'],
+  ['t','14:22:07.388','DEBUG','slot_map[3] = hero_king, origin (412,318) scale 0.94'],
+  ['ok','14:22:07.104','DONE ','attack complete — 3 stars, 218,400 gold, 196,200 elixir, 1,980 de'],
+  ['t','14:22:06.902','INFO ','recording to attack_history.json (entry 84)'],
+  ['info','14:22:04.551','INFO ','returned home, army full (280/280)'],
+  ['warn','14:22:01.220','WARN ','stall timer 18s remaining — no deploys yet'],
+  ['info','14:21:58.003','INFO ','searching for next base'],
+  ['dbg','14:21:58.011','DEBUG','capture 15,204 → 860x732 rgba, 142.6ms'],
+  ['err','14:21:55.870','ERROR','capture failed: EOF on adb transport — reconnecting in 250ms'],
+  ['ok','14:21:56.140','DONE ','transport reconnected (CNXN ok)'],
+  ['info','14:21:52.330','INFO ','base skipped — estimated loot 312,000 gold < 400,000 floor'],
+  ['t','14:21:49.776','INFO ','deploy slot 1 → hog rider (x24)'],
+  ['dbg','14:21:49.780','DEBUG','red line computed: 412,318 → 288,402, len 148px'],
+  ['ok','14:21:41.020','DONE ','attack complete — 2 stars, 182,400 gold, 171,600 elixir'],
+  ['info','14:21:38.550','INFO ','wall upgrade skipped — 84,200 gold below 120,000 threshold'],
+  ['t','14:21:35.112','INFO ','loading strategy barch_hybrid.yaml (14 slots)'],
+  ['dbg','14:21:35.118','DEBUG','formula[hog_rider] = 0.62*t + 0.38, r²=0.94, n=180']
+];
+document.getElementById('console').innerHTML = LOGS.map(l=>`<div><span class="${l[0]}">${l[1]}</span>  <span class="${l[0]==='err'?'err':l[0]==='ok'?'ok':l[0]==='warn'?'warn':l[0]==='dbg'?'dbg':'info'}">${l[2]}</span>  ${l[3]}</div>`).join('');
+
+// ── Tabs ─────────────────────────────────────────────────
+const nav = document.getElementById('nav');
+nav.addEventListener('click', e => {
+  const t = e.target.closest('.navlink'); if (!t) return;
+  nav.querySelectorAll('.navlink').forEach(n => n.classList.toggle('on', n === t));
+  document.querySelectorAll('section[data-page]').forEach(s => s.classList.toggle('hidden', s.dataset.page !== t.dataset.tab));
+  document.getElementById('page').scrollTop = 0;
+});
+// The masthead sub-tabs are real filters, not chrome: Attacks shows the
+// results table, Bases swapped the figure for the skip log, Console jumps
+// to the live footnote.
+const SKIPPED = [
+  {t:'14:21:52', g:312000, th:'TH15'}, {t:'14:21:44', g:288400, th:'TH14'},
+  {t:'14:21:31', g:341900, th:'TH16'}, {t:'14:21:19', g:264100, th:'TH13'},
+  {t:'14:21:02', g:298700, th:'TH15'}, {t:'14:20:48', g:251600, th:'TH14'},
+  {t:'14:20:30', g:327400, th:'TH16'}, {t:'14:20:14', g:279800, th:'TH15'}
+];
+document.getElementById('skipBody').innerHTML = SKIPPED.map((s,i)=>`
+  <tr>
+    <td class="c-rank">${String(i+1).padStart(2,'0')}</td>
+    <td class="c-name"><span class="nm">${s.th}</span><span class="sub">${s.t} · failed the 400k gold floor</span></td>
+    <td class="c-bars"><div class="meter"><i style="width:${(s.g/400000*100).toFixed(1)}%;background:var(--faint)"></i></div></td>
+    <td class="c-num">${s.g.toLocaleString()}</td>
+    <td class="c-var" style="color:var(--rose)">−${Math.round((400000-s.g)/4000)}k</td>
+    <td class="c-rk">skipped</td>
+  </tr>`).join('');
+
+const figEl = document.querySelector('.figure');
+const skipFig = document.getElementById('skipFigure');
+const skipHead = document.getElementById('skipHead');
+const footEl = document.querySelector('.footnote');
+const pageEl = document.getElementById('page');
+
+document.getElementById('hdrTabs').addEventListener('click', e => {
+  const t = e.target.closest('.hdr-tab'); if (!t) return;
+  document.querySelectorAll('.hdr-tab').forEach(n => n.classList.toggle('on', n === t));
+  const mode = t.dataset.h;
+  if (mode === 'attacks') {
+    skipFig.classList.add('hidden'); figEl.classList.remove('hidden');
+  } else if (mode === 'skipped') {
+    figEl.classList.add('hidden'); skipFig.classList.remove('hidden');
+    skipHead.textContent = `Showing 8 of ${137} skipped bases`;
+    pageEl.scrollTop = 0;
+  } else {
+    figEl.classList.add('hidden'); skipFig.classList.add('hidden');
+    footEl.scrollIntoView({behavior:'smooth', block:'center'});
+  }
+});
+</script>
+</body>
+</html>

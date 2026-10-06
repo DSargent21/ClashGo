@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ClashGO — 02 Command Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0a0a; --s1:#111111; --s2:#171717; --s3:#1e1e1e;
+    --line:#262626; --line-2:#333333;
+    --tx:#ededed; --tx-2:#a1a1a1; --tx-3:#8a8a8a;
+    --sage:#c3ddb0; --gold:#f0b429; --elixir:#d946ef; --rose:#f26d6d; --em:#5fd08a;
+    --sans:'Inter',system-ui,-apple-system,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased;overflow:hidden}
+  .app{display:flex;height:100vh;width:100vw}
+  .hidden{display:none}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* ── Rail ─────────────────────────────────────────── */
+  .rail{width:48px;flex:0 0 48px;background:var(--bg);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:4px}
+  .logo{width:30px;height:30px;border-radius:7px;background:var(--tx);color:var(--bg);display:grid;place-items:center;font-weight:600;font-size:14px;margin-bottom:12px;flex:0 0 30px}
+  .ric{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;color:var(--tx-3);cursor:pointer;transition:.14s;position:relative}
+  .ric:hover{background:var(--s2);color:var(--tx-2)}
+  .ric.on{color:var(--tx);background:var(--s2)}
+  .ric.on:before{content:'';position:absolute;left:-7px;top:50%;transform:translateY(-50%);width:2px;height:16px;background:var(--tx);border-radius:2px}
+  .ric svg{width:17px;height:17px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .rail .sp{flex:1}
+  .avatar{width:30px;height:30px;border-radius:8px;background:var(--s3);border:1px solid var(--line-2);display:grid;place-items:center;font-family:var(--mono);font-size:10px;color:var(--tx-2);margin-top:6px}
+
+  /* ── Column ───────────────────────────────────────── */
+  .col{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+
+  /* Session tab strip */
+  .tabstrip{height:44px;flex:0 0 44px;display:flex;align-items:stretch;border-bottom:1px solid var(--line);background:var(--bg)}
+  .sidebtn{width:44px;flex:0 0 44px;display:grid;place-items:center;color:var(--tx-3);cursor:pointer;border-right:1px solid var(--line)}
+  .sidebtn:hover{color:var(--tx-2);background:var(--s1)}
+  .sidebtn svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.5;fill:none;stroke-linecap:round}
+  .stab{display:flex;align-items:center;gap:9px;padding:0 14px;border-right:1px solid var(--line);cursor:pointer;min-width:0}
+  .stab:hover{background:var(--s1)}
+  .stab.on{background:var(--s2)}
+  .stab .nm{font-size:12.5px;color:var(--tx-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stab.on .nm{color:var(--tx)}
+  .spinner{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--line-2);border-top-color:var(--em);animation:sp .9s linear infinite;flex:0 0 12px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .stab .x{color:var(--tx-3);font-size:14px;line-height:1;padding:0 2px}
+  .stab .x:hover{color:var(--tx)}
+  .newtab{width:36px;display:grid;place-items:center;color:var(--tx-3);cursor:pointer;font-size:16px}
+  .newtab:hover{color:var(--tx)}
+  .tabright{margin-left:auto;display:flex;align-items:center;gap:2px;padding-right:8px}
+  .tabright .tb{width:32px;height:30px;border-radius:7px;display:grid;place-items:center;color:var(--tx-3);cursor:pointer}
+  .tabright .tb:hover{background:var(--s2);color:var(--tx-2)}
+  .tabright .tb svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.5;fill:none}
+
+  /* ── Stream ───────────────────────────────────────── */
+  .stream{flex:1;overflow-y:auto;padding:0 0 22px}
+  .stream::-webkit-scrollbar{width:10px}
+  .stream::-webkit-scrollbar-thumb{background:#262626;border-radius:8px;border:3px solid var(--bg)}
+
+  .statusrow{display:flex;align-items:center;gap:8px;padding:12px 24px 0;max-width:820px;margin:0 auto}
+  .pill{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:8px;background:var(--s1);border:1px solid var(--line);font-size:12px;color:var(--tx-2)}
+  .pill b{color:var(--tx);font-weight:500}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--em);box-shadow:0 0 0 3px rgba(95,208,138,.13);animation:b 2.2s infinite}
+  @keyframes b{0%,100%{opacity:1}50%{opacity:.4}}
+  .dot.idle{background:var(--tx-3);box-shadow:none;animation:none}
+  .streakdots{display:flex;gap:3px;align-items:center;margin-left:2px}
+  .sd{width:5px;height:5px;border-radius:50%;background:var(--line-2)}
+  .sd.on{background:var(--em)}
+
+  .feed{max-width:820px;margin:0 auto;padding:20px 24px 0}
+  .evt{display:flex;align-items:center;gap:13px;padding:11px 15px;background:var(--s1);border:1px solid var(--line);border-radius:11px;margin-bottom:6px}
+  .evt .ei{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:0 0 26px;background:var(--s3);color:var(--tx-3)}
+  .evt .ei svg{width:14px;height:14px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .evt .et{font-family:var(--mono);font-size:11px;color:var(--tx-3);flex:0 0 58px}
+  .evt .eb{flex:1;min-width:0;font-size:12.5px;color:var(--tx-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .evt .eb b{color:var(--tx);font-weight:450}
+  .evt.hidden{display:none}
+
+  /* Run header */
+  .runhead{display:flex;align-items:flex-start;gap:16px;padding-bottom:22px}
+  .runhead .g{width:34px;height:34px;border-radius:9px;background:var(--s2);border:1px solid var(--line);display:grid;place-items:center;color:var(--tx-2);flex:0 0 34px}
+  .runhead .g svg{width:17px;height:17px;stroke:currentColor;stroke-width:1.5;fill:none}
+  .runhead h1{font-size:19px;font-weight:500;letter-spacing:-.01em;line-height:1.35}
+  .runhead .sub{font-size:12.5px;color:var(--tx-3);margin-top:4px}
+
+  /* Attack cards */
+  .card{background:var(--s1);border:1px solid var(--line);border-radius:12px;margin-bottom:8px;overflow:hidden;transition:border-color .14s}
+  .card:hover{border-color:var(--line-2)}
+  .card .row1{display:flex;align-items:center;gap:12px;padding:13px 15px}
+  .stars{display:flex;gap:3px;flex:0 0 46px}
+  .st{width:12px;height:12px}
+  .card .t{font-family:var(--mono);font-size:11px;color:var(--tx-3);flex:0 0 58px}
+  .card .body{flex:1;min-width:0}
+  .card .ttl{font-size:13.5px;font-weight:450;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card .why{font-size:12px;color:var(--tx-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .loot{display:flex;gap:14px;flex:0 0 auto}
+  .loot .l{text-align:right}
+  .loot .lv{font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+  .loot .ll{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx-3);margin-top:1px}
+  .g{color:var(--gold)} .e{color:var(--elixir)} .d{color:#9aa3d4}
+  .card .expand{border-top:1px solid var(--line);background:var(--bg);padding:12px 15px;display:none}
+  .card.open .expand{display:block}
+  .kv{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px}
+  .kv .kk{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--tx-3)}
+  .kv .vv{font-family:var(--mono);font-size:12px;margin-top:3px}
+  .slotmap{display:flex;gap:3px;margin-top:2px}
+  .slotmap i{flex:1;height:5px;border-radius:2px;background:var(--s3)}
+  .slotmap i.on{background:var(--em)}
+  .slotmap i.warn{background:var(--rose)}
+  .cardfoot{display:flex;align-items:center;gap:10px;padding-top:9px;border-top:1px solid var(--line)}
+  .tgl{font-size:11.5px;color:var(--tx-3);cursor:pointer}
+  .tgl:hover{color:var(--tx-2)}
+
+  /* Skipped divider */
+  .divider{display:flex;align-items:center;gap:12px;padding:14px 0 14px 4px}
+  .divider .ln{flex:1;height:1px;background:var(--line)}
+  .divider .t{font-size:11.5px;color:var(--tx-3)}
+
+  /* Log strip */
+  .logstrip{margin-top:16px;border:1px solid var(--line);border-radius:12px;background:var(--s1);overflow:hidden}
+  .logstrip .h{display:flex;align-items:center;gap:9px;padding:10px 14px;border-bottom:1px solid var(--line)}
+  .logstrip .h .ttl{font-size:12px;color:var(--tx-2);font-weight:500}
+  .logstrip .body{font-family:var(--mono);font-size:10.5px;line-height:1.85;padding:11px 14px;height:150px;overflow-y:auto;background:var(--bg)}
+  .logstrip .body div{white-space:pre;overflow:hidden;text-overflow:ellipsis}
+  .logstrip .body::-webkit-scrollbar{width:6px}
+  .logstrip .body::-webkit-scrollbar-thumb{background:#262626;border-radius:6px}
+  .c-t{color:#7d7d7d} .c-i{color:var(--tx-3)} .c-ok{color:var(--em)} .c-w{color:var(--gold)} .c-e{color:var(--rose)}
+
+  /* ── Command bar ──────────────────────────────────── */
+  .cmdwrap{padding:0 24px 20px;background:linear-gradient(to top,var(--bg) 62%,rgba(10,10,10,0))}
+  .cmd{max-width:820px;margin:0 auto;background:var(--s1);border:1px solid var(--line-2);border-radius:14px;padding:13px 14px 10px;transition:border-color .15s}
+  .cmd:focus-within{border-color:#3d3d3d}
+  .cmd .field{font-size:14px;color:var(--tx-3);line-height:1.5;min-height:21px}
+  .cmd .field b{color:var(--tx);font-weight:450}
+  .cmdbar{display:flex;align-items:center;gap:8px;margin-top:11px}
+  .seg{display:flex;background:var(--s3);border-radius:8px;padding:2px;gap:2px}
+  .seg span{padding:5px 11px;border-radius:6px;font-size:12px;color:var(--tx-3);cursor:pointer}
+  .seg span.on{background:var(--tx);color:var(--bg);font-weight:500}
+  .sel{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--tx-2);padding:5px 9px;border-radius:8px;cursor:pointer}
+  .sel:hover{background:var(--s3)}
+  .sel .cv{color:var(--tx-3)}
+  .sel:hover .cv{color:var(--tx-2)}
+  .send{width:32px;height:32px;border-radius:9px;background:var(--sage);color:#141a10;display:grid;place-items:center;margin-left:2px;cursor:pointer}
+  .send:hover{filter:brightness(1.06)}
+  .send svg{width:16px;height:16px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .plus{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--tx-3);cursor:pointer}
+  .plus:hover{background:var(--s3);color:var(--tx-2)}
+  .plus svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round}
+  .hintbar{display:flex;gap:14px;margin-top:9px;padding:0 3px}
+  .hint{font-family:var(--mono);font-size:10.5px;color:var(--tx-3);cursor:pointer}
+  .hint:hover{color:var(--tx-2)}
+
+  /* Config / settings panels (drawer style) */
+  .panel{max-width:820px;margin:0 auto;padding:20px 24px 0}
+  .panel h2{font-size:13px;font-weight:500;color:var(--tx-2);margin-bottom:14px}
+  .cfg{background:var(--s1);border:1px solid var(--line);border-radius:12px;padding:4px 16px}
+  .crow{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
+  .crow:last-child{border-bottom:0}
+  .crow .cl{flex:1}
+  .crow .cl .n{font-size:13px}
+  .crow .cl .d{font-size:11.5px;color:var(--tx-3);margin-top:3px}
+  .crow .ci{width:150px;background:var(--s3);border:1px solid var(--line-2);border-radius:8px;padding:7px 10px;font-family:var(--mono);font-size:12.5px;color:var(--tx);text-align:right;outline:none}
+  .sw{width:36px;height:20px;border-radius:10px;background:var(--em);position:relative;cursor:pointer;flex:0 0 36px}
+  .sw:after{content:'';position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:#0a0a0a}
+  .sw.off{background:var(--s3)} .sw.off:after{right:18px;background:var(--tx-3)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .stat{display:flex;justify-content:space-between;align-items:baseline;padding:12px 0;border-bottom:1px solid var(--line)}
+  .stat .l{font-size:12.5px;color:var(--tx-2)}
+  .stat .v{font-family:var(--mono);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Rail -->
+  <div class="rail">
+    <div class="logo">C</div>
+    <div class="ric on" data-tab="run" title="Run"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+    <div class="ric" data-tab="stats" title="Analytics"><svg viewBox="0 0 24 24"><path d="M3 20V10M9 20V4M15 20v-7M21 20v-11"/></svg></div>
+    <div class="ric" data-tab="config" title="Config"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg></div>
+    <div class="ric" data-tab="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8"/></svg></div>
+    <div class="sp"></div>
+    <div class="avatar" title="Bot process">CG</div>
+  </div>
+
+  <div class="col">
+    <!-- Session tab strip -->
+    <div class="tabstrip">
+      <div class="sidebtn"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></div>
+      <div class="stab"><span class="spinner"></span><span class="nm">Run 4 — BARCH Hybrid</span><span class="x">×</span></div>
+      <div class="stab on"><span class="nm" style="opacity:.55">◦</span><span class="nm">Run 3 — Hybrid Lava</span><span class="x">×</span></div>
+      <div class="newtab">+</div>
+      <div class="tabright">
+        <div class="tb" title="Toggle console"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></div>
+        <div class="tb" title="Fullscreen"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></div>
+      </div>
+    </div>
+
+    <!-- ══ RUN ══ -->
+    <div class="stream" id="pane-run">
+      <div class="statusrow">
+        <span class="pill"><span class="dot"></span>Bot <b>running</b> · 4h 12m</span>
+        <span class="pill"><b class="g">3,184,500</b> gold</span>
+        <span class="pill"><b class="e">2,942,100</b> elixir</span>
+        <span class="pill">3★ <b>33.3%</b></span>
+        <span class="pill">ADB <b>5555</b></span>
+      </div>
+
+      <div class="feed">
+        <div class="runhead">
+          <div class="g"><svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M4.5 7.5l2.6 2.6M16.9 13.9l2.6 2.6M3 12h4M17 12h4M4.5 16.5l2.6-2.6M16.9 10.1l2.6-2.6"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <div>
+            <h1>Run 4 · searching, attacking, looting</h1>
+            <div class="sub">BARCH Hybrid · started 10:09:52 · 84 attacks · 137 bases skipped</div>
+          </div>
+        </div>
+
+        <div id="cards"></div>
+        <div id="events"></div>
+
+        <div class="divider"><span class="ln"></span><span class="t">137 skipped below the 400k floor</span><span class="ln"></span></div>
+
+        <div class="logstrip">
+          <div class="h">
+            <span class="ttl">Console</span>
+            <span style="font-family:var(--mono);font-size:10.5px;color:var(--tx-3)">5 Hz · live</span>
+            <div style="margin-left:auto;display:flex;gap:5px">
+              <span class="tgl" style="font-size:11px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--s3);color:var(--tx)">All</span>
+              <span class="tgl" style="font-size:11px;padding:3px 7px;border:1px solid var(--line);border-radius:6px">Debug</span>
+              <span class="tgl" style="font-size:11px;padding:3px 7px;border:1px solid var(--line);border-radius:6px">Warn</span>
+              <span class="tgl" style="font-size:11px;padding:3px 7px;border:1px solid var(--line);border-radius:6px">Error</span>
+            </div>
+          </div>
+          <div class="body" id="log"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ STATS ══ -->
+    <div class="stream hidden" id="pane-stats">
+      <div class="feed">
+        <div class="runhead">
+          <div class="g"><svg viewBox="0 0 24 24"><path d="M3 20V10M9 20V4M15 20v-7M21 20v-11"/></svg></div>
+          <div><h1>Performance</h1><div class="sub">84 attacks across 3 strategies in 4h 12m</div></div>
+        </div>
+        <div class="cfg" style="padding:4px 16px">
+          <div class="crow"><div class="cl"><div class="n">Gold per attack</div><div class="d">vs 34,120 in run 3</div></div><div class="ci g">37,911</div></div>
+          <div class="crow"><div class="cl"><div class="n">Elixir per attack</div><div class="d">vs 32,880 in run 3</div></div><div class="ci e">35,025</div></div>
+          <div class="crow"><div class="cl"><div class="n">Dark elixir per attack</div><div class="d">up 1,940 from run 3</div></div><div class="ci">498</div></div>
+          <div class="crow"><div class="cl"><div class="n">BARCH Hybrid · 3★ rate</div><div class="d">54 attacks — the workhorse</div></div><div class="ci">38.9%</div></div>
+          <div class="crow"><div class="cl"><div class="n">Queen Charge · 3★ rate</div><div class="d">19 attacks — 2 zero-stars vs TH16</div></div><div class="ci" style="color:var(--rose)">10.5%</div></div>
+          <div class="crow"><div class="cl"><div class="n">Hybrid Lava · 3★ rate</div><div class="d">11 attacks — best ratio in the run</div></div><div class="ci" style="color:var(--em)">45.5%</div></div>
+        </div>
+        <h2 style="margin-top:22px">Star distribution</h2>
+        <div class="cfg" style="padding:16px">
+          <div id="hist"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ CONFIG ══ -->
+    <div class="stream hidden" id="pane-config">
+      <div class="panel">
+        <h2>Search thresholds — a base is attacked only when all three floors clear</h2>
+        <div class="cfg">
+          <div class="crow"><div class="cl"><div class="n">Minimum gold</div><div class="d">Skipped without deploying</div></div><input class="ci" value="400,000"></div>
+          <div class="crow"><div class="cl"><div class="n">Minimum elixir</div><div class="d">All three must clear together</div></div><input class="ci" value="400,000"></div>
+          <div class="crow"><div class="cl"><div class="n">Minimum dark elixir</div><div class="d">0 disables</div></div><input class="ci" value="2,000"></div>
+          <div class="crow"><div class="cl"><div class="n">Search enabled</div><div class="d">Off halts at the home screen</div></div><div class="sw"></div></div>
+        </div>
+        <h2 style="margin-top:22px">Attack</h2>
+        <div class="cfg">
+          <div class="crow"><div class="cl"><div class="n">Strategy</div><div class="d">assets/strategies/ · applies next attack</div></div><select class="ci" style="text-align:left"><option>BARCH Hybrid</option><option>Queen Charge</option><option>Hybrid Lava</option></select></div>
+          <div class="crow"><div class="cl"><div class="n">Stall timer</div><div class="d">Abandons an undeployed match</div></div><input class="ci" value="30"></div>
+          <div class="crow"><div class="cl"><div class="n">Wall upgrades</div><div class="d">Between attacks only</div></div><div class="sw"></div></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <span class="send" style="background:var(--tx)"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+          <span style="font-size:12px;color:var(--tx-3);align-self:center">Saved 14:21:58</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ SETTINGS ══ -->
+    <div class="stream hidden" id="pane-settings">
+      <div class="panel">
+        <h2>Connection</h2>
+        <div class="grid2">
+          <div class="cfg" style="padding:4px 16px">
+            <div class="crow"><div class="cl"><div class="n">Status</div></div><span style="font-size:12.5px;color:var(--em)">Optimal</span></div>
+            <div class="crow"><div class="cl"><div class="n">ADB port</div></div><span class="mono" style="font-size:12.5px">5555</span></div>
+            <div class="crow"><div class="cl"><div class="n">Capture latency</div></div><span class="mono" style="font-size:12.5px">142.6 ms</span></div>
+            <div class="crow"><div class="cl"><div class="n">Consecutive fails</div></div><span class="mono" style="font-size:12.5px;color:var(--em)">0</span></div>
+          </div>
+          <div class="cfg" style="padding:4px 16px">
+            <div class="crow"><div class="cl"><div class="n">CPU time</div></div><span class="mono" style="font-size:12.5px">1,841.6 s</span></div>
+            <div class="crow"><div class="cl"><div class="n">CPU usage</div></div><span class="mono" style="font-size:12.5px">4.2%</span></div>
+            <div class="crow"><div class="cl"><div class="n">Uptime</div></div><span class="mono" style="font-size:12.5px">4:12:06</span></div>
+            <div class="crow"><div class="cl"><div class="n">Version</div></div><span class="mono" style="font-size:12.5px">0.2.0</span></div>
+          </div>
+        </div>
+        <h2 style="margin-top:22px">Appearance</h2>
+        <div class="cfg">
+          <div class="crow"><div class="cl"><div class="n">Dark mode</div><div class="d">This layout is dark-native</div></div><div class="sw"></div></div>
+        </div>
+        <h2 style="margin-top:22px">Danger zone</h2>
+        <div class="cfg">
+          <div class="crow"><div class="cl"><div class="n">Reset statistics</div><div class="d">Clears lifetime counters and attack_history.json</div></div><span style="font-size:12.5px;color:var(--rose);cursor:pointer">Reset</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Command bar (always present, persistent) -->
+    <div class="cmdwrap">
+      <div class="cmd">
+        <div class="field">Tell the bot what to do</div>
+        <div class="cmdbar">
+          <div class="seg" id="seg">
+            <span class="on">Attack</span><span>Search</span><span>Walls</span><span>Idle</span>
+          </div>
+          <div class="sel">BARCH Hybrid <span class="cv">▾</span></div>
+          <div class="sel">Effort: Medium <span class="cv">▾</span></div>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <div class="plus"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div>
+            <div class="send"><svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></div>
+          </div>
+        </div>
+      </div>
+      <div class="hintbar">
+        <span class="hint">/start</span><span class="hint">/stop</span><span class="hint">/strategy barch</span><span class="hint">/loot 500k</span><span class="hint">/logs</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CARDS = [
+  {t:'14:22:07', s:3, ttl:'TH16 · 3 stars',            why:'BARCH Hybrid · full deploy · no stall', g:218400, e:196200, d:1980, open:true,  slots:14, bad:0, dur:'52s'},
+  {t:'14:19:41', s:3, ttl:'TH15 · 3 stars',            why:'BARCH Hybrid · full deploy · no stall', g:204100, e:188300, d:2140, open:false, slots:14, bad:0, dur:'49s'},
+  {t:'14:16:58', s:2, ttl:'TH16 · 2 stars',            why:'Queen Charge · 2 hero slots left undeployed', g:198600, e:174900, d:1620, open:false, slots:12, bad:2, dur:'71s'},
+  {t:'14:14:22', s:3, ttl:'TH16 · 3 stars',            why:'BARCH Hybrid · full deploy · no stall', g:196800, e:181400, d:1890, open:false, slots:14, bad:0, dur:'50s'},
+  {t:'14:11:55', s:2, ttl:'TH15 · 2 stars',            why:'Hybrid Lava · stalled 22s before deploy', g:191300, e:168700, d:1540, open:false, slots:13, bad:1, dur:'66s'},
+  {t:'14:09:30', s:3, ttl:'TH16 · 3 stars',            why:'Queen Charge · heroes saved for 2nd', g:187900, e:165200, d:1760, open:false, slots:14, bad:0, dur:'58s'},
+  {t:'14:07:12', s:2, ttl:'TH16 · 2 stars',            why:'BARCH Hybrid · wall-first, troops second', g:182400, e:171600, d:1410, open:false, slots:14, bad:0, dur:'63s'},
+  {t:'14:02:19', s:1, ttl:'TH16 · 1 star',           why:'BARCH Hybrid · red line rejected, 24 hogs lost', g:171500, e:152300, d:1190, open:false, slots:14, bad:3, dur:'88s'}
+];
+function stars(n){
+  let s = '';
+  for (let i=1;i<=3;i++){
+    s += `<svg class="st" viewBox="0 0 24 24" fill="${i<=n?'#f0b429':'none'}" stroke="#3a3a3a" stroke-width="1.4"><path d="M12 3.6l2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8z"/></svg>`;
+  }
+  return s;
+}
+document.getElementById('cards').innerHTML = CARDS.map((c,i)=>`
+  <div class="card ${c.open?'open':''}" data-i="${i}">
+    <div class="row1">
+      <div class="stars">${stars(c.s)}</div>
+      <span class="t">${c.t}</span>
+      <div class="body">
+        <div class="ttl">${c.ttl}</div>
+        <div class="why">${c.why}</div>
+      </div>
+      <div class="loot">
+        <div class="l"><div class="lv g">+${c.g.toLocaleString()}</div><div class="ll">gold</div></div>
+        <div class="l"><div class="lv e">+${c.e.toLocaleString()}</div><div class="ll">elixir</div></div>
+        <div class="l"><div class="lv d">+${c.d.toLocaleString()}</div><div class="ll">de</div></div>
+      </div>
+    </div>
+    <div class="expand">
+      <div class="kv">
+        <div><div class="kk">Strategy</div><div class="vv">${c.ttl.includes('TH15')?'—':'—'}</div></div>
+        <div><div class="kk">Duration</div><div class="vv">${c.dur}</div></div>
+        <div><div class="kk">Slots used</div><div class="slotmap">${Array.from({length:14},(_,k)=>`<i class="${k<c.slots?'on':''}"></i>`).join('')}</div></div>
+        <div><div class="kk">Undeployed</div><div class="vv" style="color:${c.bad?'var(--rose)':'var(--tx)'}">${c.bad}</div></div>
+      </div>
+      <div class="cardfoot">
+        <span class="tgl">Open in terminal</span>
+        <span class="tgl">Replay deploy</span>
+        <span class="tgl" style="margin-left:auto;color:${c.bad?'var(--gold)':'var(--tx-3)'}">${c.bad?c.bad+' slot warning':'Clean run'}</span>
+      </div>
+    </div>
+  </div>`).join('');
+
+document.getElementById('cards').addEventListener('click', e => {
+  if (e.target.closest('.tgl')) return;
+  const card = e.target.closest('.card');
+  if (card) card.classList.toggle('open');
+});
+
+const LOGS = [
+  ['c-t','14:22:07.412','info','deploy slot 3 → barbarian king (x1)'],
+  ['c-t','14:22:07.388','c-i','slot_map[3] = hero_king, origin (412,318) scale 0.94'],
+  ['c-ok','14:22:07.104','c-ok','attack complete — 3★ 218,400 gold 196,200 elixir'],
+  ['c-t','14:22:06.902','c-i','recording attack_history.json entry 84'],
+  ['c-t','14:22:04.551','c-i','returned home, army full (280/280)'],
+  ['c-w','14:22:01.220','c-w','stall timer 18s remaining — no deploys yet'],
+  ['c-t','14:21:58.003','c-i','searching for next base'],
+  ['c-t','14:21:58.011','c-i','capture 15,204 → 860x732 rgba, 142.6ms'],
+  ['c-e','14:21:55.870','c-e','capture failed: EOF on adb transport — reconnecting'],
+  ['c-ok','14:21:56.140','c-ok','transport reconnected (CNXN ok)'],
+  ['c-i','14:21:52.330','c-i','base skipped — 312,000 gold < 400,000 floor'],
+  ['c-t','14:21:49.776','c-t','deploy slot 1 → hog rider (x24)'],
+  ['c-t','14:21:49.780','c-i','red line computed: 412,318 → 288,402, len 148px']
+];
+document.getElementById('log').innerHTML = LOGS.map(l=>`<div><span class="${l[0]}">${l[1]}</span>  <span class="${l[2]}">${l[3]}</span></div>`).join('');
+
+const HIST = [['3★',28,33.3,'#5fd08a'],['2★',31,36.9,'#8b8b8b'],['1★',19,22.6,'#5a5a5a'],['0★',6,7.1,'#f26d6d']];
+document.getElementById('hist').innerHTML = HIST.map(h=>`
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
+    <span class="mono" style="width:30px;font-size:12px;color:var(--tx-2)">${h[0]}</span>
+    <div style="flex:1;height:8px;background:#1e1e1e;border-radius:4px;overflow:hidden">
+      <div style="width:${h[2]}%;height:100%;background:${h[3]};border-radius:4px"></div>
+    </div>
+    <span class="mono" style="width:34px;text-align:right;font-size:12px">${h[1]}</span>
+    <span class="mono" style="width:56px;text-align:right;font-size:11px;color:var(--tx-3)">${h[2]}%</span>
+  </div>`).join('');
+
+document.querySelector('.rail').addEventListener('click', e => {
+  const b = e.target.closest('.ric'); if (!b) return;
+  document.querySelectorAll('.ric').forEach(r => r.classList.toggle('on', r === b));
+  ['run','stats','config','settings'].forEach(t => {
+    document.getElementById('pane-'+t).classList.toggle('hidden', t !== b.dataset.tab);
+  });
+});
+document.getElementById('seg').addEventListener('click', e => {
+  const s = e.target.closest('span'); if (!s) return;
+  s.parentNode.querySelectorAll('span').forEach(n => n.classList.toggle('on', n === s));
+  filterFeed(s.textContent.trim());
+});
+
+// The mode selector filters the run stream rather than sitting there as
+// decoration: Attack = deploy outcomes, Search = bases the bot walked past,
+// Walls = upgrade decisions, Idle = the quiet stretches between fights.
+const EVENTS = {
+  search: [
+    ['14:21:52','Base skipped — estimated <b>312,000</b> gold, floor is 400,000','search'],
+    ['14:21:44','Base skipped — estimated <b>288,400</b> gold','search'],
+    ['14:21:31','Matched TH16 — estimated <b>468,200</b> gold, attacking','search'],
+    ['14:20:48','Base skipped — estimated <b>251,600</b> gold','search']
+  ],
+  walls: [
+    ['14:21:30','Wall upgrade skipped — only <b>84,200</b> gold banked, needs 120,000','wall'],
+    ['14:20:12','Wall 14→15 started — <b>2,400,000</b> gold committed','wall'],
+    ['14:18:44','Wall upgrade skipped — builder busy for 4m 20s','wall'],
+    ['14:16:02','Collector banked <b>318,400</b> gold','wall']
+  ],
+  idle: [
+    ['14:20:55','Idle 38s — waiting for the army to finish training','idle'],
+    ['14:19:14','Idle 22s — army at 212/280','idle'],
+    ['14:17:40','Idle 51s — barracks rebuilding after a wall upgrade','idle']
+  ]
+};
+const ICONS = {
+  search:'<circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L20 20"/>',
+  wall:'<rect x="3" y="7" width="18" height="11" rx="1"/><path d="M3 12h18M9 7v11M15 7v11"/>',
+  idle:'<circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 1.5"/>'
+};
+document.getElementById('events').innerHTML = Object.entries(EVENTS).map(([k,list])=>
+  list.map(e=>`<div class="evt" data-kind="${k}">
+    <span class="ei"><svg viewBox="0 0 24 24">${ICONS[k]}</svg></span>
+    <span class="et">${e[0]}</span>
+    <span class="eb">${e[1]}</span>
+  </div>`).join('')).join('');
+
+const ATTACK_LABEL = '84 attacks · 137 bases skipped';
+const MODE_NOUN = {Attack:'attack', Search:'search', Walls:'wall', Idle:'idle'};
+function filterFeed(mode){
+  const cards = document.querySelectorAll('#cards .card');
+  const evts  = document.querySelectorAll('#events .evt');
+  const showCards = mode === 'Attack';
+  cards.forEach(c => c.classList.toggle('hidden', !showCards));
+  evts.forEach(e => e.classList.toggle('hidden', mode === 'Attack' || e.dataset.kind !== mode.toLowerCase()));
+  const div = document.querySelector('.divider');
+  if (div) div.classList.toggle('hidden', !showCards);
+  const sub = document.querySelector('.runhead .sub');
+  if (sub) {
+    const shown = [...evts].filter(e => !e.classList.contains('hidden')).length;
+    sub.textContent = showCards
+      ? 'BARCH Hybrid · started 10:09:52 · ' + ATTACK_LABEL
+      : `Filtered to ${MODE_NOUN[mode]} events · ${shown} of 221 this run`;
+  }
+}
+</script>
+</body>
+</html>
