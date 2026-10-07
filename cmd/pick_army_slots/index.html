@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClashGO - Army Recipe Box Picker</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0e1116; color: #e8ecf1;
+         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { display: flex; gap: 14px; align-items: center; padding: 12px 16px;
+           background: #151a22; border-bottom: 1px solid #263040; position: sticky; top: 0; z-index: 10; }
+  header b { color: #58a6ff; font-size: 15px; }
+  .grow { flex: 1 1 auto; }
+  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+           border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; transition: all .15s; }
+  button:hover { background: #30363d; border-color: #8b949e; }
+  button.primary { background: #238636; border-color: #2ea043; color: #fff; }
+  button.primary:hover { background: #2ea043; }
+  button.action { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  button.action:hover { background: #388bfd; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; padding: 16px; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .stage-wrap { position: relative; background: #000; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+  .stage-wrap img { display: block; width: 100%; height: auto; user-select: none; }
+  .stage-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+  .panel h3 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #8b949e; }
+  .item-card { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; margin-bottom: 8px;
+               border-radius: 6px; border: 1px solid #30363d; background: #0d1117; cursor: pointer; }
+  .item-card:hover { border-color: #58a6ff; }
+  .item-card.active { border-color: #58a6ff; background: #13233a; }
+  .item-header { display: flex; align-items: center; justify-content: space-between; }
+  .item-title { font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .item-color { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .coords-info { color: #8b949e; font-size: 12px; font-family: ui-monospace, monospace; }
+  .item-actions { display: flex; gap: 6px; margin-top: 4px; }
+  .tap-btn { padding: 4px 8px; font-size: 11px; }
+  .status-toast { padding: 8px 12px; border-radius: 6px; background: #1f2937; color: #10b981; font-weight: 600; font-size: 12px; }
+  .hint-box { margin-top: 14px; padding: 10px; border-radius: 6px; background: #1c2128; font-size: 12px; color: #8b949e; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <b>ClashGO Army Box Picker</b>
+  <span id="res" style="color: #8b949e; font-size: 12px;">1280x720</span>
+  <div class="grow"></div>
+  <button id="btnOpen" class="action">Open Dropdown on Game</button>
+  <button id="btnCapture">Refresh Frame</button>
+  <button id="btnSave" class="primary">Save Boxes</button>
+</header>
+
+<main>
+  <div class="stage-wrap" id="stage">
+    <img id="frameImg" src="/frame.png" alt="Emulator Screen">
+    <svg id="stageSvg" viewBox="0 0 1280 720"></svg>
+  </div>
+
+  <div class="panel">
+    <h3>Select Item to Position</h3>
+    <div id="itemsList"></div>
+    <div id="toast" class="status-toast" style="display:none;"></div>
+    <div class="hint-box">
+      <strong>How to calibrate:</strong><br>
+      1. Click <em>Open Dropdown on Game</em> to expand the Saved Recipes popup on BlueStacks.<br>
+      2. Click a Slot card on the right (e.g. <strong>Slot 2 - Army 2</strong>).<br>
+      3. Click on the image where that army card is located.<br>
+      4. Click <strong>Test Tap</strong> to watch the game immediately select that army!<br>
+      5. Click <strong>Save Boxes</strong> when done.
+    </div>
+  </div>
+</main>
+
+<script>
+let state = {
+  width: 1280,
+  height: 720,
+  dropdown_arrow: { x: 742, y: 71 },
+  slots: {
+    "1": { x: 740, y: 150, w: 417, h: 55, name: "Slot 1 (Imported Army 3)" },
+    "2": { x: 740, y: 222, w: 417, h: 55, name: "Slot 2 (Army 2 - Valkyries)" },
+    "3": { x: 740, y: 293, w: 417, h: 55, name: "Slot 3 (Imported Army 3)" },
+    "4": { x: 740, y: 366, w: 417, h: 55, name: "Slot 4 (Imported Army 4)" }
+  }
+};
+
+let activeKey = "2";
+const colors = {
+  arrow: "#f59e0b",
+  "1": "#3b82f6",
+  "2": "#10b981", // slot 2 green (Army 2)
+  "3": "#8b5cf6",
+  "4": "#ec4899"
+};
+
+const stage = document.getElementById("stage");
+const frameImg = document.getElementById("frameImg");
+const stageSvg = document.getElementById("stageSvg");
+const itemsList = document.getElementById("itemsList");
+const toast = document.getElementById("toast");
+
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.style.display = "block";
+  setTimeout(() => { toast.style.display = "none"; }, 3000);
+}
+
+async function loadState() {
+  try {
+    const res = await fetch("/state");
+    state = await res.json();
+    renderUI();
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function renderUI() {
+  stageSvg.setAttribute("viewBox", `0 0 ${state.width} ${state.height}`);
+  document.getElementById("res").textContent = `${state.width}x${state.height}`;
+
+  // Build SVG overlays
+  let svg = ``;
+  // Arrow point
+  const ax = state.dropdown_arrow.x, ay = state.dropdown_arrow.y;
+  svg += `<circle cx="${ax}" cy="${ay}" r="8" fill="${colors.arrow}" stroke="#fff" stroke-width="2"/>
+          <text x="${ax + 12}" y="${ay + 4}" fill="${colors.arrow}" font-size="14" font-weight="bold">Dropdown Arrow [v]</text>`;
+
+  // Slots
+  for (const [k, s] of Object.entries(state.slots)) {
+    const c = colors[k] || "#999";
+    const isActive = (activeKey === k);
+    const strokeWidth = isActive ? 3 : 1.5;
+    const rx = s.x - s.w/2;
+    const ry = s.y - s.h/2;
+    svg += `<rect x="${rx}" y="${ry}" width="${s.w}" height="${s.h}" rx="6"
+                  fill="${c}22" stroke="${c}" stroke-width="${strokeWidth}"/>
+            <circle cx="${s.x}" cy="${s.y}" r="5" fill="${c}" stroke="#fff" stroke-width="1.5"/>
+            <text x="${rx + 8}" y="${s.y + 5}" fill="${c}" font-size="14" font-weight="bold">${s.name || 'Slot '+k}</text>`;
+  }
+  stageSvg.innerHTML = svg;
+
+  // Build Sidebar list
+  let html = ``;
+  // Arrow item
+  html += `
+    <div class="item-card ${activeKey === 'arrow' ? 'active' : ''}" onclick="selectKey('arrow')">
+      <div class="item-header">
+        <span class="item-title">
+          <span class="item-color" style="background:${colors.arrow}"></span>
+          Dropdown Arrow [v]
+        </span>
+        <button class="tap-btn" onclick="testTap(${state.dropdown_arrow.x}, ${state.dropdown_arrow.y}, event)">Test Tap</button>
+      </div>
+      <div class="coords-info">X: ${state.dropdown_arrow.x}, Y: ${state.dropdown_arrow.y}</div>
+    </div>
+  `;
+
+  for (const [k, s] of Object.entries(state.slots)) {
+    const c = colors[k] || "#999";
+    html += `
+      <div class="item-card ${activeKey === k ? 'active' : ''}" onclick="selectKey('${k}')">
+        <div class="item-header">
+          <span class="item-title">
+            <span class="item-color" style="background:${c}"></span>
+            ${s.name}
+          </span>
+          <button class="tap-btn" onclick="testTap(${s.x}, ${s.y}, event)">Test Tap</button>
+        </div>
+        <div class="coords-info">Target: (${s.x}, ${s.y}) | Box: ${s.w}x${s.h}</div>
+      </div>
+    `;
+  }
+  itemsList.innerHTML = html;
+}
+
+function selectKey(k) {
+  activeKey = k;
+  renderUI();
+}
+
+stage.addEventListener("click", (e) => {
+  const rect = frameImg.getBoundingClientRect();
+  const scaleX = state.width / rect.width;
+  const scaleY = state.height / rect.height;
+  const clickX = Math.round((e.clientX - rect.left) * scaleX);
+  const clickY = Math.round((e.clientY - rect.top) * scaleY);
+
+  if (activeKey === "arrow") {
+    state.dropdown_arrow.x = clickX;
+    state.dropdown_arrow.y = clickY;
+  } else if (state.slots[activeKey]) {
+    state.slots[activeKey].x = clickX;
+    state.slots[activeKey].y = clickY;
+  }
+  renderUI();
+});
+
+async function testTap(x, y, ev) {
+  if (ev) ev.stopPropagation();
+  try {
+    showToast(`Tapping (${x}, ${y}) on emulator...`);
+    await fetch(`/tap?x=${x}&y=${y}`);
+    setTimeout(() => { refreshFrame(); }, 800);
+  } catch (e) {
+    showToast("Tap error: " + e);
+  }
+}
+
+async function refreshFrame() {
+  frameImg.src = "/frame.png?t=" + Date.now();
+}
+
+document.getElementById("btnCapture").onclick = refreshFrame;
+
+document.getElementById("btnOpen").onclick = async () => {
+  showToast("Opening Saved Recipes menu on BlueStacks...");
+  try {
+    await fetch("/open_dropdown");
+    setTimeout(() => { refreshFrame(); }, 2000);
+  } catch (e) {
+    showToast("Error opening menu: " + e);
+  }
+};
+
+document.getElementById("btnSave").onclick = async () => {
+  try {
+    const res = await fetch("/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state)
+    });
+    if (res.ok) {
+      showToast("Saved to army_slots.json successfully!");
+    } else {
+      showToast("Save error");
+    }
+  } catch (e) {
+    showToast("Save error: " + e);
+  }
+};
+
+loadState();
+</script>
+</body>
+</html>

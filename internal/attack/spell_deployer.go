@@ -261,8 +261,24 @@ func (sd *SpellDeployer) DeploySpell(unit strategy.Unit, slot *TrackedSlot, targ
 	// user pins a spell line and the spells still go to the formula's ground.
 	if sd.pinnedGround {
 		isPointPattern := unit.Pattern == "Point" || phasePattern == "Point"
-		if spellTarget, ok := sd.pCfg.SpellTargets[targetEdge]; ok && isPointPattern {
-			return sd.deployPointSpell(unit, slot, spellTarget)
+		if isPointPattern {
+			if strings.EqualFold(targetEdge, "Center") {
+				if centerTarget, ok := sd.pCfg.SpellTargets["Center"]; ok {
+					return sd.deployPointSpell(unit, slot, centerTarget)
+				}
+				if sd.w > 0 && sd.h > 0 {
+					return sd.deployPointSpell(unit, slot, image.Pt(sd.w/2, sd.h/2))
+				}
+			}
+			if spellTarget, ok := sd.pCfg.SpellTargets[targetEdge]; ok {
+				return sd.deployPointSpell(unit, slot, spellTarget)
+			}
+			if centerTarget, ok := sd.pCfg.SpellTargets["Center"]; ok {
+				return sd.deployPointSpell(unit, slot, centerTarget)
+			}
+			if sd.w > 0 && sd.h > 0 {
+				return sd.deployPointSpell(unit, slot, image.Pt(sd.w/2, sd.h/2))
+			}
 		}
 		if _, okA := sd.pCfg.SpellEdgesA[targetEdge]; okA {
 			return sd.deployLineSpell(unit, slot, targetEdge)
@@ -283,10 +299,24 @@ func (sd *SpellDeployer) DeploySpell(unit strategy.Unit, slot *TrackedSlot, targ
 	}
 
 	isPointPattern := unit.Pattern == "Point" || phasePattern == "Point"
-	spellTarget, hasTarget := sd.pCfg.SpellTargets[targetEdge]
-
-	if isPointPattern && hasTarget {
-		return sd.deployPointSpell(unit, slot, spellTarget)
+	if isPointPattern {
+		if strings.EqualFold(targetEdge, "Center") {
+			if centerTarget, hasCenter := sd.pCfg.SpellTargets["Center"]; hasCenter {
+				return sd.deployPointSpell(unit, slot, centerTarget)
+			}
+			if sd.w > 0 && sd.h > 0 {
+				return sd.deployPointSpell(unit, slot, image.Pt(sd.w/2, sd.h/2))
+			}
+		}
+		if spellTarget, hasTarget := sd.pCfg.SpellTargets[targetEdge]; hasTarget {
+			return sd.deployPointSpell(unit, slot, spellTarget)
+		}
+		if centerTarget, hasCenter := sd.pCfg.SpellTargets["Center"]; hasCenter {
+			return sd.deployPointSpell(unit, slot, centerTarget)
+		}
+		if sd.w > 0 && sd.h > 0 {
+			return sd.deployPointSpell(unit, slot, image.Pt(sd.w/2, sd.h/2))
+		}
 	}
 
 	return sd.deployLineSpell(unit, slot, targetEdge)
@@ -377,14 +407,20 @@ func (sd *SpellDeployer) deployPointSpell(unit strategy.Unit, slot *TrackedSlot,
 	// The ring is sized by the spacing rule, not by a constant. A hardcoded 18
 	// reference px radius puts 5 casts 28 px apart and 8 casts 18 px apart — all
 	// inside one cast's reach, i.e. the same freeze landed 5 times.
-	jitter := 6
+	isCenter := (spellTarget.X == sd.w/2 && spellTarget.Y == sd.h/2) || strings.EqualFold(unit.Name, "earthquake spell")
+	jitter := 4
+	if isCenter {
+		jitter = 3
+	}
 	minStep := sd.ringChord(jitter)
 	points := make([]image.Point, 0, maxSpells)
 	for i := 0; i < maxSpells; i++ {
 		var offset image.Point
-		if radius := sd.castRingRadius(maxSpells, minStep); radius > 0 {
-			angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
-			offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
+		if !isCenter {
+			if radius := sd.castRingRadius(maxSpells, minStep); radius > 0 {
+				angle := float64(i) * 2.0 * math.Pi / float64(maxSpells)
+				offset = image.Pt(int(radius*math.Cos(angle)), int(radius*math.Sin(angle)))
+			}
 		}
 		pt := image.Pt(spellTarget.X+offset.X, spellTarget.Y+offset.Y)
 		points = append(points, sd.executor.addJitter(pt, jitter))

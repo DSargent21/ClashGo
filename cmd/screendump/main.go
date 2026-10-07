@@ -53,6 +53,8 @@ func main() {
 	k := flag.Float64("k", 0, "override the display scale (0 = the scale the bot pins in device.display_scale, as the bot runs it); see docs/RESOLUTION.md for how to measure it")
 	derive := flag.Bool("derive", false, "use the scale derived from the screen diagonal instead of the pinned one — the pre-pin behaviour, and what reproduces the derived-vs-pinned contrast in docs/RESOLUTION.md")
 	tap := flag.String("tap", "", "tap X,Y on the live device before capturing (drives the game by hand without the host adb binary)")
+	swipe := flag.String("swipe", "", "swipe X1,Y1,X2,Y2 on the live device before capturing (scrolls lists by hand)")
+	speed := flag.Int("swipe-ms", 400, "duration of the -swipe gesture")
 	pinch := flag.String("pinch", "", "run the bot's native pinch gesture (out|in) before capturing")
 	settle := flag.Duration("settle", 1500*time.Millisecond, "wait after -tap/-pinch before capturing")
 	device := flag.String("device", "localhost:5555", "ADB device used for live capture and -tap")
@@ -85,6 +87,12 @@ func main() {
 		os.Exit(2)
 	}
 
+	swipeX1, swipeY1, swipeX2, swipeY2, doSwipe, err := parseSwipe(*swipe)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "-swipe: %v\n", err)
+		os.Exit(2)
+	}
+
 	doPinch, err := parsePinch(*pinch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "-pinch: %v\n", err)
@@ -92,7 +100,7 @@ func main() {
 	}
 
 	var client *adb.Client
-	if *imgPath == "" || doTap || doPinch != "" {
+	if *imgPath == "" || doTap || doSwipe || doPinch != "" {
 		client = adb.NewClient(
 			adb.WithHost("127.0.0.1"),
 			adb.WithPort(5037),
@@ -100,6 +108,17 @@ func main() {
 		)
 		client.DeviceID = *device
 		defer client.Close()
+	}
+
+	// Scrolling a list by hand (e.g. the saved-recipe cards) needs the same
+	// transport as -tap: the host adb binary's `input swipe` fails on BlueStacks.
+	if doSwipe {
+		if err := client.Swipe(swipeX1, swipeY1, swipeX2, swipeY2, *speed); err != nil {
+			fmt.Fprintf(os.Stderr, "swipe %d,%d -> %d,%d: %v\n", swipeX1, swipeY1, swipeX2, swipeY2, err)
+			os.Exit(1)
+		}
+		fmt.Printf("swiped %d,%d -> %d,%d (%dms); settling %s\n", swipeX1, swipeY1, swipeX2, swipeY2, *speed, *settle)
+		time.Sleep(*settle)
 	}
 
 	// Drives the gesture the bot itself performs before an attack (the mandatory
@@ -163,6 +182,28 @@ func parsePinch(s string) (string, error) {
 	default:
 		return "", fmt.Errorf("want out|in (got %q)", s)
 	}
+}
+
+// parseSwipe splits the -swipe flag into X1,Y1,X2,Y2. An empty flag means "do
+// not swipe"; a typo must fail loudly rather than degrade into a plain look,
+// for the same reason as -tap.
+func parseSwipe(s string) (int, int, int, int, bool, error) {
+	if strings.TrimSpace(s) == "" {
+		return 0, 0, 0, 0, false, nil
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) != 4 {
+		return 0, 0, 0, 0, false, fmt.Errorf("want X1,Y1,X2,Y2 (got %q)", s)
+	}
+	var v [4]int
+	for i, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			return 0, 0, 0, 0, false, fmt.Errorf("bad coordinate in %q", s)
+		}
+		v[i] = n
+	}
+	return v[0], v[1], v[2], v[3], true, nil
 }
 
 // parseTap splits the -tap flag into coordinates. An empty flag means "do not

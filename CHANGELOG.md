@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0-beta] - 2026-10-07
+
+### Added
+- **Simultaneous 4-Sided Rapid Deployment (`FourSides` pattern)** (`internal/attack/executor.go`):
+  Deploys high-capacity armies (such as Valkyries) across all four base edges simultaneously in under 1.2 seconds using interleaved coordinate bursts.
+- **Centered Spell Targeting** (`internal/attack/spell_deployer.go`):
+  Clustered point drop targeting dead-center `(640, 360)` for Earthquake spells and core breaches.
+- **Per-Strategy Auto-End Battle at 50% Damage** (`internal/attack/attack.go`, `web/src/components/ConfigView.tsx`):
+  Added operational UI switch to automatically end battles immediately once 50% damage (1 star) is secured. Defaults to ON for Valkyrie strategies to minimize troop losses and cycle times.
+- **Saved Recipe Slot Configuration** (`internal/bot/bot.go`, `assets/army_slots.json`, `cmd/pick_army_slots`):
+  Per-strategy army recipe slot selection (slots 1–4) with dropdown automation on the attack sheet and coordinate calibration tools.
+- **Search Filter Bypass Performance Optimization** (`internal/bot/bot.go`):
+  Bypasses `ReadAvailableLoot` OCR entirely when base search filters are disabled, eliminating 200–400ms OCR delay per matched village.
+
+### Fixed
+- **Strategy YAML Path Resolution** (`internal/bot/bot.go`):
+  Added `resolveStrategyPath` to resolve bare strategy filenames selected from the UI dropdown against `assets/strategies/` in both development and production bundles.
+- **Digit 1 Misread on Clipped % Symbol** (`internal/game/loot.go`):
+  Guarded destruction percentage reads against right-edge ROI clipping where the '%' symbol stroke was parsed as a phantom digit '1'.
+
 ## [0.6.0-beta] - 2026-09-28
 
 ### Fixed

@@ -799,6 +799,56 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
+// SetStrategyArmySlot configures the saved army recipe slot (1..4) for a strategy.
+func (a *App) SetStrategyArmySlot(strategyName string, slot int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if slot < 1 || slot > 4 {
+		slot = 1
+	}
+
+	cfg := config.LoadOrDefault("config.json")
+	if cfg.Attack.StrategySlots == nil {
+		cfg.Attack.StrategySlots = make(map[string]int)
+	}
+	base := filepath.Base(filepath.ToSlash(strategyName))
+	cfg.Attack.StrategySlots[base] = slot
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
+	}
+
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+}
+
+// SetStrategyAutoEnd configures whether auto-end at 50% damage is enabled for a strategy.
+func (a *App) SetStrategyAutoEnd(strategyName string, enabled bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cfg := config.LoadOrDefault("config.json")
+	if cfg.Attack.StrategyAutoEnd == nil {
+		cfg.Attack.StrategyAutoEnd = make(map[string]bool)
+	}
+	base := filepath.Base(filepath.ToSlash(strategyName))
+	cfg.Attack.StrategyAutoEnd[base] = enabled
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
+	}
+
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+}
+
 // GetStrategies lists available strategy files
 //
 // Returns a non-nil empty slice when no strategies exist. A nil slice

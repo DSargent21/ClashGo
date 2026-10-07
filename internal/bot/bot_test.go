@@ -2,10 +2,12 @@ package bot
 
 import (
 	"image"
+	"os"
 	"testing"
 
 	"gocv.io/x/gocv"
 
+	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/rs/zerolog"
@@ -283,3 +285,64 @@ func TestHistoryCacheNoWipeOnReadError(t *testing.T) {
 		t.Errorf("history cache order/copy wrong: %+v", b.historyCache)
 	}
 }
+
+func TestResolveArmySlot(t *testing.T) {
+	// 1. Config override takes precedence
+	cfg := &config.BotConfig{
+		Attack: config.AttackConfig{
+			StrategyFile: "assets/strategies/valk_spam.yaml",
+			StrategySlots: map[string]int{
+				"valk_spam.yaml": 2,
+			},
+		},
+	}
+	if got := resolveArmySlot(cfg); got != 2 {
+		t.Errorf("resolveArmySlot with config override = %d, want 2", got)
+	}
+
+	// 2. YAML default when no config override
+	cfgNoOverride := &config.BotConfig{
+		Attack: config.AttackConfig{
+			StrategyFile: "assets/strategies/valk_spam.yaml",
+		},
+	}
+	if got := resolveArmySlot(cfgNoOverride); got != 4 {
+		t.Errorf("resolveArmySlot for valk_spam YAML = %d, want 4", got)
+	}
+
+	// 3. Fallback when strategy does not declare slot (e.g. edrag)
+	cfgEdrag := &config.BotConfig{
+		Attack: config.AttackConfig{
+			StrategyFile: "assets/strategies/auto_edrag_rush.yaml",
+		},
+	}
+	if got := resolveArmySlot(cfgEdrag); got != 1 {
+		t.Errorf("resolveArmySlot for edrag YAML = %d, want 1", got)
+	}
+
+	// 4. Bare filename from UI dropdown without directory prefix
+	cfgBare := &config.BotConfig{
+		Attack: config.AttackConfig{
+			StrategyFile: "valk_spam.yaml",
+		},
+	}
+	if got := resolveArmySlot(cfgBare); got != 4 {
+		t.Errorf("resolveArmySlot for bare 'valk_spam.yaml' = %d, want 4", got)
+	}
+}
+
+func TestResolveStrategyPath(t *testing.T) {
+	cases := []string{
+		"assets/strategies/valk_spam.yaml",
+		"strategies/valk_spam.yaml",
+		"valk_spam.yaml",
+	}
+	for _, tc := range cases {
+		p := resolveStrategyPath(tc)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("resolveStrategyPath(%q) = %q, does not exist: %v", tc, p, err)
+		}
+	}
+}
+
+

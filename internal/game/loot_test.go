@@ -379,3 +379,17 @@ func TestLootVictory(t *testing.T) {
 		})
 	}
 }
+
+func TestReadDestructionPercentage_CorpusFrame(t *testing.T) {
+	img := gocv.IMRead("testdata/corpus/battle_mid_720p.png", gocv.IMReadColor)
+	if img.Empty() {
+		t.Skip("no battle_mid_720p.png")
+	}
+	defer img.Close()
+	lr := newTestLootRecognizer(t)
+	r := image.Rect(1166, 525, 1239, 557)
+	val := lr.ReadDestructionPercentage(img, r)
+	if val != 16 {
+		t.Fatalf("ReadDestructionPercentage = %d, want 16", val)
+	}
+}

@@ -35,6 +35,10 @@ export function ResetStats():Promise<void>;
 
 export function SaveConfig(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:string,arg6:boolean,arg7:number):Promise<void>;
 
+export function SetStrategyArmySlot(arg1:string,arg2:number):Promise<void>;
+
+export function SetStrategyAutoEnd(arg1:string,arg2:boolean):Promise<void>;
+
 export function SkipCurrentVersion():Promise<void>;
 
 export function StartBot(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:boolean):Promise<main.BotStatus>;

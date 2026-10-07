@@ -4,14 +4,22 @@ target_edge: "Random"
 # The Valkyrie ring plus heroes secures the win well before the stall
 # timer would fire; end the battle as soon as destruction hits 50%.
 end_at_percent: 50
-# The Valkyrie loadout lives in the 4th saved-army recipe; arm it before
+# The Valkyrie loadout lives in the 4th saved-army recipe ("Imported Army 4"); arm it before
 # the battle instead of the default first recipe.
 army_slot: 4
 phases:
   - name: "Valkyrie Spam"
-    units: [{ name: "Valkyrie", amount: "All" }]
+    units: [{ name: "Valkyrie", amount: "All", fallback_slot: 2 }]
     pattern: "FourSides"
     offset: 0
+    delay_after_ms: 100
+
+  - name: "Earthquakes"
+    units:
+      - { name: "Earthquake Spell", amount: "All" }
+      - { name: "Event Troop", amount: "All" }
+    pattern: "Point"
+    position: "Center"
     delay_after_ms: 100
 
   - name: "Siege & Heroes"
@@ -24,15 +32,7 @@ phases:
     pattern: "Point"
     position: "Center"
     offset: 150
-    delay_after_ms: 200
-
-  - name: "Earthquakes"
-    units: 
-      - { name: "Earthquake Spell", amount: "All" }
-      - { name: "Event Troop", amount: "All" }
-    pattern: "FourSides"
-    offset: 130 # Deeper in for EQs
-    delay_after_ms: 100
+    delay_after_ms: 50
 
   - name: "Abilities"
     units:
@@ -41,3 +41,4 @@ phases:
       - { name: "Grand Warden", amount: "All", pattern: "Ability" }
     pattern: "Ability"
     delay_after_ms: 0
+

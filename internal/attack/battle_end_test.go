@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/pkg/strategy"
 	"github.com/rs/zerolog"
@@ -98,6 +99,41 @@ func TestEndAtPct_RequiresActiveStrategy(t *testing.T) {
 	}
 }
 
+func TestResolveEndAtPercent_ValkDefaultsAndOverrides(t *testing.T) {
+	valk := &strategy.DynamicStrategy{Name: "Valkyrie Earthquake Spam"}
+	edrag := &strategy.DynamicStrategy{Name: "Auto EDrag Rush"}
+
+	// 1. Valk defaults to 50% without config override
+	cfgDefault := &config.AttackConfig{StrategyFile: "valk_spam.yaml"}
+	if got := resolveEndAtPercent(cfgDefault, valk); got != 50 {
+		t.Fatalf("valk default auto-end = %d, want 50", got)
+	}
+
+	// 2. Non-valk defaults to 0% without config override
+	cfgEdrag := &config.AttackConfig{StrategyFile: "auto_edrag.yaml"}
+	if got := resolveEndAtPercent(cfgEdrag, edrag); got != 0 {
+		t.Fatalf("edrag default auto-end = %d, want 0", got)
+	}
+
+	// 3. Explicit config override turns valk OFF
+	cfgValkOff := &config.AttackConfig{
+		StrategyFile:    "valk_spam.yaml",
+		StrategyAutoEnd: map[string]bool{"valk_spam.yaml": false},
+	}
+	if got := resolveEndAtPercent(cfgValkOff, valk); got != 0 {
+		t.Fatalf("valk with override false = %d, want 0", got)
+	}
+
+	// 4. Explicit config override turns edrag ON
+	cfgEdragOn := &config.AttackConfig{
+		StrategyFile:    "auto_edrag.yaml",
+		StrategyAutoEnd: map[string]bool{"auto_edrag.yaml": true},
+	}
+	if got := resolveEndAtPercent(cfgEdragOn, edrag); got != 50 {
+		t.Fatalf("edrag with override true = %d, want 50", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Stall-timer suppression in threshold mode
 //
@@ -161,6 +197,28 @@ func TestValidDestructionRead(t *testing.T) {
 	} {
 		if got := validDestructionRead(raw); got != want {
 			t.Errorf("validDestructionRead(%d) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+func TestReconstructTensDigit(t *testing.T) {
+	cases := []struct {
+		lastPct    int
+		currentPct int
+		want       int
+	}{
+		{lastPct: 49, currentPct: 2, want: 52},  // live 52% misread as 2%
+		{lastPct: 52, currentPct: 3, want: 53},  // live 53% misread as 3%
+		{lastPct: 53, currentPct: 4, want: 54},  // live 54% misread as 4%
+		{lastPct: 54, currentPct: 0, want: 60},  // 60% misread as 0%
+		{lastPct: 49, currentPct: 0, want: 50},  // 50% misread as 0%
+		{lastPct: 49, currentPct: 50, want: 50}, // 2-digit read intact
+		{lastPct: 15, currentPct: 6, want: 6},   // under 30% baseline unchanged
+	}
+	for _, tc := range cases {
+		got := reconstructTensDigit(tc.lastPct, tc.currentPct)
+		if got != tc.want {
+			t.Errorf("reconstructTensDigit(%d, %d) = %d, want %d", tc.lastPct, tc.currentPct, got, tc.want)
 		}
 	}
 }

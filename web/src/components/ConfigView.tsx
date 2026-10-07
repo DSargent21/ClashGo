@@ -1,4 +1,5 @@
 import React from 'react';
+import { SaveConfig } from '../../wailsjs/go/main/App';
 
 interface ConfigViewProps {
   goldThreshold: number;
@@ -16,6 +17,10 @@ interface ConfigViewProps {
   setUpgradeWalls: (v: boolean) => void;
   stallTimer: number;
   setStallTimer: (v: number) => void;
+  armySlot: number;
+  onSetArmySlot: (slot: number) => void;
+  autoEnd: boolean;
+  onSetAutoEnd: (v: boolean) => void;
   // Returns the underlying SaveConfig promise so ConfigView can own
   // the save-status indicator (green flash / red flash + inline
   // "Saved!" / "Save failed" pill) and surface success or failure to
@@ -41,6 +46,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   searchEnabled, setSearchEnabled,
   upgradeWalls, setUpgradeWalls,
   stallTimer, setStallTimer,
+  armySlot, onSetArmySlot,
+  autoEnd, onSetAutoEnd,
   onSave
 }) => {
   const [isOpen, setIsOpen] = React.useState(false);
@@ -207,11 +214,9 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   role="combobox"
                   aria-expanded={isOpen}
                   aria-haspopup="listbox"
-                  aria-disabled={!searchEnabled}
-                  tabIndex={searchEnabled ? 0 : -1}
-                  onClick={() => searchEnabled && setIsOpen(!isOpen)}
+                  tabIndex={0}
+                  onClick={() => setIsOpen(!isOpen)}
                   onKeyDown={(e) => {
-                    if (!searchEnabled) return;
                     if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
                       e.preventDefault();
                       setIsOpen(true);
@@ -219,7 +224,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                       setIsOpen(false);
                     }
                   }}
-                  className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white cursor-pointer flex justify-between items-center transition-all ${isOpen ? 'ring-4 ring-zinc-950/5 dark:ring-white/5 border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900' : 'hover:bg-white dark:hover:bg-zinc-900'} ${!searchEnabled ? 'opacity-30 cursor-not-allowed' : ''}`}
+                  className={`w-full bg-zinc-50/50 dark:bg-zinc-950/40 border border-zinc-100 dark:border-zinc-800 rounded-2xl py-4 px-6 text-base font-bold text-zinc-900 dark:text-white cursor-pointer flex justify-between items-center transition-all ${isOpen ? 'ring-4 ring-zinc-950/5 dark:ring-white/5 border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900' : 'hover:bg-white dark:hover:bg-zinc-900'}`}
                 >
                   <span className="truncate">
                     {selectedStrategy ? selectedStrategy.split('/').pop()?.replace('.yaml', '').replace('.csv', '') : 'Standard Protocol'}
@@ -229,7 +234,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   </span>
                 </div>
 
-                {isOpen && searchEnabled && (
+                {isOpen && (
                   <div role="listbox" className="dropdown-pop absolute top-[calc(100%+12px)] left-0 w-full bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-premium-lg dark:shadow-2xl z-50 py-3 max-h-72 overflow-y-auto">
                     {(strategies ?? []).map((s, idx) => {
                       const isActive = !!selectedStrategy && selectedStrategy.endsWith(s);
@@ -238,7 +243,20 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                           key={idx}
                           role="option"
                           aria-selected={isActive}
-                          onClick={() => { setSelectedStrategy(s); setIsOpen(false); }}
+                          onClick={() => {
+                            setSelectedStrategy(s);
+                            setIsOpen(false);
+                            // Ponytail: auto-save immediately on strategy switch so user doesn't have to hit "Save Settings"
+                            SaveConfig(
+                              goldThreshold,
+                              elixirThreshold,
+                              deThreshold,
+                              upgradeWalls,
+                              s,
+                              searchEnabled,
+                              stallTimer
+                            ).catch(e => console.error('Failed to auto-save strategy:', e));
+                          }}
                           className={`px-6 py-3 text-sm font-bold cursor-pointer transition-colors ${isActive ? 'bg-zinc-50 dark:bg-zinc-800 text-zinc-950 dark:text-white' : 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 hover:text-zinc-950 dark:hover:text-white'}`}
                         >
                           {s.replace('.yaml', '').replace('.csv', '')}
@@ -281,6 +299,46 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               )}
             </div>
           </div>
+
+          {/* Army Menu Recipe Slot selector */}
+          <div className="space-y-4 pt-2 border-t border-zinc-100 dark:border-zinc-800/60">
+            <div className="flex items-center justify-between px-1">
+              <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em]">
+                <div className="w-8 h-8 rounded-xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center text-zinc-500 dark:text-zinc-500 border border-zinc-100/10">
+                  <span className="material-symbols-outlined text-base">view_carousel</span>
+                </div>
+                Army Recipe Slot (In-Game Menu)
+              </label>
+              <span className="text-[10px] font-black text-zinc-400 dark:text-zinc-600 uppercase tracking-widest">
+                Slot {armySlot} Active
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[1, 2, 3, 4].map((slotNum) => {
+                const isSelected = armySlot === slotNum;
+                return (
+                  <button
+                    key={slotNum}
+                    type="button"
+                    onClick={() => onSetArmySlot(slotNum)}
+                    className={`py-3.5 px-4 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2.5 border ${
+                      isSelected
+                        ? 'bg-zinc-950 dark:bg-zinc-100 text-white dark:text-zinc-950 border-zinc-950 dark:border-white shadow-premium'
+                        : 'bg-zinc-50/50 dark:bg-zinc-950/40 text-zinc-600 dark:text-zinc-400 border-zinc-100 dark:border-zinc-800 hover:bg-white dark:hover:bg-zinc-900 hover:text-zinc-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-base">
+                      {isSelected ? 'check_circle' : 'tag'}
+                    </span>
+                    <span>Slot {slotNum}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="px-1 text-xs text-zinc-500 dark:text-zinc-500">
+              Selects which saved army recipe ClashGO taps in the train menu for this strategy (e.g. Slot 4 for Valk Spam, Slot 1 for E-Drag).
+            </p>
+          </div>
         </div>
 
         {/* Operational Toggles */}
@@ -316,6 +374,24 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
             </div>
             <div className={`w-14 h-7 rounded-full transition-all duration-500 relative shrink-0 ${upgradeWalls ? 'bg-emerald-500/80' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
                <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${upgradeWalls ? 'left-8 bg-white' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
+            </div>
+          </button>
+
+          <div className="h-px bg-zinc-50 dark:bg-zinc-800/50 w-full"></div>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoEnd}
+            onClick={() => onSetAutoEnd(!autoEnd)}
+            className="w-full flex items-center justify-between group cursor-pointer text-left"
+          >
+            <div className="max-w-[80%]">
+              <span className="block text-lg font-bold text-zinc-950 dark:text-white mb-1 tracking-tight">Auto End Battle (50% Damage)</span>
+              <span className="block text-sm text-zinc-500 dark:text-zinc-500 font-medium">Surrender immediately once 50% damage (1 star) is secured to save time and troops.</span>
+            </div>
+            <div className={`w-14 h-7 rounded-full transition-all duration-500 relative shrink-0 ${autoEnd ? 'bg-emerald-500/80' : 'bg-zinc-200 dark:bg-zinc-800'}`}>
+               <div className={`absolute top-1 w-5 h-5 rounded-full transition-all duration-500 shadow-lg ${autoEnd ? 'left-8 bg-white' : 'left-1 bg-white dark:bg-zinc-500'}`}></div>
             </div>
           </button>
         </div>

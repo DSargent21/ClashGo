@@ -586,52 +586,54 @@ func (t *TapExecutor) TapDeployPoint(pt image.Point, count int, jitterPx int) {
 	}
 }
 
-// TapDeployFourSides performs rapid 4-side spam deployment.
+// TapDeployFourSides performs rapid simultaneous 4-side spam deployment across all 4 sides at once.
 func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string, countPerSide int, jitterPx int) {
-	edges := []string{"TopRight", "BottomRight", "BottomLeft", "TopLeft"}
-	for _, edgeName := range edges {
-		edge, ok := pCfg.Edges[edgeName]
-		if !ok {
-			continue
+	edgeNames := []string{"TopRight", "BottomRight", "BottomLeft", "TopLeft"}
+	type edgeLine struct {
+		name   string
+		p1, p2 image.Point
+	}
+	cx, cy := 640, 360
+	pushOutward := func(pt image.Point, dist float64) image.Point {
+		dx := float64(pt.X - cx)
+		dy := float64(pt.Y - cy)
+		h := math.Hypot(dx, dy)
+		if h == 0 {
+			return pt
 		}
-		p1, p2 := edge.P1, edge.P2
+		return image.Pt(int(float64(pt.X)+dx/h*dist), int(float64(pt.Y)+dy/h*dist))
+	}
 
-		t.logger.Info().Str("edge", edgeName).Msg("FourSides rapid spam")
-		steps := countPerSide
-		if steps < 4 {
-			steps = 4
-		}
-		for i := 0; i < steps; i += 3 {
-			rem := steps - i
-			if rem >= 3 {
-				pct1 := float64(i) / float64(steps-1)
-				pct2 := float64(i+1) / float64(steps-1)
-				pct3 := float64(i+2) / float64(steps-1)
-				tx1, ty1 := intLerp(p1, p2, pct1)
-				tx2, ty2 := intLerp(p1, p2, pct2)
-				tx3, ty3 := intLerp(p1, p2, pct3)
-				j1 := t.addJitter(image.Pt(tx1, ty1), jitterPx)
-				j2 := t.addJitter(image.Pt(tx2, ty2), jitterPx)
-				j3 := t.addJitter(image.Pt(tx3, ty3), jitterPx)
-				t.noteInput(t.client.TapTriple(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0, j3.X, j3.Y, 12.0), "four-sides triple")
-			} else if rem == 2 {
-				pct1 := float64(i) / float64(steps-1)
-				pct2 := float64(i+1) / float64(steps-1)
-				tx1, ty1 := intLerp(p1, p2, pct1)
-				tx2, ty2 := intLerp(p1, p2, pct2)
-				j1 := t.addJitter(image.Pt(tx1, ty1), jitterPx)
-				j2 := t.addJitter(image.Pt(tx2, ty2), jitterPx)
-				t.noteInput(t.client.TapDual(j1.X, j1.Y, 12.0, j2.X, j2.Y, 12.0), "four-sides dual")
-			} else {
-				pct := float64(i) / float64(steps-1)
-				tx, ty := intLerp(p1, p2, pct)
-				j1 := t.addJitter(image.Pt(tx, ty), jitterPx)
-				t.noteInput(t.client.TapFast(j1.X, j1.Y, 12.0), "four-sides single")
-			}
-			time.Sleep(45 * time.Millisecond)
+	var validEdges []edgeLine
+	for _, name := range edgeNames {
+		if edge, ok := pCfg.Edges[name]; ok {
+			// Push outward into grass to avoid red deploy boundary
+			p1 := pushOutward(edge.P1, 15)
+			p2 := pushOutward(edge.P2, 15)
+			validEdges = append(validEdges, edgeLine{name: name, p1: p1, p2: p2})
 		}
 	}
-	time.Sleep(120 * time.Millisecond)
+	if len(validEdges) == 0 {
+		return
+	}
+
+	steps := countPerSide
+	if steps < 14 {
+		steps = 14 // At least 14 per side = 56 taps, drops all 52 Valkyries in ~1.5s
+	}
+
+	t.logger.Info().Int("steps_per_side", steps).Int("total_taps", steps*len(validEdges)).Msg("FourSides simultaneous rapid spam across all 4 sides")
+
+	for i := 0; i < steps; i++ {
+		pct := float64(i) / float64(steps-1)
+		for _, e := range validEdges {
+			tx, ty := intLerp(e.p1, e.p2, pct)
+			j := t.addJitter(image.Pt(tx, ty), 4)
+			t.client.TapFast(j.X, j.Y, 3.0)
+			time.Sleep(18 * time.Millisecond)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
 }
 
 // TapHeroAbility taps a hero slot to activate its ability.

@@ -10,6 +10,8 @@ import {
   GetAttackHistory,
   GetLogs,
   SaveConfig,
+  SetStrategyArmySlot,
+  SetStrategyAutoEnd,
   StartBot,
   StopBot,
   IsRunning,
@@ -139,6 +141,8 @@ function App() {
   const [searchEnabled, setSearchEnabled] = useState(true);
   const [upgradeWalls, setUpgradeWalls] = useState(false);
   const [stallTimer, setStallTimer] = useState(30);
+  const [strategySlots, setStrategySlots] = useState<Record<string, number>>({});
+  const [strategyAutoEnd, setStrategyAutoEnd] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const init = async () => {
@@ -156,6 +160,12 @@ function App() {
         setUpgradeWalls(conf.upgrade.upgrade_walls);
         setSelectedStrategy(conf.attack.strategy_file);
         setStallTimer(conf.attack.stall_timer_seconds);
+        if (conf.attack.strategy_slots) {
+          setStrategySlots(conf.attack.strategy_slots);
+        }
+        if (conf.attack.strategy_auto_end) {
+          setStrategyAutoEnd(conf.attack.strategy_auto_end);
+        }
         setIsRunning(running);
         // Never let a null from the Go side reach the Config page — a
         // nil slice marshals to JSON null, and ConfigView dereferences
@@ -370,27 +380,56 @@ function App() {
         : adbState === 'disconnected'
           ? 'Disconnected'
           : 'Awaiting';
+  const configProps = useMemo(() => {
+    // Default slot based on strategy if not explicitly set in config
+    const stratBase = selectedStrategy.split('/').pop() || '';
+    const currentArmySlot = strategySlots[stratBase] ?? (stratBase.includes('valk') ? 4 : 1);
+    const isValk = stratBase.toLowerCase().includes('valk');
+    const currentAutoEnd = strategyAutoEnd[stratBase] ?? isValk;
 
-  const configProps = useMemo(() => ({
-    goldThreshold, setGoldThreshold,
-    elixirThreshold, setElixirThreshold,
-    deThreshold, setDeThreshold,
-    selectedStrategy, setSelectedStrategy,
-    strategies,
-    searchEnabled, setSearchEnabled,
-    upgradeWalls, setUpgradeWalls,
-    stallTimer, setStallTimer,
-    onSave: async () => {
-      // Errors intentionally bubble so ConfigView's save-status
-      // indicator can show a red "Save failed" pill back to the user.
-      // Previously this catch swallowed the error and only logged it,
-      // which made save feel broken when SaveConfig (the Wails IPC)
-      // rejected (e.g. backend down, malformed payload).
-      await saveSettings();
-    }
-  }), [
+    const handleSetArmySlot = async (slot: number) => {
+      setStrategySlots(prev => ({ ...prev, [stratBase]: slot }));
+      try {
+        await SetStrategyArmySlot(selectedStrategy, slot);
+      } catch (err) {
+        console.error('Failed to set strategy army slot:', err);
+      }
+    };
+
+    const handleSetAutoEnd = async (enabled: boolean) => {
+      setStrategyAutoEnd(prev => ({ ...prev, [stratBase]: enabled }));
+      try {
+        await SetStrategyAutoEnd(selectedStrategy, enabled);
+      } catch (err) {
+        console.error('Failed to set strategy auto end:', err);
+      }
+    };
+
+    return {
+      goldThreshold, setGoldThreshold,
+      elixirThreshold, setElixirThreshold,
+      deThreshold, setDeThreshold,
+      selectedStrategy, setSelectedStrategy,
+      strategies,
+      searchEnabled, setSearchEnabled,
+      upgradeWalls, setUpgradeWalls,
+      stallTimer, setStallTimer,
+      armySlot: currentArmySlot,
+      onSetArmySlot: handleSetArmySlot,
+      autoEnd: currentAutoEnd,
+      onSetAutoEnd: handleSetAutoEnd,
+      onSave: async () => {
+        // Errors intentionally bubble so ConfigView's save-status
+        // indicator can show a red "Save failed" pill back to the user.
+        // Previously this catch swallowed the error and only logged it,
+        // which made save feel broken when SaveConfig (the Wails IPC)
+        // rejected (e.g. backend down, malformed payload).
+        await saveSettings();
+      }
+    };
+  }, [
     goldThreshold, elixirThreshold, deThreshold,
-    selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer
+    selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd
   ]);
 
   return (

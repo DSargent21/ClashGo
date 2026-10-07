@@ -1,0 +1,38 @@
+{
+  "width": 1280,
+  "height": 720,
+  "dropdown_arrow": {
+    "x": 742,
+    "y": 71
+  },
+  "slots": {
+    "1": {
+      "x": 740,
+      "y": 150,
+      "w": 417,
+      "h": 55,
+      "name": "Slot 1 (Imported Army 3)"
+    },
+    "2": {
+      "x": 740,
+      "y": 222,
+      "w": 417,
+      "h": 55,
+      "name": "Slot 2 (Army 2)"
+    },
+    "3": {
+      "x": 740,
+      "y": 293,
+      "w": 417,
+      "h": 55,
+      "name": "Slot 3 (Imported Army 3)"
+    },
+    "4": {
+      "x": 740,
+      "y": 366,
+      "w": 417,
+      "h": 55,
+      "name": "Slot 4 (Imported Army 4)"
+    }
+  }
+}

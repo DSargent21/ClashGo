@@ -54,6 +54,8 @@ export interface BotConfig {
   attack: {
     strategy_file: string;
     stall_timer_seconds: number;
+    strategy_slots?: Record<string, number>;
+    strategy_auto_end?: Record<string, boolean>;
   };
 }
 

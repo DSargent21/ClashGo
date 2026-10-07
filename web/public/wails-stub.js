@@ -180,6 +180,8 @@
                     ]),
                     GetLiveScreenshot: resolve(''),
                     SaveConfig: resolve(null),
+                    SetStrategyArmySlot: resolve(null),
+                    SetStrategyAutoEnd: resolve(null),
                     StartBot: resolve({ running: false, message: 'browser-stub' }),
                     StopBot: resolve({ running: false, message: 'browser-stub' }),
                     GetUpdateStatus: resolve({

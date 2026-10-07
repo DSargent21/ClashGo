@@ -141,6 +141,15 @@ pick-coords:
 	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/pick_coords ./cmd/pick_coords
 	@$(BUILD_DIR)/pick_coords $(ARGS)
 
+# pick-army-slots: select and calibrate the clickable boxes for each of the
+# 4 saved army recipe slots and the dropdown arrow on live game frames.
+#   make pick-army-slots
+.PHONY: pick-army-slots
+pick-army-slots:
+	@mkdir -p $(BUILD_DIR)
+	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/pick_army_slots ./cmd/pick_army_slots
+	@$(BUILD_DIR)/pick_army_slots $(ARGS)
+
 # see: the debugging agent's eyes on the emulator. Renders a frame as text
 # with a pixel-coordinate ruler plus everything the bot's own vision layer
 # perceives (state, action button, red zone, recognised text with boxes), and

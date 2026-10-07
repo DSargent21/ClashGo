@@ -183,7 +183,9 @@ type AttackConfig struct {
 	QueenChargeAtPct    int      `json:"queen_charge_at_pct"`
 	WardenUseAtPct      int      `json:"warden_use_at_pct"`
 	ReserveDEPercent    int      `json:"reserve_de_percent"`
-	StallTimerSeconds   int      `json:"stall_timer_seconds"`
+	StallTimerSeconds   int            `json:"stall_timer_seconds"`
+	StrategySlots       map[string]int `json:"strategy_slots,omitempty"`
+	StrategyAutoEnd     map[string]bool `json:"strategy_auto_end,omitempty"`
 	// MinSecondsBetweenAttacks is the minimum pause between the end of one
 	// battle (Return Home) and the start of the next attack sequence.
 	// Armies take real time to retrain; without this gate the bot attacked
@@ -242,6 +244,22 @@ type Duration struct {
 }
 
 func (d *Duration) UnmarshalJSON(b []byte) error {
+	// Two encodings are in the wild and both must load: the Wails GUI
+	// marshals the embedded time.Duration as {"Duration": <nanoseconds>},
+	// while hand-written configs use "5s". Accepting only the string made
+	// Load fail on every GUI-written file, and LoadOrDefault then silently
+	// fell back to DefaultConfig — which dropped strategy_slots, so
+	// resolveArmySlot fell through to the strategy YAML's stale army_slot and
+	// armed the wrong recipe (observed live: valk_spam resolved slot 4 while
+	// config.json said 2, because the file did not parse at all).
+	var obj struct {
+		Duration *int64 `json:"Duration"`
+	}
+	if err := json.Unmarshal(b, &obj); err == nil && obj.Duration != nil {
+		d.Duration = time.Duration(*obj.Duration)
+		return nil
+	}
+
 	s := string(b)
 	s = s[1 : len(s)-1]
 

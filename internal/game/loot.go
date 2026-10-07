@@ -168,7 +168,15 @@ func (lr *LootRecognizer) ReadDestructionPercentage(screen gocv.Mat, roi image.R
 	if roi.Empty() {
 		return 0
 	}
-	return lr.readRow(screen, roi)
+	val := lr.readRow(screen, roi)
+	// Trailing '%' symbol guard: on HUD overlays the right edge of the ROI
+	// can clip the '%' glyph's left vertical stroke, which matches digit_1.
+	// That turns e.g. "36%" into 361, "50%" into 501. Truncating the phantom
+	// digit recovers the true destruction percentage.
+	if val > 100 && val <= 1009 && val%10 == 1 {
+		val /= 10
+	}
+	return val
 }
 
 // ReadBattleResult reads the loot and star counts shown on the Clash of

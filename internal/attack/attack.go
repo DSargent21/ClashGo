@@ -1732,6 +1732,60 @@ func validDestructionRead(pct int) bool {
 	return pct >= 0 && pct <= 100
 }
 
+// resolveEndAtPercent returns the effective destruction threshold for the active strategy.
+// Explicit overrides in cfg.StrategyAutoEnd take precedence. When unconfigured, defaults to
+// 50% for Valkyrie strategies or strategies declaring end_at_percent, and 0 (disabled) otherwise.
+func resolveEndAtPercent(cfg *config.AttackConfig, s *strategy.DynamicStrategy) int {
+	if s == nil {
+		return 0
+	}
+	stratName := s.Name
+	yamlEndAt := s.EndAtPercent
+	var stratBase string
+	if cfg != nil && cfg.StrategyFile != "" {
+		stratBase = filepath.Base(filepath.ToSlash(cfg.StrategyFile))
+	}
+	if cfg != nil && cfg.StrategyAutoEnd != nil && stratBase != "" {
+		if val, ok := cfg.StrategyAutoEnd[stratBase]; ok {
+			if val {
+				if yamlEndAt > 0 {
+					return yamlEndAt
+				}
+				return 50
+			}
+			return 0
+		}
+	}
+	// Default: ON for valk army, or if strategy declared end_at_percent > 0
+	bLower := strings.ToLower(stratBase)
+	sLower := strings.ToLower(stratName)
+	if strings.Contains(bLower, "valk") || strings.Contains(sLower, "valk") || yamlEndAt > 0 {
+		if yamlEndAt > 0 {
+			return yamlEndAt
+		}
+		return 50
+	}
+	return 0
+}
+
+// reconstructTensDigit heals a dropped tens digit from monotonic destruction.
+// CoC destruction only increases; if lastPct >= 30 and currentPct is 0..9,
+// OCR dropped the tens digit (e.g. 49% -> 2% is actually 52%).
+func reconstructTensDigit(lastPct, currentPct int) int {
+	if lastPct < 30 || currentPct < 0 || currentPct >= 10 {
+		return currentPct
+	}
+	baseTens := (lastPct / 10) * 10
+	reconstructed := baseTens + currentPct
+	if reconstructed < lastPct {
+		reconstructed += 10
+	}
+	if reconstructed <= 100 {
+		return reconstructed
+	}
+	return currentPct
+}
+
 // ResetBattleOutcome clears the per-battle destruction/TH state. Called
 // at the top of WaitForBattleEndCtx so a misread from a previous battle
 // can never bleed into the next battle's star computation (observed live:
@@ -1892,10 +1946,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			e.pollHeroWatch(screen)
 
 			// Per-strategy auto-end threshold from end_at_percent (0 = off).
-			endAtPct := 0
-			if e.activeStrategy != nil {
-				endAtPct = e.activeStrategy.EndAtPercent
-			}
+			endAtPct := resolveEndAtPercent(e.cfg, e.activeStrategy)
 
 			// Destruction-percent reads serve two purposes: the stall
 			// timer and the strategy's end_at_percent auto-end. When a
@@ -1926,6 +1977,18 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 					continue
 				}
 
+				// Reconstruct dropped tens digit: destruction is monotonic in CoC.
+				// If a previous tick measured >= 30% and this tick reads a single
+				// digit (0-9), the tens digit was dropped by OCR (e.g. 52% -> 2%).
+				if healed := reconstructTensDigit(e.lastDestructionPct, currentPct); healed != currentPct {
+					e.logger.Info().
+						Int("raw_pct", currentPct).
+						Int("healed_pct", healed).
+						Int("last_pct", e.lastDestructionPct).
+						Msg("reconstructed destruction percentage from single-digit OCR read")
+					currentPct = healed
+				}
+
 				// Latch the highest measured destruction as the battle's
 				// final damage (destruction is monotonic; transient 0 reads
 				// happen when the overlay starts rendering before its state
@@ -1953,14 +2016,14 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 					e.logger.Info().Int("percent", currentPct).Int("threshold", endAtPct).Msg("destruction progress toward strategy threshold")
 				}
 
-				if endAtPercentReached(endAtPct, currentPct) {
+				if endAtPercentReached(endAtPct, e.lastDestructionPct) {
 					// End only when the red End Battle button is actually on
 					// screen (army fully spent). A misread percent must not
 					// tap the map mid-fight.
 					if !e.endButtonVisible(screen, sCfg) {
-						e.logger.Debug().Int("percent", currentPct).Msg("threshold reached but End Battle button not visible; keeping battle alive")
+						e.logger.Debug().Int("percent", e.lastDestructionPct).Msg("threshold reached but End Battle button not visible; keeping battle alive")
 					} else {
-						e.logger.Info().Int("percent", currentPct).Int("threshold", endAtPct).Msg("destruction reached strategy threshold, ending battle!")
+						e.logger.Info().Int("percent", e.lastDestructionPct).Int("threshold", endAtPct).Msg("destruction reached strategy threshold, ending battle!")
 						screen.Close()
 						e.EndBattle()
 						return true

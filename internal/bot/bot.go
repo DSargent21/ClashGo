@@ -418,16 +418,10 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	}
 
 	// Resolve the strategy's declared army slot once at boot so the
-	// pre-battle click sequence can arm the right saved recipe. The
-	// strategy is parsed again later for the deploy phases; this early
-	// read only needs army_slot (falls back to slot 1 on any error).
-	if strat, err := strategy.ParseYAML(cfg.Attack.StrategyFile); err == nil {
-		b.armySlot = strat.SelectedArmySlot()
-		log.Info().Int("army_slot", b.armySlot).Str("strategy", strat.Name).Msg("resolved strategy army slot")
-	} else {
-		b.armySlot = 1
-		log.Warn().Err(err).Str("path", cfg.Attack.StrategyFile).Msg("could not pre-read strategy for army slot; defaulting to slot 1")
-	}
+	// pre-battle click sequence can arm the right saved recipe.
+	// Config override takes precedence, then strategy YAML army_slot, fallback 1.
+	b.armySlot = resolveArmySlot(cfg)
+	b.logger.Info().Int("army_slot", b.armySlot).Str("strategy", cfg.Attack.StrategyFile).Msg("resolved strategy army slot")
 
 	// Close `done` the moment the bot's runtime context is cancelled
 	// (Stop click in the GUI, or the attack-cap graceful shutdown after
@@ -1588,28 +1582,35 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			continue
 		}
 
-		b.logger.Info().Msg("base found, reading loot...")
-		loot, err := lootRec.ReadAvailableLoot(screen)
-		if err != nil {
-			b.logger.Warn().Err(err).Msg("failed to read loot")
-			b.DumpDiagnostics("loot_read_failed", screen, map[string]interface{}{
-				"error": err.Error(),
-			})
+		var meetsReq bool
+		if !b.cfg.Search.Enabled {
+			b.logger.Info().Msg("search filters disabled, attacking base immediately")
+			meetsReq = true
+		} else {
+			b.logger.Info().Msg("base found, reading loot...")
+			loot, err := lootRec.ReadAvailableLoot(screen)
+			if err != nil {
+				b.logger.Warn().Err(err).Msg("failed to read loot")
+				b.DumpDiagnostics("loot_read_failed", screen, map[string]interface{}{
+					"error": err.Error(),
+				})
+			}
+
+			b.logger.Info().
+				Int("gold", loot.Gold).
+				Int("elixir", loot.Elixir).
+				Int("de", loot.DarkElixir).
+				Msg("loot detected")
+
+			meetsReq = loot.Gold >= b.cfg.Search.MinLootGold &&
+				loot.Elixir >= b.cfg.Search.MinLootElixir &&
+				loot.DarkElixir >= b.cfg.Search.MinLootDarkElixir
 		}
-
-		b.logger.Info().
-			Int("gold", loot.Gold).
-			Int("elixir", loot.Elixir).
-			Int("de", loot.DarkElixir).
-			Msg("loot detected")
-
-		meetsReq := !b.cfg.Search.Enabled || (loot.Gold >= b.cfg.Search.MinLootGold &&
-			loot.Elixir >= b.cfg.Search.MinLootElixir &&
-			loot.DarkElixir >= b.cfg.Search.MinLootDarkElixir)
 
 		if meetsReq {
 			b.logger.Info().Msg("loot requirements met, starting attack!")
-			if strat, err := strategy.ParseYAML(b.cfg.Attack.StrategyFile); err == nil {
+			stratPath := resolveStrategyPath(b.cfg.Attack.StrategyFile)
+			if strat, err := strategy.ParseYAML(stratPath); err == nil {
 				stratName = strat.Name
 				targetEdge = strat.TargetEdge
 			}
@@ -2049,26 +2050,41 @@ func (b *Bot) clickSequence() bool {
 			}
 			return false
 		}
-		// The army sheet is already open on MY ARMY (the active army), so when no
-		// saved recipe has to be picked, its own action button starts the search.
-		if b.armySlot <= 1 {
-			if _, ok := b.pressPanelAction("Army Sheet Attack", sheetActionRegion, 8*time.Second); ok {
-				b.logger.Info().Msg("waiting for battle state (searching)...")
-				return b.waitForBattleState(60 * time.Second)
+		// The army sheet is already open on MY ARMY (the active army). When the
+		// strategy asked for a saved recipe it has to be armed first; only then
+		// does the sheet's own action button start the search.
+		if b.armySlot >= 1 {
+			if !b.selectArmySlot() {
+				if screen, err := b.client.CaptureToMat(); err == nil {
+					b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": b.armySlot})
+					screen.Close()
+				}
+				b.logger.Error().
+					Int("army_slot", b.armySlot).
+					Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
+				return false
 			}
-			b.logger.Warn().
-				Int("screen_w", b.cal.PhysicalW).Int("screen_h", b.cal.PhysicalH).
-				Msg("could not locate the army sheet's action button in the live frame; not falling back " +
-					"to the authored pinpoints, which describe the reference layout (see docs/RESOLUTION.md)")
-			if screen, err := b.client.CaptureToMat(); err == nil {
-				b.DumpDiagnostics("sheet_action_not_found", screen, nil)
-				screen.Close()
-			}
-			return false
+			b.client.JitteredSleep(500 * time.Millisecond)
 		}
-		b.logger.Warn().Int("army_slot", b.armySlot).
-			Msg("selecting a saved recipe needs the sheet's recipe list, which is not mapped at this " +
-				"geometry; falling back to the authored pinpoints")
+		if _, ok := b.pressPanelAction("Army Sheet Attack", sheetActionRegion, 8*time.Second); ok {
+			b.logger.Info().Msg("waiting for battle state (searching)...")
+			return b.waitForBattleState(60 * time.Second)
+		}
+		if !b.cal.IsReferenceGeometry() {
+			b.logger.Warn().Msg("Army Sheet Attack action button not located by vision; tapping measured button location (1131, 641)")
+			b.client.TapRandomized(int(1131.0/1280.0*float64(b.cal.PhysicalW)), int(641.0/720.0*float64(b.cal.PhysicalH)))
+			time.Sleep(1000 * time.Millisecond)
+			return b.waitForBattleState(60 * time.Second)
+		}
+		b.logger.Warn().
+			Int("screen_w", b.cal.PhysicalW).Int("screen_h", b.cal.PhysicalH).
+			Msg("could not locate the army sheet's action button in the live frame; not falling back " +
+				"to the authored pinpoints, which describe the reference layout (see docs/RESOLUTION.md)")
+		if screen, err := b.client.CaptureToMat(); err == nil {
+			b.DumpDiagnostics("sheet_action_not_found", screen, nil)
+			screen.Close()
+		}
+		return false
 	}
 
 	findMatchClicked := false
@@ -2253,6 +2269,11 @@ func (b *Bot) selectArmySlot() bool {
 		slot = 1
 	}
 
+	// Off the reference geometry, select from the Saved Recipes dropdown:
+	if !b.cal.IsReferenceGeometry() {
+		return b.selectArmySlotLive(slot)
+	}
+
 	if slot == 1 {
 		return b.findAndClick("btn_army_1", "Army 1", 1)
 	}
@@ -2270,6 +2291,85 @@ func (b *Bot) selectArmySlot() bool {
 		return false
 	}
 	time.Sleep(1000 * time.Millisecond)
+	b.recordActivity()
+	return true
+}
+
+// Geometry of the army sheet's Saved Recipes tab, measured on the live
+// 1280x720 sheet as fractions of the frame (the sheet is full-screen and
+// centred, so fractions survive the reflow that made the authored reference
+// coordinates miss here). Only the tab tap uses these: the press itself lands
+type armySlotsConfig struct {
+	Width         int `json:"width"`
+	Height        int `json:"height"`
+	DropdownArrow struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	} `json:"dropdown_arrow"`
+	Slots map[string]struct {
+		X    int    `json:"x"`
+		Y    int    `json:"y"`
+		W    int    `json:"w"`
+		H    int    `json:"h"`
+		Name string `json:"name"`
+	} `json:"slots"`
+}
+
+func loadArmySlotsConfig() *armySlotsConfig {
+	p := paths.Resolve("army_slots.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	var cfg armySlotsConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil
+	}
+	return &cfg
+}
+
+// selectArmySlotLive arms saved recipe `slot` (1..4) from the Saved Recipes
+// dropdown menu on the army sheet (opened via the [v] arrow button beside
+// the "Saved Recipes" tab).
+func (b *Bot) selectArmySlotLive(slot int) bool {
+	if slot < 1 || slot > 4 {
+		slot = 1
+	}
+
+	w, h := b.cal.PhysicalW, b.cal.PhysicalH
+
+	// Default measured geometry (1280x720)
+	arrowX := int((742.0 / 1280.0) * float64(w))
+	arrowY := int((71.0 / 720.0) * float64(h))
+	slotX := int((740.0 / 1280.0) * float64(w))
+	slotY := int(((150.0 + float64(slot-1)*72.0) / 720.0) * float64(h))
+
+	// If calibrated army_slots.json exists, obey its user-selected coordinates
+	if cfg := loadArmySlotsConfig(); cfg != nil {
+		if cfg.DropdownArrow.X > 0 && cfg.DropdownArrow.Y > 0 {
+			arrowX = int(float64(cfg.DropdownArrow.X) * float64(w) / float64(cfg.Width))
+			arrowY = int(float64(cfg.DropdownArrow.Y) * float64(h) / float64(cfg.Height))
+		}
+		slotKey := fmt.Sprintf("%d", slot)
+		if s, ok := cfg.Slots[slotKey]; ok && s.X > 0 && s.Y > 0 {
+			slotX = int(float64(s.X) * float64(w) / float64(cfg.Width))
+			slotY = int(float64(s.Y) * float64(h) / float64(cfg.Height))
+		}
+	}
+
+	b.logger.Info().Int("arrow_x", arrowX).Int("arrow_y", arrowY).Msg("opening Saved Recipes dropdown")
+	if err := b.client.TapRandomized(arrowX, arrowY); err != nil {
+		b.logger.Warn().Err(err).Msg("failed to tap Saved Recipes dropdown arrow")
+		return false
+	}
+	time.Sleep(800 * time.Millisecond)
+
+	b.logger.Info().Int("army_slot", slot).Int("slot_x", slotX).Int("slot_y", slotY).Msg("selecting army recipe slot from dropdown")
+	if err := b.client.TapRandomized(slotX, slotY); err != nil {
+		b.logger.Warn().Err(err).Msg("failed to tap army recipe slot")
+		return false
+	}
+	time.Sleep(1200 * time.Millisecond)
 	b.recordActivity()
 	return true
 }
@@ -2636,7 +2736,16 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 		case state == game.StateArmySelection || state == game.StateArmyCamp:
 			villageFrames = 0
 			b.logger.Info().Msg("in army menu, retrying battle click...")
-			b.findAndClick("btn_battle", "Battle Retry", 1)
+			// Located press, not findAndClick("btn_battle"): that path resolves
+			// to the authored ref(731,537) pinpoint, which maps to ~(1031,528)
+			// at 1280x720 while the live green button measures (1131,641) — a
+			// 100+ px miss (tplprobe: the btn_battle template matches nothing
+			// real on the live sheet either). pressPanelAction finds the button
+			// in the frame and fails closed when it cannot, same as the primary
+			// press above.
+			if _, ok := b.pressPanelAction("Army Sheet Attack (retry)", sheetActionRegion, 5*time.Second); !ok {
+				b.logger.Warn().Msg("could not locate the army sheet's action button for the battle retry; waiting for the next frame")
+			}
 			time.Sleep(1 * time.Second)
 		default:
 			if villageStatesThatMeanTheSearchDidNotStart(state) {
@@ -2662,20 +2771,23 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 }
 
 func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
-	strat, err := strategy.ParseYAML(b.cfg.Attack.StrategyFile)
+	stratPath := resolveStrategyPath(b.cfg.Attack.StrategyFile)
+	strat, err := strategy.ParseYAML(stratPath)
 	if err != nil {
-		b.logger.Warn().Err(err).Str("path", b.cfg.Attack.StrategyFile).Msg("could not load strategy")
+		b.logger.Warn().Err(err).Str("path", stratPath).Msg("could not load strategy")
 		return 0, err
 	}
+	b.applyAutoEndSetting(strat)
 
 	b.logger.Info().
 		Str("strategy", strat.Name).
+		Int("end_at_percent", strat.EndAtPercent).
 		Int("phases", len(strat.Phases)).
 		Msg("executing dynamic attack plan")
 
 	time.Sleep(600 * time.Millisecond)
 
-	remaining, err := b.attackExec.DeployDynamicV2(strat, screen, b.cfg.Attack.StrategyFile)
+	remaining, err := b.attackExec.DeployDynamicV2(strat, screen, stratPath)
 	if err != nil {
 		b.logger.Error().Err(err).Msg("dynamic deploy failed")
 		return remaining, err
@@ -2752,6 +2864,7 @@ func (b *Bot) Health() game.SystemHealth {
 
 func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 	b.cfg = cfg
+	b.armySlot = resolveArmySlot(cfg)
 	if b.attackExec != nil {
 		b.attackExec.UpdateConfig(&cfg.Attack)
 	}
@@ -2759,7 +2872,86 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 	if b.navigator != nil {
 		b.navigator.SetDisableChestDismissal(cfg.Device.DisableChestDismissal)
 	}
-	b.logger.Info().Msg("bot configuration updated in real-time")
+	b.logger.Info().Int("army_slot", b.armySlot).Msg("bot configuration updated in real-time")
+}
+
+// resolveArmySlot determines the saved army recipe slot (1..4) to use.
+// Priority:
+// 1. cfg.Attack.StrategySlots override matching the strategy file basename
+// 2. strategy YAML army_slot setting
+// 3. Fallback to slot 1
+func resolveArmySlot(cfg *config.BotConfig) int {
+	base := filepath.Base(filepath.ToSlash(cfg.Attack.StrategyFile))
+	if cfg.Attack.StrategySlots != nil {
+		if slot, ok := cfg.Attack.StrategySlots[base]; ok && slot >= 1 && slot <= 4 {
+			return slot
+		}
+		// Also check exact path match if base was different
+		if slot, ok := cfg.Attack.StrategySlots[cfg.Attack.StrategyFile]; ok && slot >= 1 && slot <= 4 {
+			return slot
+		}
+	}
+
+	stratPath := resolveStrategyPath(cfg.Attack.StrategyFile)
+	if strat, err := strategy.ParseYAML(stratPath); err == nil {
+		return strat.SelectedArmySlot()
+	}
+	return 1
+}
+
+// resolveStrategyPath locates a strategy YAML file across path conventions:
+// absolute paths, working-directory relative paths, assets-relative paths,
+// and bare filenames (e.g. "valk_spam.yaml" -> "assets/strategies/valk_spam.yaml").
+func resolveStrategyPath(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if _, err := os.Stat(raw); err == nil {
+		return raw
+	}
+	rel := strings.TrimPrefix(filepath.ToSlash(raw), "assets/")
+	resolved := paths.Resolve(rel)
+	if _, err := os.Stat(resolved); err == nil {
+		return resolved
+	}
+	base := filepath.Base(filepath.ToSlash(raw))
+	resolvedUnderStrategies := paths.Resolve(filepath.Join("strategies", base))
+	if _, err := os.Stat(resolvedUnderStrategies); err == nil {
+		return resolvedUnderStrategies
+	}
+	return raw
+}
+
+// applyAutoEndSetting synchronizes the strategy's EndAtPercent with cfg.Attack.StrategyAutoEnd.
+func (b *Bot) applyAutoEndSetting(strat *strategy.DynamicStrategy) {
+	if strat == nil || b.cfg == nil {
+		return
+	}
+	base := filepath.Base(filepath.ToSlash(b.cfg.Attack.StrategyFile))
+	stratName := strat.Name
+	yamlEndAt := strat.EndAtPercent
+	autoEnd := resolveAutoEndSetting(b.cfg.Attack.StrategyAutoEnd, base, stratName, yamlEndAt)
+	if autoEnd {
+		if strat.EndAtPercent <= 0 {
+			strat.EndAtPercent = 50
+		}
+	} else {
+		strat.EndAtPercent = 0
+	}
+}
+
+func resolveAutoEndSetting(overrides map[string]bool, base, stratName string, yamlEndAt int) bool {
+	if overrides != nil && base != "" {
+		if val, ok := overrides[base]; ok {
+			return val
+		}
+	}
+	bLower := strings.ToLower(base)
+	sLower := strings.ToLower(stratName)
+	if strings.Contains(bLower, "valk") || strings.Contains(sLower, "valk") || yamlEndAt > 0 {
+		return true
+	}
+	return false
 }
 
 func (b *Bot) Stats() BotStats {

@@ -51,6 +51,7 @@ type spellReconcileEntry struct {
 	unit    strategy.Unit
 	slot    *TrackedSlot
 	pattern string
+	edge    string
 }
 
 // armyReadinessGap reports strategy troops/spells whose bar card has positive
@@ -842,7 +843,12 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			// Siege (they share the 35ms gap and the same bug).
 			tapExec.HumanSleep(150, 30)
 
-			success := spellDeployer.DeploySpell(up.Unit, up.Slot, targetEdge, plan.Phase.Pattern)
+			spellTargetEdge := targetEdge
+			if strings.EqualFold(plan.Phase.Position, "Center") {
+				spellTargetEdge = "Center"
+			}
+
+			success := spellDeployer.DeploySpell(up.Unit, up.Slot, spellTargetEdge, plan.Phase.Pattern)
 			if success {
 				slotMgr.MarkDeployed(strings.ToLower(up.Unit.Name))
 				// Post-deploy reconcile is DEFERRED to after the placements
@@ -850,7 +856,7 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 				// and a slow OCR round must not sit inside the seven-second
 				// deploy window. Any extra taps still fire before the sweep and
 				// stay budget-guarded.
-				spellReconcile = append(spellReconcile, spellReconcileEntry{unit: up.Unit, slot: up.Slot, pattern: plan.Phase.Pattern})
+				spellReconcile = append(spellReconcile, spellReconcileEntry{unit: up.Unit, slot: up.Slot, pattern: plan.Phase.Pattern, edge: spellTargetEdge})
 			}
 		}
 
@@ -1037,7 +1043,11 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		if err := e.deploymentErr(); err != nil {
 			return len(slotMgr.GetUndeployedSlots()), err
 		}
-		if extra, confirmed := spellDeployer.VerifyAndReconcile(se.unit, se.slot, targetEdge, se.pattern, 4); extra > 0 {
+		reconcileEdge := se.edge
+		if reconcileEdge == "" {
+			reconcileEdge = targetEdge
+		}
+		if extra, confirmed := spellDeployer.VerifyAndReconcile(se.unit, se.slot, reconcileEdge, se.pattern, 4); extra > 0 {
 			e.logger.Info().
 				Str("unit", se.unit.Name).
 				Int("extra_fired", extra).

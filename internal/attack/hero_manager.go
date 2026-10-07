@@ -291,9 +291,13 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 		hm.debugDump(fmt.Sprintf("wave%d_pre", i))
 		// Spread the heroes over the candidate ground and widen the drop jitter
 		// per hero: five heroes on one tile is both bot-like and the first thing
-		// a refused pocket kills. Every candidate is validated ground, so any of
-		// them is a legal first drop.
-		p.firstIndex = i % len(p.cands)
+		// a refused pocket kills. When the pattern is explicitly "Point", all heroes
+		// drop on the primary candidate point (same spot).
+		if p.d.Unit.Pattern == "Point" {
+			p.firstIndex = 0
+		} else {
+			p.firstIndex = i % len(p.cands)
+		}
 		ground := p.cands[p.firstIndex]
 		jitter := 3 + 2*i
 		if jitter > 10 {
@@ -961,7 +965,14 @@ func (hm *HeroManager) DeployTroops(
 				cfg.Edges[k] = ManualEdge{P1: p1, P2: p2}
 			}
 		}
-		hm.executor.TapDeployFourSides(cfg, hm.targetEdge, 12, 8)
+		count := 12
+		if detectedCount > 0 {
+			count = (detectedCount + 3) / 4
+			if count < 4 {
+				count = 4
+			}
+		}
+		hm.executor.TapDeployFourSides(cfg, hm.targetEdge, count, 8)
 
 		hm.slotManager.MarkDeployed(unitName)
 		return true

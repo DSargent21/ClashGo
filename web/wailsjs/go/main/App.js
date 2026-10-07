@@ -62,6 +62,14 @@ export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
+export function SetStrategyArmySlot(arg1, arg2) {
+  return window['go']['main']['App']['SetStrategyArmySlot'](arg1, arg2);
+}
+
+export function SetStrategyAutoEnd(arg1, arg2) {
+  return window['go']['main']['App']['SetStrategyAutoEnd'](arg1, arg2);
+}
+
 export function SkipCurrentVersion() {
   return window['go']['main']['App']['SkipCurrentVersion']();
 }

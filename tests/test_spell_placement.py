@@ -187,29 +187,34 @@ def test_valk_spam_declares_earthquake_spell():
     )
 
 
-def test_valk_spam_earthquake_uses_foursides_with_deep_offset():
+def test_valk_spam_earthquake_uses_center_point():
     doc = _load_yaml("valk_spam.yaml")
     phases = _spell_phases(doc)
     assert len(phases) == 1, "valk_spam must have exactly one spell phase"
     phase = phases[0]
-    assert phase["pattern"] == "FourSides", (
-        "Earthquake phase must use FourSides so EQs ring all four walls"
+    assert phase["pattern"] == "Point", (
+        "Earthquake phase must use Point pattern to cluster in the center"
     )
-    assert phase.get("offset", 0) > 0, (
-        "Earthquake phase needs a positive offset — without it EQs land on the "
-        "outer red line instead of deeper in on the walls"
+    assert phase.get("position") == "Center", (
+        "Earthquake phase must target Center"
     )
 
 
-def test_valk_spam_earthquake_runs_after_troops():
+def test_valk_spam_earthquake_runs_after_valkyries_before_heroes():
     doc = _load_yaml("valk_spam.yaml")
     names = [p["name"] for p in doc["phases"]]
     spell_idx = next(
         i for i, p in enumerate(doc["phases"]) if any(u["name"] in SPELL_NAMES for u in p["units"])
     )
+    hero_idx = next(
+        i for i, p in enumerate(doc["phases"]) if "Heroes" in p["name"]
+    )
     assert spell_idx > 0, "spell phase must not run first"
     assert "Valkyrie Spam" in names[:spell_idx], (
-        "Valkyries must deploy before the Earthquake ring"
+        "Valkyries must deploy before Earthquakes"
+    )
+    assert spell_idx < hero_idx, (
+        "Earthquakes must deploy before heroes"
     )
 
 
@@ -280,8 +285,8 @@ def test_no_spell_unit_lacks_both_formula_and_pattern_fallback():
             f"{u['name']} has neither formula entry nor legacy fallback"
         )
 
-    # valk spells rely on the FourSides phase pattern, verified above.
-    assert all(p["pattern"] == "FourSides" for p in _spell_phases(valk))
+    # valk spells rely on configured Point or FourSides phase pattern, verified above.
+    assert all(p["pattern"] in ("Point", "FourSides") for p in _spell_phases(valk))
 
 
 # ---------------------------------------------------------------------------

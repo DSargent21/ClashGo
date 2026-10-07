@@ -206,6 +206,8 @@ export namespace config {
 	    warden_use_at_pct: number;
 	    reserve_de_percent: number;
 	    stall_timer_seconds: number;
+	    strategy_slots?: Record<string, number>;
+	    strategy_auto_end?: Record<string, boolean>;
 	    min_seconds_between_attacks: number;
 	
 	    static createFrom(source: any = {}) {
@@ -228,6 +230,8 @@ export namespace config {
 	        this.warden_use_at_pct = source["warden_use_at_pct"];
 	        this.reserve_de_percent = source["reserve_de_percent"];
 	        this.stall_timer_seconds = source["stall_timer_seconds"];
+	        this.strategy_slots = source["strategy_slots"];
+	        this.strategy_auto_end = source["strategy_auto_end"];
 	        this.min_seconds_between_attacks = source["min_seconds_between_attacks"];
 	    }
 	
