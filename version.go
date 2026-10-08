@@ -8,7 +8,7 @@ package main
 // the Wails build (//go:build !cli) AND the CLI build (//go:build cli) —
 // putting them in cli.go would otherwise hide them from the GUI.
 var (
-	version = "0.7.0-beta"
+	version = "0.8.0-beta"
 	// commit is read only by cli.go (//go:build cli); staticcheck flags it
 	// as unused in the GUI build — that is a build-tag false positive.
 	commit = "none"

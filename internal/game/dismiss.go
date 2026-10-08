@@ -242,6 +242,13 @@ func DismissOverlay(dev DismissDevice, cal *Calibration, cl *Classifier, state G
 			continue
 		}
 		x, y := cal.AnchorPoint(probe.X, probe.Y, rule.Anchor)
+		if state == StateConfirmExit && !cal.IsReferenceGeometry() {
+			// At non-reference geometry (1280x720), the probe (279,429 -> live 444,442)
+			// lands on the upper border of the Cancel button (bounds: [435..556, 445..479]).
+			// Nudge into the button's center so the click reliably registers.
+			x += int(45.0 * (float64(cal.PhysicalW) / 1280.0))
+			y += int(18.0 * (float64(cal.PhysicalH) / 720.0))
+		}
 		logger.Info().
 			Str("state", state.String()).
 			Int("x", x).Int("y", y).

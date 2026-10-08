@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0-beta] - 2026-10-08
+
+### Fixed
+- **Four-Sided Valkyrie Deployment Edge Scaling & Slot Reconciliation** (`internal/attack/executor.go`, `internal/attack/hero_manager.go`, `internal/attack/orchestrator.go`):
+  - Fixed edge coordinate scaling in `TapDeployFourSides` to dynamically scale authored edges to physical screen resolution and push 20px outward into clear grass.
+  - Fixed `applyCornerOverride` in orchestrator so existing pinned edges are preserved rather than overwritten by the primary target edge.
+  - Added post-deploy verification and top-up pass to `DeployTroops`: verifies slot is genuinely empty before marking deployed; leaves undeployed slots for the sweeper to finish all remaining troops.
+- **Accurate Star Counting Outcome Ground Truth** (`internal/bot/bot.go`):
+  - Authoritative star count now follows deterministic Clash of Clans destruction rules derived from live battle percentage and Town Hall status (<50% = 0⭐, >=50% = 1⭐, TH+50% = 2⭐, 100% = 3⭐), preventing 0-star defeats from misreading as 2⭐ due to victory ribbon pixel overlap.
+- **Obstacle Dialog & Return Home Dismissal Watchdog** (`internal/bot/bot.go`, `internal/attack/attack.go`):
+  - Added fast dismissal for accidental obstacle dialog popups during village capture loops.
+  - Handled `StateConnectionLost` and ticker deadline bounds in `WaitForBattleEndCtx` to eliminate battle end hangs.
+
 ## [0.7.0-beta] - 2026-10-07
 
 ### Added

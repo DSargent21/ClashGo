@@ -1681,17 +1681,21 @@ func (e *Executor) ReturnHome() error {
 	if err := e.client.TapHuman(hx, hy, 5.0); err != nil {
 		return err
 	}
-	time.Sleep(900 * time.Millisecond)
-	screen, err := e.client.CaptureToMat()
-	if err != nil {
-		return err
+	// CoC transition animation back to village takes ~1.5 - 2.5s.
+	// Poll until StateMainVillage appears instead of a single premature check.
+	for attempt := 0; attempt < 8; attempt++ {
+		time.Sleep(500 * time.Millisecond)
+		screen, err := e.client.CaptureToMat()
+		if err != nil {
+			continue
+		}
+		state, _ := e.classify(screen)
+		screen.Close()
+		if state == game.StateMainVillage {
+			return nil
+		}
 	}
-	defer screen.Close()
-	state, _ := e.classify(screen)
-	if state != game.StateMainVillage {
-		return fmt.Errorf("did not return home")
-	}
-	return nil
+	return fmt.Errorf("did not return home")
 }
 
 // WaitForBattleEnd is the context-free variant of
@@ -1927,6 +1931,11 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			e.logger.Info().Msg("battle end wait cancelled (bot stopping)")
 			return false
 		case <-ticker.C:
+			if time.Now().After(deadline) {
+				e.logger.Warn().Msg("battle end wait reached deadline; aborting")
+				return false
+			}
+
 			screen, err := e.client.CaptureToMat()
 			if err != nil {
 				e.logger.Warn().Err(err).Msg("battle-end wait capture failed; retrying next tick")
@@ -1937,6 +1946,11 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			if state == game.StateBattleEnd || state == game.StateReturnHome {
 				screen.Close()
 				return true
+			}
+			if state == game.StateConnectionLost {
+				e.logger.Warn().Msg("connection lost during battle; aborting battle wait to trigger recovery")
+				screen.Close()
+				return false
 			}
 
 			// HP-triggered hero abilities: the deploy already spent the

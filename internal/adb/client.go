@@ -636,7 +636,7 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 	if err1 != nil {
 		return err1
 	}
-	time.Sleep(50 * time.Millisecond)
+	c.HumanSleep(55, 12)
 	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_dual_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	return err2
@@ -675,13 +675,13 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	if err1 != nil {
 		return err1
 	}
-	time.Sleep(50 * time.Millisecond)
+	c.HumanSleep(55, 12)
 	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	if err2 != nil {
 		return err2
 	}
-	time.Sleep(50 * time.Millisecond)
+	c.HumanSleep(55, 12)
 	err3 := c.routeTap("input tap", x3+ox3, y3+oy3, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_3", X: x3, Y: y3, ActualX: x3 + ox3, ActualY: y3 + oy3, StdDev: stdDev3, Error: errStr(err3)})
 	return err3

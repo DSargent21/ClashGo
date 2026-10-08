@@ -43,19 +43,28 @@ trap 'rm -rf "${HELPER_COPY_DIR:-}" "${STAGE:-}"' EXIT
 
 log "install_update.sh: start zip=$ZIP bundle=$BUNDLE dir=$INSTALL_DIR"
 
+PARENT_PID="${4:-}"
+
 # 1. Wait for the parent process to fully exit. The Go side detaches us
 #    and calls os.Exit(0); swapping the bundle while the old Mach-O is
-#    still mapped can fail with "text file busy". The match is scoped to
-#    the exact bundle path (not a bare "ClashGO" match) so a second copy
-#    of ClashGO elsewhere on the machine neither stalls nor races us.
-EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
-EXEC_NAME="${EXEC_NAME:-ClashGO}"
-for _ in $(seq 1 30); do
-  if ! pgrep -f "$BUNDLE/Contents/MacOS/$EXEC_NAME" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
-done
+#    still mapped can fail with "text file busy".
+if [[ -n "$PARENT_PID" ]]; then
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$PARENT_PID" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+else
+  EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
+  EXEC_NAME="${EXEC_NAME:-ClashGO}"
+  for _ in $(seq 1 30); do
+    if ! pgrep -f "$BUNDLE/Contents/MacOS/$EXEC_NAME" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+fi
 sleep 1
 
 # 2. Sanity-check the verified download is present.

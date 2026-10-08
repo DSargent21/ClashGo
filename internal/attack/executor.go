@@ -593,23 +593,29 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 		name   string
 		p1, p2 image.Point
 	}
-	cx, cy := 640, 360
+	w, h := 1280, 720
+	if t.cal != nil && t.cal.PhysicalW > 0 && t.cal.PhysicalH > 0 {
+		w, h = t.cal.PhysicalW, t.cal.PhysicalH
+	}
+	cx, cy := w/2, h/2
 	pushOutward := func(pt image.Point, dist float64) image.Point {
 		dx := float64(pt.X - cx)
 		dy := float64(pt.Y - cy)
-		h := math.Hypot(dx, dy)
-		if h == 0 {
+		hypot := math.Hypot(dx, dy)
+		if hypot == 0 {
 			return pt
 		}
-		return image.Pt(int(float64(pt.X)+dx/h*dist), int(float64(pt.Y)+dy/h*dist))
+		return image.Pt(int(float64(pt.X)+dx/hypot*dist), int(float64(pt.Y)+dy/hypot*dist))
 	}
 
+	uiCutoff := UICutoff(h)
 	var validEdges []edgeLine
 	for _, name := range edgeNames {
-		if edge, ok := pCfg.Edges[name]; ok {
-			// Push outward into grass to avoid red deploy boundary
-			p1 := pushOutward(edge.P1, 15)
-			p2 := pushOutward(edge.P2, 15)
+		if edge, ok := pCfg.Edges[name]; ok && !isZeroManualEdge(edge) {
+			scaled := ScaleEdge(edge, pCfg.Width, pCfg.Height, w, h)
+			// Push outward into grass to avoid red deploy boundary and clamp within field
+			p1 := ClampToDeployBand(pushOutward(scaled.P1, 20), uiCutoff)
+			p2 := ClampToDeployBand(pushOutward(scaled.P2, 20), uiCutoff)
 			validEdges = append(validEdges, edgeLine{name: name, p1: p1, p2: p2})
 		}
 	}
@@ -618,22 +624,25 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 	}
 
 	steps := countPerSide
-	if steps < 14 {
-		steps = 14 // At least 14 per side = 56 taps, drops all 52 Valkyries in ~1.5s
+	if steps < 15 {
+		steps = 15 // At least 15 per side = 60 taps, covers full army capacity
 	}
 
 	t.logger.Info().Int("steps_per_side", steps).Int("total_taps", steps*len(validEdges)).Msg("FourSides simultaneous rapid spam across all 4 sides")
 
-	for i := 0; i < steps; i++ {
-		pct := float64(i) / float64(steps-1)
-		for _, e := range validEdges {
+	// Deploy edge-by-edge: sweeps each edge smoothly along the deploy line.
+	// Natural finger motion avoids inhuman cross-screen teleport taps (<20ms).
+	for _, e := range validEdges {
+		for i := 0; i < steps; i++ {
+			pct := float64(i) / float64(steps-1)
 			tx, ty := intLerp(e.p1, e.p2, pct)
-			j := t.addJitter(image.Pt(tx, ty), 4)
+			j := t.addJitter(image.Pt(tx, ty), 6)
 			t.client.TapFast(j.X, j.Y, 3.0)
-			time.Sleep(18 * time.Millisecond)
+			t.client.HumanSleep(45, 12)
 		}
+		t.client.HumanSleep(60, 15)
 	}
-	time.Sleep(100 * time.Millisecond)
+	t.client.HumanSleep(100, 20)
 }
 
 // TapHeroAbility taps a hero slot to activate its ability.

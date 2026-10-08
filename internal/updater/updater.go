@@ -123,9 +123,17 @@ type serviceConfig struct {
 // future release gets much larger, bump downloadTimeout in
 // streamToFile specifically rather than this global knob.
 func DefaultConfig(currentVersion string) serviceConfig {
+	owner := "DSargent21"
+	if env := os.Getenv("CLASHGO_REPO_OWNER"); env != "" {
+		owner = env
+	}
+	repo := "ClashGo"
+	if env := os.Getenv("CLASHGO_REPO_NAME"); env != "" {
+		repo = env
+	}
 	return serviceConfig{
-		RepoOwner:      "Ducky705",
-		RepoName:       "ClashGO",
+		RepoOwner:      owner,
+		RepoName:       repo,
 		CurrentVersion: currentVersion,
 		HTTPClient:     &http.Client{Timeout: 5 * time.Minute},
 		Now:            time.Now,
@@ -437,6 +445,26 @@ func (s *Service) fetchLatestRelease(ctx context.Context) (githubRelease, error)
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
+		// /releases/latest returned 404 (e.g. only prereleases exist).
+		// Fallback to checking the releases list.
+		fallbackURL := fmt.Sprintf(
+			"https://api.github.com/repos/%s/%s/releases?per_page=1",
+			s.cfg.RepoOwner, s.cfg.RepoName,
+		)
+		fbReq, fbErr := http.NewRequestWithContext(ctx, http.MethodGet, fallbackURL, nil)
+		if fbErr == nil {
+			fbReq.Header.Set("Accept", "application/vnd.github+json")
+			fbReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+			if fbResp, fbDoErr := s.cfg.HTTPClient.Do(fbReq); fbDoErr == nil {
+				defer fbResp.Body.Close()
+				if fbResp.StatusCode == http.StatusOK {
+					var list []githubRelease
+					if err := json.NewDecoder(fbResp.Body).Decode(&list); err == nil && len(list) > 0 {
+						return list[0], nil
+					}
+				}
+			}
+		}
 		return githubRelease{}, errNoReleases
 	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
@@ -836,8 +864,9 @@ func (s *Service) ApplyAuto() (bool, error) {
 	if filepath.Base(macosDir) != "MacOS" {
 		return false, fmt.Errorf("not running from a .app bundle: %s", exe)
 	}
-	bundlePath := filepath.Dir(macosDir) // .../ClashGO.app
-	helper := filepath.Join(filepath.Dir(macosDir), "Resources", "install_update.sh")
+	contentsDir := filepath.Dir(macosDir)
+	bundlePath := filepath.Dir(contentsDir) // .../ClashGO.app
+	helper := filepath.Join(contentsDir, "Resources", "install_update.sh")
 	if _, err := os.Stat(helper); err != nil {
 		return false, fmt.Errorf("helper script missing: %w", err)
 	}
@@ -853,7 +882,7 @@ func (s *Service) ApplyAuto() (bool, error) {
 	// OR the install location, so it knows where to move the new app.
 	installDir := filepath.Dir(bundlePath)
 
-	cmd := exec.Command("bash", helper, st.DownloadPath, bundlePath, installDir)
+	cmd := exec.Command("bash", helper, st.DownloadPath, bundlePath, installDir, fmt.Sprintf("%d", os.Getpid()))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

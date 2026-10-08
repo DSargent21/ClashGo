@@ -334,13 +334,10 @@ function App() {
     await ApplyUpdate();
   };
   const handleUpdaterOneClick = async () => {
-    // The Go-side InstallAndRestart takes care of stopping the bot,
-    // saving stats, marking the restarting state, spawning the helper,
-    // and exiting the process after a 1s IPC flush window.
+    if (updateStatus && updateStatus.state !== 'ready') {
+      await DownloadUpdate();
+    }
     await InstallAndRestart();
-    // The status will flip to 'restarting' and the React side will
-    // switch to the non-dismissible splash automatically via the
-    // updater_status event listener.
   };
   const handleUpdaterSkip = async () => {
     await SkipCurrentVersion();

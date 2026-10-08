@@ -158,11 +158,10 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 // forwardUpdaterStatus pushes the updater's status to the React side
-// on every meaningful change. We use a 2s ticker with equality check
-// to avoid spamming the UI with identical payloads; React renders
-// only when the status struct actually changes.
+// on every meaningful change. React renders only when the status
+// struct actually changes (equality check prevents spam).
 func (a *App) forwardUpdaterStatus(ctx context.Context) {
-	t := time.NewTicker(2 * time.Second)
+	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	var lastJSON string
 	for {
@@ -901,7 +900,11 @@ func (a *App) CheckForUpdate() (updater.Status, error) {
 	if a.updater == nil {
 		return updater.Status{State: updater.StateError}, fmt.Errorf("updater not initialized")
 	}
-	return a.updater.Check(a.ctx)
+	st, err := a.updater.Check(a.ctx)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "updater_status", a.updater.GetStatus())
+	}
+	return st, err
 }
 
 // DownloadUpdate downloads + SHA256-verifies the matched asset. The
@@ -910,7 +913,11 @@ func (a *App) DownloadUpdate() (string, error) {
 	if a.updater == nil {
 		return "", fmt.Errorf("updater not initialized")
 	}
-	return a.updater.Download(a.ctx)
+	path, err := a.updater.Download(a.ctx)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "updater_status", a.updater.GetStatus())
+	}
+	return path, err
 }
 
 // ApplyUpdate opens the downloaded zip in Finder so the user can
@@ -925,6 +932,7 @@ func (a *App) ApplyUpdate() error {
 
 // InstallAndRestart is the one-click auto-install path.
 // Sequence (intentional ordering):
+//  0. Download update if not already downloaded.
 //  1. Stop the bot synchronously so ADB + stats flush cleanly.
 //  2. Save persisted stats via the existing path.
 //  3. Mark Status=StateRestarting so React covers the Wails ↔ helper
@@ -943,6 +951,16 @@ func (a *App) InstallAndRestart() error {
 		return fmt.Errorf("updater not initialized")
 	}
 
+	st := a.updater.GetStatus()
+	if st.State != updater.StateReady {
+		if !st.Available {
+			return fmt.Errorf("no update available")
+		}
+		if _, err := a.updater.Download(a.ctx); err != nil {
+			return fmt.Errorf("download update: %w", err)
+		}
+	}
+
 	// Step 1: stop the bot synchronously if running.
 	if a.IsRunning() {
 		log.Info().Msg("InstallAndRestart: stopping bot to drain ADB before exit")
@@ -954,11 +972,10 @@ func (a *App) InstallAndRestart() error {
 	a.saveStats()
 
 	// Step 3: cover the Wails exit + helper wait window.
-	// We deliberately do NOT emit "updater_status" here — the 2s
-	// ticker in forwardUpdaterStatus emits within ~2s and we don't
-	// want React to receive two close-in-time events (the IPC emit
-	// + the ticker race). SetState alone is enough.
 	a.updater.SetState(updater.StateRestarting)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "updater_status", a.updater.GetStatus())
+	}
 
 	// Step 4: detach the helper script. Returns (started, error).
 	// If false, the helper is missing (e.g. dev build); fall back to
@@ -970,6 +987,9 @@ func (a *App) InstallAndRestart() error {
 		// Revert state so the UI comes back to "ready" instead of
 		// staying on the restart splash.
 		a.updater.SetState(updater.StateReady)
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "updater_status", a.updater.GetStatus())
+		}
 		return err
 	}
 

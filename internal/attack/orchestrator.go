@@ -1449,10 +1449,14 @@ func applyCornerOverride(pCfg *PrecisionConfig, deployLine DeployLine, redZoneVa
 			if c == targetEdge {
 				continue
 			}
-			pCfg.Edges[c] = pinnedOverride
+			if e, exists := pCfg.Edges[c]; !exists || isZeroManualEdge(e) {
+				pCfg.Edges[c] = pinnedOverride
+			}
 		}
 		for _, s := range sideNames {
-			pCfg.Sides[s] = pinnedOverride
+			if sEdge, exists := pCfg.Sides[s]; !exists || isZeroManualEdge(sEdge) {
+				pCfg.Sides[s] = pinnedOverride
+			}
 		}
 		return
 	}

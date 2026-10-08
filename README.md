@@ -40,8 +40,16 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
 1. **Emulator**: Set your emulator (like BlueStacks) to **860x732** resolution and **160 DPI**.
 2. **Config**: Point `config.json` to your ADB device.
 3. **Run**:
-   - CLI: `make build-cli && ./build/bin/bot_cli`
-   - GUI: `make build-gui` and run `build/bin/ClashGO.app`
+   - **CLI (Lightweight & Max Performance)**:
+     ```bash
+     make build-cli
+     ./build/bin/bot_cli -perf -gold 600000 -elixir 600000
+     ```
+     See [`docs/CLI.md`](docs/CLI.md) for all options (`-perf`, `-once`, `-deploy-only`, `-devices`, `-strategies`).
+   - **GUI**:
+     ```bash
+     make build-gui && open build/bin/ClashGO.app
+     ```
 
 ### 💾 Resource usage (estimates)
 

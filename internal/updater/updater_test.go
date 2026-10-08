@@ -623,5 +623,53 @@ func newServiceForTest(t *testing.T, currentVersion string, client *http.Client)
 	return s
 }
 
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig("v0.1.0")
+	if cfg.RepoOwner != "DSargent21" {
+		t.Errorf("RepoOwner = %q, want DSargent21", cfg.RepoOwner)
+	}
+	if cfg.RepoName != "ClashGo" {
+		t.Errorf("RepoName = %q, want ClashGo", cfg.RepoName)
+	}
+	if cfg.CurrentVersion != "v0.1.0" {
+		t.Errorf("CurrentVersion = %q, want v0.1.0", cfg.CurrentVersion)
+	}
+
+	t.Setenv("CLASHGO_REPO_OWNER", "CustomOwner")
+	t.Setenv("CLASHGO_REPO_NAME", "CustomRepo")
+	custom := DefaultConfig("0.2.0")
+	if custom.RepoOwner != "CustomOwner" || custom.RepoName != "CustomRepo" {
+		t.Errorf("Custom config not respected: %+v", custom)
+	}
+}
+
+func TestLiveGitHubCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live GitHub check in -short mode")
+	}
+	cfg := DefaultConfig("0.6.0-beta")
+	s := New(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	status, err := s.Check(ctx)
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+	if !status.Available {
+		t.Errorf("expected Available=true when running 0.6.0-beta, got false (latest=%s)", status.LatestVersion)
+	}
+	if status.LatestVersion != "0.7.0-beta" {
+		t.Errorf("expected LatestVersion=0.7.0-beta, got %s", status.LatestVersion)
+	}
+	if status.AssetName != "ClashGO-v0.7.0-beta-macOS.zip" {
+		t.Errorf("expected AssetName=ClashGO-v0.7.0-beta-macOS.zip, got %s", status.AssetName)
+	}
+	if status.ExpectedSize <= 0 {
+		t.Errorf("expected positive ExpectedSize, got %d", status.ExpectedSize)
+	}
+}
+
 // Ensure io is referenced (used in streamToFile progress reader).
 var _ = io.EOF
+

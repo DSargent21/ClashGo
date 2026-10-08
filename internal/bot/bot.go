@@ -1166,6 +1166,20 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
+	// Obstacle dialog or building info bottom sheet (opened by an accidental tap
+	// or zoom pinch on a village building/obstacle). DismissOverlay sends Back to
+	// close the sheet cleanly without waiting out the 35s stuck watchdog.
+	// Only send Back if the Attack button is NOT visible — on a clear village,
+	// Back opens the quit confirmation dialog.
+	if state == game.StateObstacleDialog {
+		if !b.findAttackButton(screen, 0.45) {
+			if game.DismissOverlay(b.client, b.cal, b.classifier, game.StateObstacleDialog, b.templates, b.logger) {
+				b.recordActivity()
+			}
+			return
+		}
+	}
+
 	if gc.State == game.StateBattleEnd || gc.State == game.StateReturnHome {
 		if b.claimReturnHome() {
 			b.logger.Info().Str("state", gc.State.String()).Msg("detected terminal state without active sequence, returning home...")
@@ -1178,7 +1192,11 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
-	if b.zoomedOut.Load() && (gc.State == game.StateMainVillage || gc.State == game.StateUnknown) && b.findAttackButton(screen, 0.45) {
+	if b.cfg.Attack.MaxAttackPerSession > 0 && b.attackCount.Load() >= int32(b.cfg.Attack.MaxAttackPerSession) {
+		return
+	}
+
+	if b.zoomedOut.Load() && (gc.State == game.StateMainVillage || gc.State == game.StateUnknown || gc.State == game.StateObstacleDialog) && b.findAttackButton(screen, 0.45) {
 		b.logger.Info().Msg("attack button detected, starting sequence")
 		b.lastSequenceStart = time.Now()
 		go b.executeAttackSequence(gc)
@@ -1792,7 +1810,8 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 						Int("rule_stars", ruleStars).
 						Int("destruction_pct", finalPct).
 						Bool("th_destroyed", b.attackExec.ThDestroyed()).
-						Msg("battle stars: keeping visual parse over destruction-rule read")
+						Msg("battle stars: using destruction-rule stars as authoritative outcome")
+					battleStars = ruleStars
 				}
 			}
 
@@ -1933,15 +1952,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	b.lastAttackEnd = time.Now()
 
 	// Leftover post-attack popups are dismissed only when one is actually on the
-	// screen. This used to be an unconditional tap on empty village space, which
-	// is a tap with no evidence behind it: the bot clicked the village after every
-	// battle whether or not anything was up. The classification says whether there
-	// is anything to dismiss, and dismissInterruptions only fires on an overlay it
-	// can verify (game.DismissOverlay).
+	// screen. Settle first so the village fade-in transition doesn't briefly
+	// misread as a modal.
+	time.Sleep(1500 * time.Millisecond)
 	if screen, err := b.client.CaptureToMat(); err == nil {
 		state, _ := b.classify(screen)
 		screen.Close()
-		if state != game.StateMainVillage && state != game.StateUnknown {
+		if state != game.StateMainVillage && state != game.StateUnknown && state != game.StateObstacleDialog {
 			b.logger.Info().Str("state", state.String()).Msg("post-attack overlay detected; dismissing it")
 			b.dismissInterruptions()
 			time.Sleep(1000 * time.Millisecond)
@@ -2000,7 +2017,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		Dur("uptime", time.Since(b.startedAt)).
 		Msg("=== SESSION SUMMARY ===")
 
-	b.zoomedOut.Store(false)
+	// Only reset zoomedOut if wall upgrades are enabled: the attack button
+	// is fixed HUD chrome and works at any zoom level, whereas wall upgrading
+	// needs building map coordinates. Skipping redundant zoom-outs saves ~18s
+	// per battle and avoids accidental pinches touching village buildings.
+	if b.cfg.Upgrade.UpgradeWalls {
+		b.zoomedOut.Store(false)
+	}
 }
 
 func (b *Bot) clickSequence() bool {
@@ -2714,6 +2737,7 @@ func villageStatesThatMeanTheSearchDidNotStart(state game.GameState) bool {
 func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	villageFrames := 0
+	unknownFrames := 0
 	for time.Now().Before(deadline) {
 		screen, err := b.client.CaptureToMat()
 		if err != nil {
@@ -2730,11 +2754,13 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 			return true
 		case state == game.StateSearchMap || state == game.StateLoading:
 			villageFrames = 0
+			unknownFrames = 0
 			b.logger.Info().Msg("in clouds/loading...")
 			time.Sleep(1 * time.Second)
 			continue
 		case state == game.StateArmySelection || state == game.StateArmyCamp:
 			villageFrames = 0
+			unknownFrames = 0
 			b.logger.Info().Msg("in army menu, retrying battle click...")
 			// Located press, not findAndClick("btn_battle"): that path resolves
 			// to the authored ref(731,537) pinpoint, which maps to ~(1031,528)
@@ -2760,6 +2786,19 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 			} else {
 				villageFrames = 0
 			}
+
+			if state == game.StateUnknown {
+				unknownFrames++
+				if unknownFrames >= 16 {
+					b.logger.Warn().
+						Int("frames", unknownFrames).
+						Msg("no search transition detected after 8s of unclassified screen; search never started, handing back for clean recovery")
+					return false
+				}
+			} else {
+				unknownFrames = 0
+			}
+
 			b.logger.Info().Str("state", state.String()).Msg("waiting for battle state (searching)...")
 			b.dismissInterruptions()
 			time.Sleep(500 * time.Millisecond)

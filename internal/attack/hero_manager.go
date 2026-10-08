@@ -954,18 +954,20 @@ func (hm *HeroManager) DeployTroops(
 			cx, cy := hm.w/2, hm.h/2
 			pct := float64(offset) / 200.0
 			for k, e := range hm.pCfg.Edges {
+				scaled := ScaleEdge(e, hm.pCfg.Width, hm.pCfg.Height, hm.w, hm.h)
 				p1 := image.Pt(
-					int(float64(e.P1.X)+float64(cx-e.P1.X)*pct),
-					int(float64(e.P1.Y)+float64(cy-e.P1.Y)*pct),
+					int(float64(scaled.P1.X)+float64(cx-scaled.P1.X)*pct),
+					int(float64(scaled.P1.Y)+float64(cy-scaled.P1.Y)*pct),
 				)
 				p2 := image.Pt(
-					int(float64(e.P2.X)+float64(cx-e.P2.X)*pct),
-					int(float64(e.P2.Y)+float64(cy-e.P2.Y)*pct),
+					int(float64(scaled.P2.X)+float64(cx-scaled.P2.X)*pct),
+					int(float64(scaled.P2.Y)+float64(cy-scaled.P2.Y)*pct),
 				)
 				cfg.Edges[k] = ManualEdge{P1: p1, P2: p2}
 			}
+			cfg.Width, cfg.Height = hm.w, hm.h
 		}
-		count := 12
+		count := 15
 		if detectedCount > 0 {
 			count = (detectedCount + 3) / 4
 			if count < 4 {
@@ -974,8 +976,42 @@ func (hm *HeroManager) DeployTroops(
 		}
 		hm.executor.TapDeployFourSides(cfg, hm.targetEdge, count, 8)
 
-		hm.slotManager.MarkDeployed(unitName)
-		return true
+		time.Sleep(150 * time.Millisecond)
+		live, trusted, visualEmpty := hm.liveCountAndEmpty(slot)
+		if visualEmpty && (!trusted || live <= 0) {
+			hm.slotManager.MarkDeployed(unitName)
+			return true
+		}
+
+		// Troops still left in slot: fire a top-up round across 4 sides
+		if !visualEmpty {
+			hm.logger.Warn().
+				Str("unit", unit.Name).
+				Int("live_count", live).
+				Bool("trusted", trusted).
+				Msg("FourSides deploy left troops in slot; firing top-up pass")
+			hm.executor.TapSlot(slot, 8)
+			hm.executor.HumanSleep(120, 25)
+			topUpCount := 6
+			if trusted && live > 0 {
+				topUpCount = (live + 3) / 4
+				if topUpCount < 4 {
+					topUpCount = 4
+				}
+			}
+			hm.executor.TapDeployFourSides(cfg, hm.targetEdge, topUpCount, 8)
+
+			time.Sleep(150 * time.Millisecond)
+			live2, trusted2, visualEmpty2 := hm.liveCountAndEmpty(slot)
+			if visualEmpty2 && (!trusted2 || live2 <= 0) {
+				hm.slotManager.MarkDeployed(unitName)
+				return true
+			}
+		}
+
+		// Not empty: do not mark deployed so Sweeper finishes remaining troops
+		hm.slotManager.RecordAttempt(unitName, false)
+		return false
 	}
 
 	var p1, p2 image.Point
