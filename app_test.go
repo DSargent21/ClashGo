@@ -191,3 +191,30 @@ func TestApp_RefreshHistoryReReadsWarmCache(t *testing.T) {
 		t.Errorf("latest attack missing from history head: got %+v", got)
 	}
 }
+
+func TestApp_UpdaterBindings(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	// Initially updater is initialized
+	st := a.GetUpdateStatus()
+	if st.State == "" {
+		t.Errorf("expected non-empty state from GetUpdateStatus, got empty")
+	}
+
+	// InstallAndRestart with no update available returns error
+	err := a.InstallAndRestart()
+	if err == nil {
+		t.Error("expected error from InstallAndRestart when no update available, got nil")
+	}
+
+	// Nil updater guard
+	a.updater = nil
+	nilSt := a.GetUpdateStatus()
+	if nilSt.Error == "" {
+		t.Errorf("expected error in status when updater is nil, got empty")
+	}
+	if err := a.InstallAndRestart(); err == nil {
+		t.Error("expected error when updater is nil")
+	}
+}

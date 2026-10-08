@@ -130,7 +130,7 @@ function App() {
   // Updater state — pushed via `updater_status` event from Go.
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
   const [appVersion, setAppVersion] = useState('');
-  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
 
   // Config states
   const [goldThreshold, setGoldThreshold] = useState(400000);
@@ -317,7 +317,9 @@ function App() {
     try {
       const s = await CheckForUpdate();
       setUpdateStatus(s);
-      setUpdateDismissed(false);
+      if (s.available || s.state === 'ready') {
+        setIsUpdateModalOpen(true);
+      }
     } catch (err) {
       console.error('CheckForUpdate failed:', err);
     }
@@ -458,20 +460,20 @@ function App() {
               <h1 className="font-headline text-5xl font-bold tracking-tight capitalize text-zinc-950 dark:text-white">{tab}</h1>
             </div>
             <div className="flex gap-4 items-center">
-              {!updateDismissed && (
-                <UpdateBanner
-                  status={updateStatus}
-                  appVersion={appVersion}
-                  isBotRunning={isRunning}
-                  onCheckNow={handleUpdaterCheck}
-                  onDownload={handleUpdaterDownload}
-                  onApply={handleUpdaterApply}
-                  onUpdateAndRestart={handleUpdaterOneClick}
-                  onSkip={handleUpdaterSkip}
-                  onClearSkip={handleUpdaterClearSkip}
-                  onDismiss={() => setUpdateDismissed(true)}
-                />
-              )}
+              <UpdateBanner
+                status={updateStatus}
+                appVersion={appVersion}
+                isBotRunning={isRunning}
+                isOpen={isUpdateModalOpen}
+                onOpenChange={setIsUpdateModalOpen}
+                onCheckNow={handleUpdaterCheck}
+                onDownload={handleUpdaterDownload}
+                onApply={handleUpdaterApply}
+                onUpdateAndRestart={handleUpdaterOneClick}
+                onSkip={handleUpdaterSkip}
+                onClearSkip={handleUpdaterClearSkip}
+                onDismiss={() => setIsUpdateModalOpen(false)}
+              />
               <div className="bg-white dark:bg-zinc-900 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md" title={`ADB server port ${adbPort} — ${adbStateLabel}`}>
                 <div className="relative">
                   <div className={`w-2.5 h-2.5 rounded-full ${
@@ -504,6 +506,7 @@ function App() {
               updateStatus={updateStatus}
               onCheckUpdates={handleUpdaterCheck}
               onClearSkip={handleUpdaterClearSkip}
+              onOpenUpdateModal={() => setIsUpdateModalOpen(true)}
             />
           )}
         </div>

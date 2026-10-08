@@ -3,17 +3,15 @@
 # .app at Contents/Resources/ and invoked DETACHED by the Go updater
 # (internal/updater ApplyAuto) as:
 #
-#   bash install_update.sh <downloaded_zip> <current_bundle_path> <install_dir>
+#   bash install_update.sh <downloaded_zip> <current_bundle_path> <install_dir> [parent_pid]
 #
 # The Go updater has already verified the zip's SHA256 before calling us.
 # This script:
-#   0. Re-execs itself from a stable temp copy (see below).
-#   1. Waits for the parent ClashGO process to exit (it spawns us detached
-#      and then calls os.Exit(0) immediately).
+#   0. Re-execs itself from a stable temp copy.
+#   1. Waits for the parent ClashGO process to exit.
 #   2. Unzips the verified download into a temp staging dir.
-#   3. Strips quarantine + extended attributes (Gatekeeper "damaged"
-#      avoidance on macOS).
-#   4. Swaps the bundle at the install location.
+#   3. Strips quarantine + extended attributes and signs ad-hoc.
+#   4. Swaps the bundle atomically with backup rollback.
 #   5. Relaunches the new app.
 set -euo pipefail
 
@@ -25,8 +23,14 @@ APP_NAME="$(basename "$BUNDLE")" # ClashGO.app
 LOG_DIR="$HOME/Library/Application Support/ClashGO"
 LOG_FILE="$LOG_DIR/update_install.log"
 mkdir -p "$LOG_DIR"
+exec >>"$LOG_FILE" 2>&1
 
-log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG_FILE" 2>/dev/null || true; }
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" || true; }
+notify() {
+  local msg="$1"
+  local title="${2:-ClashGO Update}"
+  osascript -e "display notification \"$msg\" with title \"$title\"" 2>/dev/null || true
+}
 
 # 0. Re-exec from a stable temp copy. This script lives INSIDE the old
 #    .app bundle, and step 4 removes that bundle mid-run. bash reads
@@ -53,7 +57,7 @@ if [[ -n "$PARENT_PID" ]]; then
     if ! kill -0 "$PARENT_PID" 2>/dev/null; then
       break
     fi
-    sleep 1
+    sleep 0.5
   done
 else
   EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
@@ -62,20 +66,25 @@ else
     if ! pgrep -f "$BUNDLE/Contents/MacOS/$EXEC_NAME" >/dev/null 2>&1; then
       break
     fi
-    sleep 1
+    sleep 0.5
   done
 fi
-sleep 1
+sleep 0.5
 
 # 2. Sanity-check the verified download is present.
 if [[ ! -f "$ZIP" ]]; then
   log "install_update.sh: ERROR zip missing: $ZIP"
+  notify "Update package missing. Please re-download."
   exit 1
 fi
 
 # 3. Stage the new bundle in a temp dir (cleaned on any exit).
 STAGE="$(mktemp -d -t clashgo-update-XXXXXX)"
-unzip -q "$ZIP" -d "$STAGE" || { log "install_update.sh: ERROR unzip failed: $ZIP"; exit 1; }
+if ! unzip -q "$ZIP" -d "$STAGE"; then
+  log "install_update.sh: ERROR unzip failed: $ZIP"
+  notify "Failed to extract update package."
+  exit 1
+fi
 
 NEW_APP="$STAGE/$APP_NAME"
 if [[ ! -d "$NEW_APP" ]]; then
@@ -83,24 +92,41 @@ if [[ ! -d "$NEW_APP" ]]; then
 fi
 if [[ -z "$NEW_APP" || ! -d "$NEW_APP" ]]; then
   log "install_update.sh: ERROR no .app bundle found in $ZIP"
+  notify "No valid app bundle found in update."
   exit 1
 fi
 
 # 4. Strip quarantine + ACLs so Gatekeeper doesn't flag the fresh bundle
-#    as "damaged".
+#    as "damaged", then sign ad-hoc to seal the bundle.
 xattr -dr com.apple.quarantine "$NEW_APP" 2>/dev/null || true
 xattr -rc "$NEW_APP" 2>/dev/null || true
 chmod -R u+rwX,go+rX "$NEW_APP"
+codesign --force --deep -s - "$NEW_APP" 2>/dev/null || true
 
-# 5. Swap the bundle at the install location.
+# 5. Swap the bundle at the install location atomically with backup.
 DEST="$INSTALL_DIR/$APP_NAME"
-rm -rf "$DEST"
-if ! mv "$NEW_APP" "$DEST"; then
-  log "install_update.sh: ERROR mv to $DEST failed"
+BACKUP="$INSTALL_DIR/.${APP_NAME}.old.$$"
+
+if [[ -d "$DEST" ]]; then
+  mv "$DEST" "$BACKUP"
+fi
+
+if mv "$NEW_APP" "$DEST"; then
+  rm -rf "$BACKUP"
+  log "install_update.sh: successfully swapped bundle at $DEST"
+else
+  log "install_update.sh: ERROR moving bundle to $DEST failed; restoring backup"
+  [[ -d "$BACKUP" ]] && mv "$BACKUP" "$DEST"
+  notify "Failed to install update. Restored previous version."
   exit 1
 fi
 
 # 6. Relaunch from the install location.
-open "$DEST" 2>>"$LOG_FILE" || true
-log "install_update.sh: done — installed $DEST and relaunched"
+sleep 0.5
+if open -n "$DEST" || open "$DEST"; then
+  log "install_update.sh: done — installed $DEST and relaunched"
+else
+  log "install_update.sh: WARNING relaunch failed"
+  notify "ClashGO updated. Please open from Applications."
+fi
 exit 0

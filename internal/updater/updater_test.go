@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -659,14 +661,140 @@ func TestLiveGitHubCheck(t *testing.T) {
 	if !status.Available {
 		t.Errorf("expected Available=true when running 0.6.0-beta, got false (latest=%s)", status.LatestVersion)
 	}
-	if status.LatestVersion != "0.7.0-beta" {
-		t.Errorf("expected LatestVersion=0.7.0-beta, got %s", status.LatestVersion)
+	if CompareVersions(status.LatestVersion, "0.6.0-beta") <= 0 {
+		t.Errorf("expected LatestVersion > 0.6.0-beta, got %s", status.LatestVersion)
 	}
-	if status.AssetName != "ClashGO-v0.7.0-beta-macOS.zip" {
-		t.Errorf("expected AssetName=ClashGO-v0.7.0-beta-macOS.zip, got %s", status.AssetName)
+	if !strings.HasPrefix(status.AssetName, "ClashGO-") || !strings.HasSuffix(status.AssetName, "-macOS.zip") {
+		t.Errorf("expected macOS release asset name, got %s", status.AssetName)
 	}
 	if status.ExpectedSize <= 0 {
 		t.Errorf("expected positive ExpectedSize, got %d", status.ExpectedSize)
+	}
+}
+
+func TestApply_Validation(t *testing.T) {
+	s := New(DefaultConfig("0.1.0"))
+	// Not ready -> error
+	if err := s.Apply(); err == nil {
+		t.Fatal("expected error when Apply called on idle state")
+	}
+
+	// StateReady but empty path -> error
+	s.SetState(StateReady)
+	if err := s.Apply(); err == nil {
+		t.Fatal("expected error when Apply called with empty DownloadPath")
+	}
+
+	// StateRestarting but missing file -> verify error
+	s.SetState(StateRestarting)
+	s.statusMu.Lock()
+	s.status.DownloadPath = filepath.Join(t.TempDir(), "nonexistent.zip")
+	s.statusMu.Unlock()
+	if err := s.Apply(); err == nil {
+		t.Fatal("expected error when download file does not exist")
+	}
+}
+
+func TestApplyAuto_Validation(t *testing.T) {
+	s := New(DefaultConfig("0.1.0"))
+	// Not ready -> error
+	if _, err := s.ApplyAuto(); err == nil {
+		t.Fatal("expected error when ApplyAuto called on idle state")
+	}
+
+	// StateReady or StateRestarting with missing file
+	s.SetState(StateRestarting)
+	s.statusMu.Lock()
+	s.status.DownloadPath = filepath.Join(t.TempDir(), "nonexistent.zip")
+	s.statusMu.Unlock()
+	if _, err := s.ApplyAuto(); err == nil {
+		t.Fatal("expected error when download file does not exist")
+	}
+}
+
+func TestInstallUpdateScript_EndToEnd(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("skipping macOS helper script test on non-darwin")
+	}
+
+	helperScript, err := filepath.Abs("../../build/darwin/install_update.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(helperScript); err != nil {
+		t.Skipf("helper script not found at %s", helperScript)
+	}
+
+	tmp := t.TempDir()
+	appDir := filepath.Join(tmp, "Applications")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldApp := filepath.Join(appDir, "ClashGO.app")
+	oldMacOS := filepath.Join(oldApp, "Contents", "MacOS")
+	oldRes := filepath.Join(oldApp, "Contents", "Resources")
+	if err := os.MkdirAll(oldMacOS, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(oldRes, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(oldMacOS, "ClashGO"), []byte("#!/bin/sh\necho v1.0.0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	infoPlist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleExecutable</key><string>ClashGO</string></dict></plist>`
+	if err := os.WriteFile(filepath.Join(oldApp, "Contents", "Info.plist"), []byte(infoPlist), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	scriptCopy := filepath.Join(oldRes, "install_update.sh")
+	data, err := os.ReadFile(helperScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptCopy, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepare new app bundle in a zip
+	newStage := filepath.Join(tmp, "stage", "ClashGO.app")
+	newMacOS := filepath.Join(newStage, "Contents", "MacOS")
+	if err := os.MkdirAll(newMacOS, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newMacOS, "ClashGO"), []byte("#!/bin/sh\necho v2.0.0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newStage, "Contents", "Info.plist"), []byte(infoPlist), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	zipPath := filepath.Join(tmp, "update.zip")
+	zipCmd := exec.Command("zip", "-q", "-r", zipPath, "ClashGO.app")
+	zipCmd.Dir = filepath.Join(tmp, "stage")
+	if out, err := zipCmd.CombinedOutput(); err != nil {
+		t.Fatalf("zip failed: %v: %s", err, string(out))
+	}
+
+	// Run install_update.sh with empty parent pid so it proceeds immediately
+	cmd := exec.Command("bash", scriptCopy, zipPath, oldApp, appDir, "99999999")
+	cmd.Env = append(os.Environ(), "CLASHGO_HELPER_COPY=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install_update.sh failed: %v: %s", err, string(out))
+	}
+
+	// Verify bundle replaced
+	binContent, err := os.ReadFile(filepath.Join(oldMacOS, "ClashGO"))
+	if err != nil {
+		t.Fatalf("failed to read updated binary: %v", err)
+	}
+	if !strings.Contains(string(binContent), "v2.0.0") {
+		t.Errorf("binary content mismatch: want v2.0.0, got %s", string(binContent))
 	}
 }
 

@@ -11,11 +11,13 @@ interface SettingsViewProps {
   updateStatus: UpdateStatus;
   onCheckUpdates: () => void;
   onClearSkip: () => void;
+  onOpenUpdateModal?: () => void;
 }
 
 const SettingsView: React.FC<SettingsViewProps> = React.memo(({
   stats, adbPort, darkMode, setDarkMode, onResetStats,
   appVersion, updateStatus, onCheckUpdates, onClearSkip,
+  onOpenUpdateModal,
 }) => {
   // Destructive action protection: the first click only ARMS the reset
   // (visual shift + "click again" prompt); a second click within 4s
@@ -120,15 +122,23 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <div
           role="button"
           tabIndex={0}
-          onClick={onCheckUpdates}
+          onClick={() => {
+            if ((updateStatus.available || updateStatus.state === 'ready') && onOpenUpdateModal) {
+              onOpenUpdateModal();
+            } else {
+              onCheckUpdates();
+            }
+          }}
           onKeyDown={(e) => {
-            // Ignore keydowns originating from the nested "Resume
-            // notifications" button — otherwise pressing Space/Enter
-            // there would also trigger a manual update check.
+            // Ignore keydowns originating from nested buttons
             if (e.target !== e.currentTarget) return;
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              onCheckUpdates();
+              if ((updateStatus.available || updateStatus.state === 'ready') && onOpenUpdateModal) {
+                onOpenUpdateModal();
+              } else {
+                onCheckUpdates();
+              }
             }
           }}
           className="w-full flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group cursor-pointer text-left"
@@ -148,10 +158,27 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                     Update {updateStatus.latest_version} available
                   </span>
                 )}
+                {updateStatus.state === 'ready' && (
+                  <span className="ml-3 text-[10px] font-black uppercase tracking-widest text-emerald-500">
+                    v{updateStatus.latest_version} ready to install
+                  </span>
+                )}
               </span>
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {(updateStatus.available || updateStatus.state === 'ready') && onOpenUpdateModal && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenUpdateModal();
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-black uppercase tracking-[0.2em] transition-all duration-300 flex items-center gap-1.5 shadow-sm active:scale-95"
+              >
+                <span className="material-symbols-outlined text-xs">rocket_launch</span>
+                {updateStatus.state === 'ready' ? 'Install Now' : 'Update Now'}
+              </button>
+            )}
             {updateStatus.skip_version && (
               <button
                 onClick={(e) => { e.stopPropagation(); onClearSkip(); }}
@@ -161,7 +188,9 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                 Resume notifications
               </button>
             )}
-            <span className="material-symbols-outlined text-zinc-300 dark:text-zinc-700 group-hover:translate-x-1 transition-transform">refresh</span>
+            <span className="material-symbols-outlined text-zinc-300 dark:text-zinc-700 group-hover:translate-x-1 transition-transform">
+              {(updateStatus.available || updateStatus.state === 'ready') ? 'arrow_forward' : 'refresh'}
+            </span>
           </div>
         </div>
 

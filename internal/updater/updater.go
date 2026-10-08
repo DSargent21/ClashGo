@@ -35,6 +35,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
@@ -814,7 +815,7 @@ func fileSHA256(path string) (string, error) {
 // bundled in the .app, use ApplyAuto() instead for in-place replace.
 func (s *Service) Apply() error {
 	st := s.GetStatus()
-	if st.State != StateReady {
+	if st.State != StateReady && st.State != StateRestarting {
 		return errors.New("download not ready — call Download() first")
 	}
 	if st.DownloadPath == "" {
@@ -851,8 +852,11 @@ func (s *Service) ApplyAuto() (bool, error) {
 		return false, fmt.Errorf("auto-install only supported on macOS")
 	}
 	st := s.GetStatus()
-	if st.State != StateReady || st.DownloadPath == "" {
+	if (st.State != StateReady && st.State != StateRestarting) || st.DownloadPath == "" {
 		return false, errors.New("download not ready — call Download() first")
+	}
+	if _, err := os.Stat(st.DownloadPath); err != nil {
+		return false, fmt.Errorf("verify downloaded file: %w", err)
 	}
 
 	exe, err := os.Executable()
@@ -876,15 +880,16 @@ func (s *Service) ApplyAuto() (bool, error) {
 		return false, err
 	}
 
-	// Spawn detached so this process can safely Exit(0) and let the
-	// script do the swap without holding locks on the running binary.
-	// We pass the helper the parent of the bundle (typically /Applications)
-	// OR the install location, so it knows where to move the new app.
+	// Spawn detached in its own process group so this process can safely Exit(0)
+	// and let the helper script perform the swap without pipe broken errors.
 	installDir := filepath.Dir(bundlePath)
 
 	cmd := exec.Command("bash", helper, st.DownloadPath, bundlePath, installDir, fmt.Sprintf("%d", os.Getpid()))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		return false, fmt.Errorf("start helper: %w", err)
 	}

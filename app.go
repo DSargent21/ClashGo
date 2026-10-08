@@ -971,26 +971,23 @@ func (a *App) InstallAndRestart() error {
 	// even when no bot is running.
 	a.saveStats()
 
-	// Step 3: cover the Wails exit + helper wait window.
-	a.updater.SetState(updater.StateRestarting)
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "updater_status", a.updater.GetStatus())
-	}
-
-	// Step 4: detach the helper script. Returns (started, error).
-	// If false, the helper is missing (e.g. dev build); fall back to
-	// Finder-open and don't exit.
+	// Step 3: detach helper script for in-place bundle swap.
+	// Returns (started, error). If the helper is unavailable (e.g. running
+	// in terminal dev environment without .app bundle), gracefully fall back
+	// to Finder-open.
 	started, err := a.updater.ApplyAuto()
 	if err != nil || !started {
 		log.Warn().Err(err).Msg("InstallAndRestart: helper unavailable, falling back to Finder")
-		_ = a.updater.Apply()
-		// Revert state so the UI comes back to "ready" instead of
-		// staying on the restart splash.
-		a.updater.SetState(updater.StateReady)
-		if a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "updater_status", a.updater.GetStatus())
+		if applyErr := a.updater.Apply(); applyErr != nil {
+			return fmt.Errorf("install update: %w", applyErr)
 		}
-		return err
+		return nil
+	}
+
+	// Step 4: cover the Wails exit + helper wait window with restart splash.
+	a.updater.SetState(updater.StateRestarting)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "updater_status", a.updater.GetStatus())
 	}
 
 	// Step 5: exit cleanly so the helper script's PID wait resolves.

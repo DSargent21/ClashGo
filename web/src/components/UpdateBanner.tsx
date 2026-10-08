@@ -19,6 +19,8 @@ interface UpdateBannerProps {
   status: UpdateStatus | null;
   appVersion: string;
   isBotRunning: boolean;
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onCheckNow: () => void;
   onDownload: () => Promise<string>;
   onApply: () => Promise<void>;
@@ -82,6 +84,8 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   status,
   appVersion,
   isBotRunning,
+  isOpen,
+  onOpenChange,
   onCheckNow,
   onDownload,
   onApply,
@@ -90,7 +94,15 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   onClearSkip,
   onDismiss,
 }) => {
-  const [open, setOpen] = React.useState(false);
+  const [internalOpen, setInternalOpen] = React.useState(false);
+  const open = isOpen !== undefined ? isOpen : internalOpen;
+  const setOpen = React.useCallback(
+    (val: boolean) => {
+      setInternalOpen(val);
+      onOpenChange?.(val);
+    },
+    [onOpenChange]
+  );
   const [busy, setBusy] = React.useState<string | null>(null);
   const [lastError, setLastError] = React.useState<string | null>(null);
   const [mountedChecksumFlash, setMountedChecksumFlash] = React.useState(false);
@@ -347,11 +359,13 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                   </span>
                   {busy === 'oneclick'
                     ? status.state === 'ready'
-                      ? 'Installing…'
-                      : 'Downloading & installing…'
+                      ? 'Installing & restarting…'
+                      : progressPct > 0
+                        ? `Downloading & installing (${progressPct}%)…`
+                        : 'Downloading & installing…'
                     : status.state === 'ready'
                       ? 'Install & Restart'
-                      : `Update to v${status.latest_version}`}
+                      : `1-Click Update to v${status.latest_version}`}
                 </span>
               </button>
 
