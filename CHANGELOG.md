@@ -14,6 +14,13 @@ All notable changes to this project will be documented in this file.
 - **Obstacle Dialog & Return Home Dismissal Watchdog** (`internal/bot/bot.go`, `internal/attack/attack.go`):
   - Added fast dismissal for accidental obstacle dialog popups during village capture loops.
   - Handled `StateConnectionLost` and ticker deadline bounds in `WaitForBattleEndCtx` to eliminate battle end hangs.
+- **Streamlined 1-Click Auto-Update & In-Place Replacement** (`app.go`, `internal/updater/updater.go`, `build/darwin/install_update.sh`):
+  - Fixed premature state transition: `ApplyAuto()` and `Apply()` now permit both `StateReady` and `StateRestarting`, resolving the "download not ready" error that blocked auto-installations.
+  - Spawns helper in a detached process group (`Setpgid: true`) with redirected logging to avoid broken pipe signals on process termination.
+  - Implemented atomic bundle swap with rollback fallback in `install_update.sh`, ad-hoc code-signing re-seal, and quarantine cleanup.
+- **Persistent In-App Update Banner & Settings Integration** (`web/src/App.tsx`, `web/src/components/UpdateBanner.tsx`, `web/src/components/SettingsView.tsx`):
+  - Retains header update badge even when modal dialog is dismissed ("Later" or closed), ensuring 1-click update is always reachable.
+  - Added direct "Update Now" / "Install Now" launcher in Settings App Version section.
 
 ## [0.7.0-beta] - 2026-10-07
 

@@ -28,13 +28,8 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
   on-screen text — a terminal-only "eye view" for debugging without a
   GUI. See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
 - **Replayable attacks**: `make attack-record` records a deploy you perform on the emulator; `make attack-replay` re-fires that JSON on the device with classification + extras. Useful for sharing working attacks without re-engineering.
-  - **In-app updater (auto-pop)**: New releases ship through GitHub
-    Releases. When a version is published, ClashGO **pops up the update
-    window on its own** (no click needed) offering one-click
-    *Update & Restart*: it downloads the zip, verifies the SHA256
-    against `latest.json`, swaps the running app in place, and relaunches.
-    No new servers, no manual checks. "Later" silences it for the session;
-    "Skip version" silences it permanently.
+- **Intuitive 1-Click In-App Updater**: New releases ship through GitHub Releases. When an update is detected, ClashGO auto-pops the release window and highlights a persistent status pill in the header. Clicking **1-Click Update & Restart** automatically downloads the verified bundle, stops the running bot cleanly, swaps the macOS bundle in place using a detached helper, re-signs ad-hoc, and relaunches seamlessly with rollback protection. "Later" keeps the header pill accessible for whenever you're ready, and updates can also be triggered directly from Settings.
+- **Headless CLI (`bot_cli`)**: Full bot engine without WebKit/GUI overhead. Ideal for 24/7 background tmux sessions or low-spec machines. Check version with `./build/bin/bot_cli -v` and run with `-perf` for maximum efficiency.
 
 ### 🛠️ How to use
 1. **Emulator**: Set your emulator (like BlueStacks) to **860x732** resolution and **160 DPI**.
@@ -43,6 +38,7 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
    - **CLI (Lightweight & Max Performance)**:
      ```bash
      make build-cli
+     ./build/bin/bot_cli -v                             # Print version & commit
      ./build/bin/bot_cli -perf -gold 600000 -elixir 600000
      ```
      See [`docs/CLI.md`](docs/CLI.md) for all options (`-perf`, `-once`, `-deploy-only`, `-devices`, `-strategies`).
@@ -51,7 +47,7 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
      make build-gui && open build/bin/ClashGO.app
      ```
 
-### 💾 Resource usage (estimates)
+### 💾 Resource usage & Performance metrics (estimates)
 
 All numbers below are **principled estimates from code analysis** (frame
 sizing, mat pool, template cache, capture-loop cadence), not live
@@ -64,10 +60,14 @@ validates them on your machine.
 - Full capture frame: `860 × 732 × 3 ≈ 1.80 MB`
 - Half-size frame (Live View JPEG encode): `430 × 366 × 3 ≈ 0.47 MB`
 
-| Scenario | ClashGO (Go) RSS | ClashGO CPU¹ | + BlueStacks RSS² | Combined RSS (est.) |
-|----------|----------------:|-------------:|------------------:|--------------------:|
-| **Idle / UI only** (1 FPS capture) | ~60–90 MB | ~1–3% (1 core) | ~800 MB–1.2 GB | ~0.9–1.3 GB |
-| **Active battle @ 15 FPS** | ~90–140 MB | ~15–25% (1 core) | ~1.0–1.5 GB | ~1.1–1.7 GB |
+| Scenario | ClashGO RSS | ClashGO CPU¹ | + BlueStacks RSS² | Combined RSS (est.) |
+|----------|------------:|-------------:|------------------:|--------------------:|
+| **CLI Headless (Idle / UI only)** | **~25–40 MB** | **<1% (1 core)** | ~800 MB–1.2 GB | **~0.8–1.2 GB** |
+| **CLI Headless (Active battle @ 15 FPS, `-perf`)** | **~45–70 MB** | **~8–15% (1 core)** | ~1.0–1.5 GB | **~1.0–1.6 GB** |
+| **GUI (Idle / UI only)** (1 FPS capture) | ~60–90 MB | ~1–3% (1 core) | ~800 MB–1.2 GB | ~0.9–1.3 GB |
+| **GUI (Active battle @ 15 FPS)** | ~90–140 MB | ~15–25% (1 core) | ~1.0–1.5 GB | ~1.1–1.7 GB |
+
+> **CLI vs GUI Footprint**: The CLI (`bot_cli`) strips out the embedded Wails / WebKit browser runtime, saving ~35–50 MB RSS and eliminates UI re-render cycles entirely for maximum 24/7 battery and CPU efficiency.
 
 ¹ CPU is single-core; the bot is largely single-threaded per capture frame
 (classify + template match + tap). Higher FPS = proportionally more CPU.
