@@ -1076,9 +1076,9 @@ func (hm *HeroManager) DeployTroops(
 		tapCountMeasured = true
 	}
 	if strings.EqualFold(unit.Amount, "All") && p1 != p2 {
-		minTaps := 16
+		minTaps := 22
 		if strings.Contains(unitName, "dragon") {
-			minTaps = 12
+			minTaps = 16
 		}
 		if tapCount < minTaps {
 			tapCount = minTaps
@@ -1182,7 +1182,7 @@ func (hm *HeroManager) DeployTroops(
 		if !trusted && tapCountMeasured {
 			unreadableReads++
 			if unreadableReads >= maxUnreadableReconcileReads {
-				if strings.EqualFold(unit.Amount, "All") && tapCount >= 12 && p1 != p2 {
+				if strings.EqualFold(unit.Amount, "All") && tapCount >= 16 && p1 != p2 {
 					hm.logger.Info().
 						Str("unit", unit.Name).
 						Int("reads", unreadableReads).
@@ -1213,6 +1213,8 @@ func (hm *HeroManager) DeployTroops(
 		fire := live
 		if !trusted || fire <= 0 {
 			fire = blindBatchTaps
+		} else {
+			fire += 2
 		}
 		hm.executor.TapSlot(slot, 4)
 		hm.executor.HumanSleep(reconcileSettleMs, 30)

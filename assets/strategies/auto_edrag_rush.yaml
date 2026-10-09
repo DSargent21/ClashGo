@@ -5,6 +5,7 @@ description: "Professional Balloon + EDrag attack with Double Diamond precision.
 #   "Random" - pick a random corner per attack (recommended for unattended runs)
 #   "Rotate"  - cycle TL -> TR -> BR -> BL across attacks (persistent state)
 target_edge: "Random"
+stall_timer_seconds: 35
 auto_deploy_eventTroops: true
 phases:
   - name: "Balloons"

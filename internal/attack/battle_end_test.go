@@ -134,6 +134,35 @@ func TestResolveEndAtPercent_ValkDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveStallTimerSeconds(t *testing.T) {
+	cfg := &config.AttackConfig{StallTimerSeconds: 30}
+	
+	// 1. Without strategy override, uses config value
+	stratNoOverride := &strategy.DynamicStrategy{Name: "Generic"}
+	if got := resolveStallTimerSeconds(cfg, stratNoOverride); got != 30 {
+		t.Fatalf("default stall seconds = %d, want 30", got)
+	}
+
+	// 2. Strategy override takes precedence
+	overrideSec := 40
+	stratOverride := &strategy.DynamicStrategy{Name: "Auto EDrag Rush", StallTimerSeconds: &overrideSec}
+	if got := resolveStallTimerSeconds(cfg, stratOverride); got != 40 {
+		t.Fatalf("strategy override stall seconds = %d, want 40", got)
+	}
+
+	// 3. Strategy can disable stall timer with 0
+	disableSec := 0
+	stratDisabled := &strategy.DynamicStrategy{Name: "No Stall", StallTimerSeconds: &disableSec}
+	if got := resolveStallTimerSeconds(cfg, stratDisabled); got != 0 {
+		t.Fatalf("strategy disabled stall seconds = %d, want 0", got)
+	}
+
+	// 4. Nil cfg falls back safely
+	if got := resolveStallTimerSeconds(nil, stratNoOverride); got != 0 {
+		t.Fatalf("nil config without strategy override = %d, want 0", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Stall-timer suppression in threshold mode
 //

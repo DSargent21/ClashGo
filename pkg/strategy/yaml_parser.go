@@ -45,6 +45,11 @@ type DynamicStrategy struct {
 	// and should not wait out the full stall timer.
 	EndAtPercent int `yaml:"end_at_percent"`
 
+	// StallTimerSeconds optionally overrides the battle stall timer in seconds.
+	// 0 disables the stall timer for this strategy. If omitted (nil), falls
+	// back to the global AttackConfig.StallTimerSeconds.
+	StallTimerSeconds *int `yaml:"stall_timer_seconds,omitempty"`
+
 	// ArmySlot is the saved-army recipe to arm before attacking
 	// (1-based, default 1). Each saved recipe holds a different
 	// composition, so a strategy must declare which recipe its unit

@@ -1772,6 +1772,19 @@ func resolveEndAtPercent(cfg *config.AttackConfig, s *strategy.DynamicStrategy) 
 	return 0
 }
 
+// resolveStallTimerSeconds returns the effective stall timer in seconds.
+// Explicit strategy overrides in s.StallTimerSeconds take precedence. When
+// unconfigured, falls back to cfg.StallTimerSeconds (or 0 if cfg is nil).
+func resolveStallTimerSeconds(cfg *config.AttackConfig, s *strategy.DynamicStrategy) int {
+	if s != nil && s.StallTimerSeconds != nil {
+		return *s.StallTimerSeconds
+	}
+	if cfg != nil {
+		return cfg.StallTimerSeconds
+	}
+	return 0
+}
+
 // reconstructTensDigit heals a dropped tens digit from monotonic destruction.
 // CoC destruction only increases; if lastPct >= 30 and currentPct is 0..9,
 // OCR dropped the tens digit (e.g. 49% -> 2% is actually 52%).
@@ -1879,7 +1892,8 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 
 	lastPct := 0
 	lastPctTime := time.Now()
-	stallLimit := time.Duration(e.cfg.StallTimerSeconds) * time.Second
+	stallSec := resolveStallTimerSeconds(e.cfg, e.activeStrategy)
+	stallLimit := time.Duration(stallSec) * time.Second
 	// Consecutive no-progress stalls in this battle, used to throttle the
 	// "keeping battle alive" log to one Warn per stall episode.
 	stallEpisodes := 0
@@ -1968,7 +1982,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			// BELOW it — ending early on a stall would abandon the win
 			// the strategy is built around (e.g. valk_spam's 50%). Only
 			// the deadline bounds how long we keep waiting for it.
-			if hasStallROI && (e.cfg.StallTimerSeconds > 0 || endAtPct > 0) {
+			if hasStallROI && (stallSec > 0 || endAtPct > 0) {
 				currentPct := lootRec.ReadDestructionPercentage(screen, pRoi)
 
 				// Garbage-read guard: destruction can never exceed 100, so a
@@ -2044,7 +2058,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 					}
 				}
 
-				if e.cfg.StallTimerSeconds > 0 && endAtPct == 0 {
+				if stallSec > 0 && endAtPct == 0 {
 					if currentPct > lastPct {
 						lastPct = currentPct
 						lastPctTime = time.Now()

@@ -300,7 +300,7 @@ func DefaultConfig() *BotConfig {
 			QueenChargeAtPct:         50,
 			WardenUseAtPct:           30,
 			ReserveDEPercent:         200,
-			StallTimerSeconds:        10,
+			StallTimerSeconds:        30,
 			MinSecondsBetweenAttacks: 30,
 		},
 		Search: SearchConfig{
