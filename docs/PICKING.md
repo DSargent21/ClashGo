@@ -175,3 +175,21 @@ one side at a time.
 The tool never writes frames to disk and captures only when the page asks for a
 frame, so it cannot turn into the runaway capture loop that once filled this
 machine's disk.
+
+---
+
+## Visual ROI & Template Picker (`cmd/roi_picker`)
+
+When you need to calibrate clickable buttons, hero cards, or troop slots on live screens without guessing pixel coordinates or editing JSON by hand, use the visual ROI picker:
+
+```bash
+make roi-picker              # serves picker on http://127.0.0.1:8795/
+make roi-picker ARGS="-open" # opens directly in default browser
+```
+
+Features:
+- **Live Frame Streaming**: Click **Capture Frame** to fetch the current live BlueStacks display state.
+- **Visual Drag & Drop**: Click and drag bounding boxes over elements (e.g. Return Home button, 4x speed button, troop slots, hero cards).
+- **Instant Template Cropping**: Automatically saves cropped templates directly into `assets/templates/` with proper category prefixing.
+- **JSON Configuration Export**: Directly exports coordinates and dimensions formatted for `manual_slots.json`, `buttons.json`, or precision configs.
+

@@ -28,6 +28,8 @@ Look, I made this fast. It's rough around the edges, probably has bugs, and migh
   on-screen text — a terminal-only "eye view" for debugging without a
   GUI. See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
 - **Replayable attacks**: `make attack-record` records a deploy you perform on the emulator; `make attack-replay` re-fires that JSON on the device with classification + extras. Useful for sharing working attacks without re-engineering.
+- **Interactive Visual ROI Picker**: `make roi-picker` serves an interactive web UI on `http://127.0.0.1:8795/` allowing visual box dragging on live emulator frames to calibrate buttons, troop slots, and hero cards with instant template cropping and JSON exports.
+- **Battle 4x Speed-Up**: Automatically triggers the 4x fast-forward button after 2 minutes of elapsed battle time to speed through cleanup.
 - **Intuitive 1-Click In-App Updater**: New releases ship through GitHub Releases. When an update is detected, ClashGO auto-pops the release window and highlights a persistent status pill in the header. Clicking **1-Click Update & Restart** automatically downloads the verified bundle, stops the running bot cleanly, swaps the macOS bundle in place using a detached helper, re-signs ad-hoc, and relaunches seamlessly with rollback protection. "Later" keeps the header pill accessible for whenever you're ready, and updates can also be triggered directly from Settings.
 - **Headless CLI (`bot_cli`)**: Full bot engine without WebKit/GUI overhead. Ideal for 24/7 background tmux sessions or low-spec machines. Check version with `./build/bin/bot_cli -v` and run with `-perf` for maximum efficiency.
 
@@ -97,11 +99,11 @@ always **BlueStacks**, not the bot.
 
 Updates are powered by GitHub Releases — no extra infrastructure.
 
-1. Bump `productVersion` in `wails.json` (e.g. `0.3.0-beta`).
+1. Bump `productVersion` in `wails.json` (e.g. `0.9.0-beta`).
 2. Commit + push, then tag it:
 
    ```sh
-   git tag v0.3.0-beta && git push origin v0.3.0-beta
+   git tag v0.9.0-beta && git push origin v0.9.0-beta
    ```
 
    Pushing a `v*` tag runs the **Release** workflow
@@ -115,10 +117,11 @@ Updates are powered by GitHub Releases — no extra infrastructure.
 
 Manual fallback (no CI):
 
-1. `make release VERSION=0.3.0-beta` — produces the zip, the DMG,
+1. `make release VERSION=0.9.0-beta` — produces the zip, the DMG,
    and `latest.json`.
-2. Publish a GitHub release tagged `v0.3.0-beta`, and attach:
-   - `ClashGO-v0.3.0-beta-macOS.zip`
+2. Publish a GitHub release tagged `v0.9.0-beta`, and attach:
+   - `ClashGO-v0.9.0-beta-macOS.zip`
+   - `ClashGO.dmg`
    - `latest.json`
 
 ### 🤝 HELP WANTED (Porting to Windows)
