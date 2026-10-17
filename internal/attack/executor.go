@@ -454,22 +454,56 @@ func (t *TapExecutor) clearsSiege(pt image.Point) bool {
 	return dx*dx+dy*dy >= clearance*clearance
 }
 
+// avoidUIButtons ensures any field placement tap does not land on the End Battle,
+// Boost Army, or Boost Heroes UI overlay in the bottom-left region above the troop bar.
+func (t *TapExecutor) avoidUIButtons(pt image.Point) (image.Point, bool) {
+	h := 768
+	if t.cal != nil && t.cal.PhysicalH > 0 {
+		h = t.cal.PhysicalH
+	}
+	// Cutoff below which UI overlay buttons sit (Boost Army/Heroes, End Battle)
+	// In 768p: bottom-left UI buttons sit at y > 530, x < 460.
+	// In 720p: bottom-left UI buttons sit at y > 500, x < 430.
+	cutoffY := int(float64(h) * 0.69)
+	cutoffX := int(float64(h) * 0.60)
+	if pt.X < cutoffX && pt.Y > cutoffY {
+		moved := image.Pt(pt.X, cutoffY-15)
+		t.logger.Warn().
+			Interface("was", pt).
+			Interface("moved_to", moved).
+			Msg("placement tap lands in End Battle / Boost button region; nudged upward into safe field")
+		return moved, true
+	}
+	return pt, false
+}
+
+// safeFieldPoint ensures pt does not hit the placed siege machine or bottom-left UI buttons.
+func (t *TapExecutor) safeFieldPoint(pt image.Point) image.Point {
+	if moved, ok := t.avoidSiegeGround(pt); ok {
+		pt = moved
+	}
+	if moved, ok := t.avoidUIButtons(pt); ok {
+		pt = moved
+	}
+	return pt
+}
+
 // avoidSiegeGroundXY is avoidSiegeGround for the batched tap loops, which work
 // in raw coordinates rather than points.
 func (t *TapExecutor) avoidSiegeGroundXY(x, y int) (int, int) {
-	moved, _ := t.avoidSiegeGround(image.Pt(x, y))
-	return moved.X, moved.Y
+	pt := t.safeFieldPoint(image.Pt(x, y))
+	return pt.X, pt.Y
 }
 
 // TapUnitField fires ONE unit placement tap on the field, moved clear of any
-// siege machine already standing there.
+// siege machine already standing there and clear of bottom-left UI buttons.
 //
 // Every single-tap placement path goes through here (hero drops, hero field-tap
-// retries, sweep hero taps), so the siege tile is protected in one place rather
+// retries, sweep hero taps), so the siege tile and UI buttons are protected in one place rather
 // than in each caller. Jitter belongs OUTSIDE this call: the clearance check has
 // to be the last thing between the caller's aim and the wire.
 func (t *TapExecutor) TapUnitField(pt image.Point, stdDev float64) {
-	pt, _ = t.avoidSiegeGround(pt)
+	pt = t.safeFieldPoint(pt)
 	t.noteInput(t.client.TapFast(pt.X, pt.Y, stdDev), "unit field tap")
 }
 
@@ -518,25 +552,14 @@ func (t *TapExecutor) fireSlotTap(slot *TrackedSlot, jitterPx int) error {
 }
 
 // TapDeployLine distributes taps along a line from p1 to p2.
-// Direction alternates per call (boustrophedon): down the line, then
-// back up the next call, so consecutive passes never restart at the top.
+// Anchors each end of the line (p1, p2) first, then fans the remaining units
+// in the central segment of the line.
 func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int) {
 	points := t.calculateLinePoints(p1, p2, count)
 
-	t.lineForward = !t.lineForward
-	if !t.lineForward {
-		for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
-			points[i], points[j] = points[j], points[i]
-		}
-	}
-
-	// A sweep re-firing troops after the siege phase walks the same line, and the
-	// pinned line can run straight through the machine's tile. Move any point that
-	// would land on it before batching, so the protection costs no extra tap.
+	// Protect points from landing on placed siege machine or bottom-left UI buttons.
 	for i, pt := range points {
-		if moved, ok := t.avoidSiegeGround(pt); ok {
-			points[i] = moved
-		}
+		points[i] = t.safeFieldPoint(pt)
 	}
 
 	for i := 0; i < len(points); {
@@ -563,7 +586,7 @@ func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int)
 
 // TapDeployPoint clusters taps around a single point.
 func (t *TapExecutor) TapDeployPoint(pt image.Point, count int, jitterPx int) {
-	pt, _ = t.avoidSiegeGround(pt)
+	pt = t.safeFieldPoint(pt)
 	for i := 0; i < count; {
 		rem := count - i
 		if rem >= 3 {
@@ -724,12 +747,30 @@ func (t *TapExecutor) addJitter(pt image.Point, maxPixels int) image.Point {
 }
 
 // calculateLinePoints distributes points along a line.
+// Places one unit at each end (p1, p2) as funnel anchors, then fans the
+// remaining units evenly across the middle segment of the line.
 func (t *TapExecutor) calculateLinePoints(p1, p2 image.Point, count int) []image.Point {
+	if count <= 0 {
+		return nil
+	}
+	if count == 1 {
+		tx, ty := intLerp(p1, p2, 0.5)
+		return []image.Point{image.Pt(tx, ty)}
+	}
+	if count == 2 {
+		return []image.Point{p1, p2}
+	}
+
 	points := make([]image.Point, 0, count)
-	for i := 0; i < count; i++ {
+	// Anchors on each end of the line
+	points = append(points, p1, p2)
+
+	// Remaining units fan across the middle section (20% to 80%)
+	rem := count - 2
+	for i := 0; i < rem; i++ {
 		pct := 0.5
-		if count > 1 {
-			pct = float64(i) / float64(count-1)
+		if rem > 1 {
+			pct = 0.20 + 0.60*(float64(i)/float64(rem-1))
 		}
 		tx, ty := intLerp(p1, p2, pct)
 		points = append(points, image.Pt(tx, ty))

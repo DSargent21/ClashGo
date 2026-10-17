@@ -129,11 +129,13 @@ func (dp *DeployPlanner) planUnit(unit strategy.Unit, phase strategy.Phase) Unit
 		unit.Pattern = phase.Pattern
 	}
 
+	isSiege := isSiegeStatic(unitName) || strings.Contains(unitName, "castle") || unitName == "cc"
+
 	plan := UnitPlan{
 		Unit:      unit,
 		IsSpell:   isSpellStatic(unitName),
 		IsHero:    isHeroStatic(unitName),
-		IsSiege:   isSiegeStatic(unitName),
+		IsSiege:   isSiege,
 		IsAbility: isAbility,
 		Retry:     dp.defaultRetry,
 	}
@@ -150,6 +152,10 @@ func (dp *DeployPlanner) planUnit(unit strategy.Unit, phase strategy.Phase) Unit
 	if slot == nil {
 		dp.logger.Warn().Str("unit", unit.Name).Msg("unit not found in bar")
 		return plan
+	}
+
+	if slot.Category == "Siege" || slot.Category == "CC" {
+		plan.IsSiege = true
 	}
 
 	plan.Slot = slot

@@ -280,6 +280,19 @@ func (c *Classifier) evaluateRules(screen gocv.Mat, detail, earlyExit bool) []Ru
 				if err == nil && len(matches) > 0 {
 					bestConf = matches[0].Confidence
 					templatePassed = true
+				} else if rule.Template == "btn_attack" {
+					if altTpl, altOk := c.templates.Get("btn_battle_village"); altOk && altTpl.Cols() > 1 && altTpl.Rows() > 1 {
+						altROI := RuleSearchROI(c.cal, "btn_battle_village", rule.Anchor, image.Rect(0, 0, screen.Cols(), screen.Rows()))
+						altMatches, altErr := vision.MatchMultiScaleROICached(
+							screen, altTpl, "btn_battle_village",
+							k*0.9, k*1.1, 3, c.cfg.TemplateThreshold,
+							altROI,
+						)
+						if altErr == nil && len(altMatches) > 0 {
+							bestConf = altMatches[0].Confidence
+							templatePassed = true
+						}
+					}
 				}
 			}
 		}
@@ -386,20 +399,28 @@ func (c *Classifier) buildRules() {
 		},
 		// StateChestReward is the post-attack event-reward chest screen.
 		//
-		// Detection is TEMPLATE-ONLY: the hammer icon + "TAP TO OPEN"
-		// prompt vanish the moment the chest breaks, and never appear
-		// on a normal village screen.  Pixel-based checks were tried
-		// but the bottom-center dark band (the TAP TO OPEN shadow)
-		// appears in several other CoC overlays and the village
-		// itself, causing false positives.  Priority 94 sits just
-		// below the obstruction modals (GemDialog=96,
-		// ObstacleDialog=95).
+		// Detection uses the distinct vault room signature (arched sunlight
+		// beam at top center, dark stone walls, warm wooden floor) and/or
+		// the hammer prompt template if present. Priority 98 ensures it outranks
+		// transitional splash states (e.g. TapToContinue at 97 whose "Tap!" probe
+		// otherwise misfires on the chest's "Tap!" prompt).
 		{
 			State:    StateChestReward,
-			Priority: 94,
-			Weight:   94,
-			Desc:     "post-attack reward chest screen (hammer template only)",
-			MinPass:  0,
+			Priority: 98,
+			Weight:   105,
+			Desc:     "post-attack reward chest screen (vault room or hammer template)",
+			Anchor:   AnchorEdge,
+			MinPass:  3,
+			Checks: []PixelCheck{
+				// Bright arched window sunlight beam at top center
+				{430, 122, 0xF0, 0xEB, 0xCD, 45},
+				// Top-left dark stone wall
+				{40, 50, 0x36, 0x2A, 0x1F, 45},
+				// Top-right dark stone wall
+				{820, 50, 0x32, 0x21, 0x11, 45},
+				// Bottom-right warm wood floor
+				{760, 690, 0x60, 0x2C, 0x18, 45},
+			},
 			Template: "hammer",
 		},
 		{
@@ -1006,6 +1027,16 @@ func (c *Classifier) buildRules() {
 				// label text. Battle frames read (17-19,32-35,46-89) at this
 				// point — 200+ away.
 				{41, 654, 0xEF, 0xA5, 0x4B, 40}, // live (54,617) Attack! face
+
+				// UI Overhaul (2026): Elixir storage icon (Top Right) in compressed resource stack
+				{830, 65, 0xFB, 0x3D, 0xFF, 45},
+
+				// UI Overhaul (2026): Battle button yellow face (Bottom Left)
+				{23, 713, 0xFD, 0xB2, 0x0F, 35},
+				{19, 678, 0xFF, 0xC2, 0x14, 35},
+
+				// UI Overhaul (2026): Build button yellow face (Bottom Right)
+				{837, 701, 0xFC, 0xB7, 0x0F, 35},
 			},
 		},
 		{

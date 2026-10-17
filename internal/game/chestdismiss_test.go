@@ -675,3 +675,108 @@ func TestChestDismiss_ContinueFails(t *testing.T) {
 		t.Errorf("expected %d capture calls, got %d", want, got)
 	}
 }
+
+// TestChestDismiss_LocateContinueButtonOnRealFrame tests dynamic button recognition
+// on live-captured frames: true on the reward screen, false while chest is closed or breaking.
+func TestChestDismiss_LocateContinueButtonOnRealFrame(t *testing.T) {
+	dev := newFakeDevice(1)
+	defer dev.Close()
+	sc := &scriptedClassifier{states: []GameState{StateMainVillage}}
+	nav := makeTestNavigator(dev, sc)
+
+	const path = "testdata/chest_test_frames/chest_reward.png"
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skipf("fixture %s not present on disk; skipping", path)
+	}
+	rewardMat := gocv.IMRead(path, gocv.IMReadColor)
+	defer rewardMat.Close()
+	if rewardMat.Empty() {
+		t.Fatal("failed to read chest_reward.png")
+	}
+
+	pt, ok := nav.locateContinueButton(rewardMat)
+	if !ok {
+		t.Fatalf("expected locateContinueButton to find button on chest_reward.png")
+	}
+	// On 1280x720, Continue button center is (650, 660)
+	if pt.X < 600 || pt.X > 700 || pt.Y < 620 || pt.Y > 690 {
+		t.Fatalf("located button point (%d,%d) out of expected Continue bounds", pt.X, pt.Y)
+	}
+
+	closedPath := "testdata/chest_test_frames/chest_closed.png"
+	if _, err := os.Stat(closedPath); err == nil {
+		closedMat := gocv.IMRead(closedPath, gocv.IMReadColor)
+		defer closedMat.Close()
+		if nav.hasContinueButton(closedMat) {
+			t.Fatalf("expected hasContinueButton to be false on chest_closed.png")
+		}
+	}
+
+	breakingPath := "testdata/chest_test_frames/chest_breaking.png"
+	if _, err := os.Stat(breakingPath); err == nil {
+		breakingMat := gocv.IMRead(breakingPath, gocv.IMReadColor)
+		defer breakingMat.Close()
+		if nav.hasContinueButton(breakingMat) {
+			t.Fatalf("expected hasContinueButton to be false on chest_breaking.png")
+		}
+	}
+}
+
+// TestChestDismiss_EndToEndSequenceWithRealFrames tests full real-world chest dismiss flow:
+// chest_closed -> chest_breaking -> chest_reward (detects Continue) -> village_720p.
+func TestChestDismiss_EndToEndSequenceWithRealFrames(t *testing.T) {
+	withFastChestAnimSettle(t)
+	fixtures := []string{
+		"testdata/chest_test_frames/chest_closed.png",   // iter 0 check
+		"testdata/chest_test_frames/chest_breaking.png", // iter 1 check
+		"testdata/chest_test_frames/chest_reward.png",   // iter 2 check -> hasContinueButton exits loop
+		"testdata/corpus/village_720p.png",              // continueRect tap verify -> verifyAtMainVillage PASS
+	}
+	for _, p := range fixtures {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Skipf("fixture %s missing", p)
+		}
+	}
+	fd := &fakeDevice{}
+	defer fd.Close()
+	for _, p := range fixtures {
+		m := gocv.IMRead(p, gocv.IMReadColor)
+		fd.caps = append(fd.caps, m)
+		fd.allMats = append(fd.allMats, m)
+	}
+
+	cal := NewCalibration(1280, 720)
+	c := NewClassifier(cal, DefaultClassifierConfig(), zerolog.Nop())
+	classifyWrap := func(m gocv.Mat) (GameState, int) {
+		st, sc := c.ClassifyState(m)
+		t.Logf("CLASSIFY capIdx=%d: state=%s score=%d", fd.capIdx, st, sc)
+		return st, sc
+	}
+	nav := &Navigator{
+		client:     fd,
+		cal:        cal,
+		classifier: c,
+		logger:     zerolog.Nop(),
+		classify:   classifyWrap,
+		cfg:        DefaultNavigatorConfig(),
+	}
+
+	cfg := &ChestROISchema{
+		TapROI: &Rectangle{X1: 354, Y1: 320, X2: 499, Y2: 447},
+	}
+	continueRect := &Rectangle{X1: 348, Y1: 634, X2: 534, Y2: 694}
+
+	err := nav.dismissChestRewardWithCfg(cfg, continueRect)
+	if err != nil {
+		t.Fatalf("expected successful dismissal, got err: %v", err)
+	}
+
+	if len(fd.recorded) < 2 {
+		t.Fatalf("expected at least 2 taps (chest taps + continue tap), got %d", len(fd.recorded))
+	}
+	lastTap := fd.recorded[len(fd.recorded)-1]
+	// Continue button on 1280x720 centered rect lands at (654, 719)
+	if lastTap.X < 600 || lastTap.X > 700 || lastTap.Y < 620 || lastTap.Y > 725 {
+		t.Errorf("last tap was not on Continue button: got (%d,%d)", lastTap.X, lastTap.Y)
+	}
+}

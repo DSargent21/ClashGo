@@ -276,19 +276,25 @@ func (sm *SlotManager) classifySlots(screen gocv.Mat, activeXs []int, templates 
 			continue
 		}
 
-		bestSlot.UnitName = cleanName
-		bestSlot.Confidence = res.match.Confidence
-		bestSlot.State = SlotIdentified
-
 		if isHeroStatic(cleanName) {
 			bestSlot.Category = "Hero"
 		} else if isSiegeStatic(cleanName) {
-			bestSlot.Category = "Siege"
+			if isUnconfiguredCCSlot(screen, bestSlot.X, sm.slotY, sm.w, sm.h) {
+				cleanName = "clan castle"
+				bestSlot.Category = "CC"
+				sm.logger.Info().Int("x", bestSlot.X).Msg("slot carries CC toggle with '!', overriding false-positive siege template")
+			} else {
+				bestSlot.Category = "Siege"
+			}
 		} else if isSpellStatic(cleanName) {
 			bestSlot.Category = "Spell"
 		} else if strings.Contains(cleanName, "cc") || strings.Contains(cleanName, "castle") {
 			bestSlot.Category = "CC"
 		}
+
+		bestSlot.UnitName = cleanName
+		bestSlot.Confidence = res.match.Confidence
+		bestSlot.State = SlotIdentified
 
 		sm.logger.Info().
 			Str("unit", cleanName).
@@ -491,10 +497,69 @@ func (sm *SlotManager) findClosestSlot(x int, tolerancePct float64) *TrackedSlot
 // GetSlot returns the tracked slot for a unit name (case-insensitive).
 func (sm *SlotManager) GetSlot(unitName string) *TrackedSlot {
 	n := strings.ToLower(strings.TrimSpace(unitName))
+	clean := strings.ReplaceAll(n, "_", " ")
+	if slot, ok := sm.unitIndex[clean]; ok {
+		return slot
+	}
 	if slot, ok := sm.unitIndex[n]; ok {
 		return slot
 	}
+	// Common synonyms
+	var synonyms []string
+	switch clean {
+	case "edrag", "e drag", "electro dragon":
+		synonyms = []string{"electro dragon", "edrag"}
+	case "balloon", "balloons", "loon", "loons":
+		synonyms = []string{"balloon", "balloons"}
+	case "freeze", "freeze spell", "ice", "ice spell":
+		synonyms = []string{"ice spell", "freeze spell"}
+	case "rage", "rage spell":
+		synonyms = []string{"rage spell", "rage"}
+	case "royal champion", "rc":
+		synonyms = []string{"royal champion"}
+	case "barbarian king", "king", "bk":
+		synonyms = []string{"barbarian king"}
+	case "dragon duke", "duke", "dd":
+		synonyms = []string{"dragon duke"}
+	case "archer queen", "queen", "aq":
+		synonyms = []string{"archer queen"}
+	case "grand warden", "warden", "gw":
+		synonyms = []string{"grand warden"}
+	case "minion prince", "prince", "mp":
+		synonyms = []string{"minion prince"}
+	}
+	for _, syn := range synonyms {
+		if slot, ok := sm.unitIndex[syn]; ok {
+			return slot
+		}
+	}
+	if slot := sm.fallbackSiegeSlot(n); slot != nil {
+		return slot
+	}
 	return sm.fallbackSpellSlot(n)
+}
+
+// fallbackSiegeSlot returns the Clan Castle or Siege slot on the troop bar.
+// A CoC army has at most ONE CC/Siege slot. If the strategy asks for a siege
+// machine (e.g. "stone slammer") or "clan castle", but template matching
+// identified it as "clan castle" or the reverse, this fallback links them so
+// the siege phase deploys it on schedule with its single placement tap.
+func (sm *SlotManager) fallbackSiegeSlot(unitName string) *TrackedSlot {
+	if !isSiegeStatic(unitName) && !strings.Contains(unitName, "castle") && unitName != "cc" {
+		return nil
+	}
+	for _, slot := range sm.slots {
+		if slot.Category == "Siege" || slot.Category == "CC" || isSiegeStatic(slot.UnitName) || strings.Contains(strings.ToLower(slot.UnitName), "castle") {
+			sm.logger.Info().
+				Str("requested", unitName).
+				Str("slot_unit", slot.UnitName).
+				Str("category", slot.Category).
+				Int("x", slot.X).
+				Msg("linking siege/CC unit to slot via fallback")
+			return slot
+		}
+	}
+	return nil
 }
 
 // fallbackSpellSlot returns an unnamed spell-category slot for a strategy
@@ -692,6 +757,58 @@ func isSiegeStatic(name string) bool {
 
 func isSpellStatic(name string) bool {
 	return strings.Contains(strings.ToLower(name), "spell")
+}
+
+// isUnconfiguredCCSlot checks if a card slot carries a Clan Castle badge with an
+// exclamation mark ('!') toggle state instead of an active Siege Machine.
+func isUnconfiguredCCSlot(screen gocv.Mat, x, y, screenW, screenH int) bool {
+	if screen.Empty() || screen.Cols() == 0 || screen.Rows() == 0 {
+		return false
+	}
+	halfW := int(float64(screenW) * 0.035) // ~35px at 1024
+	if halfW < 20 {
+		halfW = 20
+	}
+	halfH := int(float64(screenH) * 0.05) // ~38px at 768
+	if halfH < 25 {
+		halfH = 25
+	}
+	x1 := x - halfW
+	x2 := x + halfW
+	y1 := y - halfH
+	y2 := y + halfH
+	if x1 < 0 {
+		x1 = 0
+	}
+	if y1 < 0 {
+		y1 = 0
+	}
+	if x2 > screen.Cols() {
+		x2 = screen.Cols()
+	}
+	if y2 > screen.Rows() {
+		y2 = screen.Rows()
+	}
+	if x2 <= x1 || y2 <= y1 {
+		return false
+	}
+	rect := image.Rect(x1, y1, x2, y2)
+	roi := screen.Region(rect)
+	defer roi.Close()
+
+	// Cyan BGR: B: 140..255, G: 160..255, R: 0..115
+	cyanMask := gocv.NewMat()
+	defer cyanMask.Close()
+	gocv.InRangeWithScalar(roi, gocv.NewScalar(140, 160, 0, 0), gocv.NewScalar(255, 255, 115, 0), &cyanMask)
+	cyanCount := gocv.CountNonZero(cyanMask)
+
+	// Exclamation mark white BGR: B: 220..255, G: 220..255, R: 220..255
+	whiteMask := gocv.NewMat()
+	defer whiteMask.Close()
+	gocv.InRangeWithScalar(roi, gocv.NewScalar(220, 220, 220, 0), gocv.NewScalar(255, 255, 255, 0), &whiteMask)
+	whiteCount := gocv.CountNonZero(whiteMask)
+
+	return cyanCount > 300 && whiteCount > 100
 }
 
 // slotActivity computes the active-content ratio for a slot region using a shared

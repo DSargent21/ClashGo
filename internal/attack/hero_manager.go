@@ -59,6 +59,10 @@ type HeroManager struct {
 	// USER's pin from precision_config.json (see SetPinnedGround).
 	pinnedGround bool
 
+	lastTroopLineP1 image.Point
+	lastTroopLineP2 image.Point
+	hasTroopLine    bool
+
 	// ratioHook, when non-nil, replaces the screen capture inside
 	// captureSlotRatio. Test seam only — nil in production.
 	ratioHook func() (float64, bool)
@@ -596,17 +600,27 @@ func containsPoint(pts []image.Point, p image.Point) bool {
 // seconds later. The log's ground_source names whichever ground actually leads
 // after all of it.
 func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []image.Point {
+	// The verified line just used by troops is proven legal ground in this exact battle.
+	// Centering heroes on it prevents red-area refusals and costly retry loops.
+	if hm.hasTroopLine {
+		p1, p2 := hm.lastTroopLineP1, hm.lastTroopLineP2
+		var candidates []image.Point
+		for _, frac := range []float64{0.25, 0.75, 0.15, 0.85, 0.35, 0.65} {
+			pt := image.Pt(p1.X+int(frac*float64(p2.X-p1.X)), p1.Y+int(frac*float64(p2.Y-p1.Y)))
+			if hm.executor == nil || hm.executor.clearsSiege(pt) {
+				candidates = append(candidates, pt)
+			}
+		}
+		if len(candidates) > 0 {
+			return candidates
+		}
+		return []image.Point{image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2)}
+	}
+
 	entry, hasFormula := hm.formulaEntry(unitName)
 	var cands []image.Point
 	source := "deploy_line"
 
-	// A side the user pinned by hand outranks everything below. Live TopLeft run
-	// 2026-09-27: the troop line correctly used the pin (src=pin) while both
-	// heroes still dropped at the FORMULA's mirrored point {192,288}, because the
-	// formula's hero entry supplied the intent here and the pinned hero point was
-	// only reachable through the axis-snap fallback — which a diagonal pinned
-	// line never satisfies. A first tap on the user's own point is also what
-	// leaves the second card tap free for the ability.
 	pinnedPt, havePin := hm.pinnedHeroPoint()
 
 	// The ground the troop pass just used wins: snap this hero's intent onto the
@@ -1041,8 +1055,20 @@ func (hm *HeroManager) DeployTroops(
 	if hasFormula {
 		src = "formula"
 	}
+	if !hasFormula && hm.hasTroopLine && (strings.Contains(unitName, "dragon") || strings.Contains(unitName, "edrag")) {
+		p1 = hm.lastTroopLineP1
+		p2 = hm.lastTroopLineP2
+		hasFormula = true
+		src = "previous_troop_line"
+	}
 	if src == "edge" {
 		p1, p2 = hm.resolveTroopTarget(slot, offset)
+	}
+
+	if p1 != p2 {
+		hm.lastTroopLineP1 = p1
+		hm.lastTroopLineP2 = p2
+		hm.hasTroopLine = true
 	}
 
 	// Remember this pass's ground for the hero phase that follows: these taps
@@ -1304,6 +1330,19 @@ func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) {
 }
 
 func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
+	markDone := func() {
+		if slot != nil {
+			slot.SiegePlaced = true
+			slot.IsEmpty = true
+			slot.State = SlotDeployed
+			if slot.UnitName != "" {
+				hm.slotManager.MarkDeployed(slot.UnitName)
+			}
+		}
+		hm.slotManager.MarkDeployed(unit.Name)
+		hm.slotManager.MarkDeployed("clan castle")
+	}
+
 	// The user pinned a hero point for this side and asked for the siege to land
 	// on the same spot: the machine screens the heroes, so it belongs on their
 	// ground rather than on the strategy's "Center" — the middle of the base,
@@ -1318,14 +1357,14 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 			Msg("siege placed on the user's pinned hero point (the one and only placement tap)")
 		hm.executor.PlaceSiege(slot, tap, 12.0)
 		hm.confirmSiegeDrop(unit, slot)
-		hm.slotManager.MarkDeployed(slot.UnitName)
+		markDone()
 		return true
 	}
 
 	if entry, ok := hm.formulaEntry(unit.Name); ok {
 		if hm.deploySiegeFromFormula(unit, slot, entry) {
 			hm.confirmSiegeDrop(unit, slot)
-			hm.slotManager.MarkDeployed(slot.UnitName)
+			markDone()
 			return true
 		}
 	}
@@ -1344,7 +1383,7 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 	hm.executor.PlaceSiege(slot, j, 12.0)
 
 	time.Sleep(80 * time.Millisecond)
-	hm.slotManager.MarkDeployed(slot.UnitName)
+	markDone()
 	return true
 }
 
@@ -1415,6 +1454,15 @@ func (hm *HeroManager) deploySiegeFromFormula(unit strategy.Unit, slot *TrackedS
 	switch {
 	case entry.IsPoint() && entry.P != nil:
 		p := entry.P.Image()
+		if hm.hasTroopLine {
+			// Center of verified troop line is guaranteed safe deployable ground (never red area)
+			mid := image.Pt((hm.lastTroopLineP1.X+hm.lastTroopLineP2.X)/2, (hm.lastTroopLineP1.Y+hm.lastTroopLineP2.Y)/2)
+			hm.logger.Info().
+				Interface("formula_point", p).
+				Interface("troop_midpoint", mid).
+				Msg("aligning siege point with verified troop line center to guarantee legal placement")
+			p = mid
+		}
 		hm.logger.Info().Str("unit", unit.Name).Interface("p", p).
 			Msg("formula-driven siege placement (single tap)")
 		j := hm.executor.addJitter(p, jitter)
@@ -1423,6 +1471,10 @@ func (hm *HeroManager) deploySiegeFromFormula(unit strategy.Unit, slot *TrackedS
 	case entry.IsLine() && entry.P1 != nil && entry.P2 != nil:
 		p1 := entry.P1.Image()
 		p2 := entry.P2.Image()
+		if hm.hasTroopLine {
+			p1 = hm.lastTroopLineP1
+			p2 = hm.lastTroopLineP2
+		}
 		hm.logger.Info().Str("unit", unit.Name).Interface("p1", p1).Interface("p2", p2).
 			Msg("formula-driven siege placement (single tap on line midpoint)")
 		mid := image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2)

@@ -279,11 +279,12 @@ func DefaultConfig() *BotConfig {
 			PackageName:           "com.supercell.clashofclans",
 			ZoomOutKey:            "i",
 			ZoomInKey:             "o",
-			Width:                 860,
-			Height:                732,
-			DPI:                   160,
+			Width:                 1024,
+			Height:                768,
+			DPI:                   320,
 			RestartOnStartup:      true,
 			DisableChestDismissal: false, // chest dismissal loop IS on by default
+			DisplayScale:          1.1334,
 		},
 		Training: TrainingConfig{
 			Enabled:              true,

@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0-beta] - 2026-10-17
+
+### Added
+- **Interactive Visual ROI Picker** (`cmd/roi_picker/`, `Makefile`):
+  Web-based calibration tool with live screen captures, category selection, template cropping, and JSON export for battle buttons and troop/hero slots (`make roi-picker`).
+- **In-Battle 4x Speed-Up Button Support** (`internal/attack/attack.go`):
+  Automated detection and tapping of the 4x fast-forward button appearing after 2 minutes of battle elapsed.
+
+### Fixed
+- **Fast EDrag Rush Spell Deployment** (`assets/strategies/auto_edrag_rush.yaml`):
+  Reordered attack phases to deploy Spells immediately after Troops and Siege Machine (second ~4) rather than waiting for hero drops, ensuring Balloons and Electro Dragons receive early rage/freeze coverage.
+- **Hero Ground Alignment & Siege Clearance** (`internal/attack/hero_manager.go`, `internal/attack/executor.go`):
+  Mapped hero drop candidates along the verified troop line filtered by `clearsSiege`, avoiding red-zone placement refusals while protecting the active siege machine.
+- **Distinct Hero Slot Identification** (`internal/attack/slot_manager.go`):
+  Separated hero synonyms so Royal Champion, Dragon Duke, Barbarian King, Archer Queen, and Grand Warden resolve independently without slot collisions.
+- **Troop Counter False All-Zero OCR Guard** (`internal/attack/troop_counter.go`):
+  Guarded `DetectCountsMerged` against unmeasured label rows reporting false 0-counts across all slots, preventing premature empty-card lockouts on spells.
+- **Single-Tap Siege Machine Placement** (`internal/attack/hero_manager.go`, `internal/attack/executor.go`):
+  Ensured siege machine receives exactly one placement tap to prevent accidental in-air self-destruction.
+
 ## [0.8.0-beta] - 2026-10-08
 
 ### Fixed

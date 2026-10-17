@@ -24,8 +24,9 @@ import "image"
 // for a guess.
 var buttonROIBounds = map[string]image.Rectangle{
 	// HUD chrome, authored for the tap paths (bot.buttonROI / waitForButton).
-	"btn_attack":     image.Rect(0, 500, 300, 732),   // Attack! button, bottom-left
-	"btn_find_match": image.Rect(50, 400, 400, 600),  // Find a Match, centre-left panel
+	"btn_attack":         image.Rect(0, 500, 300, 732),   // Attack! button, bottom-left
+	"btn_battle_village": image.Rect(0, 500, 300, 732),   // Battle button (new UI), bottom-left
+	"btn_find_match":     image.Rect(50, 400, 400, 600),  // Find a Match, centre-left panel
 	"btn_battle":     image.Rect(300, 150, 860, 732), // green Battle button, army bar
 	"btn_next":       image.Rect(600, 450, 860, 732), // Next Match, bottom-right
 	"btn_army_arrow": image.Rect(350, 100, 700, 300),

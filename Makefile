@@ -150,6 +150,14 @@ pick-army-slots:
 	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/pick_army_slots ./cmd/pick_army_slots
 	@$(BUILD_DIR)/pick_army_slots $(ARGS)
 
+# roi-picker: visual drag-and-drop ROI selector for slots, buttons, templates
+#   make roi-picker
+.PHONY: roi-picker
+roi-picker:
+	@mkdir -p $(BUILD_DIR)
+	@go build -ldflags "$(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/roi_picker ./cmd/roi_picker
+	@$(BUILD_DIR)/roi_picker $(ARGS)
+
 # see: the debugging agent's eyes on the emulator. Renders a frame as text
 # with a pixel-coordinate ruler plus everything the bot's own vision layer
 # perceives (state, action button, red zone, recognised text with boxes), and

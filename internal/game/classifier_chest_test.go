@@ -38,9 +38,7 @@ func loadHammerTemplate(t *testing.T, c *Classifier) {
 }
 
 // TestClassify_ChestDetectedOnChestFrame asserts that StateChestReward
-// fires when the hammer template ("TAP TO OPEN" prompt) is present on
-// screen. Detection is template-only to avoid false positives from dark
-// bottom pixels in non-chest screens.
+// fires when the vault room signature and hammer template are present.
 func TestClassify_ChestDetectedOnChestFrame(t *testing.T) {
 	c := newChestClassifier(t)
 	loadHammerTemplate(t, c)
@@ -49,6 +47,9 @@ func TestClassify_ChestDetectedOnChestFrame(t *testing.T) {
 	defer m.Close()
 	// Fill with a dark neutral background so the hammer stands out.
 	m.SetTo(gocv.NewScalar(30, 30, 30, 0))
+
+	// Paint the bright arched window beam at top center
+	setRGB(m, 430, 122, 0xF0, 0xEB, 0xCD)
 
 	hammer := gocv.IMRead("../../assets/templates/hammer.png", gocv.IMReadColor)
 	defer hammer.Close()
@@ -65,6 +66,35 @@ func TestClassify_ChestDetectedOnChestFrame(t *testing.T) {
 	state, _ := c.ClassifyState(m)
 	if state != StateChestReward {
 		t.Fatalf("expected StateChestReward, got %s", state)
+	}
+}
+
+// TestClassify_RealChestFrames tests that live-captured real event frames
+// (closed, breaking, reward) all correctly classify as StateChestReward.
+func TestClassify_RealChestFrames(t *testing.T) {
+	cal := NewCalibration(1280, 720)
+	c := NewClassifier(cal, DefaultClassifierConfig(), zerolog.Nop())
+
+	fixtures := []string{
+		"testdata/chest_test_frames/chest_closed.png",
+		"testdata/chest_test_frames/chest_hammer.png",
+		"testdata/chest_test_frames/chest_breaking.png",
+		"testdata/chest_test_frames/chest_reward.png",
+	}
+
+	for _, path := range fixtures {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Skipf("fixture %s not present on disk; skipping", path)
+		}
+		m := gocv.IMRead(path, gocv.IMReadColor)
+		if m.Empty() {
+			t.Fatalf("failed to read %s", path)
+		}
+		state, score := c.ClassifyState(m)
+		m.Close()
+		if state != StateChestReward {
+			t.Fatalf("%s: expected StateChestReward, got %s (score=%d)", path, state, score)
+		}
 	}
 }
 

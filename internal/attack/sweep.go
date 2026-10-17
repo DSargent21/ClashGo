@@ -289,8 +289,8 @@ func (sw *Sweeper) Sweep(strategyUnitNames []string, troopCounts map[int]int) in
 			sw.logger.Warn().Msg("sweep: deploy budget exhausted; abandoning remaining slots")
 			break
 		}
-		// Skip siege slots (handled separately)
-		if slot.Category == "Siege" {
+		// Skip siege and CC slots (handled separately / single placement)
+		if slot.Category == "Siege" || slot.Category == "CC" || slot.SiegePlaced || isSiegeStatic(slot.UnitName) || strings.Contains(strings.ToLower(slot.UnitName), "castle") {
 			continue
 		}
 		// Skip fallback-labeled slots here — the label is stale (old
@@ -575,19 +575,18 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 		return true
 	}
 
-	// Siege defense-in-depth: see comment above. If we somehow got
-	// here with an undeployed siege slot, do NOT fire taps — they're
-	// guaranteed wasted because DeploySiege already attempted (and
-	// either succeeded silently or already threw a bad harvest).
+	// Siege/CC defense-in-depth: see comment above. If we somehow got
+	// here with an undeployed siege or CC slot, do NOT fire troop sweep taps —
+	// DeploySiege owns these and any multi-tap destroys the machine on the field.
 	// Exception: event troops. A seasonal/bonus card that got
 	// fallback-labeled "siege machine" is NOT owned by DeploySiege —
 	// the strategy never declared it, so nobody tried to deploy it.
 	// isEventTroop=true means we must place it like a normal card.
-	if slot.Category == "Siege" && !isEventTroop {
+	if (slot.Category == "Siege" || slot.Category == "CC" || isSiegeStatic(slot.UnitName) || strings.Contains(strings.ToLower(slot.UnitName), "castle")) && !isEventTroop {
 		sw.logger.Warn().
 			Int("x", slot.X).
 			Str("unit", slot.UnitName).
-			Msg("sweep: siege slot arrived undeployed; DeploySiege owns these — skipping to avoid wasted taps")
+			Msg("sweep: siege/CC slot arrived undeployed; DeploySiege owns these — skipping to avoid double-tapping or wasted taps")
 		return false
 	}
 

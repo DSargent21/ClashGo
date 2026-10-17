@@ -543,6 +543,21 @@ func (tc *TroopCounter) DetectCountsMerged(frames []gocv.Mat, slots []*TrackedSl
 		results = append(results, res)
 	}
 
+	// If the reader found zero positive counts on the entire bar and zeroed every card,
+	// the bar was either unreadable or caught in a state without badge text.
+	// Reject all-zero as untrusted so we never skip deploying the army.
+	if agreed == 0 && zeroed == len(slots) {
+		tc.logger.Warn().
+			Int("slots", len(slots)).
+			Msg("all slots measured zero with zero positive reads; rejecting as blind read")
+		for i := range results {
+			results[i].OK = false
+			results[i].Count = 0
+		}
+		zeroed = 0
+		undecided = len(slots)
+	}
+
 	tc.logger.Info().
 		Int("frames", framesUsed).
 		Int("bar_y", barY).

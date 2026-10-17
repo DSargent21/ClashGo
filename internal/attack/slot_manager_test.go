@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/rs/zerolog"
+	"gocv.io/x/gocv"
 )
 
 // newTestSlotManager builds a SlotManager with the given pre-assigned
@@ -188,5 +189,50 @@ func TestGetSlot_SpellFallbackSkipsIdentifiedSpellCards(t *testing.T) {
 	}
 	if sm.GetSlot("Rage Spell") != nil {
 		t.Fatal("Rage Spell fell back onto a card already identified as Poison Spell")
+	}
+}
+
+// TestIsUnconfiguredCCSlot verifies that a CC card with cyan background and
+// exclamation mark is correctly recognized as an unconfigured CC slot, while
+// standard cards are not.
+func TestIsUnconfiguredCCSlot(t *testing.T) {
+	// 1. Unconfigured CC card (cyan BGR: [200, 200, 50], white center: [250, 250, 250])
+	ccMat := gocv.NewMatWithSize(768, 1024, gocv.MatTypeCV8UC3)
+	defer ccMat.Close()
+
+	// Fill region around x=239, y=705 with cyan
+	for r := 705 - 30; r < 705 + 30; r++ {
+		for c := 239 - 25; c < 239 + 25; c++ {
+			ccMat.SetUCharAt(r, c*3+0, 200) // B
+			ccMat.SetUCharAt(r, c*3+1, 200) // G
+			ccMat.SetUCharAt(r, c*3+2, 50)  // R
+		}
+	}
+	// Paint white center exclamation mark
+	for r := 705 - 15; r < 705 + 15; r++ {
+		for c := 239 - 5; c < 239 + 5; c++ {
+			ccMat.SetUCharAt(r, c*3+0, 250)
+			ccMat.SetUCharAt(r, c*3+1, 250)
+			ccMat.SetUCharAt(r, c*3+2, 250)
+		}
+	}
+
+	if !isUnconfiguredCCSlot(ccMat, 239, 705, 1024, 768) {
+		t.Fatal("expected isUnconfiguredCCSlot to return true for CC card with cyan + white center")
+	}
+
+	// 2. Normal dark troop card (no cyan, no white center)
+	darkMat := gocv.NewMatWithSize(768, 1024, gocv.MatTypeCV8UC3)
+	defer darkMat.Close()
+	for r := 705 - 30; r < 705 + 30; r++ {
+		for c := 239 - 25; c < 239 + 25; c++ {
+			darkMat.SetUCharAt(r, c*3+0, 60)
+			darkMat.SetUCharAt(r, c*3+1, 60)
+			darkMat.SetUCharAt(r, c*3+2, 60)
+		}
+	}
+
+	if isUnconfiguredCCSlot(darkMat, 239, 705, 1024, 768) {
+		t.Fatal("expected isUnconfiguredCCSlot to return false for dark troop card")
 	}
 }

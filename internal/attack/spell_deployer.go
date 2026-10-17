@@ -768,7 +768,7 @@ func (sd *SpellDeployer) clampToMeasured(unit strategy.Unit, count int) int {
 		return count
 	}
 	measured, ok := sd.slotCounts[sd.executor.slotXFor(unit)]
-	if !ok || count <= measured {
+	if !ok || count <= measured || measured <= 0 {
 		return count
 	}
 	sd.logger.Warn().

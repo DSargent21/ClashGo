@@ -11,7 +11,7 @@ import (
 // must stay honest).
 func TestButtonROIBounds(t *testing.T) {
 	known := []string{
-		"btn_attack", "btn_find_match", "btn_battle", "btn_next",
+		"btn_attack", "btn_battle_village", "btn_find_match", "btn_battle", "btn_next",
 		"btn_army_arrow", "btn_army_1", "btn_okay", "btn_return_home",
 	}
 	frame := ReferenceFrame()

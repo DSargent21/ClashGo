@@ -208,3 +208,69 @@ func TestGetEventTroops_ExcludesAPlacedSiege(t *testing.T) {
 		t.Fatalf("event troops = %d slots, want only the bonus troop at x=%d", len(got), bonus.X)
 	}
 }
+
+func TestCalculateLinePoints_AnchorsEndsAndFansCenter(t *testing.T) {
+	exec := &TapExecutor{}
+
+	p1 := image.Pt(100, 200)
+	p2 := image.Pt(700, 200)
+
+	// count = 1: center
+	pts1 := exec.calculateLinePoints(p1, p2, 1)
+	if len(pts1) != 1 || pts1[0].X != 400 || pts1[0].Y != 200 {
+		t.Fatalf("count 1: got %v, want [(400, 200)]", pts1)
+	}
+
+	// count = 2: ends
+	pts2 := exec.calculateLinePoints(p1, p2, 2)
+	if len(pts2) != 2 || pts2[0] != p1 || pts2[1] != p2 {
+		t.Fatalf("count 2: got %v, want [%v, %v]", pts2, p1, p2)
+	}
+
+	// count = 10: 1 on each end, 8 fanned in middle (20% to 80%)
+	pts10 := exec.calculateLinePoints(p1, p2, 10)
+	if len(pts10) != 10 {
+		t.Fatalf("count 10: got %d points, want 10", len(pts10))
+	}
+	if pts10[0] != p1 {
+		t.Fatalf("first point = %v, want p1 (%v)", pts10[0], p1)
+	}
+	if pts10[1] != p2 {
+		t.Fatalf("second point = %v, want p2 (%v)", pts10[1], p2)
+	}
+	for i := 2; i < 10; i++ {
+		// x should be between 220 and 580 (20% to 80% of 600px line)
+		if pts10[i].X < 200 || pts10[i].X > 600 {
+			t.Fatalf("point %d = %v outside center band [200, 600]", i, pts10[i])
+		}
+	}
+}
+
+func TestSlotManager_FallbackSiegeSlot(t *testing.T) {
+	sm := &SlotManager{
+		slots: []*TrackedSlot{
+			{TroopSlot: TroopSlot{X: 100, Category: "Troop"}, UnitName: "electro dragon"},
+			{TroopSlot: TroopSlot{X: 200, Category: "Troop"}, UnitName: "balloon"},
+			{TroopSlot: TroopSlot{X: 300, Category: "CC"}, UnitName: "clan castle"},
+			{TroopSlot: TroopSlot{X: 400, Category: "Hero"}, UnitName: "archer queen"},
+		},
+		unitIndex: map[string]*TrackedSlot{
+			"electro dragon": {TroopSlot: TroopSlot{X: 100, Category: "Troop"}, UnitName: "electro dragon"},
+			"balloon":        {TroopSlot: TroopSlot{X: 200, Category: "Troop"}, UnitName: "balloon"},
+			"clan castle":    {TroopSlot: TroopSlot{X: 300, Category: "CC"}, UnitName: "clan castle"},
+			"archer queen":   {TroopSlot: TroopSlot{X: 400, Category: "Hero"}, UnitName: "archer queen"},
+		},
+	}
+
+	// Strategy requests "Stone Slammer", but slot is named "clan castle"
+	slot := sm.GetSlot("stone slammer")
+	if slot == nil || slot.X != 300 {
+		t.Fatalf("GetSlot(stone slammer) = %v, want slot at x=300", slot)
+	}
+
+	// Strategy requests "Clan Castle"
+	slotCC := sm.GetSlot("clan castle")
+	if slotCC == nil || slotCC.X != 300 {
+		t.Fatalf("GetSlot(clan castle) = %v, want slot at x=300", slotCC)
+	}
+}

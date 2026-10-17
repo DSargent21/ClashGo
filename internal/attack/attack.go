@@ -1678,6 +1678,19 @@ func (e *Executor) EndBattle() error {
 func (e *Executor) ReturnHome() error {
 	// Return Home sits on the centred battle-result panel.
 	hx, hy := e.cal.Centre(430, 566)
+	if data, ok := readConfigJSON("continue_button.json"); ok {
+		var box struct {
+			X1 int `json:"x1"`
+			X2 int `json:"x2"`
+			Y1 int `json:"y1"`
+			Y2 int `json:"y2"`
+		}
+		if json.Unmarshal(data, &box) == nil && box.X2 > box.X1 && box.Y2 > box.Y1 {
+			hx = (box.X1 + box.X2) / 2
+			hy = (box.Y1 + box.Y2) / 2
+			e.logger.Info().Int("x", hx).Int("y", hy).Msg("using calibrated Return Home button coordinates")
+		}
+	}
 	if err := e.client.TapHuman(hx, hy, 5.0); err != nil {
 		return err
 	}
@@ -1892,6 +1905,9 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 
 	lastPct := 0
 	lastPctTime := time.Now()
+	battleWaitStart := time.Now()
+	speedUpTaps := 0
+	var lastSpeedUpTap time.Time
 	stallSec := resolveStallTimerSeconds(e.cfg, e.activeStrategy)
 	stallLimit := time.Duration(stallSec) * time.Second
 	// Consecutive no-progress stalls in this battle, used to throttle the
@@ -1972,6 +1988,20 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			// (or proactively for the warden). Reuses this tick's frame, so
 			// the watch costs no extra captures. See hero_hp.go.
 			e.pollHeroWatch(screen)
+
+			// 4x Speed-Up Button: appears after 2 minutes of battle (120s from battle start, or ~110s into battle-wait).
+			// Tapping it accelerates battle playback to 4x speed.
+			if time.Since(battleWaitStart) >= 110*time.Second && (lastSpeedUpTap.IsZero() || time.Since(lastSpeedUpTap) >= 3*time.Second) {
+				pt := image.Pt(978, 492)
+				if e.cal != nil && (e.cal.PhysicalW != 1024 || e.cal.PhysicalH != 768) {
+					sx, sy := e.cal.ScaleRef(978, 492)
+					pt = image.Pt(sx, sy)
+				}
+				e.logger.Info().Interface("pt", pt).Int("tap", speedUpTaps+1).Msg("tapping 4x speed-up button to fast-forward remaining battle")
+				e.client.TapFast(pt.X, pt.Y, 2.0)
+				speedUpTaps++
+				lastSpeedUpTap = time.Now()
+			}
 
 			// Per-strategy auto-end threshold from end_at_percent (0 = off).
 			endAtPct := resolveEndAtPercent(e.cfg, e.activeStrategy)

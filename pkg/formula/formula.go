@@ -164,8 +164,47 @@ func (f *Formula) LookUp(unitName string) (UnitEntry, bool) {
 	if e, ok := f.Units[key]; ok {
 		return e, true
 	}
-	if e, ok := f.Units[strings.ReplaceAll(key, "_", " ")]; ok {
+	clean := strings.ReplaceAll(key, "_", " ")
+	if e, ok := f.Units[clean]; ok {
 		return e, true
+	}
+	// Common synonyms/aliases
+	switch clean {
+	case "edrag", "e drag":
+		if e, ok := f.Units["electro dragon"]; ok {
+			return e, true
+		}
+	case "electro dragon":
+		if e, ok := f.Units["edrag"]; ok {
+			return e, true
+		}
+	case "loons", "balloons":
+		if e, ok := f.Units["balloon"]; ok {
+			return e, true
+		}
+	case "freeze", "freeze spell":
+		if e, ok := f.Units["ice spell"]; ok {
+			return e, true
+		}
+	case "ice", "ice spell":
+		if e, ok := f.Units["freeze spell"]; ok {
+			return e, true
+		}
+	case "rage":
+		if e, ok := f.Units["rage spell"]; ok {
+			return e, true
+		}
+	case "royal champion", "rc":
+		if e, ok := f.Units["dragon duke"]; ok {
+			return e, true
+		}
+		if e, ok := f.Units["barbarian king"]; ok {
+			return e, true
+		}
+	case "dragon duke":
+		if e, ok := f.Units["barbarian king"]; ok {
+			return e, true
+		}
 	}
 	return UnitEntry{}, false
 }

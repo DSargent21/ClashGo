@@ -160,3 +160,44 @@ func TestClampBandCoversTheCornerThatOnlyTheMirrorReaches(t *testing.T) {
 		t.Errorf("the clamped TopRight plan still leaves points outside y %d..%d (above %v, below %v)", minY, maxY, above, below)
 	}
 }
+
+// TestShippedFormulaAt1024x768_ClampsCleanly proves 1024x768 (4:3 tablet)
+// preserves the vertical deploy band without crushing top or bottom edges:
+// all points clamp cleanly into the tappable band.
+func TestShippedFormulaAt1024x768_ClampsCleanly(t *testing.T) {
+	const (
+		w, h = 1024, 768
+		k    = 1.1334
+	)
+	minY := YTopMin()
+	maxY := 768 * 85 / 100 // 652
+
+	for _, corner := range []string{"BottomRight", "BottomLeft", "TopRight", "TopLeft"} {
+		t.Run(corner, func(t *testing.T) {
+			f := loadShippedFormula(t)
+			applyCornerUnits(f, corner)
+			f.ProjectUniform(k, f.Screen.W, f.Screen.H, w, h)
+			f.ClampY(minY, maxY)
+
+			var offScreen, above, below []string
+			for name, pts := range deployedPoints(f) {
+				for _, p := range pts {
+					x, y := p[0], p[1]
+					switch {
+					case x < 0 || x >= w || y < 0 || y >= h:
+						offScreen = append(offScreen, fmt.Sprintf("%s(%d,%d)", name, x, y))
+					case y < minY:
+						above = append(above, fmt.Sprintf("%s y=%d", name, y))
+					case y > maxY:
+						below = append(below, fmt.Sprintf("%s y=%d", name, y))
+					}
+				}
+			}
+
+			if len(offScreen)+len(above)+len(below) > 0 {
+				t.Errorf("1024x768 has %d points outside band (%d..%d): off %v, above %v, below %v",
+					len(offScreen)+len(above)+len(below), minY, maxY, offScreen, above, below)
+			}
+		})
+	}
+}

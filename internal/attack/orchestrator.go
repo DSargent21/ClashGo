@@ -65,6 +65,7 @@ func armyReadinessGap(plans []PhasePlan, counts map[int]int, sm *SlotManager) []
 	}
 	var gap []string
 	seen := make(map[string]bool)
+	totalUnits := 0
 	for _, plan := range plans {
 		for _, up := range plan.UnitPlans {
 			if up.Slot == nil || seen[up.Unit.Name] {
@@ -73,11 +74,19 @@ func armyReadinessGap(plans []PhasePlan, counts map[int]int, sm *SlotManager) []
 			if up.Slot.Category != "Troop" && up.Slot.Category != "Spell" {
 				continue
 			}
+			totalUnits++
 			if n, ok := counts[up.Slot.X]; ok && n <= 0 {
 				seen[up.Unit.Name] = true
 				gap = append(gap, up.Unit.Name)
 			}
 		}
+	}
+	// If EVERY unit reports zero at deploy start (for a multi-unit army), the digit reader's badge band
+	// is blind/misaligned on this resolution (live 1024x768: cards carry full
+	// armies but badges sit below bar_y instead of above it). A total blackout
+	// is detector blindness, not positive evidence of an empty army; do not block.
+	if totalUnits > 1 && len(gap) >= totalUnits {
+		return nil
 	}
 	return gap
 }

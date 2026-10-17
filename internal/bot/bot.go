@@ -954,6 +954,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			state == game.StateArmyCamp ||
 			b.isOrange(screen, pinX, pinY) ||
 			b.templateMatch(screen, "btn_attack", 0.45) ||
+			b.templateMatch(screen, "btn_battle_village", 0.45) ||
 			b.templateMatch(screen, "btn_settings", 0.6)
 
 		if isVillage {
@@ -1034,6 +1035,10 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
+	if b.seqRunning.Load() {
+		return
+	}
+
 	// Post-boot splash screens. The game shows a short chain after every
 	// relaunch: the "ТАР!" tap-to-continue / collect splash, then the CoC
 	// castle logo (which sits static 1-3 min while the session connects),
@@ -1085,10 +1090,6 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 				b.logger.Info().Str("state", st.String()).Msg("boot splash dismissed")
 			}(state)
 		}
-		return
-	}
-
-	if b.seqRunning.Load() {
 		return
 	}
 
@@ -1311,48 +1312,43 @@ func (b *Bot) findAttackButton(screen gocv.Mat, threshold float32) bool {
 		return true
 	}
 
-	tpl, ok := b.templates.Get("btn_attack")
-	if !ok {
-		return false
+	for _, tplName := range []string{"btn_attack", "btn_battle_village"} {
+		tpl, ok := b.templates.Get(tplName)
+		if !ok {
+			continue
+		}
+
+		roi := image.Rect(0, 500, 300, 732)
+		// The Attack! / Battle button is bottom-left HUD chrome, so the search window keeps
+		// its distance to the left and bottom edges.
+		physROI := b.cal.HudRect(roi)
+		physROI.Min.X = 0
+
+		matches, err := vision.MatchMultiScaleROICached(screen, tpl, tplName, 0.2, 2.0, attackButtonScaleSteps, threshold, physROI)
+		if err != nil || len(matches) == 0 {
+			continue
+		}
+
+		best := matches[0]
+		confirmed, facePx, faceFrac := attackButtonFaceConfirmed(screen, best, tpl)
+
+		b.logger.Debug().
+			Str("tpl", tplName).
+			Float64("conf", best.Confidence).
+			Int("x", best.Point.X).
+			Int("y", best.Point.Y).
+			Float64("scale", best.Scale).
+			Int("face_px", facePx).
+			Float64("face_frac", faceFrac).
+			Bool("is_orange", confirmed).
+			Msg("attack button detection check")
+
+		if confirmed {
+			return true
+		}
 	}
 
-	roi := image.Rect(0, 500, 300, 732)
-	// The Attack! button is bottom-left HUD chrome, so the search window keeps
-	// its distance to the left and bottom edges.
-	physROI := b.cal.HudRect(roi)
-	// ...but the left edge is pulled back to the frame: HudRect maps reference
-	// x=0 to physical x=70 on this client while Hud(0,695) maps the same column to
-	// x=0, and the Attack! label is drawn against the very left of the village HUD.
-	// The 70 px inset therefore clipped the label out of the search area, the
-	// matcher could only place the template at the clip (33 px right of where the
-	// label actually is) and its score collapsed under every threshold — while a
-	// whole-frame search of the same frames finds the button at conf 0.767. Only
-	// the left edge is widened: the window still ends before the map's centre.
-	physROI.Min.X = 0
-
-	matches, err := vision.MatchMultiScaleROICached(screen, tpl, "btn_attack", 0.2, 2.0, attackButtonScaleSteps, threshold, physROI)
-	if err != nil {
-		b.logger.Debug().Err(err).Msg("btn_attack template match error")
-		return false
-	}
-	if len(matches) == 0 {
-		return false
-	}
-
-	best := matches[0]
-	confirmed, facePx, faceFrac := attackButtonFaceConfirmed(screen, best, tpl)
-
-	b.logger.Debug().
-		Float64("conf", best.Confidence).
-		Int("x", best.Point.X).
-		Int("y", best.Point.Y).
-		Float64("scale", best.Scale).
-		Int("face_px", facePx).
-		Float64("face_frac", faceFrac).
-		Bool("is_orange", confirmed).
-		Msg("attack button detection check")
-
-	return confirmed
+	return false
 }
 
 // attackButtonFaceConfirmed reports whether a matched Attack! box is drawn on the
@@ -2073,6 +2069,16 @@ func (b *Bot) clickSequence() bool {
 			}
 			return false
 		}
+
+		// If tapping Find a Match launched search directly (bypassing army sheet):
+		if screen, err := b.client.CaptureToMat(); err == nil {
+			st, _ := b.classifyFrame(screen)
+			screen.Close()
+			if st == game.StateSearchMap || st == game.StateBattle {
+				b.logger.Info().Str("state", st.String()).Msg("direct transition to search/battle detected")
+				return b.waitForBattleState(60 * time.Second)
+			}
+		}
 		// The army sheet is already open on MY ARMY (the active army). When the
 		// strategy asked for a saved recipe it has to be armed first; only then
 		// does the sheet's own action button start the search.
@@ -2288,8 +2294,10 @@ var sheetActionRegion = [4]float64{0.5, 0.5, 1.0, 1.0}
 // older game layouts; slots 2+ use the measured card geometry.
 func (b *Bot) selectArmySlot() bool {
 	slot := b.armySlot
-	if slot <= 0 {
-		slot = 1
+	if slot <= 1 {
+		// Slot 1 is the default active army ("MY ARMY") already displayed when
+		// the army sheet opens. No dropdown selection needed.
+		return true
 	}
 
 	// Off the reference geometry, select from the Saved Recipes dropdown:
@@ -2424,7 +2432,8 @@ type Pinpoint struct {
 // non-reference run mis-taps.
 var villagePinpoints = map[string]Pinpoint{
 	// measured: village bottom-left button, keeps its left and bottom offsets
-	"btn_attack": {X: 64, Y: 666, Name: "Attack", XA: game.AnchorLow, YA: game.AnchorHigh},
+	"btn_attack":         {X: 64, Y: 666, Name: "Attack", XA: game.AnchorLow, YA: game.AnchorHigh},
+	"btn_battle_village": {X: 64, Y: 666, Name: "Battle", XA: game.AnchorLow, YA: game.AnchorHigh},
 	// measured: attack-menu button, left-anchored, vertically centred
 	"btn_find_match": {X: 158, Y: 494, Name: "Find Match", XA: game.AnchorLow, YA: game.AnchorMid},
 	// not yet measured at a non-reference geometry: the army bar's buttons are

@@ -437,18 +437,19 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 	}
 
 	// 1. Preferred: wait for the Continue button (btn_continue
-	// template) to actually RENDER, then tap the matched point.
+	// template or dynamic green button) to actually RENDER, then tap the matched point.
 	// The button lags the chest-open animation by ~1s, so we
 	// poll (up to chestContinueAppearTimeout) instead of a one-shot
 	// match — this is the "wait for it to appear" step.
 	if n.templates != nil {
 		if pt, conf, ok := n.waitContinueButton(); ok {
-			n.logger.Info().Float64("conf", conf).Msg("chest continue: button appeared — tapping Continue")
+			n.logger.Info().Float64("conf", conf).Int("x", pt.X).Int("y", pt.Y).
+				Msg("chest continue: button appeared — tapping Continue")
 			if err := n.client.Tap(pt.X, pt.Y); err != nil {
 				n.logger.Warn().Err(err).Msg("chest continue: tap failed; continuing")
 			}
 			time.Sleep(ChestAnimSettle)
-			if n.verifyAtMainVillage("chest continue (template)") == nil {
+			if n.verifyAtMainVillage("chest continue (dynamic/template)") == nil {
 				return nil
 			}
 			n.logger.Warn().Msg("chest continue: button tap did not reach MainVillage; falling back to rect")
@@ -495,27 +496,112 @@ func (n *Navigator) chestContinueTap(continueRect *Rectangle) error {
 	return fmt.Errorf("chest continue: tapped Continue rect %d times without reaching MainVillage (see debug_chest_continue_fail.png)", chestContinueMaxTaps)
 }
 
-// waitContinueButton polls for the `btn_continue` template until
-// it actually renders on the (normalized) screen, then returns the
-// physical point to tap. This is the "wait for it to appear"
-// step: the Continue button lags the chest-open animation by ~1s,
-// so a one-shot match misses it. Returns (_, _, false) on
-// timeout (caller falls back to the configured rect, or nil if
-// no rect). Polls the bottom half (Continue buttons live low on
-// the chest overlay); ref-width 860 spans the full normalized width.
+// locateContinueButton looks for a green action button (e.g. Continue or Okay)
+// in the bottom area of the frame. Returns physical screen point to tap and true if found.
+func (n *Navigator) locateContinueButton(mat gocv.Mat) (image.Point, bool) {
+	if mat.Empty() || mat.Cols() < 50 || mat.Rows() < 50 {
+		return image.Point{}, false
+	}
+	region := vision.FractionRect(mat.Cols(), mat.Rows(), 0.25, 0.60, 0.75, 0.98)
+	sub := mat.Region(region)
+	defer sub.Close()
+
+	planes := gocv.Split(sub)
+	defer func() {
+		for i := range planes {
+			planes[i].Close()
+		}
+	}()
+	if len(planes) < 3 {
+		return image.Point{}, false
+	}
+	b, g, r := planes[0], planes[1], planes[2]
+
+	diffGR := gocv.NewMat()
+	diffGB := gocv.NewMat()
+	defer diffGR.Close()
+	defer diffGB.Close()
+	gocv.Subtract(g, r, &diffGR)
+	gocv.Subtract(g, b, &diffGB)
+
+	maskGR := gocv.NewMat()
+	maskGB := gocv.NewMat()
+	maskG := gocv.NewMat()
+	defer maskGR.Close()
+	defer maskGB.Close()
+	defer maskG.Close()
+
+	gocv.Threshold(diffGR, &maskGR, 20, 255, gocv.ThresholdBinary)
+	gocv.Threshold(diffGB, &maskGB, 35, 255, gocv.ThresholdBinary)
+	gocv.Threshold(g, &maskG, 140, 255, gocv.ThresholdBinary)
+
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.BitwiseAnd(maskGR, maskGB, &mask)
+	gocv.BitwiseAnd(mask, maskG, &mask)
+
+	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(7, 7))
+	defer kernel.Close()
+	gocv.MorphologyEx(mask, &mask, gocv.MorphClose, kernel)
+
+	labels := gocv.NewMat()
+	stats := gocv.NewMat()
+	centroids := gocv.NewMat()
+	defer labels.Close()
+	defer stats.Close()
+	defer centroids.Close()
+
+	num := gocv.ConnectedComponentsWithStats(mask, &labels, &stats, &centroids)
+	minW := int(float64(mat.Cols()) * 0.10)
+	minH := 25
+
+	for i := 1; i < num; i++ {
+		cw := int(stats.GetIntAt(i, int(gocv.CC_STAT_WIDTH)))
+		ch := int(stats.GetIntAt(i, int(gocv.CC_STAT_HEIGHT)))
+		cx := int(stats.GetIntAt(i, int(gocv.CC_STAT_LEFT)))
+		cy := int(stats.GetIntAt(i, int(gocv.CC_STAT_TOP)))
+		if cw >= minW && ch >= minH {
+			pt := image.Pt(region.Min.X+cx+cw/2, region.Min.Y+cy+ch/2)
+			return pt, true
+		}
+	}
+
+	return image.Point{}, false
+}
+
+// hasContinueButton reports whether a green continue button is currently on the frame.
+func (n *Navigator) hasContinueButton(mat gocv.Mat) bool {
+	_, ok := n.locateContinueButton(mat)
+	return ok
+}
+
+// waitContinueButton polls for the Continue button until it renders on screen.
+// Checks dynamic action button and template match.
 func (n *Navigator) waitContinueButton() (image.Point, float64, bool) {
-	if n.templates == nil {
-		return image.Point{}, 0, false
+	var tpl gocv.Mat
+	var hasTpl bool
+	if n.templates != nil {
+		tpl, hasTpl = n.templates.Get("btn_continue")
 	}
-	tpl, ok := n.templates.Get("btn_continue")
-	if !ok {
-		return image.Point{}, 0, false
-	}
-	region := image.Rect(0, 360, 860, 732)
 	deadline := time.Now().Add(chestContinueAppearTimeout)
 	for time.Now().Before(deadline) {
-		if pt, conf, ok := n.matchButtonTemplate(tpl, "btn_continue", region, 0.6); ok {
-			return pt, conf, true
+		norm, physScale, err := n.captureNormalized()
+		if err == nil && !norm.Empty() {
+			// 1. Dynamic action button search
+			if pt, ok := n.locateContinueButton(norm); ok {
+				norm.Close()
+				return image.Pt(int(float64(pt.X)*physScale), int(float64(pt.Y)*physScale)), 1.0, true
+			}
+			// 2. Template matching
+			if hasTpl {
+				region := image.Rect(0, 360, 860, 732)
+				pt, conf, err := vision.MatchTemplateRegion(norm, tpl, region, 0.6)
+				if err == nil && conf >= 0.6 {
+					norm.Close()
+					return image.Pt(int(float64(pt.X)*physScale), int(float64(pt.Y)*physScale)), conf, true
+				}
+			}
+			norm.Close()
 		}
 		time.Sleep(chestContinuePollInterval)
 	}
@@ -624,6 +710,17 @@ func (n *Navigator) chestTapScanLoop(cfg *ChestROISchema, maxIter int) error {
 		if capErr != nil {
 			return fmt.Errorf("chest loop capture failed (iter=%d): %w", i, capErr)
 		}
+
+		// Fast-exit if the chest broke open and Continue button has appeared
+		if n.hasContinueButton(mat) {
+			n.logger.Info().
+				Int("iterations", i+1).
+				Int("hammer_taps_per_loop", hammer).
+				Msg("chest opened; reward continue button appeared")
+			mat.Close()
+			return nil
+		}
+
 		state, score := n.classify(mat)
 		if !mat.Empty() {
 			mat.Close()
