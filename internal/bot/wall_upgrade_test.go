@@ -1273,6 +1273,27 @@ func TestLocateWallTrayChipFollowsReflow(t *testing.T) {
 	}
 }
 
+// TestWallTrayGateRejectsAdjacentButtons ensures an action button whose centre
+// lies outside the mapped chip rect (e.g. an adjacent Wall Ring button) is not
+// adopted as the chip's located rect.
+func TestWallTrayGateRejectsAdjacentButtons(t *testing.T) {
+	frame := gocv.NewMatWithSize(testFrameH, testFrameW, gocv.MatTypeCV8UC3)
+	defer frame.Close()
+	frame.SetTo(gocv.NewScalar(60, 60, 60, 0))
+
+	// An adjacent action button (e.g. blue wall ring) painted right next to testGoldRect.
+	adjacent := image.Rect(testGoldRect.X2+2, testGoldRect.Y1, testGoldRect.X2+42, testGoldRect.Y2)
+	gocv.Rectangle(&frame, adjacent, color.RGBA{0, 200, 255, 0}, -1)
+
+	located, _, found := locateWallTrayChip(frame, testGoldRect)
+	if found {
+		t.Fatalf("adjacent button was adopted as chip: %v", located)
+	}
+	if located != testGoldRect {
+		t.Fatalf("expected located to remain mapped rect %v, got %v", testGoldRect, located)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Loop-level safety properties
 // ---------------------------------------------------------------------------

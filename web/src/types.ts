@@ -48,8 +48,50 @@ export interface BotConfig {
     min_loot_de: number;
     enabled: boolean;
   };
+  storage?: {
+    halt_when_gold_full: boolean;
+    halt_when_elixir_full: boolean;
+    halt_when_de_full: boolean;
+    halt_rule: string;
+    full_threshold_percent: number;
+    resume_threshold_percent: number;
+    dump_to_walls_before_halt: boolean;
+    auto_collect?: boolean;
+  };
+  schedule?: {
+    enabled: boolean;
+    active_hours_start: string;
+    active_hours_end: string;
+    session_duration_minutes: number;
+    session_jitter_minutes: number;
+    break_duration_minutes: number;
+    break_jitter_minutes: number;
+    force_stop_on_break: boolean;
+    max_attacks_per_hour: number;
+    max_attacks_per_day: number;
+  };
   upgrade: {
     upgrade_walls: boolean;
+    wall_resource?: string;
+    wall_min_gold_reserve?: number;
+    wall_min_elixir_reserve?: number;
+    auto_builders?: boolean;
+    reserve_builders?: number;
+    upgrade_strategy?: string;
+    upgrade_defenses?: boolean;
+    upgrade_resources?: boolean;
+    upgrade_army?: boolean;
+    upgrade_traps?: boolean;
+    upgrade_heroes?: boolean;
+    max_gold_per_upgrade?: number;
+    max_elixir_per_upgrade?: number;
+    max_de_per_upgrade?: number;
+    auto_lab?: boolean;
+    lab_strategy?: string;
+    lab_allow_de?: boolean;
+    lab_priorities?: string[];
+    auto_pets?: boolean;
+    pet_priorities?: string[];
   };
   attack: {
     strategy_file: string;

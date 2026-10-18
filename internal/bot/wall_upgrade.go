@@ -401,26 +401,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		}
 		h.step("main_village_verified", nil)
 
-		// 2. Click the builder head button in the top middle. The authored
-		// reference point is the fallback; a picked assets/builder_button.json
-		// (the picking session's first step) wins when it is present, because the
-		// top bar's chrome is the part of this sequence most likely to move.
-		bx, by := h.Cal.Hud(430, 30)
-		builderSource := "authored-reference"
-		if hasBuilderButton {
-			bx, by = builderX, builderY
-			builderSource = "assets/builder_button.json"
-		}
-		h.Logger.Debug().Int("x", bx).Int("y", by).Str("source", builderSource).Msg("Clicking builder head icon")
-		if err := h.Client.Tap(bx, by); err != nil {
-			h.Logger.Error().Err(err).Msg("Failed to tap builder head")
-			h.step("tap_builder_failed", map[string]any{"err": err.Error()})
-			break
-		}
-		h.step("builder_tapped", map[string]any{"x": bx, "y": by, "source": builderSource})
-		h.sleep(1500 * time.Millisecond) // Wait for menu to appear
-
-		// ROI for the upgrades menu (default right side of the screen)
+		// 2. ROI for the upgrades menu (default right side of the screen)
 		menuROI := image.Rect(
 			int(h.Cal.Length(400)),
 			int(h.Cal.Length(50)),
@@ -429,29 +410,12 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		)
 
 		// Load custom ROI if it exists (assets/builder_menu_roi.json)
-		//
-		// The pickers write the rect as a `reference` block (the authored
-		// 860x732 frame, `physical / scale`) plus the raw `physical` one. The
-		// reference block is the one that is comparable across geometries, so
-		// it wins when present, and either way the values are mapped into the
-		// live frame through the HUD law: a menu panel's edges are anchored to
-		// the edges they sit against, so each edge is mapped on its own band
-		// (the panel's top is top-anchored just under the top bar while its
-		// bottom is mid-screen, and mapping both with the centre's band would
-		// stretch the panel's top edge to y=0). Consuming the block raw, as
-		// this used to, searched the reference-frame ROI on a 1280x720 device —
-		// 170 px left of where the menu is, where `text_wall` can never match.
 		if roiData, err := os.ReadFile(paths.Resolve("builder_menu_roi.json")); err == nil {
 			type ROIConfig struct {
 				Physical  map[string]int `json:"physical"`
 				Reference map[string]int `json:"reference"`
 			}
 			var cfg ROIConfig
-			// A malformed file must be reported, not swallowed. The record is a
-			// pair of rect blocks at the top level; a picking tool that wrapped the
-			// pair under an extra `physical` key produces JSON that unmarshals into
-			// nothing here, and silently keeping the default ROI would look like a
-			// working run.
 			if err := json.Unmarshal(roiData, &cfg); err != nil {
 				h.Logger.Error().Err(err).
 					Str("want", `{"reference":{"x1":0,"y1":0,"x2":0,"y2":0},"physical":{...}}`).
@@ -480,10 +444,6 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				}
 			}
 		}
-		// Keep the ROI inside the live frame. The reference-frame default spans
-		// ref y 50..732, i.e. past the bottom of a 720-tall frame, which would
-		// put the scroll margins off-screen (sy1 would clamp at the frame edge
-		// and the swipe would run outside its own ROI).
 		if h.Cal.PhysicalW > 0 && h.Cal.PhysicalH > 0 {
 			menuROI = image.Rect(
 				max(0, menuROI.Min.X), max(0, menuROI.Min.Y),
@@ -491,6 +451,21 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			)
 		}
 		h.step("menu_roi_loaded", map[string]any{"roi": menuROI})
+
+		bx, by := int(835 * h.Cal.DisplayScale()), int(540 * h.Cal.DisplayScale())
+		builderSource := "authored-reference"
+		if hasBuilderButton {
+			bx, by = builderX, builderY
+			builderSource = "assets/builder_button.json"
+		}
+		h.Logger.Debug().Int("x", bx).Int("y", by).Str("source", builderSource).Msg("Clicking builder head icon")
+		if err := h.Client.Tap(bx, by); err != nil {
+			h.Logger.Error().Err(err).Msg("Failed to tap builder head")
+			h.step("tap_builder_failed", map[string]any{"err": err.Error()})
+			break
+		}
+		h.step("builder_tapped", map[string]any{"x": bx, "y": by, "source": builderSource})
+		h.sleep(1500 * time.Millisecond) // Wait for menu to appear
 
 		// Cost-text ROI defaults live at iter-body scope so the legacy
 		// flow's pre-tap cost-color check (which runs later in the same
@@ -551,26 +526,10 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		// Compute swipe center X coordinate within the menu ROI to
 		// avoid dragging the map background.
 		scrollX := menuROI.Min.X + menuROI.Dx()/2
-		// Swipe strictly within scrollable bounds to maximize distance
-		topMargin := int(h.Cal.Length(30))
-		bottomMargin := int(h.Cal.Length(30))
-		sy1 := menuROI.Max.Y - bottomMargin
-		sy2 := menuROI.Min.Y + topMargin
 
-		// 3. Scroll robustly to the dead bottom of the menu
-		h.Logger.Debug().Int("scrollX", scrollX).Int("sy1", sy1).Int("sy2", sy2).Msg("Scrolling upgrades menu to the bottom")
-		for i := 0; i < 6; i++ {
-			if err := h.Client.Swipe(scrollX, sy1, scrollX, sy2, 300); err != nil {
-				h.Logger.Error().Err(err).Msg("Failed to swipe menu down")
-				h.step("scroll_failed", map[string]any{"err": err.Error(), "iter": i})
-				return
-			}
-			h.sleep(450 * time.Millisecond)
-		}
-		h.sleep(1200 * time.Millisecond) // momentum settle
-		h.step("menu_scrolled_to_bottom", nil)
-
-		// 4. Slowly scroll back up and search for "Wall" text
+		// 3. Search for "Wall" in builder menu.
+		// Search progressively from top downwards (where Wall typically lives in
+		// modern builder menu), then reverse upwards if needed.
 		wallTpl, ok := h.Templates.Get("text_wall")
 		if !ok {
 			h.Logger.Error().Msg("Wall text template ('text_wall') not loaded, aborting upgrade")
@@ -580,33 +539,19 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		}
 
 		wallClicked := false
-		for attempt := 0; attempt < 12; attempt++ {
+		for attempt := 0; attempt < 10; attempt++ {
 			screen, err := h.Client.CaptureToMat()
 			if err != nil {
 				h.sleep(500 * time.Millisecond)
 				continue
 			}
-			// Robust 0.78 threshold, 60 scale steps.
-			matches, _ := vision.MatchMultiScaleROICached(screen, wallTpl, "text_wall", 0.3, 1.5, 20, 0.78, menuROI)
+			matches, _ := vision.MatchMultiScaleROICached(screen, wallTpl, "text_wall", 0.5, 1.5, 20, 0.85, menuROI)
 
 			h.step("wall_text_search", map[string]any{
 				"attempt": attempt,
 				"matches": len(matches),
 			})
 
-			// Filter out false-positives that landed OUTSIDE the menu ROI
-			// even though the matcher was given the ROI as an argument
-			// (the ROI is advisory for MatchMultiScale — real returns can
-			// still be at y < menuROI.Min.Y, e.g. against the top-bar gold
-			// text "1/2" or username area on the village map). The user's
-			// freshly-captured text_wall.png will match on a real wall row
-			// within the menu bbox; matches below the bottom HUD or above
-			// the top bar are not the wall row we're looking for.
-			//
-			// Note: we deliberately do NOT filter by scale — the user's
-			// current 56x12 text_wall.png has padding around a real 22x5
-			// letter region, so its natural match lands at scale ~0.40.
-			// Filtering by scale >= 0.60 would block all real matches.
 			var best *vision.Match
 			for _, m := range matches {
 				if m.Point.Y < menuROI.Min.Y || m.Point.Y > menuROI.Max.Y ||
@@ -633,12 +578,6 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 					"y":       best.Point.Y,
 					"matches": matches,
 				})
-				// Tap from a FRESH frame: the menu keeps gliding for a second or more
-				// after the last swipe, so the row under a match computed from an
-				// older capture can move ~40 px before the tap fires. On the live
-				// 1280x720 run the ~100 ms between "Wall x127" matching at (504,251)
-				// and the tap put the tap on the "Hero Hunter" row above it and
-				// opened that unit's confirm dialog instead of the wall tray.
 				tapped, tapData := tapWallRow(h, wallTpl, menuROI, *best, wallRowTapWindow)
 				h.stepScreen("wall_row_tap", screen, tapData)
 				screen.Close()
@@ -651,36 +590,27 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				break
 			}
 
-			// Aggressive multiple-traverse swipe up (100px × 12 attempts =
-			// 1200px ≈ 3.5x traverses of the 339px menu). Per the user's
-			// empirical observation, over-scrolling is harmless (CoC's
-			// menu momentum-curve absorbs it) while under-scrolling has
-			// repeatedly hidden the wall row inside the matcher's blind
-			// spot between animation settle windows. The 12 attempts give
-			// the matcher ~36s of wall time to find any row in the scroll
-			// envelope; the loop's wallClicked early-break short-circuits
-			// on the first hit so a well-populated menu costs no extra
-			// time over the prior 6×90 = 540px / 7×90 = 630px runs.
-			h.Logger.Debug().Int("scrollX", scrollX).Msg("Wall text not visible, scrolling up...")
-			startY := menuROI.Min.Y + menuROI.Dx()/2
-			endY := startY + int(h.Cal.Length(100))
-			if err := h.Client.Swipe(scrollX, startY, scrollX, endY, 400); err != nil {
-				h.Logger.Error().Err(err).Msg("Failed to swipe up")
-				h.step("scroll_up_failed", map[string]any{"err": err.Error()})
+			// Scroll down fast until hitting bottom where walls reside:
+			// Swipe from near bottom of scroll container (menuROI.Max.Y - 20)
+			// up towards top (menuROI.Min.Y + 120) with a brisk 250ms flick.
+			startY := menuROI.Max.Y - int(h.Cal.Length(20))
+			endY := menuROI.Min.Y + int(h.Cal.Length(120))
+			if endY >= startY {
+				endY = startY - 200
+			}
+			h.Logger.Debug().Int("scrollX", scrollX).Int("attempt", attempt).Msg("Wall text not visible, scrolling down fast...")
+			if err := h.Client.Swipe(scrollX, startY, scrollX, endY, 250); err != nil {
+				h.Logger.Error().Err(err).Msg("Failed to swipe menu")
+				h.step("scroll_failed", map[string]any{"err": err.Error()})
 				break
 			}
-			h.sleep(1000 * time.Millisecond)
+			h.sleep(450 * time.Millisecond) // fast settle
 		}
 
 		if !wallClicked {
 			h.Logger.Warn().Msg("Failed to locate Wall text in builder menu, ending sequence")
 			h.step("wall_text_not_found", nil)
-			// Do NOT call Client.Back() here. The outer loop's runDismiss
-			// (paired with `break`) is responsible for menu cleanup.
-			// Calling Back here would pop the builder menu out from under
-			// the loop, so any retry path that re-enters this loop body
-			// would start on the village map and have to re-tap the
-			// builder icon again (1.5s settle + 6 scroll-down swipes).
+			closeBuilderMenu(h, menuROI)
 			break
 		}
 		h.step("wall_clicked", nil)
@@ -755,12 +685,28 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				h.step("asset_driven_baseline_capture_failed", map[string]any{"err": baseErr.Error()})
 				break
 			}
+
+			gate := locateWallTray(baseScreen, goldBtn, elixirBtn)
+			// BlueStacks camera pan and bottom tray slide-in can take 2.5-4s.
+			for attempt := 0; attempt < 4 && !gate.Present(); attempt++ {
+				baseScreen.Close()
+				h.sleep(500 * time.Millisecond)
+				baseScreen, baseErr = h.Client.CaptureToMat()
+				if baseErr != nil {
+					break
+				}
+				gate = locateWallTray(baseScreen, goldBtn, elixirBtn)
+			}
+			if baseErr != nil || baseScreen.Empty() {
+				h.Logger.Error().Err(baseErr).Msg("asset-driven baseline capture failed; firing no input")
+				h.step("asset_driven_baseline_capture_failed", map[string]any{"err": "capture failed during tray wait"})
+				break
+			}
 			basePopupRed := redFacePixelsIn(baseScreen, xPopupRect)
 			baseAltRed := 0
 			if xPopupAlt != nil {
 				baseAltRed = redFacePixelsIn(baseScreen, *xPopupAlt)
 			}
-			gate := locateWallTray(baseScreen, goldBtn, elixirBtn)
 			gateData := gate.Data()
 			gateData["base_popup_red"] = basePopupRed
 			gateData["base_alt_red"] = baseAltRed
@@ -1081,6 +1027,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			if success {
 				h.Logger.Info().Msg("Wall upgrade completed (asset-driven flow). Continuing to next wall...")
 				h.step("upgrade_success", nil)
+				runDismiss(h)
 				continue
 			}
 			h.Logger.Warn().Msg("Wall upgrade failed (asset-driven flow): both gold and elixir options unaffordable. Ending loop.")
@@ -1220,6 +1167,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			if successHardcoded {
 				h.Logger.Info().Msg("Wall upgrade completed (hardcoded flow). Continuing to next wall...")
 				h.step("upgrade_success", nil)
+				runDismiss(h)
 				continue
 			}
 			h.Logger.Warn().Msg("Wall upgrade failed (hardcoded flow): both gold and elixir options unaffordable. Ending loop.")
@@ -1582,6 +1530,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		if success {
 			h.Logger.Info().Msg("Wall upgrade completed successfully! Continuing to next wall...")
 			h.step("upgrade_success", nil)
+			runDismiss(h)
 		} else {
 			h.Logger.Warn().Msg("Failed to upgrade wall: all options checked, none were affordable. Ending loop.")
 			h.step("all_unaffordable", nil)
@@ -1680,9 +1629,10 @@ const wallRowTapWindow = 70
 // match at all (the row scrolled away entirely) the seed's own centre is tapped
 // as the fallback, so a menu that settled instantly behaves as it did before.
 func tapWallRow(h *WallUpgradeHooks, tpl gocv.Mat, menuROI image.Rectangle, seed vision.Match, window int) (bool, map[string]any) {
-	mw := int(float64(tpl.Cols()) * seed.Scale)
-	mh := int(float64(tpl.Rows()) * seed.Scale)
-	cx, cy := seed.Point.X+mw/2, seed.Point.Y+mh/2
+	cx, cy := seed.Point.X, seed.Point.Y
+
+	// Allow residual scroll inertia to settle
+	h.sleep(350 * time.Millisecond)
 
 	screen, err := h.Client.CaptureToMat()
 	if err != nil {
@@ -1695,32 +1645,46 @@ func tapWallRow(h *WallUpgradeHooks, tpl gocv.Mat, menuROI image.Rectangle, seed
 	if hunt.Empty() {
 		hunt = menuROI
 	}
-	matches, _ := vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.3, 1.5, 20, 0.78, hunt)
-	tx, ty := cx, cy
+	matches, _ := vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.5, 1.5, 20, 0.82, hunt)
+	if len(matches) == 0 {
+		// If hunt window missed due to momentum, search whole menuROI
+		matches, _ = vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.5, 1.5, 20, 0.85, menuROI)
+	}
+
 	data := map[string]any{
 		"seed":   []int{seed.Point.X, seed.Point.Y},
 		"window": hunt,
 		"fresh":  false,
 	}
-	for _, m := range matches {
-		if !m.Point.In(hunt) {
-			continue
-		}
-		fw := int(float64(tpl.Cols()) * m.Scale)
-		fh := int(float64(tpl.Rows()) * m.Scale)
-		tx, ty = m.Point.X+fw/2, m.Point.Y+fh/2
-		data["fresh"] = true
-		data["fresh_point"] = []int{m.Point.X, m.Point.Y}
-		data["fresh_conf"] = m.Confidence
-		data["fresh_scale"] = m.Scale
-		break
+	if len(matches) == 0 {
+		h.Logger.Warn().Msg("tapWallRow: wall text not found in fresh frame; refusing blind tap")
+		return false, data
 	}
+
+	m := matches[0]
+	tx, ty := m.Point.X, m.Point.Y
+	data["fresh"] = true
+	data["fresh_point"] = []int{m.Point.X, m.Point.Y}
+	data["fresh_conf"] = m.Confidence
+	data["fresh_scale"] = m.Scale
 	data["tap"] = []int{tx, ty}
+
 	if tapErr := h.Client.Tap(tx, ty); tapErr != nil {
 		data["err"] = tapErr.Error()
 		return false, data
 	}
 	return true, data
+}
+
+func closeBuilderMenu(h *WallUpgradeHooks, menuROI image.Rectangle) {
+	closeX := menuROI.Max.X - int(h.Cal.Length(20))
+	closeY := int(h.Cal.Length(36))
+	if closeY < 20 {
+		closeY = 36
+	}
+	h.Logger.Debug().Int("x", closeX).Int("y", closeY).Msg("Closing builder overview menu via close button")
+	_ = h.Client.Tap(closeX, closeY)
+	h.sleep(600 * time.Millisecond)
 }
 
 // leaveConfirmDialog backs out of the confirm dialog after an unaffordable
@@ -2061,6 +2025,10 @@ func locateWallTrayChip(screen gocv.Mat, mapped Rect) (located Rect, facePx int,
 	if !ok {
 		return
 	}
+	btnCenter := image.Pt(btn.Rect.Min.X+btn.Rect.Dx()/2, btn.Rect.Min.Y+btn.Rect.Dy()/2)
+	if !btnCenter.In(r) {
+		return
+	}
 	return Rect{X1: btn.Rect.Min.X, Y1: btn.Rect.Min.Y, X2: btn.Rect.Max.X, Y2: btn.Rect.Max.Y}, facePx, true
 }
 
@@ -2096,8 +2064,8 @@ type wallTrayGate struct {
 	ElixirFound  bool
 }
 
-// Present reports whether both upgrade chips are on screen as painted faces.
-func (g wallTrayGate) Present() bool { return g.GoldFound && g.ElixirFound }
+// Present reports whether an upgrade chip is on screen as a painted face.
+func (g wallTrayGate) Present() bool { return g.GoldFound || g.ElixirFound || (g.GoldFacePx > 1000 && g.ElixirFacePx > 1000) }
 
 // Data renders the gate's evidence for an OnStep payload. No *gocv.Mat here, so
 // the payload stays loggable — stepScreen is what carries frames.

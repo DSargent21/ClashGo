@@ -798,6 +798,146 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
+// SaveFullConfig saves the complete BotConfig structure to config.json.
+func (a *App) SaveFullConfig(cfg config.BotConfig) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(&cfg)
+	}
+
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+}
+
+
+
+// SetStorageConfig updates storage full halting options.
+func (a *App) SetStorageConfig(haltGold, haltElixir, haltDE bool, rule string, fullThresh, resumeThresh float64, dumpToWalls bool, autoCollect bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cfg := config.LoadOrDefault("config.json")
+	cfg.Storage.HaltWhenGoldFull = haltGold
+	cfg.Storage.HaltWhenElixirFull = haltElixir
+	cfg.Storage.HaltWhenDEFull = haltDE
+	if rule != "" {
+		cfg.Storage.HaltRule = rule
+	}
+	if fullThresh > 0 {
+		cfg.Storage.FullThresholdPercent = fullThresh
+	}
+	if resumeThresh > 0 {
+		cfg.Storage.ResumeThresholdPercent = resumeThresh
+	}
+	cfg.Storage.DumpToWallsBeforeHalt = dumpToWalls
+	cfg.Storage.AutoCollect = autoCollect
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
+	}
+
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+}
+
+// SetScheduleConfig updates 24/7 scheduler and anti-ban settings.
+func (a *App) SetScheduleConfig(enabled bool, startHour, endHour string, sessionMins, sessionJitter, breakMins, breakJitter int, forceStop bool, maxPerHour, maxPerDay int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cfg := config.LoadOrDefault("config.json")
+	cfg.Schedule.Enabled = enabled
+	if startHour != "" {
+		cfg.Schedule.ActiveHoursStart = startHour
+	}
+	if endHour != "" {
+		cfg.Schedule.ActiveHoursEnd = endHour
+	}
+	if sessionMins > 0 {
+		cfg.Schedule.SessionDurationMinutes = sessionMins
+	}
+	cfg.Schedule.SessionJitterMinutes = sessionJitter
+	if breakMins > 0 {
+		cfg.Schedule.BreakDurationMinutes = breakMins
+	}
+	cfg.Schedule.BreakJitterMinutes = breakJitter
+	cfg.Schedule.ForceStopOnBreak = forceStop
+	cfg.Schedule.MaxAttacksPerHour = maxPerHour
+	cfg.Schedule.MaxAttacksPerDay = maxPerDay
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
+	}
+
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+}
+
+// SetAutoUpgradeConfig updates the automated upgrade options (Builders, Lab, Pets, Filters).
+func (a *App) SetAutoUpgradeConfig(
+	autoBuilders bool, reserveBuilders int, upgradeStrategy string,
+	defenses, resources, army, traps, heroes bool,
+	maxGold, maxElixir, maxDE int,
+	autoLab bool, labStrategy string, labAllowDE bool,
+	autoPets bool, petPriorities []string,
+	wallResource string, wallMinGold, wallMinElixir int,
+	dryRun bool,
+) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cfg := config.LoadOrDefault("config.json")
+	cfg.Upgrade.AutoBuilders = autoBuilders
+	cfg.Upgrade.ReserveBuilders = reserveBuilders
+	if upgradeStrategy != "" {
+		cfg.Upgrade.UpgradeStrategy = upgradeStrategy
+	}
+	cfg.Upgrade.UpgradeDefenses = defenses
+	cfg.Upgrade.UpgradeResources = resources
+	cfg.Upgrade.UpgradeArmy = army
+	cfg.Upgrade.UpgradeTraps = traps
+	cfg.Upgrade.UpgradeHeroes = heroes
+	cfg.Upgrade.MaxGoldPerUpgrade = maxGold
+	cfg.Upgrade.MaxElixirPerUpgrade = maxElixir
+	cfg.Upgrade.MaxDEPerUpgrade = maxDE
+	cfg.Upgrade.AutoLab = autoLab
+	if labStrategy != "" {
+		cfg.Upgrade.LabStrategy = labStrategy
+	}
+	cfg.Upgrade.LabAllowDE = labAllowDE
+	cfg.Upgrade.AutoPets = autoPets
+	if len(petPriorities) > 0 {
+		cfg.Upgrade.PetPriorities = petPriorities
+	}
+	if wallResource != "" {
+		cfg.Upgrade.WallResource = wallResource
+	}
+	cfg.Upgrade.WallMinGoldReserve = wallMinGold
+	cfg.Upgrade.WallMinElixirReserve = wallMinElixir
+	cfg.Upgrade.DryRun = dryRun
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
+	}
+
+	bytes, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+}
+
 // SetStrategyArmySlot configures the saved army recipe slot (1..4) for a strategy.
 func (a *App) SetStrategyArmySlot(strategyName string, slot int) error {
 	a.mu.Lock()

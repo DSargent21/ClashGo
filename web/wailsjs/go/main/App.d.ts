@@ -35,6 +35,14 @@ export function ResetStats():Promise<void>;
 
 export function SaveConfig(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:string,arg6:boolean,arg7:number):Promise<void>;
 
+export function SaveFullConfig(arg1:config.BotConfig):Promise<void>;
+
+export function SetAutoUpgradeConfig(arg1:boolean,arg2:number,arg3:string,arg4:boolean,arg5:boolean,arg6:boolean,arg7:boolean,arg8:boolean,arg9:number,arg10:number,arg11:number,arg12:boolean,arg13:string,arg14:boolean,arg15:boolean,arg16:Array<string>,arg17:string,arg18:number,arg19:number,arg20:boolean):Promise<void>;
+
+export function SetScheduleConfig(arg1:boolean,arg2:string,arg3:string,arg4:number,arg5:number,arg6:number,arg7:number,arg8:boolean,arg9:number,arg10:number):Promise<void>;
+
+export function SetStorageConfig(arg1:boolean,arg2:boolean,arg3:boolean,arg4:string,arg5:number,arg6:number,arg7:boolean,arg8:boolean):Promise<void>;
+
 export function SetStrategyArmySlot(arg1:string,arg2:number):Promise<void>;
 
 export function SetStrategyAutoEnd(arg1:string,arg2:boolean):Promise<void>;

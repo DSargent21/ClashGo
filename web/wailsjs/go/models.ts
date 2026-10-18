@@ -309,6 +309,27 @@ export namespace config {
 	}
 	export class UpgradeConfig {
 	    upgrade_walls: boolean;
+	    wall_resource: string;
+	    wall_min_gold_reserve: number;
+	    wall_min_elixir_reserve: number;
+	    auto_builders: boolean;
+	    reserve_builders: number;
+	    upgrade_strategy: string;
+	    upgrade_defenses: boolean;
+	    upgrade_resources: boolean;
+	    upgrade_army: boolean;
+	    upgrade_traps: boolean;
+	    upgrade_heroes: boolean;
+	    max_gold_per_upgrade: number;
+	    max_elixir_per_upgrade: number;
+	    max_de_per_upgrade: number;
+	    auto_lab: boolean;
+	    lab_strategy: string;
+	    lab_allow_de: boolean;
+	    lab_priorities: string[];
+	    auto_pets: boolean;
+	    pet_priorities: string[];
+	    dry_run: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpgradeConfig(source);
@@ -317,6 +338,83 @@ export namespace config {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.upgrade_walls = source["upgrade_walls"];
+	        this.wall_resource = source["wall_resource"];
+	        this.wall_min_gold_reserve = source["wall_min_gold_reserve"];
+	        this.wall_min_elixir_reserve = source["wall_min_elixir_reserve"];
+	        this.auto_builders = source["auto_builders"];
+	        this.reserve_builders = source["reserve_builders"];
+	        this.upgrade_strategy = source["upgrade_strategy"];
+	        this.upgrade_defenses = source["upgrade_defenses"];
+	        this.upgrade_resources = source["upgrade_resources"];
+	        this.upgrade_army = source["upgrade_army"];
+	        this.upgrade_traps = source["upgrade_traps"];
+	        this.upgrade_heroes = source["upgrade_heroes"];
+	        this.max_gold_per_upgrade = source["max_gold_per_upgrade"];
+	        this.max_elixir_per_upgrade = source["max_elixir_per_upgrade"];
+	        this.max_de_per_upgrade = source["max_de_per_upgrade"];
+	        this.auto_lab = source["auto_lab"];
+	        this.lab_strategy = source["lab_strategy"];
+	        this.lab_allow_de = source["lab_allow_de"];
+	        this.lab_priorities = source["lab_priorities"];
+	        this.auto_pets = source["auto_pets"];
+	        this.pet_priorities = source["pet_priorities"];
+	        this.dry_run = source["dry_run"];
+	    }
+	}
+	export class ScheduleConfig {
+	    enabled: boolean;
+	    active_hours_start: string;
+	    active_hours_end: string;
+	    session_duration_minutes: number;
+	    session_jitter_minutes: number;
+	    break_duration_minutes: number;
+	    break_jitter_minutes: number;
+	    force_stop_on_break: boolean;
+	    max_attacks_per_hour: number;
+	    max_attacks_per_day: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScheduleConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.active_hours_start = source["active_hours_start"];
+	        this.active_hours_end = source["active_hours_end"];
+	        this.session_duration_minutes = source["session_duration_minutes"];
+	        this.session_jitter_minutes = source["session_jitter_minutes"];
+	        this.break_duration_minutes = source["break_duration_minutes"];
+	        this.break_jitter_minutes = source["break_jitter_minutes"];
+	        this.force_stop_on_break = source["force_stop_on_break"];
+	        this.max_attacks_per_hour = source["max_attacks_per_hour"];
+	        this.max_attacks_per_day = source["max_attacks_per_day"];
+	    }
+	}
+	export class StorageConfig {
+	    halt_when_gold_full: boolean;
+	    halt_when_elixir_full: boolean;
+	    halt_when_de_full: boolean;
+	    halt_rule: string;
+	    full_threshold_percent: number;
+	    resume_threshold_percent: number;
+	    dump_to_walls_before_halt: boolean;
+	    auto_collect: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new StorageConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.halt_when_gold_full = source["halt_when_gold_full"];
+	        this.halt_when_elixir_full = source["halt_when_elixir_full"];
+	        this.halt_when_de_full = source["halt_when_de_full"];
+	        this.halt_rule = source["halt_rule"];
+	        this.full_threshold_percent = source["full_threshold_percent"];
+	        this.resume_threshold_percent = source["resume_threshold_percent"];
+	        this.dump_to_walls_before_halt = source["dump_to_walls_before_halt"];
+	        this.auto_collect = source["auto_collect"];
 	    }
 	}
 	export class SearchConfig {
@@ -430,6 +528,8 @@ export namespace config {
 	    training: TrainingConfig;
 	    attack: AttackConfig;
 	    search: SearchConfig;
+	    storage: StorageConfig;
+	    schedule: ScheduleConfig;
 	    upgrade: UpgradeConfig;
 	    debug: DebugConfig;
 	    performance: PerformanceConfig;
@@ -444,6 +544,8 @@ export namespace config {
 	        this.training = this.convertValues(source["training"], TrainingConfig);
 	        this.attack = this.convertValues(source["attack"], AttackConfig);
 	        this.search = this.convertValues(source["search"], SearchConfig);
+	        this.storage = this.convertValues(source["storage"], StorageConfig);
+	        this.schedule = this.convertValues(source["schedule"], ScheduleConfig);
 	        this.upgrade = this.convertValues(source["upgrade"], UpgradeConfig);
 	        this.debug = this.convertValues(source["debug"], DebugConfig);
 	        this.performance = this.convertValues(source["performance"], PerformanceConfig);
@@ -467,6 +569,8 @@ export namespace config {
 		    return a;
 		}
 	}
+	
+	
 	
 	
 	

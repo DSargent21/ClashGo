@@ -218,3 +218,129 @@ func TestApp_UpdaterBindings(t *testing.T) {
 		t.Error("expected error when updater is nil")
 	}
 }
+
+func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	// 1. Initial State Getters
+	cfg := a.GetConfig()
+	if cfg == nil {
+		t.Fatal("GetConfig is nil")
+	}
+	stats := a.GetStats()
+	if stats.AttacksCompleted != 0 {
+		t.Errorf("expected 0 attacks, got %d", stats.AttacksCompleted)
+	}
+	history := a.GetAttackHistory()
+	if history == nil {
+		t.Fatal("GetAttackHistory is nil")
+	}
+	logs := a.GetLogs()
+	if logs == nil {
+		t.Fatal("GetLogs is nil")
+	}
+	strats := a.GetStrategies()
+	if strats == nil {
+		t.Fatal("GetStrategies is nil")
+	}
+	if a.IsRunning() {
+		t.Fatal("IsRunning should be false initially")
+	}
+	if v := a.GetAppVersion(); v == "" {
+		t.Fatal("GetAppVersion returned empty string")
+	}
+
+	// 2. SaveConfig
+	err := a.SaveConfig(350000, 350000, 1500, true, "barcher", true, 25)
+	if err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+
+	// 3. SetStorageConfig
+	err = a.SetStorageConfig(true, true, true, "ANY", 92.0, 80.0, true, true)
+	if err != nil {
+		t.Fatalf("SetStorageConfig failed: %v", err)
+	}
+
+	// 4. SetScheduleConfig
+	err = a.SetScheduleConfig(true, "09:00", "22:00", 45, 10, 15, 5, true, 8, 50)
+	if err != nil {
+		t.Fatalf("SetScheduleConfig failed: %v", err)
+	}
+
+	// 5. SetAutoUpgradeConfig
+	pets := []string{"Diggy", "Frosty", "Unicorn"}
+	err = a.SetAutoUpgradeConfig(
+		true, 2, "cheapest_first",
+		true, true, false, true, true,
+		6000000, 5000000, 80000,
+		true, "troops_first", true,
+		true, pets,
+		"gold", 1000000, 1500000,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("SetAutoUpgradeConfig failed: %v", err)
+	}
+
+	// 6. Strategy army slot & auto end
+	err = a.SetStrategyArmySlot("barcher", 3)
+	if err != nil {
+		t.Fatalf("SetStrategyArmySlot failed: %v", err)
+	}
+	err = a.SetStrategyAutoEnd("barcher", true)
+	if err != nil {
+		t.Fatalf("SetStrategyAutoEnd failed: %v", err)
+	}
+
+	// 7. Verify all saved properties re-read accurately from GetConfig
+	freshCfg := a.GetConfig()
+	if freshCfg.Search.MinLootGold != 350000 || freshCfg.Search.MinLootElixir != 350000 || freshCfg.Search.MinLootDarkElixir != 1500 ||
+		!freshCfg.Upgrade.UpgradeWalls || !freshCfg.Search.Enabled || freshCfg.Attack.StallTimerSeconds != 25 {
+		t.Errorf("SaveConfig values mismatch: %+v", freshCfg)
+	}
+	if !freshCfg.Storage.HaltWhenGoldFull || !freshCfg.Storage.HaltWhenElixirFull || !freshCfg.Storage.HaltWhenDEFull ||
+		freshCfg.Storage.FullThresholdPercent != 92.0 || !freshCfg.Storage.DumpToWallsBeforeHalt || !freshCfg.Storage.AutoCollect {
+		t.Errorf("SetStorageConfig values mismatch: %+v", freshCfg.Storage)
+	}
+	if !freshCfg.Schedule.Enabled || freshCfg.Schedule.ActiveHoursStart != "09:00" || freshCfg.Schedule.ActiveHoursEnd != "22:00" ||
+		freshCfg.Schedule.SessionDurationMinutes != 45 || freshCfg.Schedule.SessionJitterMinutes != 10 ||
+		freshCfg.Schedule.BreakDurationMinutes != 15 || freshCfg.Schedule.BreakJitterMinutes != 5 ||
+		!freshCfg.Schedule.ForceStopOnBreak || freshCfg.Schedule.MaxAttacksPerHour != 8 || freshCfg.Schedule.MaxAttacksPerDay != 50 {
+		t.Errorf("SetScheduleConfig values mismatch: %+v", freshCfg.Schedule)
+	}
+	if !freshCfg.Upgrade.AutoBuilders || freshCfg.Upgrade.ReserveBuilders != 2 || freshCfg.Upgrade.UpgradeStrategy != "cheapest_first" ||
+		!freshCfg.Upgrade.UpgradeDefenses || !freshCfg.Upgrade.UpgradeResources || freshCfg.Upgrade.UpgradeArmy ||
+		!freshCfg.Upgrade.UpgradeTraps || !freshCfg.Upgrade.UpgradeHeroes ||
+		freshCfg.Upgrade.MaxGoldPerUpgrade != 6000000 || freshCfg.Upgrade.MaxElixirPerUpgrade != 5000000 || freshCfg.Upgrade.MaxDEPerUpgrade != 80000 ||
+		!freshCfg.Upgrade.AutoLab || freshCfg.Upgrade.LabStrategy != "troops_first" || !freshCfg.Upgrade.LabAllowDE ||
+		!freshCfg.Upgrade.AutoPets || len(freshCfg.Upgrade.PetPriorities) != 3 ||
+		freshCfg.Upgrade.WallResource != "gold" || freshCfg.Upgrade.WallMinGoldReserve != 1000000 || freshCfg.Upgrade.WallMinElixirReserve != 1500000 {
+		t.Errorf("SetAutoUpgradeConfig values mismatch: %+v", freshCfg.Upgrade)
+	}
+	if freshCfg.Attack.StrategySlots["barcher"] != 3 {
+		t.Errorf("StrategySlots mismatch: %d, want 3", freshCfg.Attack.StrategySlots["barcher"])
+	}
+	if !freshCfg.Attack.StrategyAutoEnd["barcher"] {
+		t.Errorf("StrategyAutoEnd mismatch: want true")
+	}
+
+	// 8. Stats reset
+	a.lastStats.AttacksCompleted = 5
+	a.lastStats.TotalGold = 1000000
+	a.ResetStats()
+	clearedStats := a.GetStats()
+	if clearedStats.AttacksCompleted != 0 || clearedStats.TotalGold != 0 {
+		t.Errorf("ResetStats failed: %+v", clearedStats)
+	}
+
+	// 9. Version skip & clear (without update available, returns expected error)
+	if err := a.SkipCurrentVersion(); err == nil || err.Error() != "no version available to skip" {
+		t.Errorf("SkipCurrentVersion expected 'no version available to skip', got %v", err)
+	}
+	if err := a.ClearSkippedVersion(); err != nil {
+		t.Errorf("ClearSkippedVersion: %v", err)
+	}
+}
+

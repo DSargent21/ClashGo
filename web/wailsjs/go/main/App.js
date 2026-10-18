@@ -62,6 +62,22 @@ export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
+export function SaveFullConfig(arg1) {
+  return window['go']['main']['App']['SaveFullConfig'](arg1);
+}
+
+export function SetAutoUpgradeConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19, arg20) {
+  return window['go']['main']['App']['SetAutoUpgradeConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19, arg20);
+}
+
+export function SetScheduleConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
+  return window['go']['main']['App']['SetScheduleConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+}
+
+export function SetStorageConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['SetStorageConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+}
+
 export function SetStrategyArmySlot(arg1, arg2) {
   return window['go']['main']['App']['SetStrategyArmySlot'](arg1, arg2);
 }

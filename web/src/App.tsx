@@ -10,6 +10,9 @@ import {
   GetAttackHistory,
   GetLogs,
   SaveConfig,
+  SetStorageConfig,
+  SetScheduleConfig,
+  SetAutoUpgradeConfig,
   SetStrategyArmySlot,
   SetStrategyAutoEnd,
   StartBot,
@@ -144,6 +147,46 @@ function App() {
   const [strategySlots, setStrategySlots] = useState<Record<string, number>>({});
   const [strategyAutoEnd, setStrategyAutoEnd] = useState<Record<string, boolean>>({});
 
+  // Storage states
+  const [haltGold, setHaltGold] = useState(true);
+  const [haltElixir, setHaltElixir] = useState(true);
+  const [haltDE, setHaltDE] = useState(false);
+  const [storageThreshold, setStorageThreshold] = useState(95);
+  const [dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt] = useState(true);
+
+  // Schedule states
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [activeHoursStart, setActiveHoursStart] = useState("08:00");
+  const [activeHoursEnd, setActiveHoursEnd] = useState("23:00");
+  const [sessionDuration, setSessionDuration] = useState(60);
+  const [breakDuration, setBreakDuration] = useState(20);
+  const [forceStopOnBreak, setForceStopOnBreak] = useState(true);
+  const [maxPerHour, setMaxPerHour] = useState(6);
+  const [maxPerDay, setMaxPerDay] = useState(40);
+
+  // Auto-upgrade states & filters
+  const [autoBuilders, setAutoBuilders] = useState(false);
+  const [reserveBuilders, setReserveBuilders] = useState(1);
+  const [upgradeStrategy, setUpgradeStrategy] = useState("heroes_first");
+  const [upgradeDefenses, setUpgradeDefenses] = useState(true);
+  const [upgradeResources, setUpgradeResources] = useState(true);
+  const [upgradeArmy, setUpgradeArmy] = useState(true);
+  const [upgradeTraps, setUpgradeTraps] = useState(true);
+  const [upgradeHeroes, setUpgradeHeroes] = useState(true);
+  const [maxGoldPerUpgrade, setMaxGoldPerUpgrade] = useState(0);
+  const [maxElixirPerUpgrade, setMaxElixirPerUpgrade] = useState(0);
+  const [maxDEPerUpgrade, setMaxDEPerUpgrade] = useState(0);
+  const [autoLab, setAutoLab] = useState(false);
+  const [labStrategy, setLabStrategy] = useState("cheapest_first");
+  const [labAllowDE, setLabAllowDE] = useState(true);
+  const [autoPets, setAutoPets] = useState(false);
+  const [petPriorities, setPetPriorities] = useState<string[]>(["Diggy", "Unicorn", "Frosty", "Phoenix", "Spirit Fox"]);
+  const [wallResource, setWallResource] = useState("both");
+  const [wallMinGoldReserve, setWallMinGoldReserve] = useState(2000000);
+  const [wallMinElixirReserve, setWallMinElixirReserve] = useState(2000000);
+  const [autoCollect, setAutoCollect] = useState(true);
+  const [dryRun, setDryRun] = useState(false);
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -165,6 +208,48 @@ function App() {
         }
         if (conf.attack.strategy_auto_end) {
           setStrategyAutoEnd(conf.attack.strategy_auto_end);
+        }
+        if (conf.storage) {
+          setHaltGold(conf.storage.halt_when_gold_full ?? true);
+          setHaltElixir(conf.storage.halt_when_elixir_full ?? true);
+          setHaltDE(conf.storage.halt_when_de_full ?? false);
+          setStorageThreshold(conf.storage.full_threshold_percent ?? 95);
+          setDumpToWallsBeforeHalt(conf.storage.dump_to_walls_before_halt ?? true);
+          setAutoCollect(conf.storage.auto_collect ?? true);
+        }
+        if (conf.schedule) {
+          setScheduleEnabled(conf.schedule.enabled ?? false);
+          setActiveHoursStart(conf.schedule.active_hours_start || "08:00");
+          setActiveHoursEnd(conf.schedule.active_hours_end || "23:00");
+          setSessionDuration(conf.schedule.session_duration_minutes ?? 60);
+          setBreakDuration(conf.schedule.break_duration_minutes ?? 20);
+          setForceStopOnBreak(conf.schedule.force_stop_on_break ?? true);
+          setMaxPerHour(conf.schedule.max_attacks_per_hour ?? 6);
+          setMaxPerDay(conf.schedule.max_attacks_per_day ?? 40);
+        }
+        if (conf.upgrade) {
+          setAutoBuilders(conf.upgrade.auto_builders ?? false);
+          setReserveBuilders(conf.upgrade.reserve_builders ?? 1);
+          setUpgradeStrategy(conf.upgrade.upgrade_strategy || "heroes_first");
+          setUpgradeDefenses(conf.upgrade.upgrade_defenses ?? true);
+          setUpgradeResources(conf.upgrade.upgrade_resources ?? true);
+          setUpgradeArmy(conf.upgrade.upgrade_army ?? true);
+          setUpgradeTraps(conf.upgrade.upgrade_traps ?? true);
+          setUpgradeHeroes(conf.upgrade.upgrade_heroes ?? true);
+          setMaxGoldPerUpgrade(conf.upgrade.max_gold_per_upgrade ?? 0);
+          setMaxElixirPerUpgrade(conf.upgrade.max_elixir_per_upgrade ?? 0);
+          setMaxDEPerUpgrade(conf.upgrade.max_de_per_upgrade ?? 0);
+          setAutoLab(conf.upgrade.auto_lab ?? false);
+          setLabStrategy(conf.upgrade.lab_strategy || "cheapest_first");
+          setLabAllowDE(conf.upgrade.lab_allow_de ?? true);
+          setAutoPets(conf.upgrade.auto_pets ?? false);
+          if (conf.upgrade.pet_priorities && conf.upgrade.pet_priorities.length > 0) {
+            setPetPriorities(conf.upgrade.pet_priorities);
+          }
+          setWallResource(conf.upgrade.wall_resource || "both");
+          setWallMinGoldReserve(conf.upgrade.wall_min_gold_reserve ?? 2000000);
+          setWallMinElixirReserve(conf.upgrade.wall_min_elixir_reserve ?? 2000000);
+          setDryRun(conf.upgrade.dry_run ?? false);
         }
         setIsRunning(running);
         // Never let a null from the Go side reach the Config page — a
@@ -281,6 +366,50 @@ function App() {
       selectedStrategy,
       searchEnabled,
       stallTimer,
+    );
+    await SetStorageConfig(
+      haltGold,
+      haltElixir,
+      haltDE,
+      "ANY",
+      storageThreshold,
+      80.0,
+      dumpToWallsBeforeHalt,
+      autoCollect,
+    );
+    await SetScheduleConfig(
+      scheduleEnabled,
+      activeHoursStart,
+      activeHoursEnd,
+      sessionDuration,
+      15,
+      breakDuration,
+      5,
+      forceStopOnBreak,
+      maxPerHour,
+      maxPerDay,
+    );
+    await SetAutoUpgradeConfig(
+      autoBuilders,
+      reserveBuilders,
+      upgradeStrategy,
+      upgradeDefenses,
+      upgradeResources,
+      upgradeArmy,
+      upgradeTraps,
+      upgradeHeroes,
+      maxGoldPerUpgrade,
+      maxElixirPerUpgrade,
+      maxDEPerUpgrade,
+      autoLab,
+      labStrategy,
+      labAllowDE,
+      autoPets,
+      petPriorities,
+      wallResource,
+      wallMinGoldReserve,
+      wallMinElixirReserve,
+      dryRun,
     );
   };
 
@@ -417,18 +546,54 @@ function App() {
       onSetArmySlot: handleSetArmySlot,
       autoEnd: currentAutoEnd,
       onSetAutoEnd: handleSetAutoEnd,
+      haltGold, setHaltGold,
+      haltElixir, setHaltElixir,
+      haltDE, setHaltDE,
+      storageThreshold, setStorageThreshold,
+      dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt,
+      autoCollect, setAutoCollect,
+      scheduleEnabled, setScheduleEnabled,
+      activeHoursStart, setActiveHoursStart,
+      activeHoursEnd, setActiveHoursEnd,
+      sessionDuration, setSessionDuration,
+      breakDuration, setBreakDuration,
+      forceStopOnBreak, setForceStopOnBreak,
+      maxPerHour, setMaxPerHour,
+      maxPerDay, setMaxPerDay,
+      autoBuilders, setAutoBuilders,
+      reserveBuilders, setReserveBuilders,
+      upgradeStrategy, setUpgradeStrategy,
+      upgradeDefenses, setUpgradeDefenses,
+      upgradeResources, setUpgradeResources,
+      upgradeArmy, setUpgradeArmy,
+      upgradeTraps, setUpgradeTraps,
+      upgradeHeroes, setUpgradeHeroes,
+      maxGoldPerUpgrade, setMaxGoldPerUpgrade,
+      maxElixirPerUpgrade, setMaxElixirPerUpgrade,
+      maxDEPerUpgrade, setMaxDEPerUpgrade,
+      autoLab, setAutoLab,
+      labStrategy, setLabStrategy,
+      labAllowDE, setLabAllowDE,
+      autoPets, setAutoPets,
+      petPriorities, setPetPriorities,
+      wallResource, setWallResource,
+      wallMinGoldReserve, setWallMinGoldReserve,
+      wallMinElixirReserve, setWallMinElixirReserve,
+      dryRun, setDryRun,
       onSave: async () => {
-        // Errors intentionally bubble so ConfigView's save-status
-        // indicator can show a red "Save failed" pill back to the user.
-        // Previously this catch swallowed the error and only logged it,
-        // which made save feel broken when SaveConfig (the Wails IPC)
-        // rejected (e.g. backend down, malformed payload).
         await saveSettings();
       }
     };
   }, [
     goldThreshold, elixirThreshold, deThreshold,
-    selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd
+    selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd,
+    haltGold, haltElixir, haltDE, storageThreshold, dumpToWallsBeforeHalt, autoCollect,
+    scheduleEnabled, activeHoursStart, activeHoursEnd, sessionDuration, breakDuration, forceStopOnBreak, maxPerHour, maxPerDay,
+    autoBuilders, reserveBuilders, upgradeStrategy, upgradeDefenses, upgradeResources, upgradeArmy, upgradeTraps, upgradeHeroes,
+    maxGoldPerUpgrade, maxElixirPerUpgrade, maxDEPerUpgrade,
+    autoLab, labStrategy, labAllowDE, autoPets, petPriorities,
+    wallResource, wallMinGoldReserve, wallMinElixirReserve,
+    dryRun,
   ]);
 
   return (

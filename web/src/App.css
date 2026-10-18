@@ -58,6 +58,19 @@ html.dark ::-webkit-scrollbar-thumb {
   background-clip: content-box;
 }
 
+/* Hide scrollbar for Chrome, Safari, Edge, Opera, and Firefox */
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+.no-scrollbar,
+.scrollbar-none {
+  -ms-overflow-style: none !important;  /* IE and Edge */
+  scrollbar-width: none !important;  /* Firefox */
+}
+
 /* The console scrollbar adapts to the theme. In light mode the
    console has a white background, so the thumb is gray; in dark
    mode the console is near-black, so the thumb is white-alpha. */

@@ -393,3 +393,51 @@ func TestReadDestructionPercentage_CorpusFrame(t *testing.T) {
 		t.Fatalf("ReadDestructionPercentage = %d, want 16", val)
 	}
 }
+
+func TestVillageResources_IsFull(t *testing.T) {
+	vr := VillageResources{
+		GoldFillPercent:   98.5,
+		ElixirFillPercent: 75.0,
+		DEFillPercent:     50.0,
+	}
+
+	// ANY rule: gold is full (98.5 >= 95.0) -> true
+	if !vr.IsFull(true, false, false, "ANY", 95.0) {
+		t.Errorf("expected gold to trigger full under ANY rule")
+	}
+
+	// Elixir alone (75.0 < 95.0) -> false
+	if vr.IsFull(false, true, false, "ANY", 95.0) {
+		t.Errorf("expected elixir not full under 95%% threshold")
+	}
+
+	// ALL rule: both gold and elixir enabled -> false (elixir not full)
+	if vr.IsFull(true, true, false, "ALL", 95.0) {
+		t.Errorf("expected false under ALL rule when elixir is not full")
+	}
+
+	// ALL rule: only gold enabled -> true
+	if !vr.IsFull(true, false, false, "ALL", 95.0) {
+		t.Errorf("expected true under ALL rule when only full resource is enabled")
+	}
+}
+
+func TestReadVillageStorageFill_LiveFrame(t *testing.T) {
+	img := gocv.IMRead("/tmp/village.png", gocv.IMReadColor)
+	if img.Empty() {
+		t.Skip("no /tmp/village.png live capture")
+	}
+	defer img.Close()
+
+	res := ReadVillageStorageFillMat(img, 1.1334)
+	t.Logf("Village storage fill: Gold=%.1f%%, Elixir=%.1f%%, DE=%.1f%%",
+		res.GoldFillPercent, res.ElixirFillPercent, res.DEFillPercent)
+
+	if res.GoldFillPercent < 90.0 {
+		t.Errorf("GoldFillPercent = %.1f%%, expected >= 90%%", res.GoldFillPercent)
+	}
+	if res.ElixirFillPercent < 65.0 || res.ElixirFillPercent > 90.0 {
+		t.Errorf("ElixirFillPercent = %.1f%%, expected in [65..90]%%", res.ElixirFillPercent)
+	}
+}
+

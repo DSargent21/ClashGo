@@ -275,7 +275,7 @@ const zoomPinchRepeats = 3
 // ZoomOutMax's loop, not a claim that they are reachable.
 const (
 	zoomOutMaxAttempts  = 5
-	zoomOutMaxThreshold = 0.4 // percent of thumbnail pixels, from vision.ChangedPercent
+	zoomOutMaxThreshold = 5.0 // percent of thumbnail pixels; live village idle noise (water/trees/troops) is ~3.5%
 	zoomSettleMillis    = 900 // the camera eases after a pinch; less reads as still moving
 )
 

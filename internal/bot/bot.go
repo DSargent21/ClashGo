@@ -83,6 +83,7 @@ type Bot struct {
 	lastArmyCampGuardLog time.Time
 	startedAt            time.Time
 	lastAction           time.Time
+	lastSoftRecovery     time.Time
 	lastSequenceStart    time.Time
 	lastNav              time.Time
 	lastCapture          time.Time
@@ -115,6 +116,12 @@ type Bot struct {
 	returnHomeMu       sync.Mutex
 	returnHomeInFlight bool
 	returnHomeLast     time.Time
+
+	scheduler        *Scheduler
+	builderManager   *BuilderManager
+	storageHalted    atomic.Bool
+	lastUpgradeCheck time.Time
+	lastCollectTime  time.Time
 
 	OnStatsUpdate func()
 }
@@ -417,6 +424,22 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		classifyGate:      newClassifyGate(cfg.Performance),
 	}
 
+	b.scheduler = NewScheduler(cfg.Schedule, b.logger)
+	if cfg.Schedule.ForceStopOnBreak {
+		pkgName := cfg.Device.PackageName
+		b.scheduler.SetBreakHooks(
+			func() {
+				b.logger.Info().Str("pkg", pkgName).Msg("scheduler break active; force-stopping game for offline simulation")
+				_ = b.client.StopApp(pkgName)
+			},
+			func() {
+				b.logger.Info().Str("pkg", pkgName).Msg("scheduler break complete; relaunching game")
+				_ = b.client.StartApp(pkgName)
+			},
+		)
+	}
+	b.builderManager = NewBuilderManager(client, cal, cfg.Upgrade, b.logger)
+
 	// Resolve the strategy's declared army slot once at boot so the
 	// pre-battle click sequence can arm the right saved recipe.
 	// Config override takes precedence, then strategy YAML army_slot, fallback 1.
@@ -666,6 +689,7 @@ func (b *Bot) classifyFrame(screen gocv.Mat) (game.GameState, int) {
 // so the stuck-check distinguishes "spinning" from "working".
 func (b *Bot) recordActivity() {
 	b.lastAction = time.Now()
+	b.lastSoftRecovery = time.Time{}
 }
 
 // maxSplashDismissAttempts bounds how many evidence-backed taps go out for ONE
@@ -803,9 +827,26 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 		return
 	}
 
+	stuckTime := time.Since(b.lastAction)
+
+	// Intermediate fast soft-recovery: before hard-restarting at 35s, attempt in-place recovery at 16s.
+	// Sends Android Back key (cancels modals/drawers) and taps neutral village backdrop (99, 300).
+	// Recovers in <1s without dropping into a 25s cold app restart.
+	if stuckTime > 16*time.Second && time.Since(b.lastSoftRecovery) > 12*time.Second {
+		b.logger.Warn().
+			Str("state", state.String()).
+			Dur("stuck_time", stuckTime).
+			Msg("bot idle/unresponsive > 16s; attempting fast in-place soft recovery before hard restart")
+		b.lastSoftRecovery = time.Now()
+		_ = b.client.Back()
+		time.Sleep(300 * time.Millisecond)
+		k := b.cal.DisplayScale()
+		_ = b.client.Tap(int(99*k), int(300*k))
+		time.Sleep(300 * time.Millisecond)
+	}
+
 	timeout := b.stuckTimeout
 
-	stuckTime := time.Since(b.lastAction)
 	if stuckTime > timeout {
 		b.logger.Warn().
 			Str("state", state.String()).
@@ -816,6 +857,7 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 
 		b.restartGame()
 		b.lastSequenceStart = time.Now()
+		b.lastSoftRecovery = time.Time{}
 	}
 }
 
@@ -1228,6 +1270,33 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		}()
 	}
 
+	// Periodic idle upgrade check: every 10 minutes when confirmed in main village,
+	// check if a free builder, lab, or pet slot opened up while waiting/training.
+	if gc.State == game.StateMainVillage && b.builderManager != nil &&
+		(b.cfg.Upgrade.AutoBuilders || b.cfg.Upgrade.AutoLab || b.cfg.Upgrade.AutoPets) &&
+		time.Since(b.lastUpgradeCheck) > 10*time.Minute {
+		b.lastUpgradeCheck = time.Now()
+		go func() {
+			if b.seqRunning.Load() {
+				return
+			}
+			_ = b.builderManager.PerformAutoUpgrades()
+		}()
+	}
+
+	// Periodic auto-resource collection: every 5 minutes when confirmed in main village,
+	// sweep mines, drills, collectors, and cart so resources flow into storages.
+	if gc.State == game.StateMainVillage && b.cfg.Storage.AutoCollect &&
+		time.Since(b.lastCollectTime) > 5*time.Minute {
+		b.lastCollectTime = time.Now()
+		go func() {
+			if b.seqRunning.Load() {
+				return
+			}
+			b.CollectVillageResources()
+		}()
+	}
+
 	if gc.State == game.StateArmyCamp && time.Since(b.lastNav) > 3*time.Second {
 		// Guard against a misclassification, not a real camp: a dim or
 		// zoomed village frame can pass the ArmyCamp rule's single loose
@@ -1525,6 +1594,61 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 	}
 
+	// Scheduler authorization gate
+	if b.scheduler != nil {
+		if allowed, reason := b.scheduler.CanAttack(time.Now()); !allowed {
+			b.logger.Info().Str("reason", reason).Msg("scheduler halting attack sequence")
+			return
+		}
+	}
+
+	// Storage full detection gate
+	if b.cfg.Storage.HaltWhenGoldFull || b.cfg.Storage.HaltWhenElixirFull || b.cfg.Storage.HaltWhenDEFull {
+		screen, err := b.client.CaptureToMat()
+		if err == nil && !screen.Empty() {
+			scale := 1.0
+			if b.cal != nil {
+				scale = b.cal.DisplayScale()
+			}
+			fill := game.ReadVillageStorageFillMat(screen, scale)
+			screen.Close()
+
+			thresh := b.cfg.Storage.FullThresholdPercent
+			if b.storageHalted.Load() {
+				thresh = b.cfg.Storage.ResumeThresholdPercent
+			}
+			isFull := fill.IsFull(b.cfg.Storage.HaltWhenGoldFull, b.cfg.Storage.HaltWhenElixirFull, b.cfg.Storage.HaltWhenDEFull, b.cfg.Storage.HaltRule, thresh)
+			if isFull {
+				b.logger.Warn().
+					Float64("gold", fill.GoldFillPercent).
+					Float64("elixir", fill.ElixirFillPercent).
+					Float64("de", fill.DEFillPercent).
+					Msg("storages are full; checking if walls can burn resources")
+
+				if b.cfg.Storage.DumpToWallsBeforeHalt && b.cfg.Upgrade.UpgradeWalls {
+					b.UpgradeWalls(gc)
+					time.Sleep(1 * time.Second)
+					if fresh, ferr := b.client.CaptureToMat(); ferr == nil && !fresh.Empty() {
+						fill = game.ReadVillageStorageFillMat(fresh, scale)
+						fresh.Close()
+						isFull = fill.IsFull(b.cfg.Storage.HaltWhenGoldFull, b.cfg.Storage.HaltWhenElixirFull, b.cfg.Storage.HaltWhenDEFull, b.cfg.Storage.HaltRule, thresh)
+					}
+				}
+
+				if isFull {
+					b.storageHalted.Store(true)
+					b.logger.Warn().
+						Float64("gold", fill.GoldFillPercent).
+						Float64("elixir", fill.ElixirFillPercent).
+						Float64("de", fill.DEFillPercent).
+						Msg("storages remain full; halting attack sequence to avoid wasting loot")
+					return
+				}
+			}
+			b.storageHalted.Store(false)
+		}
+	}
+
 	if !b.clickSequence() {
 		// One clean retry BEFORE the heavy recovery. The common live failure is
 		// not a broken UI: it is the search aborting — a "connection lost"
@@ -1601,6 +1725,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			b.logger.Info().Msg("search filters disabled, attacking base immediately")
 			meetsReq = true
 		} else {
+			// Settle briefly so clouds clear completely and loot digits are fully rendered
+			time.Sleep(800 * time.Millisecond)
+			if settledScreen, err := b.client.CaptureToMat(); err == nil {
+				screen.Close()
+				screen = settledScreen
+			}
+
 			b.logger.Info().Msg("base found, reading loot...")
 			loot, err := lootRec.ReadAvailableLoot(screen)
 			if err != nil {
@@ -1946,6 +2077,9 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// Stamp the attack boundary so the inter-attack cooldown has a clean
 	// reference point (set only on a real return home, not on a restart).
 	b.lastAttackEnd = time.Now()
+	if b.scheduler != nil {
+		b.scheduler.RecordAttack(time.Now())
+	}
 
 	// Leftover post-attack popups are dismissed only when one is actually on the
 	// screen. Settle first so the village fade-in transition doesn't briefly
@@ -1965,6 +2099,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 	if b.cfg.Upgrade.UpgradeWalls {
 		b.UpgradeWalls(gc)
+	}
+
+	// Auto upgrades (Builders, Lab, Pets) via modern Build Menu 2.0
+	if b.builderManager != nil && (b.cfg.Upgrade.AutoBuilders || b.cfg.Upgrade.AutoLab || b.cfg.Upgrade.AutoPets) {
+		if err := b.builderManager.PerformAutoUpgrades(); err != nil {
+			b.logger.Warn().Err(err).Msg("auto upgrades encountered error")
+		}
 	}
 
 	// Cap check stays after wall upgrades so the graceful shutdown (2s
@@ -2833,7 +2974,23 @@ func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
 		Int("phases", len(strat.Phases)).
 		Msg("executing dynamic attack plan")
 
-	time.Sleep(600 * time.Millisecond)
+	// Battle zoom-out: CoC enters matchmaking with a default zoomed-in camera view.
+	// Deployment coordinates and red-zone perimeter require the battlefield to be
+	// at max zoom-out so taps land outside the base rather than on buildings.
+	b.logger.Info().Msg("zooming out battle view to max zoom-out...")
+	if zoomErr := b.navigator.ZoomOutMax(); zoomErr != nil {
+		b.logger.Warn().Err(zoomErr).Msg("battle zoom-out encountered an error; proceeding with deployment")
+	}
+
+	battleScreen, err := b.client.CaptureToMat()
+	if err == nil {
+		defer battleScreen.Close()
+		screen = battleScreen
+	} else {
+		b.logger.Warn().Err(err).Msg("could not capture post-zoom battle frame; falling back to initial screen")
+	}
+
+	time.Sleep(300 * time.Millisecond)
 
 	remaining, err := b.attackExec.DeployDynamicV2(strat, screen, stratPath)
 	if err != nil {
@@ -2919,6 +3076,12 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 
 	if b.navigator != nil {
 		b.navigator.SetDisableChestDismissal(cfg.Device.DisableChestDismissal)
+	}
+	if b.scheduler != nil {
+		b.scheduler.cfg = cfg.Schedule
+	}
+	if b.builderManager != nil {
+		b.builderManager.cfg = cfg.Upgrade
 	}
 	b.logger.Info().Int("army_slot", b.armySlot).Msg("bot configuration updated in real-time")
 }
@@ -3067,6 +3230,33 @@ type BotStats struct {
 	// climbing means the emulator is doing less; hits at zero with the cache
 	// enabled means nothing captures concurrently on this workload.
 	CaptureCache adb.CaptureCacheStats `json:"capture_cache"`
+}
+
+// CollectVillageResources sweeps the main village collector positions to collect
+// ready Gold Mines, Elixir Collectors, Dark Elixir Drills, and Loot Cart.
+func (b *Bot) CollectVillageResources() {
+	if b.cal == nil || b.client == nil {
+		return
+	}
+	k := b.cal.DisplayScale()
+	// Strategic collector sweep points across village quadrants:
+	points := []image.Point{
+		image.Pt(int(320*k), int(300*k)),
+		image.Pt(int(680*k), int(300*k)),
+		image.Pt(int(350*k), int(480*k)),
+		image.Pt(int(650*k), int(480*k)),
+		image.Pt(int(500*k), int(380*k)),
+	}
+	b.logger.Info().Msg("sweeping village resource collectors (mines, drills, cart)...")
+	for _, pt := range points {
+		if b.seqRunning.Load() || b.ctx.Err() != nil {
+			return
+		}
+		_ = b.client.Tap(pt.X, pt.Y)
+		time.Sleep(350 * time.Millisecond)
+	}
+	// Safe backdrop tap to dismiss any building info panel that might have opened
+	_ = b.client.Tap(int(88*k), int(265*k))
 }
 
 type AttackReport struct {

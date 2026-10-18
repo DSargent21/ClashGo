@@ -14,6 +14,8 @@ type BotConfig struct {
 	Training    TrainingConfig    `json:"training"`
 	Attack      AttackConfig      `json:"attack"`
 	Search      SearchConfig      `json:"search"`
+	Storage     StorageConfig     `json:"storage"`
+	Schedule    ScheduleConfig    `json:"schedule"`
 	Upgrade     UpgradeConfig     `json:"upgrade"`
 	Debug       DebugConfig       `json:"debug"`
 	Performance PerformanceConfig `json:"performance"`
@@ -235,8 +237,53 @@ type DebugConfig struct {
 	JitterFraction     float64 `json:"jitter_fraction"`
 }
 
+type StorageConfig struct {
+	HaltWhenGoldFull       bool    `json:"halt_when_gold_full"`
+	HaltWhenElixirFull     bool    `json:"halt_when_elixir_full"`
+	HaltWhenDEFull         bool    `json:"halt_when_de_full"`
+	HaltRule               string  `json:"halt_rule"` // "ANY" or "ALL"
+	FullThresholdPercent   float64 `json:"full_threshold_percent"`
+	ResumeThresholdPercent float64 `json:"resume_threshold_percent"`
+	DumpToWallsBeforeHalt  bool    `json:"dump_to_walls_before_halt"`
+	AutoCollect            bool    `json:"auto_collect"`
+}
+
+type ScheduleConfig struct {
+	Enabled                bool   `json:"enabled"`
+	ActiveHoursStart       string `json:"active_hours_start"`
+	ActiveHoursEnd         string `json:"active_hours_end"`
+	SessionDurationMinutes int    `json:"session_duration_minutes"`
+	SessionJitterMinutes   int    `json:"session_jitter_minutes"`
+	BreakDurationMinutes   int    `json:"break_duration_minutes"`
+	BreakJitterMinutes     int    `json:"break_jitter_minutes"`
+	ForceStopOnBreak       bool   `json:"force_stop_on_break"`
+	MaxAttacksPerHour      int    `json:"max_attacks_per_hour"`
+	MaxAttacksPerDay       int    `json:"max_attacks_per_day"`
+}
+
 type UpgradeConfig struct {
-	UpgradeWalls bool `json:"upgrade_walls"`
+	UpgradeWalls         bool     `json:"upgrade_walls"`
+	WallResource         string   `json:"wall_resource"` // "gold", "elixir", "both"
+	WallMinGoldReserve   int      `json:"wall_min_gold_reserve"`
+	WallMinElixirReserve int      `json:"wall_min_elixir_reserve"`
+	AutoBuilders         bool     `json:"auto_builders"`
+	ReserveBuilders      int      `json:"reserve_builders"`
+	UpgradeStrategy      string   `json:"upgrade_strategy"` // "heroes_first", "cheapest_first", "most_expensive_first", "balanced"
+	UpgradeDefenses      bool     `json:"upgrade_defenses"`
+	UpgradeResources     bool     `json:"upgrade_resources"`
+	UpgradeArmy          bool     `json:"upgrade_army"`
+	UpgradeTraps         bool     `json:"upgrade_traps"`
+	UpgradeHeroes        bool     `json:"upgrade_heroes"`
+	MaxGoldPerUpgrade    int      `json:"max_gold_per_upgrade"`
+	MaxElixirPerUpgrade  int      `json:"max_elixir_per_upgrade"`
+	MaxDEPerUpgrade      int      `json:"max_de_per_upgrade"`
+	AutoLab              bool     `json:"auto_lab"`
+	LabStrategy          string   `json:"lab_strategy"` // "troops_first", "spells_first", "siege_first", "cheapest_first"
+	LabAllowDE           bool     `json:"lab_allow_de"`
+	LabPriorities        []string `json:"lab_priorities"`
+	AutoPets             bool     `json:"auto_pets"`
+	PetPriorities        []string `json:"pet_priorities"`
+	DryRun               bool     `json:"dry_run"`
 }
 
 type Duration struct {
@@ -316,8 +363,50 @@ func DefaultConfig() *BotConfig {
 			MinLootElixir:        750000,
 			MinLootDarkElixir:    2000,
 		},
+		Storage: StorageConfig{
+			HaltWhenGoldFull:       true,
+			HaltWhenElixirFull:     true,
+			HaltWhenDEFull:         false,
+			HaltRule:               "ANY",
+			FullThresholdPercent:   95.0,
+			ResumeThresholdPercent: 80.0,
+			DumpToWallsBeforeHalt:  true,
+			AutoCollect:            true,
+		},
+		Schedule: ScheduleConfig{
+			Enabled:                false,
+			ActiveHoursStart:       "08:00",
+			ActiveHoursEnd:         "23:00",
+			SessionDurationMinutes: 60,
+			SessionJitterMinutes:   15,
+			BreakDurationMinutes:   20,
+			BreakJitterMinutes:     5,
+			ForceStopOnBreak:       true,
+			MaxAttacksPerHour:      6,
+			MaxAttacksPerDay:       40,
+		},
 		Upgrade: UpgradeConfig{
-			UpgradeWalls: false,
+			UpgradeWalls:         false,
+			WallResource:         "both",
+			WallMinGoldReserve:   2000000,
+			WallMinElixirReserve: 2000000,
+			AutoBuilders:         false,
+			ReserveBuilders:      1,
+			UpgradeStrategy:      "heroes_first",
+			UpgradeDefenses:      true,
+			UpgradeResources:     true,
+			UpgradeArmy:          true,
+			UpgradeTraps:         true,
+			UpgradeHeroes:        true,
+			MaxGoldPerUpgrade:    0,
+			MaxElixirPerUpgrade:  0,
+			MaxDEPerUpgrade:      0,
+			AutoLab:              false,
+			LabStrategy:          "cheapest_first",
+			LabAllowDE:           true,
+			LabPriorities:        []string{"Troops", "Spells", "Siege"},
+			AutoPets:             false,
+			PetPriorities:        []string{"Diggy", "Unicorn", "Frosty", "Phoenix", "Spirit Fox"},
 		},
 		Debug: DebugConfig{
 			CaptureDebug:       false,
