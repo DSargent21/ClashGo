@@ -120,6 +120,7 @@ logs/
 !internal/game/testdata/screen_defeat.png
 !web/src/assets/images/clashgo-logo.png
 !build/appicon.png
+!docs/media/**
 assets/templates/debug/
 assets/templates_captured/
 assets/grab/
