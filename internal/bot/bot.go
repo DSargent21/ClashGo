@@ -2854,7 +2854,7 @@ func (b *Bot) dismissSelection() {
 		b.logger.Debug().Msg("no selection menu located; not tapping empty ground")
 		return
 	}
-	tx, ty := b.cal.Centre(50, 450)
+	tx, ty := b.cal.Centre(200, 200)
 	_ = b.client.Tap(tx, ty)
 	time.Sleep(500 * time.Millisecond)
 }

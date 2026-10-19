@@ -42,28 +42,33 @@ func (bm *BuilderManager) OpenMenu() error {
 	if bm.cal == nil || bm.client == nil {
 		return errors.New("uninitialized calibration or adb client")
 	}
-	k := bm.cal.DisplayScale()
-	// Builder icon button located at bottom-right of top HUD:
-	// In the modern UI at 1024x768 reference (835, 540) maps to (947, 611).
-	pt := image.Pt(int(835*k), int(540*k))
-	bm.logger.Debug().Int("x", pt.X).Int("y", pt.Y).Msg("opening builder overview menu")
-	if err := bm.client.Tap(pt.X, pt.Y); err != nil {
+	bx, by := int(808*bm.cal.DisplayScale()), int(534*bm.cal.DisplayScale())
+	if x, y, ok := loadWallUpgradeBuilderButton(bm.cal, bm.logger); ok {
+		bx, by = x, y
+	} else if bm.cal.PhysicalW > 0 && bm.cal.PhysicalH > 0 {
+		bx = int(float64(bm.cal.PhysicalW) * 0.893)
+		by = int(float64(bm.cal.PhysicalH) * 0.788)
+	}
+	bm.logger.Debug().Int("x", bx).Int("y", by).Msg("opening builder overview menu")
+	if err := bm.client.Tap(bx, by); err != nil {
 		return fmt.Errorf("tap builder menu icon: %w", err)
 	}
 	time.Sleep(1200 * time.Millisecond)
 	return nil
 }
 
-// CloseMenu closes the Builder Overview modal by tapping the safe dismiss area on the left.
+// CloseMenu closes the Builder Overview modal by tapping the close button.
 func (bm *BuilderManager) CloseMenu() error {
 	if bm.cal == nil || bm.client == nil {
 		return errors.New("uninitialized calibration or adb client")
 	}
-	k := bm.cal.DisplayScale()
-	// Tapping in the dark village backdrop (reference 88, 265 -> ~100, 300) safely dismisses the modal.
-	pt := image.Pt(int(88*k), int(265*k))
-	bm.logger.Debug().Int("x", pt.X).Int("y", pt.Y).Msg("closing builder overview menu")
-	if err := bm.client.Tap(pt.X, pt.Y); err != nil {
+	closeX := int(float64(bm.cal.PhysicalW) * 0.952)
+	closeY := int(float64(bm.cal.PhysicalH) * 0.047)
+	if closeX == 0 || closeY == 0 {
+		closeX, closeY = 975, 36
+	}
+	bm.logger.Debug().Int("x", closeX).Int("y", closeY).Msg("closing builder overview menu via X button")
+	if err := bm.client.Tap(closeX, closeY); err != nil {
 		return fmt.Errorf("dismiss builder menu: %w", err)
 	}
 	time.Sleep(800 * time.Millisecond)
@@ -72,11 +77,16 @@ func (bm *BuilderManager) CloseMenu() error {
 
 // CloseModalDialog taps the top-right X button on a modal confirmation dialog.
 func (bm *BuilderManager) CloseModalDialog() error {
-	k := bm.cal.DisplayScale()
-	// Top right X button on full confirmation modal: reference (845, 92) -> live (958, 105)
-	pt := image.Pt(int(845*k), int(92*k))
-	bm.logger.Debug().Int("x", pt.X).Int("y", pt.Y).Msg("closing confirmation modal dialog")
-	return bm.client.Tap(pt.X, pt.Y)
+	if bm.cal == nil || bm.client == nil {
+		return errors.New("uninitialized calibration or adb client")
+	}
+	closeX := int(float64(bm.cal.PhysicalW) * 0.915)
+	closeY := int(float64(bm.cal.PhysicalH) * 0.178)
+	if closeX == 0 || closeY == 0 {
+		closeX, closeY = 937, 137
+	}
+	bm.logger.Debug().Int("x", closeX).Int("y", closeY).Msg("closing confirmation modal dialog via X button")
+	return bm.client.Tap(closeX, closeY)
 }
 
 // BuilderOverviewStats holds parsed status of the builder menu tabs.
@@ -234,11 +244,29 @@ func (bm *BuilderManager) executeBuildingUpgrade(stats BuilderOverviewStats, k f
 		return
 	}
 
-	// Confirm dialog: standard upgrade button with resources is at reference (656, 560) -> live (744, 635)
-	confirmPt := image.Pt(int(656*k), int(560*k))
-	bm.logger.Info().Int("x", confirmPt.X).Int("y", confirmPt.Y).Msg("confirming building upgrade")
-	_ = bm.client.Tap(confirmPt.X, confirmPt.Y)
-	time.Sleep(1000 * time.Millisecond)
+	// Confirm dialog: check if confirmation modal is drawn
+	screen, err := bm.client.CaptureToMat()
+	if err == nil {
+		defer screen.Close()
+		confirmRect, ok := loadWallUpgradeConfirmRect(bm.cal, bm.logger)
+		if !ok {
+			confirmRect = Rect{X1: int(580 * k / 1.1334), Y1: int(550 * k / 1.1334), X2: int(850 * k / 1.1334), Y2: int(663 * k / 1.1334)}
+		}
+		drawn, _, _ := confirmButtonDrawn(screen, confirmRect)
+		if drawn {
+			cx, cy := confirmRect.Center()
+			bm.logger.Info().Int("x", cx).Int("y", cy).Msg("confirming building upgrade")
+			_ = bm.client.Tap(cx, cy)
+			time.Sleep(1000 * time.Millisecond)
+		} else {
+			bm.logger.Warn().Msg("confirmation dialog not drawn; skipping tap to prevent mis-click")
+		}
+	} else {
+		confirmPt := image.Pt(int(656*k), int(560*k))
+		bm.logger.Info().Int("x", confirmPt.X).Int("y", confirmPt.Y).Msg("confirming building upgrade (fallback)")
+		_ = bm.client.Tap(confirmPt.X, confirmPt.Y)
+		time.Sleep(1000 * time.Millisecond)
+	}
 
 	// In case gems dialog or insufficient resources popup opened, safely close modal
 	_ = bm.CloseModalDialog()
@@ -256,17 +284,17 @@ func (bm *BuilderManager) ApplyLabInGameFilter(strategy string, k float64) {
 
 	switch strategy {
 	case "spells_first":
-		// Tap Spells filter button ~(410, 340)
-		_ = bm.client.Tap(int(362*k), int(300*k))
+		// Tap Spells filter button ~(416, 265)
+		_ = bm.client.Tap(int(367*k), int(234*k))
 	case "troops_first":
-		// Tap Troops filter button ~(250, 340)
-		_ = bm.client.Tap(int(220*k), int(300*k))
+		// Tap Troops filter button ~(255, 265)
+		_ = bm.client.Tap(int(225*k), int(234*k))
 	case "siege_first":
-		// Tap Siege filter button ~(566, 340)
-		_ = bm.client.Tap(int(500*k), int(300*k))
+		// Tap Siege filter button ~(579, 265)
+		_ = bm.client.Tap(int(511*k), int(234*k))
 	case "cheapest_first":
-		// Tap Cost Min sorting button ~(410, 550)
-		_ = bm.client.Tap(int(362*k), int(485*k))
+		// Tap Cost Min sorting button ~(416, 425)
+		_ = bm.client.Tap(int(367*k), int(375*k))
 	}
 	time.Sleep(400 * time.Millisecond)
 
@@ -451,13 +479,38 @@ func (bm *BuilderManager) inspectMenuFrame() BuilderOverviewStats {
 	return stats
 }
 
+func isDurationText(txt string) bool {
+	clean := strings.ToLower(strings.TrimSpace(txt))
+	clean = strings.Trim(clean, "©•:(øOG ")
+	if clean == "sd" || clean == "5d" {
+		return true
+	}
+	hasDigit := false
+	hasUnit := false
+	for _, ch := range clean {
+		if ch >= '0' && ch <= '9' {
+			hasDigit = true
+		}
+		if ch == 'd' || ch == 'h' || ch == 'm' || ch == 's' || ch == 'д' || ch == 'н' || ch == 'м' {
+			hasUnit = true
+		}
+	}
+	return hasDigit && hasUnit
+}
+
 // ParseBuilderOverviewOCR parses recognized text regions from a builder overview frame.
 func ParseBuilderOverviewOCR(regions []vision.TextRegion) BuilderOverviewStats {
 	var stats BuilderOverviewStats
 	stats.TotalBuilders = 5
 
+	// First pass: locate bottom tab counters and header Y ("Suggested", "Filtered", "Assigned")
+	suggestedY := 110 // default threshold
 	for _, r := range regions {
 		txt := strings.ToLower(r.Text)
+		if strings.Contains(txt, "suggested") || strings.Contains(txt, "filtered") ||
+			(strings.Contains(txt, "assigned") && !strings.Contains(txt, "un")) {
+			suggestedY = r.Y
+		}
 		// Match builder pattern e.g. "1/5", "2/5", "0/5" near bottom tabs
 		if r.Y >= 680 {
 			var free, total int
@@ -465,7 +518,7 @@ func ParseBuilderOverviewOCR(regions []vision.TextRegion) BuilderOverviewStats {
 				stats.FreeBuilders = free
 				stats.TotalBuilders = total
 			}
-			if strings.Contains(r.Text, "0/1") || strings.Contains(r.Text, "0л1") {
+			if strings.Contains(r.Text, "0/1") || strings.Contains(r.Text, "0л1") || strings.Contains(r.Text, "oл1") {
 				// Tab counter shows busy
 			} else if strings.Contains(r.Text, "1/1") {
 				if r.X >= 700 && r.X <= 800 {
@@ -475,17 +528,35 @@ func ParseBuilderOverviewOCR(regions []vision.TextRegion) BuilderOverviewStats {
 				}
 			}
 		}
+	}
 
-		// Detect suggested items in menu
-		if r.X >= 550 && r.Y >= 140 && r.Y <= 680 {
+	// Second pass: detect suggested, filtered, and assigned items inside the overview panel
+	for _, r := range regions {
+		txt := strings.ToLower(r.Text)
+		if r.X >= 590 && r.Y >= suggestedY+10 && r.Y <= 680 {
 			cat := classifyItemCategory(txt)
 			if cat != "" {
-				cost := parseResourceCost(txt)
+				cost := 0
+				if !isDurationText(txt) {
+					cost = parseResourceCost(txt)
+				}
+				for _, c := range regions {
+					if c.X > r.X && c.Y >= r.Y-35 && c.Y <= r.Y+45 {
+						if isDurationText(c.Text) {
+							continue
+						}
+						if cCost := parseResourceCost(c.Text); cCost > 0 {
+							cost = cCost
+							break
+						}
+					}
+				}
+				curr := parseCurrency(cat, txt)
 				stats.Items = append(stats.Items, UpgradeItem{
 					Name:     r.Text,
 					Category: cat,
 					Cost:     cost,
-					Currency: parseCurrency(txt),
+					Currency: curr,
 					Region:   r,
 				})
 			}
@@ -495,90 +566,155 @@ func ParseBuilderOverviewOCR(regions []vision.TextRegion) BuilderOverviewStats {
 }
 
 func classifyItemCategory(txt string) string {
-	// Spells
-	if strings.Contains(txt, "spell") || strings.Contains(txt, "lightning") ||
-		strings.Contains(txt, "heal") || strings.Contains(txt, "rage") ||
-		strings.Contains(txt, "jump") || strings.Contains(txt, "freeze") ||
-		strings.Contains(txt, "clone") || strings.Contains(txt, "invis") ||
-		strings.Contains(txt, "recall") || strings.Contains(txt, "revive") ||
-		strings.Contains(txt, "poison") || strings.Contains(txt, "earthquake") ||
-		strings.Contains(txt, "haste") || strings.Contains(txt, "bat") ||
-		strings.Contains(txt, "overgrowth") {
-		return "spells"
+	txt = strings.ToLower(txt)
+	norm := strings.ReplaceAll(txt, " ", "")
+
+	// 1. Traps first: must beat heroes (seeking air mine != king), troops (giant bomb != giant), resources (air mine != mine)
+	if strings.Contains(norm, "bomb") || strings.Contains(norm, "spring") ||
+		strings.Contains(norm, "airmine") || strings.Contains(norm, "skeleton") ||
+		strings.Contains(norm, "tornado") {
+		return "traps"
 	}
-	// Siege Machines
+
+	// 2. Defenses: must beat troops (archer tower != archer, wizard tower != wizard)
+	if strings.Contains(norm, "cannon") || strings.Contains(norm, "archertower") ||
+		strings.Contains(norm, "wizardtower") || strings.Contains(norm, "mortar") ||
+		strings.Contains(norm, "airdefense") || strings.Contains(norm, "tesla") ||
+		strings.Contains(norm, "x-bow") || strings.Contains(norm, "xbow") ||
+		strings.Contains(norm, "inferno") || strings.Contains(norm, "eagle") ||
+		strings.Contains(norm, "scattershot") || strings.Contains(norm, "monolith") ||
+		strings.Contains(norm, "spelltower") || strings.Contains(norm, "revengetower") ||
+		strings.Contains(norm, "ricochet") {
+		return "defenses"
+	}
+
+	// 3. Resources: must beat spells (storage != rage) and siege (dark elixir drill != battle drill)
+	if strings.Contains(norm, "collector") || strings.Contains(norm, "mine") ||
+		(!strings.Contains(txt, "battle") && strings.Contains(norm, "drill")) ||
+		strings.Contains(norm, "storage") {
+		return "resources"
+	}
+
+	// 4. Heroes
+	if strings.Contains(txt, "king") || strings.Contains(txt, "queen") ||
+		strings.Contains(txt, "warden") || strings.Contains(txt, "champion") ||
+		strings.Contains(txt, "prince") {
+		return "heroes"
+	}
+
+	// 5. Pets (must beat spells so Poison Lizard != spell)
+	if strings.Contains(txt, "yak") || strings.Contains(txt, "frosty") ||
+		strings.Contains(txt, "jelly") || strings.Contains(txt, "owl") || strings.Contains(txt, "owi") ||
+		strings.Contains(txt, "l.a.s.s.i") || strings.Contains(txt, "lassi") ||
+		strings.Contains(txt, "unicorn") || strings.Contains(txt, "lizard") ||
+		strings.Contains(txt, "diggy") || strings.Contains(txt, "fox") ||
+		strings.Contains(txt, "phoenix") {
+		return "pets"
+	}
+
+	// 6. Siege Machines (must beat spells so battle blimp != bat)
 	if strings.Contains(txt, "slammer") || strings.Contains(txt, "blimp") ||
 		strings.Contains(txt, "wrecker") || strings.Contains(txt, "launcher") ||
 		strings.Contains(txt, "flinger") || strings.Contains(txt, "drill") ||
 		strings.Contains(txt, "siege") {
 		return "siege"
 	}
-	// Troops
-	if strings.Contains(txt, "barbarian") || strings.Contains(txt, "archer") ||
-		strings.Contains(txt, "giant") || strings.Contains(txt, "goblin") ||
-		strings.Contains(txt, "wall breaker") || strings.Contains(txt, "balloon") ||
-		strings.Contains(txt, "wizard") || strings.Contains(txt, "dragon") ||
-		strings.Contains(txt, "pekka") || strings.Contains(txt, "p.e.k.k.a") ||
-		strings.Contains(txt, "miner") || strings.Contains(txt, "yeti") ||
-		strings.Contains(txt, "titan") || strings.Contains(txt, "root rider") ||
-		strings.Contains(txt, "minion") || strings.Contains(txt, "hog") ||
-		strings.Contains(txt, "valkyrie") || strings.Contains(txt, "golem") ||
-		strings.Contains(txt, "witch") || strings.Contains(txt, "hound") ||
-		strings.Contains(txt, "bowler") || strings.Contains(txt, "headhunter") ||
-		strings.Contains(txt, "druid") || strings.Contains(txt, "healer") {
-		return "troops"
+
+	// 7. Spells
+	if strings.Contains(txt, "spell") || strings.Contains(txt, "lightning") ||
+		strings.Contains(txt, "heal") || strings.Contains(txt, "jump") ||
+		strings.Contains(txt, "freeze") || strings.Contains(txt, "clone") ||
+		strings.Contains(txt, "invis") || strings.Contains(txt, "recall") ||
+		strings.Contains(txt, "revive") || strings.Contains(txt, "poison") ||
+		strings.Contains(txt, "earthquake") || strings.Contains(txt, "haste") ||
+		strings.Contains(txt, "overgrowth") ||
+		(!strings.Contains(txt, "storage") && strings.Contains(txt, "rage")) ||
+		(!strings.Contains(txt, "battle") && strings.Contains(txt, "bat")) {
+		return "spells"
 	}
-	// Heroes
-	if strings.Contains(txt, "king") || strings.Contains(txt, "queen") ||
-		strings.Contains(txt, "warden") || strings.Contains(txt, "champion") ||
-		strings.Contains(txt, "prince") {
-		return "heroes"
-	}
-	// Defenses
-	if strings.Contains(txt, "cannon") || strings.Contains(txt, "archer tower") ||
-		strings.Contains(txt, "wizard tower") || strings.Contains(txt, "mortar") ||
-		strings.Contains(txt, "air defense") || strings.Contains(txt, "tesla") ||
-		strings.Contains(txt, "x-bow") || strings.Contains(txt, "inferno") ||
-		strings.Contains(txt, "eagle") || strings.Contains(txt, "scattershot") ||
-		strings.Contains(txt, "monolith") || strings.Contains(txt, "spell tower") ||
-		strings.Contains(txt, "revenge tower") || strings.Contains(txt, "ricochet") {
-		return "defenses"
-	}
-	// Resources
-	if strings.Contains(txt, "collector") || strings.Contains(txt, "mine") ||
-		strings.Contains(txt, "drill") || strings.Contains(txt, "storage") {
-		return "resources"
-	}
-	// Army Buildings
-	if strings.Contains(txt, "barracks") || strings.Contains(txt, "camp") ||
-		strings.Contains(txt, "spell factory") || strings.Contains(txt, "workshop") ||
-		strings.Contains(txt, "pet house") || strings.Contains(txt, "blacksmith") {
+
+	// 8. Army Buildings
+	if strings.Contains(norm, "barracks") || strings.Contains(norm, "camp") ||
+		strings.Contains(norm, "spellfactory") || strings.Contains(norm, "workshop") ||
+		strings.Contains(norm, "pethouse") || strings.Contains(norm, "blacksmith") {
 		return "army"
 	}
-	// Traps
-	if strings.Contains(txt, "bomb") || strings.Contains(txt, "spring") ||
-		strings.Contains(txt, "air mine") || strings.Contains(txt, "skeleton") ||
-		strings.Contains(txt, "tornado") {
-		return "traps"
+
+	// 9. Troops
+	if strings.Contains(txt, "barbarian") || strings.Contains(txt, "archer") ||
+		strings.Contains(txt, "giant") || strings.Contains(txt, "goblin") ||
+		strings.Contains(txt, "wall breaker") || strings.Contains(norm, "wallbreaker") ||
+		strings.Contains(txt, "balloon") || strings.Contains(txt, "wizard") ||
+		strings.Contains(txt, "dragon") || strings.Contains(txt, "pekka") ||
+		strings.Contains(txt, "p.e.k.k.a") || strings.Contains(txt, "miner") ||
+		strings.Contains(txt, "yeti") || strings.Contains(txt, "titan") ||
+		strings.Contains(txt, "root rider") || strings.Contains(txt, "minion") ||
+		strings.Contains(txt, "hog") || strings.Contains(txt, "valkyrie") ||
+		strings.Contains(txt, "golem") || strings.Contains(txt, "witch") ||
+		strings.Contains(txt, "hound") || strings.Contains(txt, "bowler") ||
+		strings.Contains(txt, "headhunter") || strings.Contains(txt, "druid") ||
+		strings.Contains(txt, "healer") {
+		return "troops"
 	}
+
 	return ""
 }
 
 func parseResourceCost(txt string) int {
+	if isDurationText(txt) {
+		return 0
+	}
 	clean := strings.ReplaceAll(txt, " ", "")
-	for _, field := range strings.Fields(clean) {
-		if val, err := strconv.Atoi(field); err == nil && val > 100 {
-			return val
+	var digits strings.Builder
+	for _, ch := range clean {
+		if ch >= '0' && ch <= '9' {
+			digits.WriteRune(ch)
 		}
+	}
+	if val, err := strconv.Atoi(digits.String()); err == nil && val > 0 {
+		return val
 	}
 	return 0
 }
 
-func parseCurrency(txt string) string {
-	if strings.Contains(txt, "dark") || strings.Contains(txt, "de") {
+func parseCurrency(cat, txt string) string {
+	txt = strings.ToLower(txt)
+	if cat == "pets" {
 		return "dark_elixir"
 	}
-	if strings.Contains(txt, "elixir") {
+	if cat == "heroes" {
+		if strings.Contains(txt, "warden") {
+			return "elixir"
+		}
+		return "dark_elixir"
+	}
+	if cat == "spells" {
+		if strings.Contains(txt, "poison") || strings.Contains(txt, "earthquake") ||
+			strings.Contains(txt, "haste") || strings.Contains(txt, "bat") ||
+			strings.Contains(txt, "overgrowth") {
+			return "dark_elixir"
+		}
+		return "elixir"
+	}
+	if cat == "troops" {
+		if strings.Contains(txt, "minion") || strings.Contains(txt, "hog") ||
+			strings.Contains(txt, "valkyrie") || strings.Contains(txt, "golem") ||
+			strings.Contains(txt, "witch") || strings.Contains(txt, "hound") ||
+			strings.Contains(txt, "bowler") || strings.Contains(txt, "headhunter") {
+			return "dark_elixir"
+		}
+		return "elixir"
+	}
+	if cat == "defenses" {
+		if strings.Contains(txt, "monolith") {
+			return "dark_elixir"
+		}
+		return "gold"
+	}
+	if cat == "resources" {
+		if strings.Contains(txt, "collector") {
+			return "gold"
+		}
 		return "elixir"
 	}
 	return "gold"

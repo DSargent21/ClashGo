@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0-beta] - 2026-10-18
+
+### Added
+- **Automated Village Upgrades & Progression Engine** (`internal/bot/builder_manager.go`, `internal/config/config.go`):
+  - Added modern Build Overview Menu 2.0 automation supporting building upgrades, laboratory research, and hero pets.
+  - Fine-grained strategy filters: `heroes_first`, `cheapest_first`, `most_expensive_first`, `reserve_builders`, and per-resource spend caps (`max_gold_per_upgrade`, `max_elixir_per_upgrade`, `max_de_per_upgrade`).
+  - Category toggles: granular control to enable or disable upgrades for Heroes, Defenses, Resources, Army Buildings, and Traps.
+  - Interactive laboratory research filtering: automatically taps in-game category and sorting filters (`troops_first`, `spells_first`, `siege_first`, `cheapest_first`) and respects Dark Elixir permissions (`lab_allow_de`).
+  - Hero pets management: priority queue ordering across all pets (`pet_priorities`) with live capacity tracking and safe upgrade execution.
+  - Dry run mode (`dry_run`): inspects upgrade modals and tests strategy selection without spending resources.
+
+### Fixed
+- **Wall Upgrade Loop Reliability & Stability** (`internal/bot/wall_upgrade.go`, `cmd/test_wall_upgrade/main.go`):
+  - Wall resource selection: dedicated single-resource targeting (`gold`, `elixir`, or `both`) preventing unintentional resource depletion.
+  - Builder menu scrolling: eliminated kinetic glide inertia with calibrated swipe speeds and 1200ms settle pauses.
+  - Target centering: offsets wall row taps safely away from edge boundaries and pans camera before closing menu to expand upgrade tray.
+  - Fallback chip detection: relaxed minimum fill requirement and added color-face fallback for wall tray buttons.
+
 ## [0.9.0-beta] - 2026-10-17
 
 ### Added

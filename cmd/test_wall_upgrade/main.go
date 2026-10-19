@@ -73,6 +73,7 @@ func main() {
 		outDir         string
 		rmLogs         bool
 		displayScale   float64
+		wallResource   string
 	)
 	flag.StringVar(&mode, "mode", "check", "check|dry-run|run")
 	flag.BoolVar(&autoYes, "yes", false, "skip confirmation prompt before live run")
@@ -80,6 +81,7 @@ func main() {
 	flag.StringVar(&outDir, "out", "", "output directory for screenshots (default ./output/wall_upgrade_tests/<ts>)")
 	flag.BoolVar(&rmLogs, "rm-logs", false, "remove output directory before running")
 	flag.Float64Var(&displayScale, "k", 0, "pin the display scale (default: config's device.display_scale, else derived)")
+	flag.StringVar(&wallResource, "resource", "", "wall upgrade resource: gold|elixir|both (default: config or both)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -197,16 +199,23 @@ func main() {
 	// game-state classifier, so waitForMainVillage takes its fast path
 	// (returns true after the first successful capture) instead of
 	// polling a classifier for the full timeout. The user has already
-	// verified the screen themselves, so the loop drives the menu
-	// immediately.
+	res := wallResource
+	if res == "" {
+		res = cfg.Upgrade.WallResource
+		if res == "" {
+			res = "both"
+		}
+	}
+
 	hooks := &bot.WallUpgradeHooks{
-		Logger:    logger,
-		Client:    client,
-		Cal:       cal,
-		Templates: ts,
-		Classify:  nil,
-		Dismiss:   func() { dismissHelper(client, cal, logger) },
-		OnStep:    instr.onStep,
+		Logger:       logger,
+		Client:       client,
+		Cal:          cal,
+		Templates:    ts,
+		Classify:     nil,
+		Dismiss:      func() { dismissHelper(client, cal, logger) },
+		OnStep:       instr.onStep,
+		WallResource: res,
 	}
 
 	fmt.Println("\n🎬 Starting wall upgrade loop…")
@@ -522,7 +531,7 @@ func statusSymbol(ok bool) string {
 // dismissHelper mirrors Bot.dismissSelection — taps a neutral
 // bottom-left area to clear any active selection menus.
 func dismissHelper(client *adb.Client, cal *game.Calibration, logger zerolog.Logger) {
-	x, y := cal.Centre(50, 450)
+	x, y := cal.Centre(200, 200)
 	_ = client.Tap(x, y)
 	time.Sleep(500 * time.Millisecond)
 	logger.Debug().Int("x", x).Int("y", y).Msg("dismiss tap")

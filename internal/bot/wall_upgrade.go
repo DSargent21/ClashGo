@@ -5,6 +5,7 @@ import (
 	"image"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -230,6 +231,9 @@ type WallUpgradeHooks struct {
 	// interrupts an otherwise-unbounded wall-upgrade run.
 	StopCheck func() bool
 
+	// WallResource specifies resource preference ("gold", "elixir", "both").
+	WallResource string
+
 	// OnStep is the optional phase-boundary instrumentation hook.
 	OnStep func(step string, data map[string]any)
 
@@ -257,6 +261,10 @@ func (h *WallUpgradeHooks) sleep(d time.Duration) {
 // Bot's dependencies. The diagnostic tool at cmd/test_wall_upgrade
 // calls runWallUpgradeLoop directly with a hand-built hooks struct.
 func (b *Bot) UpgradeWalls(gc *game.GameContext) {
+	resource := b.cfg.Upgrade.WallResource
+	if resource == "" {
+		resource = "both"
+	}
 	RunWallUpgradeLoop(&WallUpgradeHooks{
 		Logger:    b.logger,
 		Client:    b.client,
@@ -270,7 +278,8 @@ func (b *Bot) UpgradeWalls(gc *game.GameContext) {
 		Dismiss:    b.dismissSelection,
 		// StopCheck lets a user Stop interrupt the otherwise-unbounded
 		// wall-upgrade loop at its next iteration boundary.
-		StopCheck: func() bool { return b.ctx.Err() != nil },
+		StopCheck:    func() bool { return b.ctx.Err() != nil },
+		WallResource: resource,
 	})
 }
 
@@ -447,7 +456,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		if h.Cal.PhysicalW > 0 && h.Cal.PhysicalH > 0 {
 			menuROI = image.Rect(
 				max(0, menuROI.Min.X), max(0, menuROI.Min.Y),
-				min(h.Cal.PhysicalW, menuROI.Max.X), min(h.Cal.PhysicalH, menuROI.Max.Y),
+				min(h.Cal.PhysicalW, menuROI.Max.X), min(int(float64(h.Cal.PhysicalH)*0.92), max(menuROI.Max.Y, int(float64(h.Cal.PhysicalH)*0.90))),
 			)
 		}
 		h.step("menu_roi_loaded", map[string]any{"roi": menuROI})
@@ -545,7 +554,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				h.sleep(500 * time.Millisecond)
 				continue
 			}
-			matches, _ := vision.MatchMultiScaleROICached(screen, wallTpl, "text_wall", 0.5, 1.5, 20, 0.85, menuROI)
+			matches, _ := vision.MatchMultiScaleROICached(screen, wallTpl, "text_wall", 0.75, 1.25, 9, 0.78, menuROI)
 
 			h.step("wall_text_search", map[string]any{
 				"attempt": attempt,
@@ -564,6 +573,14 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			}
 
 			if best != nil {
+				// If row is too close to bottom edge of a tall menu, scroll up slightly to bring it safely into view
+				if menuROI.Dy() > 200 && best.Point.Y > menuROI.Max.Y-int(h.Cal.Length(45)) {
+					screen.Close()
+					_ = h.Client.Swipe(scrollX, menuROI.Min.Y+int(float64(menuROI.Dy())*0.60), scrollX, menuROI.Min.Y+int(float64(menuROI.Dy())*0.40), 500)
+					h.sleep(1000 * time.Millisecond)
+					continue
+				}
+
 				h.Logger.Info().
 					Float64("conf", best.Confidence).
 					Float64("scale", best.Scale).
@@ -587,24 +604,23 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 			}
 
 			if wallClicked {
+				// Allow camera pan to wall, then close builder menu so tray expands into single row
+				h.sleep(1200 * time.Millisecond)
+				closeBuilderMenu(h, menuROI)
+				h.sleep(600 * time.Millisecond)
 				break
 			}
 
-			// Scroll down fast until hitting bottom where walls reside:
-			// Swipe from near bottom of scroll container (menuROI.Max.Y - 20)
-			// up towards top (menuROI.Min.Y + 120) with a brisk 250ms flick.
-			startY := menuROI.Max.Y - int(h.Cal.Length(20))
-			endY := menuROI.Min.Y + int(h.Cal.Length(120))
-			if endY >= startY {
-				endY = startY - 200
-			}
-			h.Logger.Debug().Int("scrollX", scrollX).Int("attempt", attempt).Msg("Wall text not visible, scrolling down fast...")
-			if err := h.Client.Swipe(scrollX, startY, scrollX, endY, 250); err != nil {
+			// Controlled drag (~200px over 500ms) with full 1200ms settle to eliminate gliding
+			startY := menuROI.Min.Y + int(float64(menuROI.Dy())*0.65)
+			endY := menuROI.Min.Y + int(float64(menuROI.Dy())*0.35)
+			h.Logger.Debug().Int("scrollX", scrollX).Int("attempt", attempt).Msg("Wall text not visible, scrolling down smoothly...")
+			if err := h.Client.Swipe(scrollX, startY, scrollX, endY, 500); err != nil {
 				h.Logger.Error().Err(err).Msg("Failed to swipe menu")
 				h.step("scroll_failed", map[string]any{"err": err.Error()})
 				break
 			}
-			h.sleep(450 * time.Millisecond) // fast settle
+			h.sleep(1200 * time.Millisecond) // complete stop: kinetic glide fully halts
 		}
 
 		if !wallClicked {
@@ -739,9 +755,21 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				mapped Rect
 				name   string
 			}
-			buttons := []btnInfo{
-				{rect: gate.GoldChip, mapped: goldBtn, name: "gold"},
-				{rect: gate.ElixirChip, mapped: elixirBtn, name: "elixir"},
+			var buttons []btnInfo
+			switch strings.ToLower(h.WallResource) {
+			case "elixir":
+				buttons = []btnInfo{
+					{rect: gate.ElixirChip, mapped: elixirBtn, name: "elixir"},
+				}
+			case "gold":
+				buttons = []btnInfo{
+					{rect: gate.GoldChip, mapped: goldBtn, name: "gold"},
+				}
+			default:
+				buttons = []btnInfo{
+					{rect: gate.GoldChip, mapped: goldBtn, name: "gold"},
+					{rect: gate.ElixirChip, mapped: elixirBtn, name: "elixir"},
+				}
 			}
 			for _, btn := range buttons {
 				bcx, bcy := btn.rect.Center()
@@ -1088,9 +1116,21 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 				rect image.Rectangle
 				name string
 			}
-			buttons := []btnInfo2{
-				{rect: goldBtn.ImageRect(), name: "gold"},
-				{rect: elixirBtn.ImageRect(), name: "elixir"},
+			var buttons []btnInfo2
+			switch strings.ToLower(h.WallResource) {
+			case "elixir":
+				buttons = []btnInfo2{
+					{rect: elixirBtn.ImageRect(), name: "elixir"},
+				}
+			case "gold":
+				buttons = []btnInfo2{
+					{rect: goldBtn.ImageRect(), name: "gold"},
+				}
+			default:
+				buttons = []btnInfo2{
+					{rect: goldBtn.ImageRect(), name: "gold"},
+					{rect: elixirBtn.ImageRect(), name: "elixir"},
+				}
 			}
 			for _, btn := range buttons {
 				cx := btn.rect.Min.X + btn.rect.Dx()/2
@@ -1570,6 +1610,7 @@ func waitForMainVillage(h *WallUpgradeHooks, timeout time.Duration) bool {
 	return false
 }
 
+
 // dismissInterruptionsFor clears an interruption dialog seen on the
 // waitForMainVillage loop's frames. It delegates to game.DismissOverlay, which is
 // the same evidence-gated path the bot's capture loop uses (game/dismiss.go), so
@@ -1607,6 +1648,7 @@ func dismissInterruptionsFor(h *WallUpgradeHooks) {
 func runDismiss(h *WallUpgradeHooks) {
 	if h.Dismiss != nil {
 		h.Dismiss()
+		h.sleep(600 * time.Millisecond)
 	}
 }
 
@@ -1629,10 +1671,12 @@ const wallRowTapWindow = 70
 // match at all (the row scrolled away entirely) the seed's own centre is tapped
 // as the fallback, so a menu that settled instantly behaves as it did before.
 func tapWallRow(h *WallUpgradeHooks, tpl gocv.Mat, menuROI image.Rectangle, seed vision.Match, window int) (bool, map[string]any) {
-	cx, cy := seed.Point.X, seed.Point.Y
+	mw := int(float64(tpl.Cols()) * seed.Scale)
+	mh := int(float64(tpl.Rows()) * seed.Scale)
+	cx, cy := seed.Point.X+mw/2, seed.Point.Y+mh/2
 
-	// Allow residual scroll inertia to settle
-	h.sleep(350 * time.Millisecond)
+	// Allow residual scroll inertia to completely settle before capturing fresh frame
+	h.sleep(500 * time.Millisecond)
 
 	screen, err := h.Client.CaptureToMat()
 	if err != nil {
@@ -1641,14 +1685,13 @@ func tapWallRow(h *WallUpgradeHooks, tpl gocv.Mat, menuROI image.Rectangle, seed
 	}
 	defer screen.Close()
 
-	hunt := image.Rect(cx-window, cy-window/2, cx+window, cy+window/2).Intersect(menuROI)
+	hunt := image.Rect(cx-window, cy-window, cx+window, cy+window).Intersect(menuROI)
 	if hunt.Empty() {
 		hunt = menuROI
 	}
-	matches, _ := vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.5, 1.5, 20, 0.82, hunt)
+	matches, _ := vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.75, 1.25, 9, 0.78, hunt)
 	if len(matches) == 0 {
-		// If hunt window missed due to momentum, search whole menuROI
-		matches, _ = vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.5, 1.5, 20, 0.85, menuROI)
+		matches, _ = vision.MatchMultiScaleROICached(screen, tpl, "text_wall", 0.75, 1.25, 9, 0.80, menuROI)
 	}
 
 	data := map[string]any{
@@ -1662,7 +1705,9 @@ func tapWallRow(h *WallUpgradeHooks, tpl gocv.Mat, menuROI image.Rectangle, seed
 	}
 
 	m := matches[0]
-	tx, ty := m.Point.X, m.Point.Y
+	fw := int(float64(tpl.Cols()) * m.Scale)
+	fh := int(float64(tpl.Rows()) * m.Scale)
+	tx, ty := m.Point.X+fw/2+20, m.Point.Y+fh/2
 	data["fresh"] = true
 	data["fresh_point"] = []int{m.Point.X, m.Point.Y}
 	data["fresh_conf"] = m.Confidence
@@ -1989,6 +2034,7 @@ func wallTrayChipConfig() vision.ActionButtonConfig {
 	cfg := vision.DefaultActionButtonConfig()
 	cfg.MinAspect = 0.45
 	cfg.MaxAspect = 2.2
+	cfg.MinFill = 0.25
 	// A chip is a small object on screen; the defaults' 0.12 frame-width floor
 	// is tuned for a panel's full-width action button and would reject it.
 	cfg.MinFrameWidthFrac = 0.03
@@ -2023,10 +2069,16 @@ func locateWallTrayChip(screen gocv.Mat, mapped Rect) (located Rect, facePx int,
 	}
 	btn, ok := vision.FindActionButton(screen, window, wallTrayChipConfig())
 	if !ok {
+		if facePx > 1000 {
+			return mapped, facePx, true
+		}
 		return
 	}
 	btnCenter := image.Pt(btn.Rect.Min.X+btn.Rect.Dx()/2, btn.Rect.Min.Y+btn.Rect.Dy()/2)
-	if !btnCenter.In(r) {
+	if !btnCenter.In(window) {
+		if facePx > 1000 {
+			return mapped, facePx, true
+		}
 		return
 	}
 	return Rect{X1: btn.Rect.Min.X, Y1: btn.Rect.Min.Y, X2: btn.Rect.Max.X, Y2: btn.Rect.Max.Y}, facePx, true
@@ -2086,10 +2138,14 @@ func locateWallTray(screen gocv.Mat, gold, elixir Rect) wallTrayGate {
 	gChip, gFace, gFound := locateWallTrayChip(screen, gold)
 	eChip, eFace, eFound := locateWallTrayChip(screen, elixir)
 	return wallTrayGate{
-		GoldChip: gChip, ElixirChip: eChip,
-		GoldMapped: gold, ElixirMapped: elixir,
-		GoldFacePx: gFace, ElixirFacePx: eFace,
-		GoldFound: gFound, ElixirFound: eFound,
+		GoldChip:     gChip,
+		ElixirChip:   eChip,
+		GoldMapped:   gold,
+		ElixirMapped: elixir,
+		GoldFacePx:   gFace,
+		ElixirFacePx: eFace,
+		GoldFound:    gFound,
+		ElixirFound:  eFound,
 	}
 }
 
