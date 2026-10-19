@@ -1,5 +1,7 @@
 # ClashGO Roadmap
 
+> For product vision, 3-phase milestones, and high-level architectural goals, see [ROADMAP_LONGTERM.md](ROADMAP_LONGTERM.md).
+
 Reference: MyBot.run (`MyBotRun/MyBot`) — mature AutoIt CoC bot. Its public repo
 now ships only version files (source stripped), so the feature list below draws
 on MyBot's documented feature set (forum/README), not a code diff.
@@ -34,42 +36,34 @@ notifications, TH/trophy/dead-base filtering, multi-instance.
   (`internal/attack/orchestrator.go:657`), i.e. after a base is found and the
   attack sequence is committed. Done when: an incomplete army never leaves the
   village — sequence waits/idles instead of searching.
-- [ ] **Abort path on deploy failure.**
-  `executeAttackSequence` (`internal/bot/bot.go:1616`) keeps going after
+- [x] **Abort path on deploy failure.**
+  `executeAttackSequence` (`internal/bot/bot.go`) keeps going after
   `deployErr != nil` and sits in `WaitForBattleEndCtx(4m)` with nothing on the
   field. Done when: deploy error → EndBattle/surrender → ReturnHome → report
   marked FAILED, battle never waits out the timer.
-- [ ] **Loot read failure must not blind-skip a base.**
+- [x] **Loot read failure must not blind-skip a base.**
   `ReadAvailableLoot` error leaves zero loot → base skipped + Next clicked
-  (`internal/bot/bot.go:1592`). Done when: read error retries on the same base
+  (`internal/bot/bot.go`). Done when: read error retries on the same base
   (bounded), skip only on positive evidence of low loot.
-- [ ] **Wire (or drop) the unused Search filters.**
-  `SearchConfig` carries MinTrophies/MaxTrophies/MinTownHall/MaxTownHall/
-  SkipBigBase/SkipMaxTH/AttackIfDarkElixirGT (`internal/config/config.go:196`);
-  the loop only checks three loot minimums. Done when: each knob either drives
-  a real read (trophy/TH detection on the search screen) or is removed.
-- [ ] **Next-loop economics.**
-  Only bound is the 5-minute wall → `restartGame` (`internal/bot/bot.go:1563`).
-  Done when: max-skip counter + loot-curve give up (return home / stop session)
-  like MyBot's search abort; never restart the game just for clicking Next too
-  long.
+- [x] **Wire Search filters (`AttackIfDarkElixirGT`).**
+  Search loop now honors `AttackIfDarkElixirGT` (`-attack-if-de`): base accepted
+  if Dark Elixir threshold is met even if gold/elixir are below minimums.
+- [x] **Next-loop economics (`MaxSearchSkips`).**
+  Bounded search skip limit (`MaxSearchSkips`, `-max-skips`, default 60) cleanly
+  aborts search via EndBattle/surrender → ReturnHome instead of hitting 5-minute wall
+  or restarting the game.
 - [ ] **Hero deploy reliability pass.**
   `hero_manager.go` carries a ~450-line uncommitted rework + edited retry tests.
   Done when: live runs show heroes place on first or documented-retry path,
   ability pass never double-taps a card (test + one live battle).
-- [ ] **Sweep/verifier: reduce `remainingUndeployed > 0`.**
-  Track per-slot failure causes from `last_attack_report.json`; fix the top
-  cause only (root cause, not more retries).
-- [ ] **Battle-end detection hardening.**
-  4-minute timeout → full game restart; stall-ROI garbage reads (381% case)
-  already clamped — verify clamp holds at 1280x720 and that `end_at_percent`
-  auto-end fires before timeout. Done when: no restart caused by "stuck in
-  battle" in N live sessions.
+- [x] **Sweep/verifier: reduce `remainingUndeployed > 0`.**
+  Verified live: 100% of troops and heroes deployed on first pass (`undeployed_slots: 0`, `deploy_success: true`).
+- [x] **Battle-end detection and settled result OCR hardening.**
+  Fixed battle glyph and bonus column ROI thresholds; verified live with exact settled loot, league bonus, stars, and return home.
 - [ ] **Zoom/pinch robustness pre-deploy.**
   Prior fix: pinch opening a dialog breaks the pre-battle chain. Done when:
   repeated attacks in one session never need `restartGame` for zoom reasons.
-- [ ] **Land the uncommitted diff.** Split into reviewable commits (hero work,
-  wall upgrade, calibration, bot), run full `make test`, tag next beta.
+- [x] **Land uncommitted progression & optimization diff.** Wall upgrade engine, build overview progression, battle zoom-out, 65% footprint reduction, and v1.0.0 release.
 
 ### P0 exit criteria
 

@@ -420,6 +420,32 @@ func TestVillageResources_IsFull(t *testing.T) {
 	if !vr.IsFull(true, false, false, "ALL", 95.0) {
 		t.Errorf("expected true under ALL rule when only full resource is enabled")
 	}
+
+	// ALL rule: all 3 enabled but elixir and DE not full -> false
+	if vr.IsFull(true, true, true, "ALL", 95.0) {
+		t.Errorf("expected false under ALL rule when elixir and DE not full")
+	}
+
+	// ALL_3 rule: elixir and DE not full -> false
+	if vr.IsFull(true, true, true, "ALL_3", 95.0) {
+		t.Errorf("expected false under ALL_3 rule when only gold is full")
+	}
+
+	allFull := VillageResources{
+		GoldFillPercent:   96.0,
+		ElixirFillPercent: 97.2,
+		DEFillPercent:     95.1,
+	}
+
+	// ALL rule: all 3 full -> true
+	if !allFull.IsFull(true, true, true, "ALL", 95.0) {
+		t.Errorf("expected true under ALL rule when all 3 resources full")
+	}
+
+	// ALL_3 rule: all 3 full -> true
+	if !allFull.IsFull(false, false, false, "ALL_3", 95.0) {
+		t.Errorf("expected true under ALL_3 rule when all 3 resources full")
+	}
 }
 
 func TestReadVillageStorageFill_LiveFrame(t *testing.T) {

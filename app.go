@@ -161,7 +161,7 @@ func (a *App) shutdown(ctx context.Context) {
 // on every meaningful change. React renders only when the status
 // struct actually changes (equality check prevents spam).
 func (a *App) forwardUpdaterStatus(ctx context.Context) {
-	t := time.NewTicker(250 * time.Millisecond)
+	t := time.NewTimer(250 * time.Millisecond)
 	defer t.Stop()
 	var lastJSON string
 	for {
@@ -169,17 +169,20 @@ func (a *App) forwardUpdaterStatus(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if a.ctx == nil || a.updater == nil {
-				continue
+			interval := 1500 * time.Millisecond
+			if a.ctx != nil && a.updater != nil {
+				st := a.updater.GetStatus()
+				if st.State == updater.StateDownloading || st.State == updater.StateChecking {
+					interval = 250 * time.Millisecond
+				}
+				b, _ := json.Marshal(st)
+				s := string(b)
+				if s != lastJSON {
+					lastJSON = s
+					runtime.EventsEmit(a.ctx, "updater_status", st)
+				}
 			}
-			st := a.updater.GetStatus()
-			b, _ := json.Marshal(st)
-			s := string(b)
-			if s == lastJSON {
-				continue
-			}
-			lastJSON = s
-			runtime.EventsEmit(a.ctx, "updater_status", st)
+			t.Reset(interval)
 		}
 	}
 }

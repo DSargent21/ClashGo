@@ -398,6 +398,12 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$BIN" 2>/dev/null
 strip_external_rpaths "$BIN"
 for p in "${libs[@]}"; do strip_external_rpaths "$FW/$(basename "$p")"; done
 
+log "stripping local symbols from binary and bundled dylibs"
+strip -x "$BIN" 2>/dev/null || true
+for p in "${libs[@]}"; do
+  strip -x "$FW/$(basename "$p")" 2>/dev/null || true
+done
+
 log "re-signing ${#libs[@]} bundled dylibs"
 for p in "${libs[@]}"; do
   f="$FW/$(basename "$p")"

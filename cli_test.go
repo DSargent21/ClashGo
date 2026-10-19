@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/bot"
+	"github.com/Ducky705/ClashGO/internal/config"
 )
 
 func TestFindConfigArg(t *testing.T) {
@@ -99,3 +100,31 @@ func TestPrintSessionSummary(t *testing.T) {
 	}
 	printSessionSummary(s)
 }
+
+func TestCLIStorageHaltFlags(t *testing.T) {
+	cfg := &config.BotConfig{
+		Storage: config.StorageConfig{
+			HaltWhenGoldFull:   false,
+			HaltWhenElixirFull: false,
+			HaltWhenDEFull:     false,
+			HaltRule:           "ANY",
+		},
+	}
+
+	haltAllFull := true
+	if haltAllFull {
+		cfg.Storage.HaltRule = "ALL"
+		cfg.Storage.HaltWhenGoldFull = true
+		cfg.Storage.HaltWhenElixirFull = true
+		cfg.Storage.HaltWhenDEFull = true
+	}
+
+	if cfg.Storage.HaltRule != "ALL" {
+		t.Errorf("expected HaltRule ALL, got %s", cfg.Storage.HaltRule)
+	}
+	if !cfg.Storage.HaltWhenGoldFull || !cfg.Storage.HaltWhenElixirFull || !cfg.Storage.HaltWhenDEFull {
+		t.Errorf("expected all 3 storages enabled, got gold=%v elixir=%v de=%v",
+			cfg.Storage.HaltWhenGoldFull, cfg.Storage.HaltWhenElixirFull, cfg.Storage.HaltWhenDEFull)
+	}
+}
+

@@ -66,6 +66,8 @@ func main() {
 	minGold := fs.Int("gold", cfg.Search.MinLootGold, "Minimum gold loot threshold to attack")
 	minElixir := fs.Int("elixir", cfg.Search.MinLootElixir, "Minimum elixir loot threshold to attack")
 	minDE := fs.Int("de", cfg.Search.MinLootDarkElixir, "Minimum dark elixir loot threshold to attack")
+	attackIfDE := fs.Int("attack-if-de", cfg.Search.AttackIfDarkElixirGT, "Attack if DE >= amount regardless of gold/elixir (0 = disabled)")
+	maxSkips := fs.Int("max-skips", cfg.Search.MaxSearchSkips, "Max search skips before returning to village (0 = unlimited)")
 	minTrophies := fs.Int("min-trophies", cfg.Search.MinTrophies, "Minimum trophies target")
 	maxTrophies := fs.Int("max-trophies", cfg.Search.MaxTrophies, "Maximum trophies target")
 	maxAttacks := fs.Int("max-attacks", cfg.Attack.MaxAttackPerSession, "Max attacks before clean exit (0 = unlimited)")
@@ -78,6 +80,8 @@ func main() {
 	trainArmy := fs.Bool("train", cfg.Training.Enabled, "Enable automatic army training")
 	fullArmy := fs.Bool("full-army", cfg.Training.FullArmyBeforeAttack, "Wait for full army before attacking")
 	armySlot := fs.Int("army", 0, "Saved army slot (1-4) for this strategy (overrides strategy_slots)")
+	haltRule := fs.String("halt-rule", cfg.Storage.HaltRule, "Storage halt condition: 'ANY' (stop when any storage is full) or 'ALL' (stop only when all storages are full)")
+	haltAllFull := fs.Bool("halt-all-full", false, "Stop bot attacks only when all 3 storages (Gold, Elixir, DE) are full")
 
 	// Performance & lifecycle flags
 	noRestart := fs.Bool("no-restart", false, "Keep current game session; do not restart Clash of Clans on boot")
@@ -117,6 +121,8 @@ func main() {
 	cfg.Search.MinLootGold = *minGold
 	cfg.Search.MinLootElixir = *minElixir
 	cfg.Search.MinLootDarkElixir = *minDE
+	cfg.Search.AttackIfDarkElixirGT = *attackIfDE
+	cfg.Search.MaxSearchSkips = *maxSkips
 	cfg.Search.MinTrophies = *minTrophies
 	cfg.Search.MaxTrophies = *maxTrophies
 	cfg.Attack.MaxAttackPerSession = *maxAttacks
@@ -128,6 +134,14 @@ func main() {
 			cfg.Attack.StrategySlots = make(map[string]int)
 		}
 		cfg.Attack.StrategySlots[cfg.Attack.StrategyFile] = *armySlot
+	}
+	if *haltAllFull {
+		cfg.Storage.HaltRule = "ALL"
+		cfg.Storage.HaltWhenGoldFull = true
+		cfg.Storage.HaltWhenElixirFull = true
+		cfg.Storage.HaltWhenDEFull = true
+	} else if *haltRule != "" {
+		cfg.Storage.HaltRule = strings.ToUpper(*haltRule)
 	}
 	cfg.Performance.PerfMode = *perf
 
@@ -384,6 +398,8 @@ func printUsage(fs *flag.FlagSet) func() {
 		fmt.Println("  -gold <amount>     Minimum gold required to attack")
 		fmt.Println("  -elixir <amount>   Minimum elixir required to attack")
 		fmt.Println("  -de <amount>       Minimum dark elixir required to attack")
+		fmt.Println("  -attack-if-de <N>  Attack if DE >= amount regardless of gold/elixir")
+		fmt.Println("  -max-skips N       Max search skips before returning to village (0 = unlimited)")
 		fmt.Println("  -min-trophies N    Minimum trophies target")
 		fmt.Println("  -max-trophies N    Maximum trophies target")
 		fmt.Println()

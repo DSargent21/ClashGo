@@ -150,7 +150,7 @@ func (r Resources) IsZero() bool {
 // TestBonusSearchCoversObserved720pBonusRows.
 var (
 	battleLootSearch = image.Rect(300, 280, 520, 470) // Battle Loot column
-	bonusLootSearch  = image.Rect(530, 330, 745, 470) // League Bonus column
+	bonusLootSearch  = image.Rect(530, 330, 760, 470) // League Bonus column
 )
 
 type BattleResult struct {
@@ -531,7 +531,7 @@ const (
 	battleGlyphMinH     = 9
 	battleGlyphMaxH     = 30
 	battleGlyphMinW     = 2
-	battleGlyphMaxW     = 18
+	battleGlyphMaxW     = 34
 	battleGlyphMinArea  = 8
 	battleGlyphMinFill  = 0.30
 	battleLineMinGlyphs = 3
@@ -812,7 +812,7 @@ func (lr *LootRecognizer) readRow(screen gocv.Mat, roi image.Rectangle) int {
 		rect := gocv.BoundingRect(contours.At(i))
 		minH := int(7*lr.scale) * 5
 		maxH := int(40*lr.scale) * 5
-		minW := int(1*lr.scale) * 5
+		minW := int(2.5 * lr.scale * 5)
 		maxW := int(40*lr.scale) * 5
 
 		if rect.Dy() < minH || rect.Dy() > maxH || rect.Dx() < minW || rect.Dx() > maxW {
@@ -1071,9 +1071,13 @@ func (vr VillageResources) IsFull(haltGold, haltElixir, haltDE bool, rule string
 	if threshold <= 0 {
 		threshold = 95.0
 	}
-	goldFull := haltGold && vr.GoldFillPercent >= threshold
-	elixirFull := haltElixir && vr.ElixirFillPercent >= threshold
-	deFull := haltDE && vr.DEFillPercent >= threshold
+	goldFull := vr.GoldFillPercent >= threshold
+	elixirFull := vr.ElixirFillPercent >= threshold
+	deFull := vr.DEFillPercent >= threshold
+
+	if rule == "ALL_3" {
+		return goldFull && elixirFull && deFull
+	}
 
 	if rule == "ALL" {
 		countEnabled := 0
@@ -1099,7 +1103,7 @@ func (vr VillageResources) IsFull(haltGold, haltElixir, haltDE bool, rule string
 		return countEnabled > 0 && countFull == countEnabled
 	}
 	// Default "ANY"
-	return goldFull || elixirFull || deFull
+	return (haltGold && goldFull) || (haltElixir && elixirFull) || (haltDE && deFull)
 }
 
 // ReadVillageStorageFill measures the storage fullness of Gold, Elixir, and Dark Elixir

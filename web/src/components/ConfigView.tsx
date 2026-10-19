@@ -28,6 +28,8 @@ interface ConfigViewProps {
   setHaltElixir: (v: boolean) => void;
   haltDE: boolean;
   setHaltDE: (v: boolean) => void;
+  haltRule: string;
+  setHaltRule: (rule: string) => void;
   storageThreshold: number;
   setStorageThreshold: (v: number) => void;
   dumpToWallsBeforeHalt: boolean;
@@ -122,6 +124,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   haltGold, setHaltGold,
   haltElixir, setHaltElixir,
   haltDE, setHaltDE,
+  haltRule, setHaltRule,
   storageThreshold, setStorageThreshold,
   dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt,
   autoCollect, setAutoCollect,
@@ -633,6 +636,59 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 <div className={`absolute top-1 w-4 h-4 rounded-full transition-all duration-300 shadow ${haltDE ? 'left-6 bg-white' : 'left-1 bg-white'}`}></div>
               </div>
             </button>
+          </div>
+
+          <div className="pt-2">
+            <label className="flex items-center gap-3 text-[11px] font-black text-zinc-500 uppercase tracking-[0.2em] px-1 mb-3">
+              <span className="material-symbols-outlined text-base">rule</span>
+              Stop Condition
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <button
+                type="button"
+                onClick={() => setHaltRule("ANY")}
+                className={`p-4 rounded-2xl border text-left transition-all ${
+                  haltRule !== "ALL"
+                    ? "bg-amber-500/10 border-amber-500/40 text-zinc-950 dark:text-white ring-1 ring-amber-500/30"
+                    : "bg-zinc-50/50 dark:bg-zinc-950/40 border-zinc-100 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-white dark:hover:bg-zinc-900"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-bold text-zinc-900 dark:text-white">Stop If Any Full</span>
+                  {haltRule !== "ALL" && (
+                    <span className="material-symbols-outlined text-amber-500 text-lg">check_circle</span>
+                  )}
+                </div>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Halt bot attacks when any enabled storage reaches full capacity.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setHaltRule("ALL");
+                  setHaltGold(true);
+                  setHaltElixir(true);
+                  setHaltDE(true);
+                }}
+                className={`p-4 rounded-2xl border text-left transition-all ${
+                  haltRule === "ALL"
+                    ? "bg-amber-500/10 border-amber-500/40 text-zinc-950 dark:text-white ring-1 ring-amber-500/30"
+                    : "bg-zinc-50/50 dark:bg-zinc-950/40 border-zinc-100 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-white dark:hover:bg-zinc-900"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-bold text-zinc-900 dark:text-white">Stop Only If All 3 Are Full</span>
+                  {haltRule === "ALL" && (
+                    <span className="material-symbols-outlined text-amber-500 text-lg">check_circle</span>
+                  )}
+                </div>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Keep attacking until Gold, Elixir, and Dark Elixir are all full.
+                </p>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-2 border-t border-zinc-100 dark:border-zinc-800/60">

@@ -345,4 +345,38 @@ func TestResolveStrategyPath(t *testing.T) {
 	}
 }
 
+func TestRecordAttackReport_StoresHistoryAndLimitsCapacity(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	b := &Bot{
+		cfg:          &config.BotConfig{},
+		historyCache: []AttackReport{},
+	}
+	rep1 := AttackReport{
+		Timestamp:     "2026-10-18T22:00:00Z",
+		Strategy:      "test_strat",
+		DeploySuccess: true,
+		Stars:         3,
+		GoldStolen:    500000,
+	}
+	b.recordAttackReport(rep1)
+	if len(b.historyCache) != 1 {
+		t.Fatalf("historyCache len = %d, want 1", len(b.historyCache))
+	}
+	if b.historyCache[0].GoldStolen != 500000 {
+		t.Errorf("historyCache[0].GoldStolen = %d, want 500000", b.historyCache[0].GoldStolen)
+	}
+
+	for i := 0; i < 510; i++ {
+		b.recordAttackReport(AttackReport{
+			Timestamp: "now",
+			Strategy:  "valk",
+			Stars:     i % 4,
+		})
+	}
+	if len(b.historyCache) != 500 {
+		t.Errorf("historyCache len after 511 inserts = %d, want 500", len(b.historyCache))
+	}
+}
+
+
 

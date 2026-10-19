@@ -2,16 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.10.0-beta] - 2026-10-18
+## [1.0.0] - 2026-10-19
+
+### Official 1.0.0 Release — Out of Beta 🎉
+
+ClashGO v1.0.0 marks the transition from beta to stable production release. It unifies complete unattended battle orchestration with full village economy automation, builder reservation policies, laboratory research, hero pets, and a ~65% reduction in application footprint.
 
 ### Added
-- **Automated Village Upgrades & Progression Engine** (`internal/bot/builder_manager.go`, `internal/config/config.go`):
-  - Added modern Build Overview Menu 2.0 automation supporting building upgrades, laboratory research, and hero pets.
+- **Automated Village Upgrades & Progression Engine** (`internal/bot/builder_manager.go`, `internal/config/config.go`, `web/src/components/ConfigView.tsx`):
+  - Modern Build Overview Menu 2.0 automation supporting building upgrades, laboratory research, and hero pets.
   - Fine-grained strategy filters: `heroes_first`, `cheapest_first`, `most_expensive_first`, `reserve_builders`, and per-resource spend caps (`max_gold_per_upgrade`, `max_elixir_per_upgrade`, `max_de_per_upgrade`).
   - Category toggles: granular control to enable or disable upgrades for Heroes, Defenses, Resources, Army Buildings, and Traps.
   - Interactive laboratory research filtering: automatically taps in-game category and sorting filters (`troops_first`, `spells_first`, `siege_first`, `cheapest_first`) and respects Dark Elixir permissions (`lab_allow_de`).
   - Hero pets management: priority queue ordering across all pets (`pet_priorities`) with live capacity tracking and safe upgrade execution.
   - Dry run mode (`dry_run`): inspects upgrade modals and tests strategy selection without spending resources.
+- **Dark Elixir Search Filtering & Skip Bounds** (`cli.go`, `internal/config/config.go`, `internal/bot/bot.go`):
+  - Added `AttackIfDarkElixirGT` (`-attack-if-de`): accepts bases meeting target Dark Elixir thresholds regardless of gold/elixir levels.
+  - Added bounded search limits (`MaxSearchSkips`, `-max-skips`, default 60) with clean surrender/return-home recovery.
+
+### Performance & Footprint
+- **65% DMG Footprint Reduction & Framework Pruning** (`Makefile`, `tools/bundle_dylibs.sh`, `tools/build_dmg.sh`):
+  - Dynamic library dead stripping: added `-dead_strip_dylibs` to linker flags, dropping 46 unused OpenCV contrib modules. Cuts OpenVINO (21MB), ICU data (29MB), OpenBLAS (13MB), librsvg (6.3MB), and HDF5 from distribution bundles.
+  - Mach-O local symbol stripping: added `strip -x` in bundler and `-s -w` Go ldflags, dropping CLI binary size by 42% (10.8MB $\to$ 6.3MB).
+  - High-efficiency disk image compression: upgraded DMG format from `UDZO` (zlib) to `ULMO` (LZMA), slashing DMG file size from 89MB to ~30MB.
+- **Runtime CPU & Memory Optimization** (`internal/bot/bot.go`, `app.go`):
+  - Frame loop timer reuse: eliminated per-frame `time.After` heap churn (3–4Hz, 24/7).
+  - Adaptive updater status polling: reduced idle IPC / JSON marshal frequency by 85% when no updates are downloading.
 
 ### Fixed
 - **Wall Upgrade Loop Reliability & Stability** (`internal/bot/wall_upgrade.go`, `cmd/test_wall_upgrade/main.go`):
@@ -19,6 +35,10 @@ All notable changes to this project will be documented in this file.
   - Builder menu scrolling: eliminated kinetic glide inertia with calibrated swipe speeds and 1200ms settle pauses.
   - Target centering: offsets wall row taps safely away from edge boundaries and pans camera before closing menu to expand upgrade tray.
   - Fallback chip detection: relaxed minimum fill requirement and added color-face fallback for wall tray buttons.
+- **Battle Zoom-Out Invariance** (`internal/adb/zoominject.go`, `internal/bot/bot.go`):
+  - Guaranteed automatic full zoom-out upon entering battle via direct gesture injection with pinch-drag fallback.
+- **Battle Loot OCR Recalibration** (`internal/game/loot.go`, `assets/battle_loot_rois.json`):
+  - Re-anchored coordinate bounding boxes for gold, elixir, and dark elixir readouts across varying resolutions.
 
 ## [0.9.0-beta] - 2026-10-17
 

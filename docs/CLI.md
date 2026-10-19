@@ -70,6 +70,8 @@ Combined with running BlueStacks at **860×732 / 160 DPI**, this yields the lowe
 | `-gold <amount>` | Minimum gold loot to attack | `750000` |
 | `-elixir <amount>` | Minimum elixir loot to attack | `750000` |
 | `-de <amount>` | Minimum dark elixir loot to attack | `2000` |
+| `-attack-if-de` | Attack if Dark Elixir threshold is met regardless of gold/elixir | `false` |
+| `-max-skips <N>` | Maximum search skips before aborting attack and returning home | `60` |
 | `-min-trophies <N>` | Minimum trophy target | `0` |
 | `-max-trophies <N>` | Maximum trophy target | `3000` |
 

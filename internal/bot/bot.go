@@ -593,15 +593,25 @@ func (b *Bot) captureLoop() {
 
 	go func() {
 		var lastCapture time.Time
+		timer := time.NewTimer(0)
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		defer timer.Stop()
+
 		for {
 			interval := getCaptureInterval()
 			nextCapture := lastCapture.Add(interval)
 			sleepTime := time.Until(nextCapture)
 			if sleepTime > 0 {
+				timer.Reset(sleepTime)
 				select {
 				case <-b.ctx.Done():
 					return
-				case <-time.After(sleepTime):
+				case <-timer.C:
 				}
 			}
 
@@ -1546,6 +1556,31 @@ func sessionCapReached(cap_ int, attacks int32) bool {
 	return cap_ > 0 && attacks >= int32(cap_)
 }
 
+func (b *Bot) recordAttackReport(rep AttackReport) {
+	if repBytes, err := json.MarshalIndent(rep, "", "  "); err == nil {
+		_ = AsyncWriteFile(paths.ResolveConfig("last_attack_report.json"), repBytes, 0644)
+	}
+
+	history := b.historyCache
+	if history == nil {
+		if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
+			_ = json.Unmarshal(histData, &history)
+		}
+	}
+	history = append([]AttackReport{rep}, history...)
+	if len(history) > 500 {
+		history = history[:500]
+	}
+	b.historyCache = history
+	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
+		_ = AsyncWriteFile(paths.ResolveConfig("attack_history.json"), histBytes, 0644)
+	}
+
+	if b.OnStatsUpdate != nil {
+		b.OnStatsUpdate()
+	}
+}
+
 func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// Panic guard for the long-running attack goroutine (spawned from
 	// processFrame outside the frame-loop recover). A panic anywhere in
@@ -1678,6 +1713,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var deployErr error
 	var stratName string = "Unknown"
 	var targetEdge string = "Unknown"
+	var searchSkips int = 0
 
 	searchStart := time.Now()
 	for {
@@ -1693,7 +1729,22 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 
 		if time.Since(searchStart) > 5*time.Minute {
-			b.logger.Error().Msg("searching/skipping bases took too long (stuck in clouds?), restarting game...")
+			b.logger.Error().Msg("searching/skipping bases took too long (stuck in clouds?); attempting clean exit to village...")
+			_ = b.attackExec.EndBattle()
+			time.Sleep(1 * time.Second)
+			_ = b.attackExec.ReturnHome()
+			screenCheck, err := b.client.CaptureToMat()
+			if err == nil {
+				state, _ := b.classify(screenCheck)
+				screenCheck.Close()
+				if state == game.StateMainVillage {
+					b.logger.Info().Msg("cleanly recovered back to village from search timeout")
+					b.lastAttackEnd = time.Now()
+					lootRec.Close()
+					return
+				}
+			}
+			b.logger.Error().Msg("could not exit to village cleanly; restarting game...")
 			b.restartGame()
 			lootRec.Close()
 			return
@@ -1733,11 +1784,27 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			}
 
 			b.logger.Info().Msg("base found, reading loot...")
-			loot, err := lootRec.ReadAvailableLoot(screen)
-			if err != nil {
-				b.logger.Warn().Err(err).Msg("failed to read loot")
+			var loot game.Resources
+			var lootErr error
+			for lootAttempt := 0; lootAttempt < 3; lootAttempt++ {
+				loot, lootErr = lootRec.ReadAvailableLoot(screen)
+				if lootErr == nil {
+					break
+				}
+				if lootAttempt < 2 {
+					b.logger.Warn().Err(lootErr).Int("attempt", lootAttempt+1).Msg("loot read failed; retrying capture on same base...")
+					time.Sleep(400 * time.Millisecond)
+					retryScreen, rerr := b.client.CaptureToMat()
+					if rerr == nil && !retryScreen.Empty() {
+						screen.Close()
+						screen = retryScreen
+					}
+				}
+			}
+			if lootErr != nil {
+				b.logger.Warn().Err(lootErr).Msg("failed to read loot after retries")
 				b.DumpDiagnostics("loot_read_failed", screen, map[string]interface{}{
-					"error": err.Error(),
+					"error": lootErr.Error(),
 				})
 			}
 
@@ -1750,6 +1817,14 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			meetsReq = loot.Gold >= b.cfg.Search.MinLootGold &&
 				loot.Elixir >= b.cfg.Search.MinLootElixir &&
 				loot.DarkElixir >= b.cfg.Search.MinLootDarkElixir
+
+			if !meetsReq && b.cfg.Search.AttackIfDarkElixirGT > 0 && loot.DarkElixir >= b.cfg.Search.AttackIfDarkElixirGT {
+				b.logger.Info().
+					Int("de", loot.DarkElixir).
+					Int("threshold", b.cfg.Search.AttackIfDarkElixirGT).
+					Msg("Dark Elixir threshold met; attacking base")
+				meetsReq = true
+			}
 		}
 
 		if meetsReq {
@@ -1778,9 +1853,31 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 		b.logger.Info().
 			Msg("loot too low, skipping base...")
+		searchSkips++
 		b.skipsCount.Add(1)
 		if b.OnStatsUpdate != nil {
 			b.OnStatsUpdate()
+		}
+
+		maxSkips := b.cfg.Search.MaxSearchSkips
+		if maxSkips > 0 && searchSkips >= maxSkips {
+			b.logger.Warn().
+				Int("skips", searchSkips).
+				Int("max", maxSkips).
+				Msg("maximum search skips reached; aborting search to village to save gold")
+			screen.Close()
+			if err := b.attackExec.EndBattle(); err != nil {
+				b.logger.Warn().Err(err).Msg("EndBattle failed during search abort; attempting ReturnHome")
+			}
+			time.Sleep(1 * time.Second)
+			if err := b.attackExec.ReturnHome(); err != nil {
+				b.findAndClick("btn_return_home", "Return Home", 1)
+			}
+			b.lastAttackEnd = time.Now()
+			lootRec.Close()
+			time.Sleep(1500 * time.Millisecond)
+			b.dismissInterruptions()
+			return
 		}
 
 		screen.Close()
@@ -1808,6 +1905,43 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 
 		time.Sleep(600 * time.Millisecond)
+	}
+
+	if deployErr != nil {
+		b.logger.Error().Err(deployErr).Msg("deployment failed; aborting battle immediately instead of waiting for timer")
+		if err := b.attackExec.EndBattle(); err != nil {
+			b.logger.Warn().Err(err).Msg("EndBattle failed during deployment abort; attempting ReturnHome")
+		}
+		time.Sleep(1 * time.Second)
+		if err := b.attackExec.ReturnHome(); err != nil {
+			b.logger.Warn().Err(err).Msg("ReturnHome failed during deployment abort; attempting template fallback")
+			for i := 0; i < 3; i++ {
+				if b.findAndClick("btn_return_home", "Return Home", 1) {
+					break
+				}
+				time.Sleep(1 * time.Second)
+			}
+		}
+		b.lastAttackEnd = time.Now()
+		b.attackCount.Add(1)
+		b.stars0.Add(1)
+		b.recordAttackReport(AttackReport{
+			Timestamp:        time.Now().Format(time.RFC3339),
+			Strategy:         stratName,
+			TargetEdge:       targetEdge,
+			DeploySuccess:    false,
+			UndeployedSlots:  remainingUndeployed,
+			DeployError:      deployErr.Error(),
+			ParsedResults:    false,
+			Stars:            0,
+			GoldStolen:       0,
+			ElixirStolen:     0,
+			DarkElixirStolen: 0,
+			TotalAttacks:     b.attackCount.Load(),
+		})
+		time.Sleep(1500 * time.Millisecond)
+		b.dismissInterruptions()
+		return
 	}
 
 	b.logger.Info().Msg("battle deployment complete, waiting for battle to end naturally...")
@@ -2024,35 +2158,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		TotalAttacks:     b.attackCount.Load(),
 	}
 
-	if repBytes, err := json.MarshalIndent(rep, "", "  "); err == nil {
-		_ = AsyncWriteFile(paths.ResolveConfig("last_attack_report.json"), repBytes, 0644)
-	}
-
-	history := b.historyCache
-	if history == nil {
-		if histData, err := os.ReadFile(paths.ResolveConfig("attack_history.json")); err == nil {
-			_ = json.Unmarshal(histData, &history)
-		}
-	}
-	history = append([]AttackReport{rep}, history...)
-	if len(history) > 500 {
-		history = history[:500]
-	}
-	b.historyCache = history
-	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
-		_ = AsyncWriteFile(paths.ResolveConfig("attack_history.json"), histBytes, 0644)
-	}
-
-	// Notify the UI AFTER the report is in historyCache and
-	// attack_history.json is flushed to disk. Firing this earlier
-	// (right after ReadBattleResult) raced the App's refreshHistory
-	// cache re-read with the report write, so the UI stayed a full
-	// attack behind even though the loot totals (live atomics) moved
-	// instantly. AsyncWriteFile blocks until the worker flushes, so
-	// by the time we get here the file on disk contains this report.
-	if b.OnStatsUpdate != nil {
-		b.OnStatsUpdate()
-	}
+	b.recordAttackReport(rep)
 
 	returnedHome := false
 	if err := b.attackExec.ReturnHome(); err == nil {

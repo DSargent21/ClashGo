@@ -210,6 +210,7 @@ type SearchConfig struct {
 	MinLootGold          int  `json:"min_loot_gold"`
 	MinLootElixir        int  `json:"min_loot_elixir"`
 	MinLootDarkElixir    int  `json:"min_loot_de"`
+	MaxSearchSkips       int  `json:"max_search_skips"`
 }
 
 type DebugConfig struct {
@@ -362,6 +363,7 @@ func DefaultConfig() *BotConfig {
 			MinLootGold:          750000,
 			MinLootElixir:        750000,
 			MinLootDarkElixir:    2000,
+			MaxSearchSkips:       60,
 		},
 		Storage: StorageConfig{
 			HaltWhenGoldFull:       true,

@@ -25,7 +25,8 @@ RELEASE_ZIP := ClashGO-v$(VERSION)-macOS.zip
 # ldflags injected into both the CLI binary and the Wails GUI binary.
 # Variables must match the package-level var names in version.go
 # (main.version / main.commit / main.date).
-LDFLAGS := -X main.version=$(VERSION) \
+LDFLAGS := -s -w \
+           -X main.version=$(VERSION) \
            -X main.commit=$(GIT_COMMIT)
 
 # min_supported in latest.json: the lowest version that can update in
@@ -33,7 +34,7 @@ LDFLAGS := -X main.version=$(VERSION) \
 # prerelease (e.g. 0.3.0-beta) it's the previous minor (0.2.0) so users
 # of the last stable/beta still get the update banner. Override with
 # MIN_SUPPORTED= on the command line when the default is wrong.
-MIN_SUPPORTED ?= $(shell echo "$(VERSION)" | awk -F'[.-]' '{ if (NF > 3) { m = $$2 - 1; if (m < 0) m = 0; print $$1 "." m ".0" } else { print $$1 "." $$2 ".0" } }')
+MIN_SUPPORTED ?= $(shell echo "$(VERSION)" | awk -F'[.-]' '{ if ($$1 == "1" && $$2 == "0" && $$3 == "0") { print "0.9.0" } else if (NF > 3) { m = $$2 - 1; if (m < 0) m = 0; print $$1 "." m ".0" } else { print $$1 "." $$2 ".0" } }')
 
 # OpenCV test ldflags: the local Homebrew/sdk OpenCV build ships dylibs
 # with @rpath install names, so test binaries need the lib dir baked into
@@ -69,7 +70,7 @@ endif
 # dies printing its usage (`-extldflags='a b'` does not survive either, because
 # the wails CLI splits the -ldflags string on spaces before handing it to Go).
 ifneq ($(OPENCV_LIBDIR),)
-    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names
+    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names,-dead_strip_dylibs
 endif
 
 .PHONY: all build build-cli build-gui clean release manifest test test-go test-py
@@ -378,3 +379,5 @@ build-zip: bundle-dylibs
 clean:
 	rm -rf $(BUILD_DIR)/*
 	rm -f $(BINARY_NAME)
+	rm -rf bin exe
+	rm -f current_screen.png

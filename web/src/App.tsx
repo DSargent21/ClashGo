@@ -151,6 +151,7 @@ function App() {
   const [haltGold, setHaltGold] = useState(true);
   const [haltElixir, setHaltElixir] = useState(true);
   const [haltDE, setHaltDE] = useState(false);
+  const [haltRule, setHaltRule] = useState("ANY");
   const [storageThreshold, setStorageThreshold] = useState(95);
   const [dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt] = useState(true);
 
@@ -213,6 +214,7 @@ function App() {
           setHaltGold(conf.storage.halt_when_gold_full ?? true);
           setHaltElixir(conf.storage.halt_when_elixir_full ?? true);
           setHaltDE(conf.storage.halt_when_de_full ?? false);
+          setHaltRule(conf.storage.halt_rule || "ANY");
           setStorageThreshold(conf.storage.full_threshold_percent ?? 95);
           setDumpToWallsBeforeHalt(conf.storage.dump_to_walls_before_halt ?? true);
           setAutoCollect(conf.storage.auto_collect ?? true);
@@ -371,7 +373,7 @@ function App() {
       haltGold,
       haltElixir,
       haltDE,
-      "ANY",
+      haltRule,
       storageThreshold,
       80.0,
       dumpToWallsBeforeHalt,
@@ -549,6 +551,7 @@ function App() {
       haltGold, setHaltGold,
       haltElixir, setHaltElixir,
       haltDE, setHaltDE,
+      haltRule, setHaltRule,
       storageThreshold, setStorageThreshold,
       dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt,
       autoCollect, setAutoCollect,
@@ -587,7 +590,7 @@ function App() {
   }, [
     goldThreshold, elixirThreshold, deThreshold,
     selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd,
-    haltGold, haltElixir, haltDE, storageThreshold, dumpToWallsBeforeHalt, autoCollect,
+    haltGold, haltElixir, haltDE, haltRule, storageThreshold, dumpToWallsBeforeHalt, autoCollect,
     scheduleEnabled, activeHoursStart, activeHoursEnd, sessionDuration, breakDuration, forceStopOnBreak, maxPerHour, maxPerDay,
     autoBuilders, reserveBuilders, upgradeStrategy, upgradeDefenses, upgradeResources, upgradeArmy, upgradeTraps, upgradeHeroes,
     maxGoldPerUpgrade, maxElixirPerUpgrade, maxDEPerUpgrade,

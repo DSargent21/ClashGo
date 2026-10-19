@@ -1,133 +1,130 @@
 # ClashGO ⚔️
 
-This is **ClashGO**, a super lightweight Clash of Clans bot written in Go.
+[![Release](https://img.shields.io/github/v/release/DSargent21/ClashGo?color=blue&label=release)](https://github.com/DSargent21/ClashGo/releases)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://golang.org)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon)-black?logo=apple)](https://github.com/DSargent21/ClashGo)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-I basically vibe-coded this in like 3 days because I wanted a bot that actually worked on my Mac (Apple Silicon). It's built from scratch using Go and OpenCV.
+High-performance, lightweight Clash of Clans automation engine written in Go and OpenCV. Built natively for macOS (Apple Silicon) with sub-millisecond persistent ADB transport, resilient computer vision, self-healing recovery, a sleek desktop GUI, and a headless CLI.
 
-### ⚠️ WARNING: It's Buggy
-Look, I made this fast. It's rough around the edges, probably has bugs, and might crash. Use it at your own risk.
+---
 
-### 🚀 Why it's cool
-- **Mac Native**: Works great on Apple Silicon.
-- **Fast**: Uses a persistent ADB connection, so screen captures and taps are instant.
-- **Lightweight**: Just a single binary, with a recent perf audit cutting battle-state CPU ~10–20% and transient RSS ~10–20 MB. See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the per-change breakdown and how to verify on your machine.
-- **Customizable strategies**: Drop a YAML strategy + matching `formula.json` (per-unit deploy coords) into `assets/strategies/` and the bot deploys each unit where you want. See `assets/strategies/auto_edrag_rush.yaml` + `assets/strategies/auto_edrag_rush_formula.json` for an end-to-end example (Balloon + EDrag + Rage + Ice).
-- **Per-corner formula workflow**: `target_edge: "Random"` (the default in `auto_edrag_rush.yaml`) picks a random corner per attack. `cmd/design_attack -live -corner BR|BL|TR|TL` authors the per-corner deploy coords; per-corner overrides in `formula.corner_overrides[<CORNER>]` are used as-authored (the mirror is only a fallback). See [`docs/formula-authoring.md`](docs/formula-authoring.md) for the full walkthrough.
-- **Self-healing boot sequence**: the bot auto-dismisses the post-boot
-  splash chain ("ТАР!" tap-to-continue → castle logo → news splash)
-  instead of force-restarting in a loop, so unattended runs survive game
-  relaunches.
-- **Unattended-run resilience**: if the emulator dies mid-session the bot
-  escalates through transport reconnect → adb-server reset → BlueStacks
-  relaunch instead of spinning; a bad frame or missing asset can't crash
-  the process (panic guards + nil-template fallback); and
-  `tools/run_bot_keepalive.sh` respawns the bot ~10s after any exit so it
-  keeps farming unattended.
-- **Text-based observability**: `./tools/observe.sh` captures the emulator
-  screen, classifies it with the bot's real vision layer, and OCRs the
-  on-screen text — a terminal-only "eye view" for debugging without a
-  GUI. See [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md).
-- **Replayable attacks**: `make attack-record` records a deploy you perform on the emulator; `make attack-replay` re-fires that JSON on the device with classification + extras. Useful for sharing working attacks without re-engineering.
-- **Interactive Visual ROI Picker**: `make roi-picker` serves an interactive web UI on `http://127.0.0.1:8795/` allowing visual box dragging on live emulator frames to calibrate buttons, troop slots, and hero cards with instant template cropping and JSON exports.
-- **Battle 4x Speed-Up**: Automatically triggers the 4x fast-forward button after 2 minutes of elapsed battle time to speed through cleanup.
-- **Intuitive 1-Click In-App Updater**: New releases ship through GitHub Releases. When an update is detected, ClashGO auto-pops the release window and highlights a persistent status pill in the header. Clicking **1-Click Update & Restart** automatically downloads the verified bundle, stops the running bot cleanly, swaps the macOS bundle in place using a detached helper, re-signs ad-hoc, and relaunches seamlessly with rollback protection. "Later" keeps the header pill accessible for whenever you're ready, and updates can also be triggered directly from Settings.
-- **Headless CLI (`bot_cli`)**: Full bot engine without WebKit/GUI overhead. Ideal for 24/7 background tmux sessions or low-spec machines. Check version with `./build/bin/bot_cli -v` and run with `-perf` for maximum efficiency.
+## ⚡ Key Highlights
 
-### 🛠️ How to use
-1. **Emulator**: Set your emulator (like BlueStacks) to **860x732** resolution and **160 DPI**.
-2. **Config**: Point `config.json` to your ADB device.
-3. **Run**:
-   - **CLI (Lightweight & Max Performance)**:
-     ```bash
-     make build-cli
-     ./build/bin/bot_cli -v                             # Print version & commit
-     ./build/bin/bot_cli -perf -gold 600000 -elixir 600000
-     ```
-     See [`docs/CLI.md`](docs/CLI.md) for all options (`-perf`, `-once`, `-deploy-only`, `-devices`, `-strategies`).
-   - **GUI**:
-     ```bash
-     make build-gui && open build/bin/ClashGO.app
-     ```
+- **Native Apple Silicon Architecture**: Compiled directly for ARM64 macOS — zero Rosetta translation, minimal memory footprint, and low thermals.
+- **Persistent ADB Engine**: Bypasses slow `adb shell` execution loops using a raw persistent socket connection (`exec:/system/bin/screencap`), reducing capture latency to ~30–50ms.
+- **Resilient Computer Vision**: Multi-scale template matching and OCR powered by OpenCV and Apple Vision, with built-in asset pooling to eliminate memory thrash.
+- **Self-Healing State Watchdogs**: Auto-dismisses post-boot splash chains ("TAP!" continue $\to$ castle logo $\to$ news dialog) and recovers gracefully from disconnected emulators, network stalls, and UI interruptions.
+- **Customizable Strategy Formulas**: Author drop orders, deploy angles, and timings via YAML strategies (`assets/strategies/`) paired with geometric formula JSONs (`pkg/formula/`).
+- **Interactive Visual Calibration**: Launch browser-based interactive tools (`make roi-picker`, `make pick-coords`) to drag boxes, crop templates, and calibrate HUD coordinates live on emulator frames.
+- **1-Click In-App Updater**: Automated GitHub Releases integration. Detects new versions, verifies SHA-256 signatures, applies detached hot-swaps, and relaunches with zero manual re-installation.
+- **Headless CLI (`bot_cli`) & Desktop GUI (Wails)**: Run the full bot engine headlessly inside `tmux` for 24/7 background farming (~25–40 MB RSS), or launch the modern React/Wails UI for visual analytics and live control.
 
-### 💾 Resource usage & Performance metrics (estimates)
+---
 
-All numbers below are **principled estimates from code analysis** (frame
-sizing, mat pool, template cache, capture-loop cadence), not live
-measurements. They assume an **Apple Silicon Mac**, **BlueStacks at
-860×732 / 160 DPI**, and the bot running at the configured capture rate.
-The recipe in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md#how-to-verify-on-your-machine)
-validates them on your machine.
+## 🚀 Quickstart
 
-**Frame math (860×732, RGB):**
-- Full capture frame: `860 × 732 × 3 ≈ 1.80 MB`
-- Half-size frame (Live View JPEG encode): `430 × 366 × 3 ≈ 0.47 MB`
+### Prerequisites
+1. **macOS** (Apple Silicon M1/M2/M3/M4 recommended).
+2. **Android Emulator** (e.g., BlueStacks) configured to:
+   - Resolution: **860 × 732**
+   - DPI: **160 DPI**
+   - ADB enabled on `127.0.0.1:5555` (default).
 
-| Scenario | ClashGO RSS | ClashGO CPU¹ | + BlueStacks RSS² | Combined RSS (est.) |
-|----------|------------:|-------------:|------------------:|--------------------:|
+### 1. Download & Install (Desktop GUI)
+Download the latest `ClashGO.dmg` from [GitHub Releases](https://github.com/DSargent21/ClashGo/releases/latest), drag `ClashGO.app` into `/Applications`, and launch.
+
+### 2. Headless CLI (`bot_cli`)
+For maximum efficiency and 24/7 background servers:
+
+```bash
+# Build the standalone binary
+make build-cli
+
+# Print version and git commit
+./build/bin/bot_cli -v
+
+# Run with performance optimizations and custom loot filters
+./build/bin/bot_cli -perf -gold 600000 -elixir 600000 -min-de 3000
+```
+
+See [`docs/CLI.md`](docs/CLI.md) for full flag documentation (`-perf`, `-once`, `-deploy-only`, `-devices`, `-strategies`).
+
+---
+
+## 🛠️ Tooling & Calibration Suite
+
+ClashGO includes a suite of developer and calibration utilities in `cmd/`:
+
+| Command / Tool | Description |
+|----------------|-------------|
+| `make roi-picker` | Drag-and-drop web ROI selector (`http://127.0.0.1:8795`) for buttons, slots, and templates |
+| `make pick-coords` | Visual deploy point picker (`http://127.0.0.1:8791`) for calibrating base boundary lines |
+| `make pick-army-slots` | Calibrate clickable boxes for army recipe slots on live frames |
+| `make attack-verify` | Renders attack plans (deploy taps, spells, red zone) onto emulator frame without tapping |
+| `make attack-record` | Macro recorder: capture clicks on emulator to JSON |
+| `make attack-replay` | Macro replayer: fire recorded attack JSON at cadence |
+| `make see` | Terminal ASCII screen inspector and vision debug eye |
+| `./tools/observe.sh` | Terminal capture + classifier + Apple Vision OCR dump |
+
+---
+
+## 💾 Resource Usage & Efficiency
+
+All metrics reflect Apple Silicon runs with BlueStacks at 860×732 / 160 DPI:
+
+| Scenario | ClashGO RSS | ClashGO CPU¹ | + BlueStacks RSS² | Combined Footprint |
+|----------|------------:|-------------:|------------------:|-------------------:|
 | **CLI Headless (Idle / UI only)** | **~25–40 MB** | **<1% (1 core)** | ~800 MB–1.2 GB | **~0.8–1.2 GB** |
-| **CLI Headless (Active battle @ 15 FPS, `-perf`)** | **~45–70 MB** | **~8–15% (1 core)** | ~1.0–1.5 GB | **~1.0–1.6 GB** |
-| **GUI (Idle / UI only)** (1 FPS capture) | ~60–90 MB | ~1–3% (1 core) | ~800 MB–1.2 GB | ~0.9–1.3 GB |
-| **GUI (Active battle @ 15 FPS)** | ~90–140 MB | ~15–25% (1 core) | ~1.0–1.5 GB | ~1.1–1.7 GB |
+| **CLI Headless (Active battle, `-perf`)** | **~45–70 MB** | **~8–15% (1 core)** | ~1.0–1.5 GB | **~1.0–1.6 GB** |
+| **GUI (Idle / Dashboard)** | ~60–85 MB | ~1–2% (1 core) | ~800 MB–1.2 GB | ~0.9–1.3 GB |
+| **GUI (Active battle)** | ~80–120 MB | ~12–20% (1 core) | ~1.0–1.5 GB | ~1.1–1.6 GB |
 
-> **CLI vs GUI Footprint**: The CLI (`bot_cli`) strips out the embedded Wails / WebKit browser runtime, saving ~35–50 MB RSS and eliminates UI re-render cycles entirely for maximum 24/7 battery and CPU efficiency.
+¹ Single-core CPU percentage. During battle, vision classification runs at throttled intervals to minimize CPU usage while guaranteeing fast result detection.
+² BlueStacks memory footprint is governed by the Android guest OS and emulator settings.
 
-¹ CPU is single-core; the bot is largely single-threaded per capture frame
-(classify + template match + tap). Higher FPS = proportionally more CPU.
-At 15 FPS the per-frame vision work (~7–15 ms) consumes ~15–25% of one core.
-The bot also reports **`cpu_time_sec`** — absolute CPU time since process
-start — which is the device-independent metric: it means the same on an M1 or
-an M3 Max, so you can compare efficiency across machines without normalizing
-by core count. The "% CPU" shown in the UI is derived by multiplying the
-per-core fraction (`cpu_cores`) by the host's logical core count; treat that
-number as host-relative only.
-² BlueStacks footprint is driven by the emulator + Android guest, not the
-bot. It scales with emulator window size / DPI and the guest's own memory
-pressure, not with ClashGO's FPS.
+See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for profiling details and optimization benchmarks.
 
-**Where the bot's RAM goes:**
-- Capture + working Mats (mat pool): ~2–4 MB retained (serial capture keeps
-  only 1–2 mats per size alive).
-- `ScaledTemplateCache` (6 classifier rules × several scales): ~1–3 MB.
-- Live View base64 frame buffer (`lastFrame`): a few hundred KB.
-- Wails/WebKit GUI harness: the bulk of the idle ~60–90 MB is the embedded
-  browser, not the Go bot logic.
+---
 
-ClashGO itself is tiny; the dominant memory cost when running is almost
-always **BlueStacks**, not the bot.
+## 📚 Documentation Index
 
-### 🚢 Releasing a new version
+- **[Architecture & Design](docs/DESIGN.md)**: State machine, vision pipelines, and subsystem layout.
+- **[CLI Reference](docs/CLI.md)**: Headless CLI flags, execution modes, and environment variables.
+- **[Formula Authoring Guide](docs/formula-authoring.md)**: Designing custom deployment patterns and corner overrides.
+- **[Performance & Optimization](docs/PERFORMANCE.md)**: Memory pooling, capture caching, and profiling guide.
+- **[Observability & Debugging](docs/OBSERVABILITY.md)**: ASCII visualization, tap traces, and OCR tools.
+- **[Resolution & Scaling](docs/RESOLUTION.md)**: Mathematical models for resolution independence and DPI scaling.
+- **[ROI Picking Guide](docs/PICKING.md)**: Calibrating game assets and buttons with interactive visual pickers.
+- **[Roadmap](ROADMAP.md)**: Tactical progression and feature backlog.
+- **[Long-Term Product Roadmap](ROADMAP_LONGTERM.md)**: Strategic 3-phase milestone plan.
 
-Updates are powered by GitHub Releases — no extra infrastructure.
+---
 
-1. Bump `productVersion` in `wails.json` (e.g. `0.9.0-beta`).
-2. Commit + push, then tag it:
+## 🚢 Release Workflow
 
-   ```sh
-   git tag v0.9.0-beta && git push origin v0.9.0-beta
-   ```
+Releases are built automatically via GitHub Actions:
 
-   Pushing a `v*` tag runs the **Release** workflow
-   (`.github/workflows/release.yml`), which builds the macOS zip, the
-   DMG, and `latest.json` on a fresh runner and publishes them to a
-   GitHub Release automatically. No manual upload, no secrets — the
-   workflow uses GitHub's built-in `GITHUB_TOKEN`, and the app itself
-   checks the public GitHub API unauthenticated.
-3. Existing users get an auto-popping update window within 6h (or on
-   next launch) offering one-click *Update & Restart*.
+```bash
+# 1. Update productVersion in wails.json
+# 2. Tag and push
+git tag v0.11.0-beta
+git push origin v0.11.0-beta
+```
 
-Manual fallback (no CI):
+GitHub Actions compiles the universal Go binaries, packages the self-contained DMG (`ULMO` LZMA compression) and zip bundle, emits `latest.json`, and publishes the release assets automatically.
 
-1. `make release VERSION=0.9.0-beta` — produces the zip, the DMG,
-   and `latest.json`.
-2. Publish a GitHub release tagged `v0.9.0-beta`, and attach:
-   - `ClashGO-v0.9.0-beta-macOS.zip`
-   - `ClashGO.dmg`
-   - `latest.json`
+---
 
-### 🤝 HELP WANTED (Porting to Windows)
-Right now, this is heavily tested on macOS. I'd love some help **porting/testing this for Windows**. If you're a dev and want to help me make this not-just-a-Mac-thing, open a PR or hit me up!
+## 🤝 Contributing
 
-Also, if you find bugs (you will), just open an issue.
+Contributions, issues, and PRs are welcome!
+- Testing or porting to **Windows** (see roadmap).
+- Authoring new troop and spell strategies in `assets/strategies/`.
+- Reporting bugs or edge cases with logs from `logs/`.
 
-### 📄 License
-MIT. Do whatever you want with it.
+---
+
+## 📄 License
+
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.

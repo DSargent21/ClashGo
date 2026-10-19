@@ -175,14 +175,14 @@ chmod -R u+rwX,go+rX "$WORK"
 # Stage 7 — create the DMG.
 # Flags picked for distribution:
 #   -ov                       overwrite in place
-#   -format UDZO              compressed read-only (smallest, fastest)
+#   -format ULMO              compressed read-only via LZMA (smallest footprint)
 #   -volname "$VOLNAME"       the label Finder shows
 #   -fs HFS+                  max-compat filesystem (also default)
 log "running hdiutil create"
 rm -f "$OUT_DMG"
 hdiutil create \
   -ov \
-  -format UDZO \
+  -format ULMO \
   -volname "$VOLNAME" \
   -fs HFS+ \
   -srcfolder "$WORK" \

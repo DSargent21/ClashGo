@@ -55,3 +55,27 @@ func TestLoadGUIWrittenConfigKeepsStrategySlots(t *testing.T) {
 		t.Errorf("sleep_after_train = %v, want 5s", cfg.Training.SleepAfterTrain.Duration)
 	}
 }
+
+func TestSearchConfigDefaultsAndMaxSearchSkips(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Search.MaxSearchSkips != 60 {
+		t.Errorf("default MaxSearchSkips = %d, want 60", cfg.Search.MaxSearchSkips)
+	}
+
+	data := `{"search": {"max_search_skips": 25, "attack_if_de_gt": 4000}}`
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Search.MaxSearchSkips != 25 {
+		t.Errorf("loaded MaxSearchSkips = %d, want 25", loaded.Search.MaxSearchSkips)
+	}
+	if loaded.Search.AttackIfDarkElixirGT != 4000 {
+		t.Errorf("loaded AttackIfDarkElixirGT = %d, want 4000", loaded.Search.AttackIfDarkElixirGT)
+	}
+}
+
