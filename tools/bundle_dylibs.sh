@@ -334,18 +334,25 @@ for p in "${libs[@]}"; do
 done
 log "copied ${#libs[@]} dylibs ($((total / 1000000)) MB) into Contents/Frameworks"
 
+# Recreate symlinks for known aliases so any reference by alias name resolves in $FW
+while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  alias="${line%%:*}"
+  target="${line#*:}"
+  if [[ "$alias" != "$target" && -f "$FW/$target" && ! -e "$FW/$alias" ]]; then
+    ln -sf "$target" "$FW/$alias"
+  fi
+done <<< "$refmap"
+
 # ---- 3. Rewrite references. ------------------------------------------
-# `install_name_tool` refuses to grow a load command, and a signed Mach-O has no
-# slack to grow into; dropping the ad-hoc signature on the copy first frees the
-# space and we re-sign at the end. New names are shorter than the ones they
-# replace anyway, but this keeps a long Homebrew Cellar path from failing.
+# `install_name_tool` modifies load commands in place. We do NOT run
+# `codesign --remove-signature` here: on modern macOS (Xcode 15/16), removing
+# signatures leaves an invalid __LINKEDIT segment that crashes install_name_tool
+# with exit error 70. Re-signing happens cleanly at the end.
 change_ref() {
   local file="$1" ref="$2" new="$3" err=""
   if ! err="$(install_name_tool -change "$ref" "$new" "$file" 2>&1)"; then
-    codesign --remove-signature "$file" 2>/dev/null || true
-    if ! err="$(install_name_tool -change "$ref" "$new" "$file" 2>&1)"; then
-      fail "could not rewrite $ref in $(basename "$file"): $err" 70
-    fi
+    fail "could not rewrite $ref in $(basename "$file"): $err" 70
   fi
 }
 
@@ -380,7 +387,6 @@ for p in "${libs[@]}"; do
   # ID is by definition reachable as a reference (cv-env's openblas ships
   # ID @rpath/libopenblas.0.dylib) and an @rpath ID inside the bundle can
   # only resolve by luck of a foreign rpath.
-  codesign --remove-signature "$f" 2>/dev/null || true
   install_name_tool -id "@loader_path/$(basename "$p")" "$f" 2>/dev/null \
     || warn "could not set install name of $(basename "$f")"
   rewrite_file "$f" lib
@@ -420,6 +426,7 @@ codesign --verify --deep --strict "$APP" >/dev/null 2>&1 \
 log "checking every reference resolves inside the bundle"
 leftovers=0
 for f in "$BIN" "$FW"/*.dylib; do
+  [[ -L "$f" ]] && continue
   self="$(basename "$f")"
   fdir="$(cd "$(dirname "$f")" && pwd)"
   while IFS= read -r ref; do
