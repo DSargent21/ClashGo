@@ -340,11 +340,11 @@ log "copied ${#libs[@]} dylibs ($((total / 1000000)) MB) into Contents/Framework
 # space and we re-sign at the end. New names are shorter than the ones they
 # replace anyway, but this keeps a long Homebrew Cellar path from failing.
 change_ref() {
-  local file="$1" ref="$2" new="$3"
-  if ! install_name_tool -change "$ref" "$new" "$file" 2>/dev/null; then
+  local file="$1" ref="$2" new="$3" err=""
+  if ! err="$(install_name_tool -change "$ref" "$new" "$file" 2>&1)"; then
     codesign --remove-signature "$file" 2>/dev/null || true
-    if ! install_name_tool -change "$ref" "$new" "$file" 2>/dev/null; then
-      fail "could not rewrite $ref in $(basename "$file")" 70
+    if ! err="$(install_name_tool -change "$ref" "$new" "$file" 2>&1)"; then
+      fail "could not rewrite $ref in $(basename "$file"): $err" 70
     fi
   fi
 }

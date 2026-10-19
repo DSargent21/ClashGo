@@ -41,7 +41,7 @@ jobs:
     # NOT match a GitHub-hosted runner pool (jobs queue forever), and
     # macos-latest currently resolves to the same macos-26 arm64 image
     # the opencv@4/gocv pairing was verified against.
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Checkout
