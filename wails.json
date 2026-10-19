@@ -8,11 +8,11 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "Ducky705",
+    "name": "DSargent21",
     "email": ""
   },
   "info": {
-    "companyName": "Ducky705",
+    "companyName": "DSargent21",
     "productName": "ClashGO",
     "productVersion": "1.0.0",
     "copyright": "Copyright 2026"

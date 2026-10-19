@@ -11,8 +11,8 @@
 //  1. In BlueStacks, navigate to MainVillage → tap builder head →
 //     scroll the upgrades menu to bring the "Wall" row to a stable
 //     position on screen. (This tool does NOT drive the menu — see
-//     run_test_wall_upgrade.sh for that.)
-//  2. Run `run_capture_template.sh text_wall`. The tool snaps a preview
+//     tools/test_wall_upgrade.sh for that.)
+//  2. Run `tools/run_capture_template.sh text_wall`. The tool snaps a preview
 //     to output/template_captures/<ts>/captured_screen.png — open that
 //     PNG in Preview / your image viewer.
 //  3. Inspect the PNG and enter the bounding rect of the "Wall" label
@@ -284,8 +284,8 @@ func main() {
 		best.Confidence, minConf, dstPath)
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  ./run_test_wall_upgrade.sh dry-run    # verify the new template matches on a fresh capture")
-	fmt.Println("  ./run_test_wall_upgrade.sh run -yes  # full live loop")
+	fmt.Println("  ./tools/test_wall_upgrade.sh dry-run    # verify the new template matches on a fresh capture")
+	fmt.Println("  ./tools/test_wall_upgrade.sh run -yes  # full live loop")
 }
 
 // moveAside renames src → dst inside the same parent directory. Used

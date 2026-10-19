@@ -114,7 +114,7 @@ build-cli:
 # rebuilds the CLI first so the cached binary used by
 # ./run_designed_attack.sh is fresh.
 attack-once: build-cli
-	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME)
+	@./tools/run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME)
 
 # 720p attack review: render the full plan (formula taps, spell lines,
 # army-bar slots, red zone) onto the live emulator frame WITHOUT tapping.
@@ -202,7 +202,7 @@ attack-report:
 .PHONY: attack-once attack-once-cli auto-attack auto-attack-right auto-attack-left auto-attack-top auto-attack-bottom attack-record attack-replay attack-classify
 
 attack-once-cli: build-cli
-	@./run_designed_attack.sh \
+	@./tools/run_designed_attack.sh \
 		--strategy assets/strategies/auto_edrag_rush.yaml \
 		--device localhost:5555 \
 		--out tmp/last_designed_attack \
@@ -212,18 +212,18 @@ attack-once-cli: build-cli
 # side → deploy via formula. Use when the manual click-by-click picker
 # is overkill (e.g. forcing a single-side attack for repeat runs).
 auto-attack: build-cli
-	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge right
+	@./tools/run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge right
 
 auto-attack-right: auto-attack
 auto-attack-left: build-cli
-	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge left
+	@./tools/run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge left
 auto-attack-top: build-cli
-	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge top
+	@./tools/run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge top
 auto-attack-bottom: build-cli
-	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge bottom
+	@./tools/run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge bottom
 
 auto-attack-bluestacks: build-cli
-	@./run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge right --device 127.0.0.1:5555
+	@./tools/run_designed_attack.sh --clashgo build/bin/$(BINARY_NAME) --auto --target-edge right --device 127.0.0.1:5555
 
 # Macro recorder/replayer — teach by demonstration. Record mode opens a
 # window over the device screen; clicks get forwarded + saved to JSON.

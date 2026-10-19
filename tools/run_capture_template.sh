@@ -23,7 +23,7 @@
 # that source file.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <template-name> [extra flags...]"

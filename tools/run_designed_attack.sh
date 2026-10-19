@@ -22,6 +22,7 @@
 #   DEVICE, STRATEGY, OUT_DIR, GO_BIN, CLASHGO_BIN
 #
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 # ---- defaults --------------------------------------------------------------
 DEVICE="${DEVICE:-emulator-5554}"

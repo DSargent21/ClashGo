@@ -3106,7 +3106,7 @@ func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
 	return remaining, nil
 }
 
-// QuickDeploy is the manual single-shot deploy path for run_designed_attack.sh.
+// QuickDeploy is the manual single-shot deploy path for tools/run_designed_attack.sh.
 // The user is assumed to already be on the attack screen with a base loaded —
 // there's no search loop, no attack-button discovery, no home → finds-match
 // pipeline. We capture the current screen once, run deployTroops (which honors

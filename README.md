@@ -96,8 +96,7 @@ See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for profiling details and optim
 - **[Observability & Debugging](docs/OBSERVABILITY.md)**: ASCII visualization, tap traces, and OCR tools.
 - **[Resolution & Scaling](docs/RESOLUTION.md)**: Mathematical models for resolution independence and DPI scaling.
 - **[ROI Picking Guide](docs/PICKING.md)**: Calibrating game assets and buttons with interactive visual pickers.
-- **[Roadmap](ROADMAP.md)**: Tactical progression and feature backlog.
-- **[Long-Term Product Roadmap](ROADMAP_LONGTERM.md)**: Strategic 3-phase milestone plan.
+- **[Roadmap](docs/ROADMAP.md)**: Product milestones, tactical backlog, and architectural vision.
 
 ---
 
@@ -108,8 +107,8 @@ Releases are built automatically via GitHub Actions:
 ```bash
 # 1. Update productVersion in wails.json
 # 2. Tag and push
-git tag v0.11.0-beta
-git push origin v0.11.0-beta
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 GitHub Actions compiles the universal Go binaries, packages the self-contained DMG (`ULMO` LZMA compression) and zip bundle, emits `latest.json`, and publishes the release assets automatically.
