@@ -162,6 +162,46 @@ func (dp *DeployPlanner) planUnit(unit strategy.Unit, phase strategy.Phase) Unit
 	return plan
 }
 
+// MissingCoreUnits reports strategy troops that are not on the troop bar at all
+// — the cards planUnit silently drops with a "unit not found in bar" warning.
+//
+// Dropping one is harmless-looking and expensive: the phase that owned it is
+// skipped, the remaining phases still deploy, and the attack is spent on
+// whatever happened to be armed. Live 2026-11-10: auto_edrag_rush ran against an
+// archer/goblin farm army, Balloon and Electro Dragon resolved to nothing, the
+// leftovers deployed, the battle stalled at 42 % and finished a defeat while the
+// report claimed "SUCCESS (100 % Deployed)". Callers gate on this before the
+// first tap.
+//
+// Heroes, spells, siege machines and abilities are deliberately exempt: a hero
+// can be in the upgrade lab, a recipe need not brew every spell the strategy
+// mentions, and clan-castle siege is a toggle. Only a regular troop is a unit
+// the strategy cannot run without.
+func (dp *DeployPlanner) MissingCoreUnits(s *strategy.DynamicStrategy) []string {
+	if dp == nil || dp.slotManager == nil || s == nil {
+		return nil
+	}
+	var missing []string
+	seen := make(map[string]bool)
+	for _, phase := range s.Phases {
+		for _, unit := range phase.Units {
+			name := strings.ToLower(strings.TrimSpace(unit.Name))
+			if seen[name] || name == "" {
+				continue
+			}
+			if unit.Pattern == "Ability" || phase.Pattern == "Ability" ||
+				isHeroStatic(name) || isSpellStatic(name) || isSiegeStatic(name) {
+				continue
+			}
+			seen[name] = true
+			if dp.slotManager.GetSlot(name) == nil {
+				missing = append(missing, unit.Name)
+			}
+		}
+	}
+	return missing
+}
+
 // GetStrategyUnitNames returns all unit names from a strategy.
 func GetStrategyUnitNames(s *strategy.DynamicStrategy) []string {
 	var names []string

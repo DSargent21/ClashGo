@@ -101,6 +101,16 @@ type resultSettle struct {
 
 	prevRead game.BattleResult
 	sameRead int // consecutive captures whose full read is identical
+
+	best      game.BattleResult // best plausible read seen (loot max)
+	bestValid bool
+	bestSeen  int // times best read observed (fallback needs repeat confirmation)
+
+	// bonusSeen is whether ANY plausible read showed a league bonus. When the
+	// panel carries no bonus row at all — a defeat panel, and the 1024x768
+	// geometry on 2026-11-10 — bonusPending can never clear, so a rule that
+	// waits for the bonus would reject every read of a panel that is finished.
+	bonusSeen bool
 }
 
 func newResultSettle(log zerolog.Logger) *resultSettle {
@@ -145,6 +155,25 @@ func (b *Bot) saveResultFrame(screen gocv.Mat) {
 	b.logger.Info().Str("path", path).Msg("saved battle result screenshot to last_battle_result.png")
 }
 
+// Fallback returns the best plausible read seen when the machine ran out of
+// attempts without accepting one. Callers use it to bank measured loot from a
+// panel that never satisfies the strict contract, instead of recording a looted
+// attack as zero. The read is repeated-confirmed (bestSeen >= 2) and has already
+// passed plausibleBattleResult, so it is a measurement, not a guess; stars are
+// still cross-checked against the destruction rule by the caller.
+//
+// It refuses any observation window in which a league bonus was SEEN but never
+// settled: that is a panel still writing (the measured 8s count-up), and
+// accepting it would bank a victory without its bonus. Only a panel that
+// never painted a bonus row at all — a defeat panel, which pays no league
+// bonus, or a UI version without the column — reaches the fallback.
+func (s *resultSettle) Fallback() (game.BattleResult, bool) {
+	if !s.bestValid || s.bestSeen < 2 || s.best.IsZero() || s.bonusSeen {
+		return game.BattleResult{}, false
+	}
+	return s.best, true
+}
+
 // observe feeds one capture to the state machine and reports whether its
 // read is final. The machine owns the attempt budget and the observation
 // window, so the caller only has to keep capturing while it says no.
@@ -162,6 +191,14 @@ func (s *resultSettle) observe(hash uint64, res game.BattleResult, now time.Time
 	// battlefield, where the pixels never hold still.
 
 	if valid {
+		if !s.bestValid || res == s.best {
+			s.best, s.bestValid, s.bestSeen = res, true, s.bestSeen+1
+		} else if res.Loot.Gold+res.Loot.Elixir > s.best.Loot.Gold+s.best.Loot.Elixir {
+			s.best, s.bestSeen = res, 1
+		}
+		if res.Bonus.Gold != 0 || res.Bonus.Elixir != 0 || res.Bonus.DarkElixir != 0 {
+			s.bonusSeen = true
+		}
 		if s.sameRead > 0 && res == s.prevRead {
 			s.sameRead++
 		} else {
@@ -204,6 +241,24 @@ func (s *resultSettle) observe(hash uint64, res game.BattleResult, now time.Time
 			Msg("battle result accepted: panel froze and reads zero (real no-loot result)")
 		return res, true
 	case s.reads >= resultSettleAttempts:
+		// Fallback: never discard a plausible read. An OCR read that never
+		// settled (e.g. star emblem unread at this geometry, gold read fine)
+		// previously banked nothing and counted a looted win as 0 stars.
+		// Accept the best plausible read seen; caller still cross-checks
+		// stars against the destruction rule.
+		// Fallback target is the live-measured failure: star emblem reads 0
+		// while loot reads fine and the bonus column never completes. A
+		// win that reports stars>=1 with an incomplete bonus is still
+		// animating, so it stays rejected (existing contract).
+		if s.bestValid && s.bestSeen >= 2 && !s.best.IsZero() && s.best.Stars == 0 {
+			s.log.Warn().
+				Int("reads", s.reads).
+				Bool("bonus_pending", bonusPending).
+				Int("stars", s.best.Stars).
+				Int("gold", s.best.Loot.Gold).
+				Msg("battle result never fully settled; accepting best plausible read as fallback")
+			return s.best, true
+		}
 		s.log.Error().
 			Int("reads", s.reads).
 			Bool("bonus_pending", bonusPending).

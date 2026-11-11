@@ -1962,6 +1962,20 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			return false
 		case <-ticker.C:
 			if time.Now().After(deadline) {
+				// Deadline is a safety bound, not a surrender: if the End
+				// Battle button is on screen the army is spent, so end the
+				// fight properly and let the caller read the result. Only
+				// restart when there is no button to tap (genuinely stuck).
+				screen, err := e.client.CaptureToMat()
+				if err == nil && !screen.Empty() {
+					visible := e.endButtonVisible(screen, sCfg)
+					screen.Close()
+					if visible {
+						e.logger.Warn().Msg("battle end wait reached deadline; ending battle via End Battle button instead of restarting")
+						e.EndBattle()
+						return true
+					}
+				}
 				e.logger.Warn().Msg("battle end wait reached deadline; aborting")
 				return false
 			}

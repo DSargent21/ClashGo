@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **One-Command Terminal Installer** (`tools/install.sh`, `Makefile`, `.github/workflows/release.yml`, `tests/test_install_sh.sh`):
+  - `curl -fsSL …/tools/install.sh | bash` installs the GUI into `/Applications` (or `~/Applications` when not writable), mounts the DMG, swaps bundles with rollback, and strips quarantine — no sudo.
+  - `--cli` installs a self-contained `bot_cli` (OpenCV dylibs bundled into `lib/`) into `~/.local/share/clashgo` plus a `~/.local/bin/bot_cli` launcher that pins `CLASHGO_ASSETS_DIR`; user-edited `assets/` survive updates unless `--force` is passed.
+  - Releases now publish `ClashGO-CLI-v<version>-macOS.tar.gz` and `SHA256SUMS`; the installer verifies every download and refuses unlisted/tampered artifacts (or releases predating the checksum file).
+  - `tools/bundle_dylibs.sh` gained a flat-directory mode so the CLI archive is portable, and `make test-install` covers both install modes, checksum failure and missing-checksum refusal.
+- **Homebrew Cask** (`Casks/clashgo.rb`, `tools/gen_cask.sh`, `tools/sync_homebrew_tap.sh`, `docs/HOMEBREW.md`):
+  - `brew install --cask dsargent21/tap/clashgo` / `brew upgrade --cask clashgo`, with the DMG's SHA-256 pinned and `livecheck` reading the release's `latest.json`.
+  - `make release` renders and uploads `clashgo.rb`; the release workflow syncs it to the tap only when `HOMEBREW_TAP_TOKEN` is configured, so releases do not depend on Homebrew setup.
+  - `make test-brew` validates the checked-in cask (Ruby syntax, version matches `wails.json`, 64-hex checksum) and the renderer's version/checksum/livecheck output.
+
 ## [1.0.0] - 2026-10-19
 
 ### Official 1.0.0 Release — Out of Beta 🎉

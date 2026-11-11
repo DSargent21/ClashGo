@@ -274,3 +274,29 @@ func TestSlotManager_FallbackSiegeSlot(t *testing.T) {
 		t.Fatalf("GetSlot(clan castle) = %v, want slot at x=300", slotCC)
 	}
 }
+
+// TestSiegeDropVerdict pins the rule that decides whether a refused siege tap
+// may be retried elsewhere. Only a readable count that still shows the machine
+// proves nothing was placed; an unreadable card must be left alone, because a
+// second tap on a machine that did drop destroys it.
+func TestSiegeDropVerdict(t *testing.T) {
+	cases := []struct {
+		name    string
+		trusted bool
+		count   int
+		ratioOK bool
+		ratio   float64
+		want    siegeVerdict
+	}{
+		{"count label gone", true, 0, true, 0.9, siegeCommitted},
+		{"card dimmed", false, 0, true, 0.2, siegeCommitted},
+		{"count still shows the machine", true, 1, true, 0.9, siegeStillOnCard},
+		{"bright but unreadable", false, 0, true, 0.9, siegeUnknown},
+		{"capture failed", false, 0, false, 0, siegeUnknown},
+	}
+	for _, c := range cases {
+		if got := siegeDropVerdict(c.trusted, c.count, c.ratioOK, c.ratio); got != c.want {
+			t.Errorf("%s: verdict = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

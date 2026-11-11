@@ -2,6 +2,7 @@ package attack
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -81,11 +82,30 @@ func armyReadinessGap(plans []PhasePlan, counts map[int]int, sm *SlotManager) []
 			}
 		}
 	}
-	// If EVERY unit reports zero at deploy start (for a multi-unit army), the digit reader's badge band
-	// is blind/misaligned on this resolution (live 1024x768: cards carry full
-	// armies but badges sit below bar_y instead of above it). A total blackout
-	// is detector blindness, not positive evidence of an empty army; do not block.
+	// A total blackout is detector blindness, not positive evidence of an empty
+	// army: if EVERY unit reports zero at deploy start (for a multi-unit army),
+	// the digit reader's badge band is blind/misaligned on this resolution (live
+	// 1024x768: cards carry full armies but badges sit below bar_y instead of
+	// above it). Do not block.
 	if totalUnits > 1 && len(gap) >= totalUnits {
+		return nil
+	}
+	// The same reasoning when the reader resolved only a MINORITY of the bar. A
+	// zero is evidence only on a bar the reader could actually see: live
+	// 2026-11-10 the 1024x768 troop bar is drawn on a slope, the reader resolved
+	// 2 of 7 cards and reported the other five full cards (6, level, x5, x8) as
+	// spent, which blocked every single attack. Fewer resolved cards than zeroed
+	// ones means the verdicts describe the reader, not the army.
+	resolved := 0
+	for _, n := range counts {
+		if n > 0 {
+			resolved++
+		}
+	}
+	// Scoped to a full bar: a handful of cards cannot show whether the reader
+	// lost the bar, and the unit tests (and any small army) must keep blocking on
+	// a single proven-empty card.
+	if len(counts) >= 4 && resolved*2 < len(counts) {
 		return nil
 	}
 	return gap
@@ -97,6 +117,19 @@ func armyReadinessGap(plans []PhasePlan, counts map[int]int, sm *SlotManager) []
 // strategyPath is the on-disk YAML path. The orchestrator uses it to find
 // the matching formula.json (loaded as <stem>_formula.json next to the
 // YAML). Pass "" to skip formula lookup entirely.
+// ErrStrategyArmyMissing marks the deploy refusal that happens when a
+// strategy's core troops are not on the troop bar at all. It is a sentinel so
+// callers can tell "this army cannot run this strategy" (idle, train, or switch
+// strategy) apart from an ordinary mid-deploy failure: searching again
+// immediately just re-enters a battle and refuses again.
+var ErrStrategyArmyMissing = errors.New("strategy army missing from the troop bar")
+
+// IsStrategyArmyMissing reports whether err is the strategy-army refusal, so
+// callers in other packages need only the attack import.
+func IsStrategyArmyMissing(err error) bool {
+	return errors.Is(err, ErrStrategyArmyMissing)
+}
+
 func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat, strategyPath string) (int, error) {
 	// User Stop observed before any capture or tap.
 	if err := e.runtimeContext().Err(); err != nil {
@@ -141,10 +174,15 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		e.logger.Info().Str("edge", targetEdge).Msg("random edge selected")
 	}
 
-	// 1. Detect red zone (deployment boundary)
-	redDetector := NewRedLineDetector(e.logger)
+	// 1. The deploy ground is AUTHORED, not detected. This path no longer
+	//    measures the red no-deploy boundary: it is a world-space ring the game
+	//    only draws while a placement is being attempted, and every model of it
+	//    has been wrong in both directions on live frames. The battlefield is at a
+	//    verified max zoom-out (bot.ensureBattleZoom) before this runs, so ground
+	//    an operator pinned stays valid for any base, and a strategy formula
+	//    carries its own authored points.
 	uiCutoff := UICutoff(h) // the troop bar starts here (see deploy_line.go)
-	redZone := redDetector.Detect(screen, uiCutoff)
+	redZone := RedZone{}    // unknown by design: nothing in this path measures it
 
 	// 2. Load precision config FIRST so we can detect user-pinned coords
 	//    before computing the deploy line. "Pinned" = user-authored non-zero
@@ -261,13 +299,6 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// missing JSON keys) which would otherwise look "pinned".
 	userPinnedForTarget := hasPinnedForTarget(pCfg, targetEdge)
 
-	// 2b. If we have neither a red zone nor a pin, don't guess. The original
-	// fall-through path deployed at x=60 regardless of base orientation —
-	// that's how the legacy "scatters across the corner" symptom started.
-	if !redZone.Valid && !userPinnedForTarget {
-		return 0, fmt.Errorf("no red zone detected AND no user-pinned sides/edges in precision_config.json for target=%q — re-pin via `cmd/pick_coords -mode=strict` or capture a battle shot", targetEdge)
-	}
-
 	// 2c. If user pinned the chosen target, build the deploy line directly
 	// from those pinned coords using a real linspace. We bypass textual
 	// side mapping (BottomLeft → "bottom" / "left") to preserve the path
@@ -302,6 +333,15 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	formulaPtr, hasFormula, ferr := formula.Load(strategyPath)
 	if ferr != nil {
 		e.logger.Warn().Err(ferr).Str("strategy_path", strategyPath).Msg("formula found but failed to parse")
+	}
+
+	// 2b. Ground is named before anything is tapped: the operator's pin for this
+	// target, or the strategy's formula. With the boundary detection gone there
+	// is no third option, and the alternative to refusing here is deploying at a
+	// corner nobody chose - which is how the legacy "scatters across the corner"
+	// symptom started.
+	if !userPinnedForTarget && !hasFormula {
+		return 0, fmt.Errorf("no deploy ground for target=%q: precision_config.json has no pin for it and the strategy carries no formula — re-pin via `cmd/pick_coords -mode=strict` or author one with `cmd/design_attack`", targetEdge)
 	}
 	if hasFormula {
 		// Resolve this corner's units (override, else mirror). Kept in one
@@ -370,44 +410,16 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 				Msg("formula points projected outside the deployable band (behind the top HUD or under the troop bar) and were clamped into it; re-author them at the target geometry")
 		}
 
-		// …and push out of the red line. The band clamp answers a frame-edge
-		// question; the red line is a shape in the middle of the frame, and a
-		// tap inside it is refused by the game ("You cannot deploy troops on
-		// the Red area!") while the bot's tap call still reports success. A
-		// live 720p run with a pinned bottom-left line showed that banner for
-		// the whole deploy phase: every tap landed, none deployed.
-		if redZone.Valid && len(redZone.Polygon) >= 3 {
-			cx, cy := redZone.Centre()
-			// One village tile per step. CoC's village is ~44 tiles across the
-			// reference width, so a tile is ~19.5 reference px; the point walks
-			// outward in whole tiles (up to 24 of them) until it clears the red
-			// line, which keeps the moved tap on the same axis the user aimed
-			// along instead of nudging it a few pixels inside the same zone.
-			step := int(e.cal.Length(19.5))
-			if moved := formulaPtr.PushOutOfZone(redZone.Inside, cx, cy, step, 24); moved > 0 {
-				e.logger.Warn().
-					Int("points_moved", moved).
-					Int("zone_centre_x", cx).
-					Int("zone_centre_y", cy).
-					Int("step_px", step).
-					Msg("formula points projected INSIDE the red deployment line (the game refuses taps there); pushed radially outward to the nearest free step — re-author them outside the red line at the target geometry")
-			}
-		} else if !redZone.Valid {
-			e.logger.Warn().Msg("no plausible red deployment boundary in this frame; formula points are used as authored (the red-line check is skipped rather than run against terrain)")
-		}
-
-		// The push walks radially in whole tiles and knows nothing about the
-		// deployable band, so it can leave a point above the top resource HUD or
-		// under the troop bar — a tap that hits chrome, which is exactly what the
-		// band clamp above exists to prevent. Re-clamp and say so: a point that
-		// had to be pulled back means the red-line push and the band disagree,
-		// and the reader needs to know the tap is not where the push put it.
+		// Projection can still leave a point above the top resource HUD or under
+		// the troop bar - a tap that hits chrome, which is exactly what the band
+		// clamp above exists to prevent. Re-clamp and say so: the durable fix is
+		// re-authoring the point, not moving the tap.
 		if reclamped := formulaPtr.ClampY(yTopMin, uiCutoff); reclamped > 0 {
 			e.logger.Warn().
 				Int("points_reclamped", reclamped).
 				Int("band_top", yTopMin).
 				Int("band_bottom", uiCutoff).
-				Msg("red-line push moved formula points out of the deployable band (behind the top HUD or under the troop bar); pulled them back into it")
+				Msg("projection put formula points outside the deployable band (behind the top HUD or under the troop bar); pulled them back into it — re-author them at the target geometry")
 		}
 
 		// Deliberately NOT translated into a guessed "safe" box when the red
@@ -430,31 +442,15 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			Msg("formula.json loaded; per-unit explicit coordinates will override edge-based deploy")
 	}
 
-	// 3. Calculate dynamic deployment line. We always compute it for the
-	//    use-case where target is NOT user-pinned (the live red-zone path)
-	//    OR for when red zone is valid even if pinned (so the dynamic line
-	//    can serve as the deployLine passed to Sweep / SpellLine).
-	deployCalc := NewDeployLineCalculator(e.logger)
-	deployLine := deployCalc.Calculate(redZone, w, h, uiCutoff, cornerToSide(targetEdge), linePoints)
+	// 3. Deploy ground: the operator's pin for this target, or the strategy
+	//    formula. There is no dynamic red-zone line any more - nothing in this
+	//    path measures the boundary (see step 1), so nothing here can guess at
+	//    one. The pin is mirrored into the unpinned corners first, so Duke's
+	//    adjacent-corner pick lands on the ground the operator actually chose.
+	applyCornerOverride(&pCfg, targetEdge)
 
-	// 3a. Apply corner override. When the user did NOT pin the target,
-	//    all four corners get the dynamic red-zone line (original Duke-
-	//    coherence fix preserved). When the user DID pin the target,
-	//    ONLY the unpinned adjacent corners get overridden — so Duke's
-	//    random adjacent-corner pick still lands on the actual chosen
-	//    side, while the user's pinned target stays intact.
-	//
-	//    Sides (top/right/bottom/left) gets mirrored in both cases so
-	//    SpotsForSide / future side-aware readers see the dynamic line.
-	applyCornerOverride(&pCfg, deployLine, redZone.Valid, targetEdge)
-
-	// 3b. Once the override is decided, the active deployLine is what
-	//     Sweep and SpellLine read. If the user pinned (and forces — or
-	//     chose — a real line), use it as the active deployLine so
-	//     every consumer (troops, spells, sweep) hits the pin; else the
-	//     dynamic line stands. This eliminates the "troops obey pin but
-	//     spells/sweep scatter off-pin" partial-inconsistency bug.
-	if userPinnedForTarget && len(pinnedLine.Points) >= 2 {
+	var deployLine DeployLine
+	if userPinnedForTarget {
 		deployLine = pinnedLine
 	}
 
@@ -490,12 +486,19 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			}
 			deployLine = fl
 		}
-	} else if userPinnedForTarget && hasFormula {
+	} else if userPinnedForTarget && hasFormula && len(deployLine.Points) >= 2 {
 		e.logger.Info().
 			Str("side", targetEdge).
 			Interface("pinned_start", deployLine.Points[0]).
 			Interface("pinned_end", deployLine.Points[len(deployLine.Points)-1]).
 			Msg("using the USER-PINNED deploy line for every troop, hero and sweep tap (strategy formula not substituted for this side)")
+	}
+
+	// No ground, no attack. With detection gone there is nothing left to fall back
+	// to, so a run that cannot name the ground it will tap must refuse rather than
+	// scatter troops at a corner.
+	if len(deployLine.Points) < 2 {
+		return 0, fmt.Errorf("no deploy ground for target=%q: the pin produced no line and the strategy formula named none — re-pin via `cmd/pick_coords -mode=strict` or author one with `cmd/design_attack`", targetEdge)
 	}
 
 	// The pinned line is used exactly as drawn. It is NOT translated into a
@@ -673,6 +676,20 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 			return 0, fmt.Errorf(
 				"army not full (training.full_army_before_attack): %s measurably empty on the troop bar; train before attacking",
 				strings.Join(gap, ", "))
+		}
+		// A strategy whose CORE TROOPS are not on the bar cannot be executed:
+		// planUnit drops a card it cannot find, so the attack would proceed with
+		// whichever phases resolved and spend the army on a partial deploy. Live
+		// 2026-11-10: auto_edrag_rush ran against an archer/goblin farm army,
+		// Balloon and Electro Dragon were dropped, the leftovers deployed, the
+		// battle stalled at 42% and finished a defeat while the report claimed
+		// "SUCCESS (100% Deployed)". No gate ever stopped it — the readiness
+		// check above skips units with no slot by design. Refuse before the first
+		// tap so the army is still intact and the operator sees why.
+		if missing := planner.MissingCoreUnits(s); len(missing) > 0 {
+			return 0, fmt.Errorf(
+				"strategy army is not on the troop bar: %s missing; arm the saved recipe this strategy expects, or run the strategy that matches the army you have: %w",
+				strings.Join(missing, ", "), ErrStrategyArmyMissing)
 		}
 	}
 
@@ -1056,7 +1073,11 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		if reconcileEdge == "" {
 			reconcileEdge = targetEdge
 		}
-		if extra, confirmed := spellDeployer.VerifyAndReconcile(se.unit, se.slot, reconcileEdge, se.pattern, 4); extra > 0 {
+		// Round budget = the spell top-up ceiling, not 4. A 4-round budget drains
+		// only 5 casts of an 11-spell ice card (live 2026-11-11) and then reports
+		// "some spells may remain undeployed" while the rest of the card sat on the
+		// bar. The ceiling is the hard bound; the visual-empty check is the stop.
+		if extra, confirmed := spellDeployer.VerifyAndReconcile(se.unit, se.slot, reconcileEdge, se.pattern, spellTopUpCeiling); extra > 0 {
 			e.logger.Info().
 				Str("unit", se.unit.Name).
 				Int("extra_fired", extra).
@@ -1420,20 +1441,15 @@ func applyCornerUnits(f *formula.Formula, corner string) bool {
 	return false
 }
 
-func applyCornerOverride(pCfg *PrecisionConfig, deployLine DeployLine, redZoneValid bool, targetEdge string) {
-	if !redZoneValid || len(deployLine.Points) < 2 {
-		return
-	}
-	if pCfg.Edges == nil {
-		pCfg.Edges = make(map[string]ManualEdge)
-	}
-	if pCfg.Sides == nil {
-		pCfg.Sides = make(map[string]ManualEdge)
-	}
-
-	// Resolve the user's pin (if any) for the chosen target. Used as
-	// the override source so Duke's adjacent-corner pick lands on the
-	// user's pinned line, not the dynamic red-zone default.
+// applyCornerOverride mirrors the operator's pin for the chosen target into the
+// corners and side names that carry no pin of their own.
+//
+// It used to also write a dynamic red-zone line over every unpinned corner. That
+// line is gone, together with the boundary detection it came from, and with it the
+// run that could attack on ground nobody chose. Only a human-authored pin is
+// propagated here; with no pin for the target this is a no-op, and the caller
+// refuses the attack rather than inventing ground.
+func applyCornerOverride(pCfg *PrecisionConfig, targetEdge string) {
 	var pinnedOverride ManualEdge
 	hasPinned := false
 	if e, ok := pCfg.Edges[targetEdge]; ok && !isZeroManualEdge(e) {
@@ -1445,41 +1461,31 @@ func applyCornerOverride(pCfg *PrecisionConfig, deployLine DeployLine, redZoneVa
 			hasPinned = true
 		}
 	}
-
-	targets := []string{"TopLeft", "TopRight", "BottomLeft", "BottomRight"}
-	sideNames := []string{"top", "right", "bottom", "left"}
-
-	if hasPinned {
-		// Pinned target path: leave target alone, mirror the user's pin
-		// into the 3 unpinned corners + all 4 side names. This is the
-		// fix for "attacks in corner on 2 sides" — Duke's random pick
-		// can no longer scatter to garbage default coords.
-		for _, c := range targets {
-			if c == targetEdge {
-				continue
-			}
-			if e, exists := pCfg.Edges[c]; !exists || isZeroManualEdge(e) {
-				pCfg.Edges[c] = pinnedOverride
-			}
-		}
-		for _, s := range sideNames {
-			if sEdge, exists := pCfg.Sides[s]; !exists || isZeroManualEdge(sEdge) {
-				pCfg.Sides[s] = pinnedOverride
-			}
-		}
+	if !hasPinned {
 		return
 	}
 
-	// Unpinned path: clobber all 4 corners + sides with the dynamic
-	// red-zone deploy line. Preserves the original behavior so a
-	// fresh-config run still finds SOMETHING to attack on.
-	lineStart := deployLine.Points[0]
-	lineEnd := deployLine.Points[len(deployLine.Points)-1]
-	dyn := ManualEdge{P1: lineStart, P2: lineEnd}
-	for _, c := range targets {
-		pCfg.Edges[c] = dyn
+	if pCfg.Edges == nil {
+		pCfg.Edges = make(map[string]ManualEdge)
 	}
-	for _, s := range sideNames {
-		pCfg.Sides[s] = dyn
+	if pCfg.Sides == nil {
+		pCfg.Sides = make(map[string]ManualEdge)
+	}
+
+	// The pinned target is left alone; the three other corners and all four side
+	// names inherit it, so Duke's random adjacent-corner pick can no longer
+	// scatter to default coordinates nobody authored.
+	for _, c := range []string{"TopLeft", "TopRight", "BottomLeft", "BottomRight"} {
+		if c == targetEdge {
+			continue
+		}
+		if e, exists := pCfg.Edges[c]; !exists || isZeroManualEdge(e) {
+			pCfg.Edges[c] = pinnedOverride
+		}
+	}
+	for _, s := range []string{"top", "right", "bottom", "left"} {
+		if sEdge, exists := pCfg.Sides[s]; !exists || isZeroManualEdge(sEdge) {
+			pCfg.Sides[s] = pinnedOverride
+		}
 	}
 }

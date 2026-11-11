@@ -162,6 +162,22 @@ func (t *TapExecutor) TapField(x, y int, stdDev float64) error {
 	return err
 }
 
+// TapCastField fires ONE spell cast, moved clear of the bottom-left UI overlay
+// (End Battle / Boost) but deliberately NOT clear of a siege machine's tile.
+//
+// Known dangerous ground, live 2026-11-11: the pinned BottomLeft Line A ends at
+// (418,542), which is inside the End Battle button region (x<461, y>529), so a
+// rage cast on the end of that line was a tap on the End Battle button. PlaceSiege
+// clearance is wrong here: a spell landing on the machine's own tile still hits
+// the base, unlike a placement tap, and moving the cast would take it off the
+// user's line for no benefit.
+func (t *TapExecutor) TapCastField(x, y int, stdDev float64) error {
+	pt, _ := t.avoidUIButtons(image.Pt(x, y))
+	err := t.client.TapFast(pt.X, pt.Y, stdDev)
+	t.noteInput(err, "spell cast")
+	return err
+}
+
 // RestoreSelection re-selects the troop/spell card the deploy most recently
 // chose. Used after a hero-ability tap so the ability's card tap cannot leave
 // a hero selected while the next phase aims field taps at troop ground.
@@ -243,8 +259,8 @@ const (
 	// hero phase already touched). 400ms covers the first-selection arm; the
 	// wave costs 250ms per hero more than before and drops the rescue path
 	// entirely when it works.
-	heroArmSettleMs   = 400
-	heroDropSettleMs  = 300
+	heroArmSettleMs  = 400
+	heroDropSettleMs = 300
 )
 
 // maxHeroRearms is how many REPLACEMENT arm taps a hero may take when the game

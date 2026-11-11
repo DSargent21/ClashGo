@@ -65,6 +65,28 @@ type Bot struct {
 	chestDismissInFlight    atomic.Bool
 	splashDismissInFlight   atomic.Bool
 	connLostDismissInFlight atomic.Bool
+	unknownHealInFlight     atomic.Bool
+	unknownHealAttempts     atomic.Int32
+	unknownHealLast         time.Time
+	// Bounded recovery for a village whose bottom bar is covered (clan chat
+	// panel open hides the Attack button). See the hudHeal block in processFrame.
+	hudHealMisses atomic.Int32
+	hudHealTried  atomic.Int32
+	hudHealLast   time.Time
+	// armyEmpty latches the "Train an army before attacking!" panel seen by
+	// pressPanelAction, so the attack cycle idles instead of restarting.
+	armyEmpty   atomic.Bool
+	armyEmptyAt atomic.Int64 // UnixNano of the last empty-army latch
+	// armyTrainAt is the UnixNano of the last saved-recipe USE press, so the
+	// empty-army recovery queues once per cooldown instead of once per poll.
+	armyTrainAt atomic.Int64
+	// strategyArmyMissing latches the deploy refusal that means "this strategy's
+	// core troops are not on the bar". Without it the attack cycle re-enters a
+	// battle, refuses again and returns home roughly every 50s (observed live
+	// 2026-11-10: 3 aborted battles in 2m40s, zero loot). See clickSequence.
+	strategyArmyMissing   atomic.Bool
+	strategyArmyMissingAt atomic.Int64 // UnixNano of the last strategy-army latch
+	confirmExitFails      int
 	// splashDismissAttempts counts the evidence-backed dismissal taps spent on
 	// the boot splash currently on screen, and splashDismissGaveUp is set when
 	// that budget runs out. Both are per-splash-episode state: they are cleared
@@ -445,6 +467,14 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	// Config override takes precedence, then strategy YAML army_slot, fallback 1.
 	b.armySlot = resolveArmySlot(cfg)
 	b.logger.Info().Int("army_slot", b.armySlot).Str("strategy", cfg.Attack.StrategyFile).Msg("resolved strategy army slot")
+	// Warn when the config override disagrees with the strategy YAML:
+	// it silently fights with the wrong saved recipe (valk_spam declares
+	// 4, a default config of 1 armed EDrag's slot).
+	if strat, err := strategy.ParseYAML(resolveStrategyPath(cfg.Attack.StrategyFile)); err == nil {
+		if yamlSlot := strat.SelectedArmySlot(); yamlSlot != b.armySlot {
+			b.logger.Warn().Int("config_slot", b.armySlot).Int("yaml_slot", yamlSlot).Msg("army slot: config override disagrees with strategy YAML; using config value — change it in Config if wrong")
+		}
+	}
 
 	// Close `done` the moment the bot's runtime context is cancelled
 	// (Stop click in the GUI, or the attack-cap graceful shutdown after
@@ -700,6 +730,7 @@ func (b *Bot) classifyFrame(screen gocv.Mat) (game.GameState, int) {
 func (b *Bot) recordActivity() {
 	b.lastAction = time.Now()
 	b.lastSoftRecovery = time.Time{}
+	b.unknownHealAttempts.Store(0)
 }
 
 // maxSplashDismissAttempts bounds how many evidence-backed taps go out for ONE
@@ -822,6 +853,8 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 	if state == game.StateBattle ||
 		state == game.StateSearchMap ||
 		state == game.StateLoading {
+		// A battle frame means troops exist, so any empty-army latch is stale.
+		b.armyEmpty.Store(false)
 		attackPhaseStuck := time.Since(b.lastAction)
 		const attackPhaseTimeout = 30 * time.Second
 		if attackPhaseStuck > attackPhaseTimeout {
@@ -848,8 +881,14 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 			Dur("stuck_time", stuckTime).
 			Msg("bot idle/unresponsive > 16s; attempting fast in-place soft recovery before hard restart")
 		b.lastSoftRecovery = time.Now()
-		_ = b.client.Back()
-		time.Sleep(300 * time.Millisecond)
+		// Back in the main village summons the quit-confirm dialog, whose
+		// dismissal can flicker against the classifier — a soft recovery
+		// that creates the overlay it then cannot clear loops forever.
+		// In the village, tap the neutral backdrop only.
+		if state != game.StateMainVillage && state != game.StateConfirmExit {
+			_ = b.client.Back()
+			time.Sleep(300 * time.Millisecond)
+		}
 		k := b.cal.DisplayScale()
 		_ = b.client.Tap(int(99*k), int(300*k))
 		time.Sleep(300 * time.Millisecond)
@@ -863,8 +902,30 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 			Time("last_action", b.lastAction).
 			Dur("stuck_time", stuckTime).
 			Dur("timeout", timeout).
-			Msg("bot appears stuck without meaningful action, triggering emergency restart...")
+			Msg("bot appears stuck without meaningful action, recovering...")
 
+		// A dropped ADB pipe classifies every frame as Unknown, so this
+		// watchdog used to restart the whole game for a transport fault
+		// (observed live: "persistent adb shell pipe closed" then 61s of
+		// Unknown then a game restart). Redial first and only restart the
+		// game when the transport is healthy and the screen is still
+		// unrecognised.
+		if err := b.client.Reconnect(); err == nil {
+			if screen, capErr := b.client.CaptureToMat(); capErr == nil && !screen.Empty() {
+				after, _ := b.classifier.ClassifyState(screen)
+				screen.Close()
+				if after != game.StateUnknown {
+					b.logger.Info().Str("state", after.String()).Msg("adb reconnect restored capture; skipping game restart")
+					b.recordActivity()
+					b.lastSoftRecovery = time.Time{}
+					return
+				}
+			}
+		} else {
+			b.logger.Warn().Err(err).Msg("adb reconnect failed; the device link needs attention")
+		}
+
+		b.logger.Warn().Msg("transport healthy but the screen stays unclassified; restarting game")
 		b.restartGame()
 		b.lastSequenceStart = time.Now()
 		b.lastSoftRecovery = time.Time{}
@@ -1190,9 +1251,19 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 				// it only while it still reads as the orange Cancel button, never on
 				// the green Okay face beside it (which quits the game).
 				if !game.DismissOverlay(b.client, b.cal, b.classifier, game.StateConfirmExit, b.templates, b.logger) {
-					b.logger.Warn().Msg("quit-confirm dialog not dismissed from verified evidence; will retry on next detection")
+					// ponytail: verified-evidence gate fails when the classifier
+					// flickers MainVillage<->ConfirmExit between frames; the Cancel
+					// face sits at a static anchor, and a miss is just a backdrop tap.
+					// Fallback: tap it directly after two gated failures.
+					if b.confirmExitFails++; b.confirmExitFails >= 2 {
+						b.confirmExitFails = 0
+						cx, cy := b.cal.AnchorPoint(279, 429, game.AnchorEdge)
+						b.logger.Warn().Int("x", cx).Int("y", cy).Msg("quit-confirm Cancel fallback tap (unverified)")
+						_ = b.client.TapRandomized(cx, cy)
+					}
 					return
 				}
+				b.confirmExitFails = 0
 				b.logger.Info().Msg("quit-confirm Cancel tapped")
 			}()
 		}
@@ -1216,6 +1287,33 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	// watchdog rather than mask the hang as progress.
 	if state == game.StateUpdatePrompt {
 		b.dismissUpdatePrompt()
+		return
+	}
+
+	// Unknown state: classifier matched nothing. Previously no handler ran
+	// here, so the bot sat on e.g. an unlisted dialog until the 35s watchdog
+	// force-restarted the game (11x in one live session, all state=Unknown).
+	// Self-heal first: rate-limited Back + backdrop tap clears most modals
+	// without a cold restart; the watchdog still owns the final escalation.
+	if state == game.StateUnknown {
+		if b.unknownHealInFlight.CompareAndSwap(false, true) && time.Since(b.unknownHealLast) > 4*time.Second {
+			attempt := int(b.unknownHealAttempts.Add(1))
+			b.unknownHealLast = time.Now()
+			b.logger.Warn().Int("attempt", attempt).Msg("unclassified screen; attempting self-heal (back + backdrop tap)")
+			go func() {
+				defer b.unknownHealInFlight.Store(false)
+				_ = b.client.Back()
+				time.Sleep(300 * time.Millisecond)
+				// Backdrop tap moved off the left edge: (99,300) ref lands on the
+				// LEFT HUD/chat column, so the "clear the modal" tap was itself
+				// opening the clan chat panel, which then hid the Attack button
+				// and put the bot in the no-button loop. Centre-right is empty
+				// village on every layout and clears the same modals.
+				k := b.cal.DisplayScale()
+				_ = b.client.Tap(int(520*k), int(300*k))
+				b.logger.Info().Msg("unknown self-heal input sent; waiting for classifier to re-match")
+			}()
+		}
 		return
 	}
 
@@ -1247,6 +1345,31 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 
 	if b.cfg.Attack.MaxAttackPerSession > 0 && b.attackCount.Load() >= int32(b.cfg.Attack.MaxAttackPerSession) {
 		return
+	}
+
+	// Chat/HUD panel covering the bottom bar. An open clan chat hides the
+	// Attack button while the village still classifies as MainVillage, so the
+	// bot sat idle until the 35s watchdog force-restarted the game (observed
+	// live: 12 restarts on one open chat panel). Back closes that panel; on a
+	// village with no panel Back opens the quit dialog, whose Cancel the
+	// ConfirmExit handler already taps — both outcomes recover. Bounded so a
+	// village that is merely waiting on troops is not fought over: at most 3
+	// presses per episode, 15s apart, and any sighting of the Attack button
+	// resets the budget.
+	if gc.State == game.StateMainVillage || gc.State == game.StateUnknown {
+		if b.findAttackButton(screen, 0.45) {
+			b.hudHealMisses.Store(0)
+			b.hudHealTried.Store(0)
+		} else if b.hudHealMisses.Add(1) >= 8 && b.hudHealTried.Load() < 3 && time.Since(b.hudHealLast) > 15*time.Second {
+			b.hudHealLast = time.Now()
+			b.hudHealMisses.Store(0)
+			n := b.hudHealTried.Add(1)
+			b.logger.Warn().Int("attempt", int(n)).Msg("no Attack button on a classified village; pressing Back to close a chat/HUD panel covering it")
+			go func() { _ = b.client.Back() }()
+			b.recordActivity()
+		}
+	} else {
+		b.hudHealMisses.Store(0)
 	}
 
 	if b.zoomedOut.Load() && (gc.State == game.StateMainVillage || gc.State == game.StateUnknown || gc.State == game.StateObstacleDialog) && b.findAttackButton(screen, 0.45) {
@@ -1373,6 +1496,188 @@ var (
 	attackButtonWarmLower = gocv.NewScalar(0, 40, 150, 0)
 	attackButtonWarmUpper = gocv.NewScalar(160, 230, 255, 0)
 )
+
+// emptyArmyPanel reports whether the Start Attack dialog is the empty-army
+// variant ("Train an army before attacking!" + green EDIT ARMY button).
+// Probes the green button by normalized position, measured on a live
+// 1024x768 frame: bbox x 263..391, y 538..585 -> centre (0.32W, 0.73H).
+// A false positive only costs one 60s idle, never a tap.
+func emptyArmyPanel(screen gocv.Mat) bool {
+	if screen.Empty() || screen.Channels() != 3 {
+		return false
+	}
+	cx := int(0.319 * float64(screen.Cols()))
+	cy := int(0.730 * float64(screen.Rows()))
+	hw := int(0.045 * float64(screen.Cols()))
+	hh := int(0.025 * float64(screen.Rows()))
+	greens, total := 0, 0
+	for y := cy - hh; y <= cy+hh; y++ {
+		if y < 0 || y >= screen.Rows() {
+			continue
+		}
+		for x := cx - hw; x <= cx+hw; x++ {
+			if x < 0 || x >= screen.Cols() {
+				continue
+			}
+			b := int(screen.GetUCharAt(y, x*3))
+			g := int(screen.GetUCharAt(y, x*3+1))
+			r := int(screen.GetUCharAt(y, x*3+2))
+			total++
+			if g > 140 && r < 160 && b < 140 {
+				greens++
+			}
+		}
+	}
+	// Measured green fraction in this box on live frames: 0.29 on the
+	// empty-army panel, 0.13 on the CHOOSE ARMY sheet, 0.04 on the village.
+	// 20% sits between the true panel and the worst look-alike.
+	return total > 0 && greens*100/total >= 20
+}
+
+// awaitEmptyArmyPanel polls for the empty-army Start Attack dialog for up to d.
+// The panel animates in after the Attack tap, so one capture immediately after
+// the tap misses it (observed live: the check passed, then the live-frame Find
+// Match search latched onto the panel's EDIT ARMY button and walked into the
+// army sheet).
+func (b *Bot) awaitEmptyArmyPanel(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if screen, err := b.client.CaptureToMat(); err == nil {
+			empty := emptyArmyPanel(screen)
+			screen.Close()
+			if empty {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+}
+
+// Empty-army recovery.
+//
+// The Start Attack panel's "Train an army before attacking!" means the camps
+// hold nothing, and no attack step can fix that: this bot has no trainer of its
+// own (docs/ROADMAP.md). The old answer was a flat 60s sleep and the same error
+// every cycle, plus a game restart ten minutes in that could not conjure a
+// single troop — to a user watching the screen, a stuck bot.
+//
+// The game has the action: the army sheet's Saved Recipes tab re-queues a whole
+// army with one USE press (measured live 2026-11-11 at 1024x768: EDIT ARMY ->
+// Saved Recipes -> USE sets the recipe and refills the barracks). So the cycle
+// presses that once per cooldown, waits for the camps in short polls with
+// honest progress logs, and stops the run at the budget instead of idling on.
+// Only recipes on the sheet's first three rows can be pressed; a deeper recipe
+// is reported instead of guessed at.
+const (
+	armyWaitBudget    = 10 * time.Minute
+	armyPollInterval  = 15 * time.Second
+	armyTrainCooldown = 2 * time.Minute
+)
+
+// armyRecipeRowsVisible is how many saved-recipe rows fit on the sheet: the
+// list starts at y 0.333 and steps 0.222, so row 4 would land at y 0.999,
+// below the frame. Queueing a recipe the bot cannot see is not an option (it
+// would press whatever row is there instead), so only the visible rows are
+// supported and the rest are reported rather than guessed at.
+const armyRecipeRowsVisible = 3
+
+// armyRecipeRow is the USE button of a visible saved-recipe row.
+func armyRecipeRow(slot int) ([2]float64, bool) {
+	if slot < 1 || slot > armyRecipeRowsVisible {
+		return [2]float64{}, false
+	}
+	return [2]float64{0.875, 0.333 + 0.222*float64(slot-1)}, true
+}
+
+// armySheetPoints is the measured geometry of the queue action, as frame
+// fractions so it survives a display-scale change: the empty-army panel's EDIT
+// ARMY button, the sheet's Saved Recipes tab, the USE button of recipe `slot`,
+// and the sheet's close button. ok is false when that recipe is not on screen.
+func armySheetPoints(slot int) (editArmy, tab, use, closeBtn [2]float64, ok bool) {
+	editArmy = [2]float64{0.319, 0.730} // emptyArmyPanel's green button, same probe
+	tab = [2]float64{0.523, 0.229}
+	closeBtn = [2]float64{0.921, 0.219}
+	use, ok = armyRecipeRow(slot)
+	return
+}
+
+// queueSavedArmy drives EDIT ARMY -> Saved Recipes -> USE -> close, i.e. the
+// game's own "put my army back in the barracks". It reports only that the taps
+// were delivered; whether troops arrive is decided by the caller's wait.
+func (b *Bot) queueSavedArmy() bool {
+	w, h := b.cal.PhysicalW, b.cal.PhysicalH
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	editArmy, tab, use, closeBtn, visible := armySheetPoints(b.armySlot)
+	if !visible {
+		b.logger.Warn().
+			Int("army_slot", b.armySlot).
+			Int("visible_rows", armyRecipeRowsVisible).
+			Msg("empty army: this recipe sits below the saved-recipe list's visible rows; queue it in-game, the bot will not press a row it cannot see")
+		return false
+	}
+	tap := func(p [2]float64, d time.Duration) bool {
+		if err := b.client.TapRandomized(int(p[0]*float64(w)), int(p[1]*float64(h))); err != nil {
+			return false
+		}
+		b.client.JitteredSleep(d)
+		return true
+	}
+	if !tap(editArmy, 1600*time.Millisecond) {
+		return false
+	}
+	if !tap(tab, 1200*time.Millisecond) {
+		return false
+	}
+	if !tap(use, 1500*time.Millisecond) {
+		return false
+	}
+	_ = tap(closeBtn, 900*time.Millisecond)
+	return true
+}
+
+// recoverEmptyArmy is what every empty-army branch calls: queue the saved
+// recipe (rate-limited), wait in short polls while saying what it is waiting
+// for, and stop the run at the budget. It never restarts the game.
+func (b *Bot) recoverEmptyArmy() {
+	emptySince := time.Unix(0, b.armyEmptyAt.Load())
+	if time.Since(time.Unix(0, b.armyTrainAt.Load())) >= armyTrainCooldown {
+		b.armyTrainAt.Store(time.Now().UnixNano())
+		if b.queueSavedArmy() {
+			b.logger.Info().
+				Int("army_slot", b.armySlot).
+				Msg("empty army: queued the saved recipe (EDIT ARMY -> Saved Recipes -> USE); waiting for the camps")
+			sleepCtx(b.ctx, armyPollInterval)
+			return
+		}
+		b.logger.Warn().Msg("empty army: the saved-recipe sheet did not take the taps; waiting for the camps")
+	}
+	if waited := time.Since(emptySince); waited >= armyWaitBudget {
+		b.logger.Error().
+			Dur("waited", waited.Round(time.Second)).
+			Dur("budget", armyWaitBudget).
+			Msg("empty army: still no troops after queueing the saved recipe; stopping the run instead of idling forever (train in-game or fix the recipe, then start again)")
+		b.cancel()
+		return
+	}
+	b.logger.Info().
+		Dur("waited", time.Since(emptySince).Round(time.Second)).
+		Dur("budget", armyWaitBudget).
+		Msg("empty army: waiting for the camps to finish training")
+	sleepCtx(b.ctx, armyPollInterval)
+}
+
+// sleepCtx waits for d or until ctx is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
+}
 
 // findAttackButton reports whether the Attack! button is on screen.
 //
@@ -1699,6 +2004,18 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		b.logger.Warn().Msg("attack click sequence failed; clearing anything covering the village and retrying once before restarting the game")
 		b.clearSwallowedTap()
 		if !b.clickSequence() {
+			// An empty army is not a broken UI: restarting the game changes
+			// nothing and costs a splash + zoom-out, which is what 12 restarts
+			// per session looked like. clickSequence already idled; leave the
+			// game alone and let the next cycle re-check.
+			// An empty army is not a broken UI, so it never justifies a restart,
+			// however long it lasts: restarting cannot train troops, and it costs
+			// a splash plus the mandatory zoom-out. recoverEmptyArmy already
+			// queued the saved recipe and logged why nothing is happening.
+			if b.armyEmpty.Load() {
+				b.logger.Error().Msg("no troops trained; not restarting the game — the saved recipe is queued, the bot resumes as soon as troops exist")
+				return
+			}
 			b.logger.Warn().Msg("attack click sequence failed, restarting game to recover...")
 			b.restartGame()
 			return
@@ -1835,6 +2152,12 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				targetEdge = strat.TargetEdge
 			}
 			remainingUndeployed, deployErr = b.deployTroops(screen)
+			if attack.IsStrategyArmyMissing(deployErr) {
+				// Nothing was spent: the refusal happens before the first tap. Latch
+				// it so the next search idles instead of entering another battle.
+				b.strategyArmyMissing.Store(true)
+				b.strategyArmyMissingAt.Store(time.Now().UnixNano())
+			}
 			if deployErr != nil || remainingUndeployed > 0 {
 				failScreen, err := b.client.CaptureToMat()
 				if err == nil {
@@ -1991,7 +2314,8 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 		var parsedResult game.BattleResult
 		parsedOK := false
-		for settle, attempt := newResultSettle(b.logger), 0; attempt < resultSettleAttempts && !parsedOK; attempt++ {
+		settle := newResultSettle(b.logger)
+		for attempt := 0; attempt < resultSettleAttempts && !parsedOK; attempt++ {
 			resultScreen, err := b.client.CaptureToMat()
 			if err != nil {
 				b.logger.Warn().Err(err).Msg("battle result capture failed; retrying")
@@ -2041,6 +2365,27 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				Int("bonus_gold", res.Bonus.Gold).
 				Msg("battle result panel still animating; waiting for the loot and bonus counters to stop, retrying...")
 			time.Sleep(resultSettleAnimatingPause)
+		}
+
+		// A panel this build never finishes painting still carries the loot. Live
+		// 2026-11-10 (1024x768): the defeat panel read "You got 1 159 086 gold"
+		// with no league-bonus row at all, so bonusPending never cleared, the
+		// strict settle refused all 28 reads, and the attack was recorded as 0
+		// stars / 0 loot. Bank the best plausible read instead of discarding a
+		// measurement; the block below still cross-checks stars against the
+		// destruction rule, and plausibleBattleResult already rejected
+		// impossible values.
+		if !parsedOK {
+			if fb, ok := settle.Fallback(); ok {
+				parsedResult = fb
+				parsedOK = true
+				b.logger.Warn().
+					Int("reads", resultSettleAttempts).
+					Int("stars", fb.Stars).
+					Int("gold", fb.Loot.Gold).
+					Int("bonus_gold", fb.Bonus.Gold).
+					Msg("battle result panel never settled; banking the best plausible read instead of recording zero loot")
+			}
 		}
 
 		if parsedOK {
@@ -2270,6 +2615,18 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 }
 
 func (b *Bot) clickSequence() bool {
+	// Idle while the strategy army is known missing, instead of re-entering a
+	// battle to refuse again. Same shape as the empty-army panel above: one clear
+	// error, a bounded idle, and the latch expires so arming the right saved
+	// recipe resumes play without a restart.
+	if b.strategyArmyMissing.Load() {
+		if age := time.Since(time.Unix(0, b.strategyArmyMissingAt.Load())); age < 2*time.Minute {
+			b.logger.Error().Msg("strategy army is still not on the troop bar; idling 60s instead of entering another battle (arm the saved recipe this strategy expects, or choose the strategy that matches your army)")
+			sleepCtx(b.ctx, 60*time.Second)
+			return false
+		}
+		b.strategyArmyMissing.Store(false)
+	}
 
 	attackClicked := false
 	for attempt := 0; attempt < 3; attempt++ {
@@ -2289,6 +2646,23 @@ func (b *Bot) clickSequence() bool {
 	}
 	b.client.JitteredSleep(500 * time.Millisecond)
 
+	// Empty army: the Start Attack panel carries the green EDIT ARMY button
+	// and the "Train an army before attacking!" box instead of troops. There
+	// is no training implementation in this bot, so every search from here
+	// fails and the session restart-storms (observed live: 12 restarts on one
+	// empty army). Idle with one clear error instead — the loop resumes by
+	// itself once troops exist.
+	if b.awaitEmptyArmyPanel(3 * time.Second) {
+		// Latch here too, not only in pressPanelAction: this branch returns
+		// before the Find a Match search runs, and without the latch the
+		// escalation path saw armyEmpty=false and restarted the game anyway.
+		b.armyEmpty.Store(true)
+		b.armyEmptyAt.Store(time.Now().UnixNano())
+		b.logger.Error().Msg("no troops trained: the Start Attack panel says \"Train an army before attacking!\"; queueing the saved recipe and waiting for the camps")
+		b.recoverEmptyArmy()
+		return false
+	}
+
 	// Find a Match. Off the reference geometry the attack menu reflows, so the
 	// button is located in the live frame rather than predicted — and that also
 	// removes the reason the old blind tap failed live at 1280x720: it fired one
@@ -2301,6 +2675,10 @@ func (b *Bot) clickSequence() bool {
 		// the measured reason a tap aimed at the village can land somewhere else.
 		_, menuUp := b.pressPanelAction("Find Match", attackMenuActionRegion, 8*time.Second)
 		if !menuUp {
+			if b.armyEmpty.Load() {
+				b.recoverEmptyArmy()
+				return false
+			}
 			b.logger.Warn().Msg("attack menu did not open after tapping Attack; clearing whatever swallowed " +
 				"the tap and retrying once")
 			b.clearSwallowedTap()
@@ -2309,6 +2687,13 @@ func (b *Bot) clickSequence() bool {
 			_, menuUp = b.pressPanelAction("Find Match", attackMenuActionRegion, 8*time.Second)
 		}
 		if !menuUp {
+			// The retry path lands here with the empty-army panel up (its EDIT
+			// ARMY button is what the Find a Match search keeps finding), so
+			// idle instead of escalating to a game restart.
+			if b.armyEmpty.Load() {
+				b.recoverEmptyArmy()
+				return false
+			}
 			b.logger.Warn().Msg("could not locate the attack menu's Find a Match button in the live frame")
 			if screen, err := b.client.CaptureToMat(); err == nil {
 				b.DumpDiagnostics("click_find_match_failed", screen, nil)
@@ -2467,6 +2852,19 @@ func (b *Bot) pressPanelAction(step string, region [4]float64, timeout time.Dura
 	for {
 		screen, err := b.client.CaptureToMat()
 		if err == nil && !screen.Empty() {
+			// Empty army: the Start Attack panel replaces its troop rows with
+			// "Train an army before attacking!" and a green EDIT ARMY button,
+			// which the Find a Match search would otherwise take for the
+			// green Find Match button (live 1024x768: EDIT ARMY centre
+			// (326,560) sits inside attackMenuActionRegion) and walk into the
+			// army sheet. Refuse before that tap.
+			if step == "Find Match" && emptyArmyPanel(screen) {
+				screen.Close()
+				b.armyEmpty.Store(true)
+				b.armyEmptyAt.Store(time.Now().UnixNano())
+				b.logger.Error().Msg("no troops trained: the Start Attack panel shows \"Train an army before attacking!\"; not tapping its EDIT ARMY button as Find Match")
+				return vision.ActionButton{}, false
+			}
 			win := vision.FractionRect(screen.Cols(), screen.Rows(), region[0], region[1], region[2], region[3])
 			btn, ok := vision.FindActionButton(screen, win, vision.DefaultActionButtonConfig())
 			screen.Close()
@@ -3081,11 +3479,17 @@ func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
 		Msg("executing dynamic attack plan")
 
 	// Battle zoom-out: CoC enters matchmaking with a default zoomed-in camera view.
-	// Deployment coordinates and red-zone perimeter require the battlefield to be
-	// at max zoom-out so taps land outside the base rather than on buildings.
+	// Every coordinate this deploy uses - the band, the red-zone perimeter, the
+	// pinned lines, the hero ground - was measured against a fully zoomed-out
+	// field, so the zoom is a precondition rather than a nicety. It used to log a
+	// warning and deploy anyway, which is how a run taps into the base and gets
+	// "You cannot deploy troops on the Red area!" for the whole deploy phase. See
+	// zoom_guard.go: bounded verified attempts, then an error instead of a guess.
 	b.logger.Info().Msg("zooming out battle view to max zoom-out...")
-	if zoomErr := b.navigator.ZoomOutMax(); zoomErr != nil {
-		b.logger.Warn().Err(zoomErr).Msg("battle zoom-out encountered an error; proceeding with deployment")
+	if zoomErr := ensureBattleZoom(b.navigator, battleZoomAttempts, b.logger); zoomErr != nil {
+		b.logger.Error().Err(zoomErr).
+			Msg("battle zoom-out could not be confirmed; refusing to deploy on unverified geometry")
+		return 0, zoomErr
 	}
 
 	battleScreen, err := b.client.CaptureToMat()

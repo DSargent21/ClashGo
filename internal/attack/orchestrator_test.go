@@ -159,10 +159,7 @@ func TestApplyCornerOverride_PinnedTargetPreserved(t *testing.T) {
 			"BottomLeft": pinnedVertical,
 		},
 	}
-	dynLine := DeployLine{Points: []image.Point{
-		image.Pt(10, 10), image.Pt(20, 20),
-	}}
-	applyCornerOverride(&pCfg, dynLine, true, "BottomLeft")
+	applyCornerOverride(&pCfg, "BottomLeft")
 
 	// The pinned target stays untouched.
 	if got, want := pCfg.Edges["BottomLeft"], pinnedVertical; got != want {
@@ -184,40 +181,44 @@ func TestApplyCornerOverride_PinnedTargetPreserved(t *testing.T) {
 	}
 }
 
-// TestApplyCornerOverride_UnpinnedClobbersAll verifies the legacy
-// behavior is preserved when the user did NOT pin the target.
-func TestApplyCornerOverride_UnpinnedClobbersAll(t *testing.T) {
+// With no pin for the target there is nothing to mirror, and the override must
+// stay out of the config entirely: writing a line there is how a run ended up
+// attacking on ground nobody authored.
+func TestApplyCornerOverride_UnpinnedIsANoOp(t *testing.T) {
 	pCfg := PrecisionConfig{
 		Edges: map[string]ManualEdge{},
 	}
-	dynLine := DeployLine{Points: []image.Point{
-		image.Pt(99, 88), image.Pt(123, 456),
-	}}
-	applyCornerOverride(&pCfg, dynLine, true, "BottomLeft")
+	applyCornerOverride(&pCfg, "BottomLeft")
 
-	want := ManualEdge{P1: image.Pt(99, 88), P2: image.Pt(123, 456)}
-	for _, c := range []string{"TopLeft", "TopRight", "BottomLeft", "BottomRight"} {
-		if got := pCfg.Edges[c]; got != want {
-			t.Errorf("corner %s not clobbered in unpinned path: got %+v, want %+v", c, got, want)
-		}
+	if len(pCfg.Edges) != 0 {
+		t.Errorf("unpinned target wrote %d corners, want none: %+v", len(pCfg.Edges), pCfg.Edges)
+	}
+	if len(pCfg.Sides) != 0 {
+		t.Errorf("unpinned target wrote %d sides, want none: %+v", len(pCfg.Sides), pCfg.Sides)
 	}
 }
 
-// TestApplyCornerOverride_NoRedZoneSkips verifies the override is a
-// no-op when red zone detection failed (otherwise we'd write a
-// garbage default).
-func TestApplyCornerOverride_NoRedZoneSkips(t *testing.T) {
+// An existing pin is never overwritten by the mirror, and a target pinned through
+// Sides works the same as one pinned through Edges.
+func TestApplyCornerOverride_KeepsExistingPins(t *testing.T) {
+	existing := ManualEdge{P1: image.Pt(50, 100), P2: image.Pt(50, 600)}
+	chosen := ManualEdge{P1: image.Pt(70, 120), P2: image.Pt(70, 610)}
 	pCfg := PrecisionConfig{
 		Edges: map[string]ManualEdge{
-			"BottomLeft": {P1: image.Pt(50, 100), P2: image.Pt(50, 600)},
+			"BottomLeft": chosen,
+			"TopLeft":    existing,
 		},
 	}
-	dynLine := DeployLine{Points: []image.Point{
-		image.Pt(99, 88), image.Pt(123, 456),
-	}}
-	applyCornerOverride(&pCfg, dynLine, false /* no red zone */, "BottomLeft")
-	if pCfg.Edges["BottomLeft"].P1.X != 50 {
-		t.Errorf("unpinned corners should not be touched when redZone invalid; got %+v", pCfg.Edges["BottomLeft"])
+	applyCornerOverride(&pCfg, "BottomLeft")
+
+	if got := pCfg.Edges["TopLeft"]; got != existing {
+		t.Errorf("existing pin overwritten: got %+v, want %+v", got, existing)
+	}
+	if got := pCfg.Edges["TopRight"]; got != chosen {
+		t.Errorf("empty corner not mirrored: got %+v, want %+v", got, chosen)
+	}
+	if got := pCfg.Sides["left"]; got != chosen {
+		t.Errorf("empty side not mirrored: got %+v, want %+v", got, chosen)
 	}
 }
 
@@ -230,10 +231,7 @@ func TestApplyCornerOverride_PinnedViaSides(t *testing.T) {
 			"bottom": pinned,
 		},
 	}
-	dynLine := DeployLine{Points: []image.Point{
-		image.Pt(11, 22), image.Pt(33, 44),
-	}}
-	applyCornerOverride(&pCfg, dynLine, true, "BottomLeft")
+	applyCornerOverride(&pCfg, "BottomLeft")
 	// Sides[bottom] preserved.
 	if got, want := pCfg.Sides["bottom"], pinned; got != want {
 		t.Errorf("Sides[bottom] should be preserved: got %+v, want %+v", got, want)

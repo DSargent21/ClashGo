@@ -29,6 +29,11 @@ type PinchGesture struct {
 	X1Start, X2Start int
 	X1End, X2End     int
 	Y                int
+	// Steps and DurationMs override the package defaults; zero means default.
+	// They exist because a game's zoom recogniser can reject a fast, small
+	// pinch, and the only way to find out is to vary the gesture.
+	Steps      int
+	DurationMs int
 }
 
 // PinchPoints returns the four x coordinates and the shared y for a pinch at
@@ -36,27 +41,65 @@ type PinchGesture struct {
 // 28% and 72% of the width moving to 48% and 52% for a zoom-out (and the
 // reverse for a zoom-in).
 func PinchPoints(w, h int, zoomOut bool) PinchGesture {
-	// Built outward from the centre so the pair is exactly symmetric: an odd
-	// width cannot split evenly if the two x values are computed independently,
-	// and a one-pixel midpoint drift is what turns a zoom into a pan.
-	cx := w / 2
-	nearOff := w * 44 / 200 // 22% either side of centre -> the 28%/72% pair
-	farOff := w * 4 / 200   // 2% either side -> the 48%/52% pair
-	if zoomOut {
-		return PinchGesture{X1Start: cx + nearOff, X2Start: cx - nearOff, X1End: cx + farOff, X2End: cx - farOff, Y: h / 2}
+	return PinchPointsVariant(w, h, zoomOut, 0)
+}
+
+// pinchVariants is how many gesture shapes the zoom ladder may try. Live
+// 2026-11-10: the injected pinch is delivered and acknowledged, and the frame did
+// not move (1.5-2.6%, i.e. idle animation) across the reference shape and three
+// wider/slower ones. One shape is not enough evidence to call a device unzoomable.
+const pinchVariants = 4
+
+// PinchPointsVariant returns the geometry for one of the pinchVariants shapes.
+// Index 0 is the reference 28%/72% -> 48%/52% gesture. The others widen the
+// starting span and slow the gesture down, which is what a zoom recogniser with a
+// minimum-velocity or minimum-distance rule needs in order to accept it.
+//
+// The pair is always built outward from the centre so it is exactly symmetric:
+// an odd width cannot split evenly if the two x values are computed
+// independently, and a one-pixel midpoint drift is what turns a zoom into a pan.
+func PinchPointsVariant(w, h int, zoomOut bool, variant int) PinchGesture {
+	nearPct, farPct := 44, 4
+	steps, durationMs := zoomInjectSteps, zoomInjectDurationMs
+	switch variant % pinchVariants {
+	case 1:
+		nearPct, farPct, steps, durationMs = 42, 14, 30, 700
+	case 2:
+		nearPct, farPct, steps, durationMs = 30, 6, 40, 900
+	case 3:
+		nearPct, farPct, steps, durationMs = 46, 10, 50, 1100
 	}
-	return PinchGesture{X1Start: cx + farOff, X2Start: cx - farOff, X1End: cx + nearOff, X2End: cx - nearOff, Y: h / 2}
+
+	cx := w / 2
+	startOff := w * nearPct / 200
+	endOff := w * farPct / 200
+	g := PinchGesture{Y: h / 2, Steps: steps, DurationMs: durationMs}
+	if zoomOut {
+		g.X1Start, g.X2Start = cx+startOff, cx-startOff
+		g.X1End, g.X2End = cx+endOff, cx-endOff
+		return g
+	}
+	g.X1Start, g.X2Start = cx+endOff, cx-endOff
+	g.X1End, g.X2End = cx+startOff, cx-startOff
+	return g
 }
 
 // pinchCommand builds the on-device invocation. Kept separate so the argument
 // shape is unit-testable without a device.
 func pinchCommand(path string, g PinchGesture) string {
+	steps, durationMs := g.Steps, g.DurationMs
+	if steps <= 0 {
+		steps = zoomInjectSteps
+	}
+	if durationMs <= 0 {
+		durationMs = zoomInjectDurationMs
+	}
 	args := []string{
 		strconv.Itoa(g.X1Start), strconv.Itoa(g.Y),
 		strconv.Itoa(g.X2Start), strconv.Itoa(g.Y),
 		strconv.Itoa(g.X1End), strconv.Itoa(g.Y),
 		strconv.Itoa(g.X2End), strconv.Itoa(g.Y),
-		strconv.Itoa(zoomInjectSteps), strconv.Itoa(zoomInjectDurationMs),
+		strconv.Itoa(steps), strconv.Itoa(durationMs),
 	}
 	return "CLASSPATH=" + path + " app_process /system/bin " + zoomInjectClass +
 		" pinch " + strings.Join(args, " ")
@@ -95,7 +138,12 @@ func (c *Client) ensureZoomInjector() error {
 // "pinch" collapses to a tap on whatever sits under the fingers and the camera
 // never moves. Injecting the MotionEvent through InputManager (the same path
 // the `input` command uses) delivers both pointers.
-func (c *Client) PinchZoom(zoomOut bool) error {
+// PinchZoom runs the reference gesture shape. PinchZoomVariant runs one of the
+// pinchVariants shapes; the caller that verifies zoom against the frame walks
+// them in order, because an accepted-but-ignored gesture is invisible otherwise.
+func (c *Client) PinchZoom(zoomOut bool) error { return c.PinchZoomVariant(zoomOut, 0) }
+
+func (c *Client) PinchZoomVariant(zoomOut bool, variant int) error {
 	if err := c.checkInputContext(); err != nil {
 		return err
 	}
@@ -112,7 +160,7 @@ func (c *Client) PinchZoom(zoomOut bool) error {
 		return c.pinchZoomSendevent(zoomOut)
 	}
 
-	cmd := pinchCommand(zoomInjectDevicePath, PinchPoints(w, h, zoomOut))
+	cmd := pinchCommand(zoomInjectDevicePath, PinchPointsVariant(w, h, zoomOut, variant))
 	out, err := c.Shell(cmd)
 	if err != nil {
 		c.log.Debugf("framework pinch failed (%v); falling back to sendevent", err)

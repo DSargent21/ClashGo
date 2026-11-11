@@ -31,11 +31,29 @@ High-performance, lightweight Clash of Clans automation engine written in Go and
    - DPI: **160 DPI**
    - ADB enabled on `127.0.0.1:5555` (default).
 
-### 1. Download & Install (Desktop GUI)
-Download the latest `ClashGO.dmg` from [GitHub Releases](https://github.com/DSargent21/ClashGo/releases/latest), drag `ClashGO.app` into `/Applications`, and launch.
+### 1. Install from the Terminal (recommended)
+
+```bash
+# Desktop GUI → /Applications/ClashGO.app
+curl -fsSL https://raw.githubusercontent.com/DSargent21/ClashGo/main/tools/install.sh | bash
+
+# Headless CLI → ~/.local/bin/bot_cli
+curl -fsSL https://raw.githubusercontent.com/DSargent21/ClashGo/main/tools/install.sh | bash -s -- --cli
+```
+
+The installer resolves the latest release, verifies every download against the release `SHA256SUMS`, and needs no sudo. Use `--version`, `--app-dir`, `--bin-dir`, or `--data-dir` to override defaults; see `bash tools/install.sh --help`.
+
+Homebrew users get managed upgrades via the cask:
+
+```bash
+brew install --cask dsargent21/tap/clashgo
+brew upgrade --cask clashgo
+```
+
+See [`docs/HOMEBREW.md`](docs/HOMEBREW.md) for tap setup and release automation. Prefer a manual install? Download `ClashGO.dmg` from [GitHub Releases](https://github.com/DSargent21/ClashGo/releases/latest), drag `ClashGO.app` into `/Applications`, and launch.
 
 ### 2. Headless CLI (`bot_cli`)
-For maximum efficiency and 24/7 background servers:
+For maximum efficiency and 24/7 background servers. The command above installs the prebuilt, self-contained binary (OpenCV dylibs bundled); to build from source instead:
 
 ```bash
 # Build the standalone binary
@@ -91,6 +109,7 @@ See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for profiling details and optim
 
 - **[Architecture & Design](docs/DESIGN.md)**: State machine, vision pipelines, and subsystem layout.
 - **[CLI Reference](docs/CLI.md)**: Headless CLI flags, execution modes, and environment variables.
+- **[Homebrew](docs/HOMEBREW.md)**: Cask install/upgrade, tap layout, and release-time tap sync.
 - **[Formula Authoring Guide](docs/formula-authoring.md)**: Designing custom deployment patterns and corner overrides.
 - **[Performance & Optimization](docs/PERFORMANCE.md)**: Memory pooling, capture caching, and profiling guide.
 - **[Observability & Debugging](docs/OBSERVABILITY.md)**: ASCII visualization, tap traces, and OCR tools.

@@ -21,6 +21,8 @@ endif
 VERSION_TAG := v$(VERSION)
 GIT_COMMIT  := $(shell git rev-parse HEAD 2>/dev/null || echo "none")
 RELEASE_ZIP := ClashGO-v$(VERSION)-macOS.zip
+CLI_ARCHIVE := ClashGO-CLI-v$(VERSION)-macOS.tar.gz
+CASK := $(BUILD_DIR)/clashgo.rb
 
 # ldflags injected into both the CLI binary and the Wails GUI binary.
 # Variables must match the package-level var names in version.go
@@ -73,7 +75,7 @@ ifneq ($(OPENCV_LIBDIR),)
     CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names,-dead_strip_dylibs
 endif
 
-.PHONY: all build build-cli build-gui clean release manifest test test-go test-py
+.PHONY: all build build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask
 
 all: build-cli build-gui
 
@@ -82,7 +84,7 @@ build: build-cli build-gui
 # test: full verification suite — vet, Go tests, Python strategy contract
 # tests. go vet before tests so a type error fails fast without paying
 # for the (slow) first OpenCV link.
-test: test-go test-py
+test: test-go test-py test-install test-brew
 	@echo "ALL TESTS PASSED"
 
 test-go:
@@ -103,6 +105,18 @@ ifdef PYTEST_PY
 else
 	@echo "SKIP: no python3 with pytest+pyyaml found — strategy contract tests not run"
 endif
+
+# Installer contract test: runs tools/install.sh against a local file:// release
+# mirror, so the download/checksum/install paths are exercised without GitHub.
+# Skips itself on non-macOS hosts (hdiutil is the DMG path).
+test-install:
+	@bash tests/test_install_sh.sh
+
+# Cask contract tests: checked-in cask + renderer, and the tap sync helper
+# against a local bare git repo. No network, no installs.
+test-brew:
+	@bash tests/test_homebrew_cask.sh
+	@bash tests/test_brew_tap_sync.sh
 
 build-cli:
 	@echo "Building CLI (version=$(VERSION), commit=$(GIT_COMMIT))..."
@@ -360,11 +374,41 @@ package: bundle-dylibs
 # caller. Callers (CI / `make release`) still trigger `package` to keep
 # the legacy make-graph intact.
 
-release: build-cli package build-zip manifest
+# cli-archive is the artifact tools/install.sh --cli installs. It carries the
+# bundled OpenCV closure (bundle_dylibs.sh in dir mode) and assets/, because a
+# downloaded bot_cli has neither Homebrew nor a source checkout behind it.
+cli-archive: build-cli
+	@echo "Packaging CLI archive ($(CLI_ARCHIVE))..."
+	@rm -rf $(BUILD_DIR)/cli-stage
+	@mkdir -p $(BUILD_DIR)/cli-stage
+	@cp $(BUILD_DIR)/bot_cli $(BUILD_DIR)/cli-stage/
+	@cp -R assets $(BUILD_DIR)/cli-stage/assets
+	@bash tools/bundle_dylibs.sh $(BUILD_DIR)/cli-stage
+	@tar -czf $(BUILD_DIR)/$(CLI_ARCHIVE) -C $(BUILD_DIR)/cli-stage .
+	@rm -rf $(BUILD_DIR)/cli-stage
+
+# SHA256SUMS is what install.sh verifies every download against (the in-app
+# updater keeps using latest.json for the zip it installs). Depends on every
+# artifact so a release can never publish a checksum file that omits one.
+checksums: build-cli package build-zip manifest cli-archive
+	@echo "Writing $(BUILD_DIR)/SHA256SUMS..."
+	@cd $(BUILD_DIR) && shasum -a 256 $(RELEASE_ZIP) ClashGO.dmg $(CLI_ARCHIVE) latest.json > SHA256SUMS
+
+# brew-cask renders the Homebrew cask for this DMG. The cask is uploaded with
+# the release and synced to the tap by CI; Casks/clashgo.rb in the repo is the
+# last published one, kept so it can be audited and installed from a checkout.
+brew-cask: package
+	@echo "Generating Homebrew cask for v$(VERSION)..."
+	@bash tools/gen_cask.sh $(VERSION) $(BUILD_DIR)/ClashGO.dmg $(CASK) DSargent21/ClashGo
+
+release: checksums brew-cask
 	@echo "Release v$(VERSION) emitted:"
-	@echo "  - $(BUILD_DIR)/ClashGO-v$(VERSION)-macOS.zip"
+	@echo "  - $(BUILD_DIR)/$(RELEASE_ZIP)"
 	@echo "  - $(BUILD_DIR)/ClashGO.dmg"
+	@echo "  - $(BUILD_DIR)/$(CLI_ARCHIVE)"
 	@echo "  - $(BUILD_DIR)/latest.json (publish alongside the zip on GitHub)"
+	@echo "  - $(BUILD_DIR)/SHA256SUMS"
+	@echo "  - $(CASK) (Homebrew cask)"
 
 # build-zip turns the packaged .app into the zip artifact. Depends on
 # bundle-dylibs so the zip carries Contents/Frameworks too — the zip is the

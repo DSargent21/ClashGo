@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClashGo boundary annotator</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #14161a; color: #e6e8ec;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 8px 10px; border-bottom: 1px solid #262a32; background: #1b1e24;
+  }
+  header .spacer { flex: 1; }
+  button, label.file {
+    background: #262b33; color: #e6e8ec; border: 1px solid #333a45;
+    border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit;
+  }
+  button:hover, label.file:hover { background: #2f3540; }
+  button.active { background: #2f6feb; border-color: #2f6feb; color: #fff; }
+  button.primary { background: #1f7a3f; border-color: #1f7a3f; color: #fff; }
+  label.file input { display: none; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #stage { position: relative; flex: 1; overflow: hidden; background: #0b0c0e; }
+  canvas { display: block; cursor: crosshair; }
+  #stage.pan canvas { cursor: grab; }
+  aside {
+    width: 300px; border-left: 1px solid #262a32; background: #1b1e24;
+    padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 0;
+  }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #9aa3b2; margin: 4px 0 0; }
+  p { margin: 0; color: #b9c0cc; }
+  textarea {
+    flex: 1; min-height: 120px; width: 100%; resize: none; padding: 8px;
+    background: #0f1115; color: #d7dbe2; border: 1px solid #2b313a;
+    border-radius: 6px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #status { padding: 4px 10px; border-top: 1px solid #262a32; color: #8d95a3; background: #1b1e24; }
+  .row { display: flex; gap: 6px; }
+  .row button { flex: 1; }
+  kbd { background: #262b33; border-radius: 4px; padding: 0 4px; font: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <label class="file">Open image…<input id="file" type="file" accept="image/*"></label>
+  <button id="modePoints" class="active" title="Click to place a point">Points</button>
+  <button id="modeFree" title="Drag to trace the line">Freehand</button>
+  <button id="modePan" title="Drag to pan">Pan</button>
+  <button id="zoomOut" title="Zoom out">−</button>
+  <button id="zoomIn" title="Zoom in">+</button>
+  <button id="fit">Fit</button>
+  <span class="spacer"></span>
+  <button id="undo">Undo</button>
+  <button id="clear">Clear</button>
+  <button id="copy" class="primary">Copy points</button>
+  <button id="download">Download JSON</button>
+</header>
+
+<main>
+  <div id="stage"><canvas id="canvas"></canvas></div>
+  <aside>
+    <h2>How to use</h2>
+    <p>Drop <code>p0.png</code> on this page (or use <em>Open image…</em>).</p>
+    <p>Then trace the <strong>red deploy line</strong>: pick <em>Points</em> and click along it, or pick <em>Freehand</em> and drag along it. Zoom with the wheel; <em>Pan</em> to move.</p>
+    <p>When done, hit <em>Copy points</em> and paste the result back into chat.</p>
+    <h2>Points (image pixels)</h2>
+    <textarea id="out" readonly spellcheck="false" placeholder="No points yet."></textarea>
+    <h2>Tips</h2>
+    <p>Start anywhere on the line and go around it once. Corners matter more than straight parts — a click at each sharp turn is enough.</p>
+  </aside>
+</main>
+<div id="status">No image loaded.</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+  const stage = document.getElementById("stage");
+  const out = document.getElementById("out");
+  const status = document.getElementById("status");
+
+  let img = null;
+  let points = [];          // [x, y] in image pixels
+  let scale = 1;
+  let offset = { x: 0, y: 0 };
+  let mode = "points";      // points | free | pan
+  let dragging = false;
+  let lastPan = null;
+  let cursor = null;
+
+  function setMode(next) {
+    mode = next;
+    for (const [id, name] of [["modePoints", "points"], ["modeFree", "free"], ["modePan", "pan"]]) {
+      document.getElementById(id).classList.toggle("active", mode === name);
+    }
+    stage.classList.toggle("pan", mode === "pan");
+  }
+
+  function resize() {
+    const rect = stage.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    canvas.style.width = rect.width + "px";
+    canvas.style.height = rect.height + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function fit() {
+    if (!img) return;
+    const rect = stage.getBoundingClientRect();
+    scale = Math.min(rect.width / img.width, rect.height / img.height);
+    offset.x = (rect.width - img.width * scale) / 2;
+    offset.y = (rect.height - img.height * scale) / 2;
+    draw();
+  }
+
+  function toImage(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return [
+      Math.round((clientX - rect.left - offset.x) / scale),
+      Math.round((clientY - rect.top - offset.y) / scale),
+    ];
+  }
+
+  function draw() {
+    const rect = stage.getBoundingClientRect();
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    if (img) {
+      ctx.imageSmoothingEnabled = scale < 1;
+      ctx.drawImage(img, offset.x, offset.y, img.width * scale, img.height * scale);
+    } else {
+      ctx.fillStyle = "#7b8391";
+      ctx.font = "14px -apple-system, sans-serif";
+      ctx.fillText("Drop a battle screenshot here, or use Open image…", 24, 40);
+      return;
+    }
+
+    if (points.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(offset.x + points[0][0] * scale, offset.y + points[0][1] * scale);
+      for (const [x, y] of points.slice(1)) {
+        ctx.lineTo(offset.x + x * scale, offset.y + y * scale);
+      }
+      ctx.strokeStyle = "rgba(255, 226, 64, 0.9)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    const dot = Math.max(2.5, Math.min(6, 3 * scale));
+    points.forEach(([x, y], i) => {
+      const sx = offset.x + x * scale;
+      const sy = offset.y + y * scale;
+      ctx.beginPath();
+      ctx.arc(sx, sy, dot, 0, Math.PI * 2);
+      ctx.fillStyle = i === 0 ? "#5ef08a" : "#ffe240";
+      ctx.fill();
+      ctx.strokeStyle = "#101215";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
+  }
+
+  function refresh() {
+    out.value = JSON.stringify(points);
+    const dims = img ? `${img.width}×${img.height}` : "—";
+    const where = cursor ? ` cursor (${cursor[0]}, ${cursor[1]})` : "";
+    status.textContent = `${points.length} point(s) · image ${dims} · zoom ${(scale * 100).toFixed(0)}%${where}`;
+    draw();
+  }
+
+  function loadFile(file) {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const next = new Image();
+    next.onload = () => {
+      img = next;
+      points = [];
+      URL.revokeObjectURL(url);
+      fit();
+      refresh();
+    };
+    next.onerror = () => { status.textContent = "Could not read that image."; };
+    next.src = url;
+  }
+
+  document.getElementById("file").addEventListener("change", (e) => loadFile(e.target.files[0]));
+
+  for (const type of ["dragover", "drop"]) {
+    stage.addEventListener(type, (e) => {
+      e.preventDefault();
+      if (type === "drop" && e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+    });
+  }
+
+  document.getElementById("modePoints").onclick = () => setMode("points");
+  document.getElementById("modeFree").onclick = () => setMode("free");
+  document.getElementById("modePan").onclick = () => setMode("pan");
+  document.getElementById("fit").onclick = fit;
+  document.getElementById("zoomIn").onclick = () => zoomAt(1.25, stage.clientWidth / 2, stage.clientHeight / 2);
+  document.getElementById("zoomOut").onclick = () => zoomAt(1 / 1.25, stage.clientWidth / 2, stage.clientHeight / 2);
+  document.getElementById("undo").onclick = () => { points.pop(); refresh(); };
+  document.getElementById("clear").onclick = () => { points = []; refresh(); };
+
+  document.getElementById("copy").onclick = async () => {
+    const text = out.value;
+    try {
+      await navigator.clipboard.writeText(text);
+      status.textContent = "Points copied to clipboard.";
+    } catch {
+      out.focus();
+      out.select();
+      status.textContent = "Clipboard blocked — points are selected, press ⌘C.";
+    }
+  };
+
+  document.getElementById("download").onclick = () => {
+    const blob = new Blob([out.value], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "boundary_points.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  function zoomAt(factor, clientX, clientY) {
+    if (!img) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    const before = [(px - offset.x) / scale, (py - offset.y) / scale];
+    scale = Math.max(0.1, Math.min(8, scale * factor));
+    offset.x = px - before[0] * scale;
+    offset.y = py - before[1] * scale;
+    refresh();
+  }
+
+  canvas.addEventListener("wheel", (e) => {
+    if (!img) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY);
+  }, { passive: false });
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!img) return;
+    canvas.setPointerCapture(e.pointerId);
+    if (mode === "pan" || e.button === 1 || e.button === 2) {
+      dragging = true;
+      lastPan = { x: e.clientX, y: e.clientY };
+      return;
+    }
+    if (mode === "points") {
+      points.push(toImage(e.clientX, e.clientY));
+      refresh();
+      return;
+    }
+    dragging = true;
+    points.push(toImage(e.clientX, e.clientY));
+    refresh();
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!img) return;
+    cursor = toImage(e.clientX, e.clientY);
+    if (dragging) {
+      if (mode === "pan" || e.buttons & 4) {
+        offset.x += e.clientX - lastPan.x;
+        offset.y += e.clientY - lastPan.y;
+        lastPan = { x: e.clientX, y: e.clientY };
+      } else if (mode === "free" && points.length) {
+        const [x, y] = cursor;
+        const [px, py] = points[points.length - 1];
+        if (Math.hypot(x - px, y - py) >= 3) points.push([x, y]);
+      }
+    }
+    refresh();
+  });
+
+  canvas.addEventListener("pointerup", () => { dragging = false; lastPan = null; });
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  window.addEventListener("resize", resize);
+
+  // Auto-load the sample frame when it sits next to this page, so the tool opens
+  // ready to annotate. Harmless when the file is absent.
+  fetch("p0.png")
+    .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("no sample frame"))))
+    .then((blob) => loadFile(new File([blob], "p0.png")))
+    .catch(() => {});
+
+  setMode("points");
+  resize();
+})();
+</script>
+</body>
+</html>

@@ -430,6 +430,7 @@ export namespace config {
 	    min_loot_gold: number;
 	    min_loot_elixir: number;
 	    min_loot_de: number;
+	    max_search_skips: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SearchConfig(source);
@@ -449,6 +450,7 @@ export namespace config {
 	        this.min_loot_gold = source["min_loot_gold"];
 	        this.min_loot_elixir = source["min_loot_elixir"];
 	        this.min_loot_de = source["min_loot_de"];
+	        this.max_search_skips = source["max_search_skips"];
 	    }
 	}
 	export class TrainingConfig {

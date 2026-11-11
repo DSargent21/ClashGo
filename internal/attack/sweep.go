@@ -1183,6 +1183,18 @@ func (sw *Sweeper) spellBatchPoints(p1, p2 image.Point, i, batchSize, count int)
 // (we use P1+P2 of the first line). Falls through to deployLine.Points
 // when no formula entry applies.
 func (sw *Sweeper) resolveSweepLine(slot *TrackedSlot, isEventTroop bool) (image.Point, image.Point, bool) {
+	// Spells are cast, not dumped: the user's two spell lines are the ground a
+	// swept spell belongs on. Without this a spell card the strategy never
+	// declared is fired along the TROOP line, which is what the user saw as
+	// "spells not on the two lines I showed" (live 2026-11-11, BottomLeft: the
+	// rage card at x=583 went to (144,394)->(359,558), the troop edge, while the
+	// pinned spell lines for that side were (324,309)->(493,462) and
+	// (204,321)->(369,478)).
+	if spellLikeSlot(slot) {
+		if p1, p2, ok := sw.spellSweepLine(slot); ok {
+			return p1, p2, true
+		}
+	}
 	// The user's pins are the ground for the sweep too: a sweep exists to place
 	// what the phases could not, and re-aiming it at the strategy formula after
 	// the user pinned a line is how the same unit got tapped on two different
@@ -1214,6 +1226,61 @@ func (sw *Sweeper) resolveSweepLine(slot *TrackedSlot, isEventTroop bool) (image
 	p1 := sw.deployLine.Points[0]
 	p2 := sw.deployLine.Points[len(sw.deployLine.Points)-1]
 	return p1, p2, true
+}
+
+// spellSweepLine returns the user's pinned spell line for the side this battle
+// deploys on: Line A for a rage spell, Line B for every other spell — the same
+// rule SpellDeployer.deployLineSpell uses, so a swept spell lands where the
+// Spells phase would have put it.
+//
+// The side is resolved by geometry, not by a new field: the sweeper already has
+// the battle's deployLine (the pins for this side), and the four spell lines are
+// far enough apart that the one whose midpoint is nearest that line's midpoint
+// is unambiguous. Keys are tried in full first: a side with no Line B pinned
+// still gets Line A rather than the troop line.
+func (sw *Sweeper) spellSweepLine(slot *TrackedSlot) (image.Point, image.Point, bool) {
+	preferred, fallback := sw.pCfg.SpellEdgesB, sw.pCfg.SpellEdgesA
+	if strings.Contains(strings.ToLower(slot.UnitName), "rage") {
+		preferred, fallback = sw.pCfg.SpellEdgesA, sw.pCfg.SpellEdgesB
+	}
+	for _, lines := range []map[string]ManualEdge{preferred, fallback} {
+		if p1, p2, ok := nearestLine(lines, sw.deployLine.Points); ok {
+			return p1, p2, true
+		}
+	}
+	return image.Point{}, image.Point{}, false
+}
+
+// nearestLine picks the entry of a per-side line map whose midpoint is closest
+// to the midpoint of the battle's deploy line, and returns it as endpoints.
+func nearestLine(lines map[string]ManualEdge, deployPoints []image.Point) (image.Point, image.Point, bool) {
+	if len(lines) == 0 {
+		return image.Point{}, image.Point{}, false
+	}
+	if len(deployPoints) < 2 {
+		// No deploy line to compare against: one configured line is the answer
+		// and several are a guess, so take the first in a stable order.
+		if len(lines) != 1 {
+			return image.Point{}, image.Point{}, false
+		}
+		for _, e := range lines {
+			return e.P1, e.P2, true
+		}
+	}
+	p1, p2 := deployPoints[0], deployPoints[len(deployPoints)-1]
+	mx := float64(p1.X+p2.X) / 2
+	my := float64(p1.Y+p2.Y) / 2
+	best := math.Inf(1)
+	var bp1, bp2 image.Point
+	found := false
+	for _, e := range lines {
+		dx := float64(e.P1.X+e.P2.X)/2 - mx
+		dy := float64(e.P1.Y+e.P2.Y)/2 - my
+		if d := math.Hypot(dx, dy); d < best {
+			best, bp1, bp2, found = d, e.P1, e.P2, true
+		}
+	}
+	return bp1, bp2, found
 }
 
 // deployHeroSlotOnce performs a hero sweep retry with ONE device tap at

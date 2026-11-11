@@ -241,7 +241,13 @@ const (
 	// occupy y 596..614, i.e. bar_y-25 .. bar_y-7. The band below is that
 	// measurement with slack on both sides.
 	badgeBandAboveRef = 38.0
-	badgeBandBelowRef = 2.0
+	// The below side used to be 2 ref px: exact at 1280x720, but at 1024x768
+	// the badges render BELOW the bar's top edge (live frame: barY=663,
+	// badges at y 660..675), so any positive offset clipped them and
+	// glyphsOnRow dropped every glyph — the whole bar read unreadable.
+	// Negative extends the band under barY; the row-overlap +
+	// anchor-tolerance gates still reject the card art below the badges.
+	badgeBandBelowRef = -14.0
 	countBandSlackRef = 9.0
 
 	// The badge font's height window, as a fraction of expectGlyphH (the level
@@ -749,9 +755,8 @@ func (tc *TroopCounter) measureCountRow(screen gocv.Mat, slots []*TrackedSlot, b
 		} else {
 			roi.CopyTo(&gray)
 		}
-		roi.Close()
 
-		for _, b := range tc.badgeGlyphBoxes(gray) {
+		for _, b := range tc.badgeGlyphBoxes(gray, roi) {
 			digit, conf, _ := tc.matchGlyphEitherPolarity(gray, b)
 			if !looksLikeCountDigit(digit, conf) {
 				continue
@@ -762,6 +767,7 @@ func (tc *TroopCounter) measureCountRow(screen gocv.Mat, slots []*TrackedSlot, b
 			}
 			centres[centre][i] = true
 		}
+		roi.Close()
 		gray.Close()
 	}
 	if len(centres) == 0 {
@@ -1218,8 +1224,67 @@ func verticallyAligned(a, b image.Rectangle) bool {
 // digit is taller than the digit it is drawn from, and the blobs that are taller
 // are the ones that used to be read as a confident `4` on a card whose real
 // label sat unread elsewhere in the band.
-func (tc *TroopCounter) badgeGlyphBoxes(gray gocv.Mat) []image.Rectangle {
-	return tc.glyphBoxesSized(gray, badgeGlyphMinFactor, badgeGlyphMaxFactor)
+func (tc *TroopCounter) badgeGlyphBoxes(gray gocv.Mat, color gocv.Mat) []image.Rectangle {
+	boxes := tc.glyphBoxesSized(gray, badgeGlyphMinFactor, badgeGlyphMaxFactor)
+	// CoC draws count badges in saturated blue ("x10" in blue) on dark card
+	// plates. In grayscale the blue reads low-luminance and every mask above
+	// loses it entirely — live 2026-11-08 at 1024x768 the full bar measured
+	// zero glyphs. The hue is stable, so add an HSV blue channel as one more
+	// candidate generator; the matcher still decides.
+	if color.Empty() || color.Channels() != 3 {
+		return boxes
+	}
+	hsv := gocv.NewMat()
+	defer hsv.Close()
+	gocv.CvtColor(color, &hsv, gocv.ColorBGRToHSV)
+	mask := gocv.NewMat()
+	defer mask.Close()
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(95, 80, 80, 0), gocv.NewScalar(130, 255, 255, 0), &mask)
+	return append(boxes, tc.boxesFromMask(mask, gray.Cols(), gray.Rows(), badgeGlyphMinFactor, badgeGlyphMaxFactor)...)
+}
+
+// boxesFromMask runs the shared size/ink filters over one binary mask.
+func (tc *TroopCounter) boxesFromMask(bin gocv.Mat, w, h int, minFactor, maxFactor float64) []image.Rectangle {
+	// Duplicate the contour scan of glyphBoxesSized for an external mask;
+	// dedupe against its output happens implicitly (duplicate boxes of one
+	// glyph just form one run and consume each other).
+	expectH := tc.expectGlyphH()
+	minH := int(minFactor * expectH)
+	maxH := int(maxFactor * expectH)
+	if minH < 6 {
+		minH = 6
+	}
+	if maxH <= minH {
+		maxH = minH + 6
+	}
+	maxW := int(1.2 * maxFactor * expectH)
+	if maxW < 6 {
+		maxW = 6
+	}
+	var boxes []image.Rectangle
+	contours := gocv.FindContours(bin, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+	defer contours.Close()
+	for i := 0; i < contours.Size(); i++ {
+		rect := gocv.BoundingRect(contours.At(i))
+		bw, bh := rect.Dx(), rect.Dy()
+		if bw < 1 || bw > maxW || bh < minH || bh > maxH {
+			continue
+		}
+		if aspect := float64(bw) / float64(bh); aspect < 0.12 || aspect > 1.6 {
+			continue
+		}
+		if rect.Min.Y <= 0 || rect.Max.Y >= h-1 {
+			continue
+		}
+		sub := bin.Region(rect)
+		ink := float64(gocv.CountNonZero(sub)) / float64(bw*bh)
+		sub.Close()
+		if ink < 0.10 || ink > 0.92 {
+			continue
+		}
+		boxes = append(boxes, rect)
+	}
+	return boxes
 }
 
 // glyphBoxesSized is glyphBoxes with the accepted glyph height given as fractions
@@ -1508,7 +1573,7 @@ func (tc *TroopCounter) regionHasReadableDigit(roi gocv.Mat, rowTop, rowBottom i
 		roi.CopyTo(&gray)
 	}
 
-	boxes := tc.badgeGlyphBoxes(gray)
+	boxes := tc.badgeGlyphBoxes(gray, roi)
 	if rowBottom > rowTop {
 		boxes = glyphsOnRow(boxes, rowTop, rowBottom)
 	}

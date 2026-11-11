@@ -107,8 +107,11 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           ZIP="build/bin/ClashGO-v${VERSION}-macOS.zip"
           DMG="build/bin/ClashGO.dmg"
+          CLI="build/bin/ClashGO-CLI-v${VERSION}-macOS.tar.gz"
           MANIFEST="build/bin/latest.json"
-          for f in "$ZIP" "$DMG" "$MANIFEST"; do
+          SUMS="build/bin/SHA256SUMS"
+          CASK="build/bin/clashgo.rb"
+          for f in "$ZIP" "$DMG" "$CLI" "$MANIFEST" "$SUMS" "$CASK"; do
             if [[ ! -f "$f" ]]; then
               echo "missing expected artifact: $f" >&2
               exit 1
@@ -139,11 +142,32 @@ jobs:
           # would leave the older release marked "Latest". This project's
           # convention (v0.1.0-beta / v0.2.0-beta) is to publish beta
           # builds as regular releases so the update flow works.
+          # SHA256SUMS is what tools/install.sh verifies every download
+          # against; the CLI tarball is what `install.sh --cli` installs.
           gh release create "$GITHUB_REF_NAME" \
             "$ZIP" \
             "$DMG" \
+            "$CLI" \
             "$MANIFEST" \
+            "$SUMS" \
+            "$CASK" \
             --title "ClashGO $GITHUB_REF_NAME" \
             --notes-file "$NOTES_FILE"
 
           echo "Release published: $GITHUB_REF_NAME"
+
+      # Makes `brew upgrade --cask clashgo` see the new version. Optional: the
+      # step no-ops when the tap repo/token are not configured, so a release
+      # never fails because Homebrew is not set up yet. See docs/HOMEBREW.md.
+      # The guard is a shell test rather than `if: env...` so it does not depend
+      # on whether step-level env is visible to that expression.
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPO: DSargent21/homebrew-tap
+        run: |
+          if [[ -z "${HOMEBREW_TAP_TOKEN}" ]]; then
+            echo "HOMEBREW_TAP_TOKEN not set — skipping tap update"
+            exit 0
+          fi
+          bash tools/sync_homebrew_tap.sh build/bin/clashgo.rb "$TAP_REPO"

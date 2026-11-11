@@ -165,7 +165,7 @@ func TestZZ720pBalloonTenIsDecisive(t *testing.T) {
 	gocv.CvtColor(roi, &gray, gocv.ColorBGRToGray)
 
 	found := false
-	for _, b := range tc.badgeGlyphBoxes(gray) {
+	for _, b := range tc.badgeGlyphBoxes(gray, roi) {
 		d, conf, margin := tc.matchGlyphEitherPolarity(gray, b)
 		if d == 0 && glyphAccepted(d, conf, margin) {
 			found = true

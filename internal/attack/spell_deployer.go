@@ -128,6 +128,12 @@ func (sd *SpellDeployer) liveCountAndEmpty(slot *TrackedSlot) (int, bool, bool) 
 	return captureSlotLiveCount(sd.executor, sd.troopCounter, slot, sd.barY, sd.w, sd.h)
 }
 
+// spellTopUpCeiling bounds the unreadable-count top-up in VerifyAndReconcile,
+// and doubles as the reconcile round budget callers pass in. Spell storage caps
+// a card well under this, so it only ever stops a card whose visual "not empty"
+// reading is stuck (e.g. a dimmed cooldown silhouette).
+const spellTopUpCeiling = 12
+
 // VerifyAndReconcile re-reads the spell's slot state after deployment and
 // re-fires the difference along the same geometry until the slot is empty
 // or maxRounds is exhausted. Mirrors HeroManager's troop reconcile loop.
@@ -168,15 +174,51 @@ func (sd *SpellDeployer) VerifyAndReconcile(unit strategy.Unit, slot *TrackedSlo
 			return totalFired, true
 		}
 		if !trusted {
-			// The card shows no readable count and is not visually empty, so
-			// there is no number to re-fire against. Stop rather than invent
-			// one: blind taps into a live battle are worse than leaving the
-			// remainder for the sweep.
+			// A two-digit badge is not always readable. Live 2026-11-11 the ice
+			// spell's "11" came back as 1, so the phase cast exactly once and
+			// this loop then had no number to reconcile against and stopped —
+			// the remaining casts fell to the sweep, which is the user's "it
+			// doesn't place all spells".
+			//
+			// The card's VISUAL state is still a measurement: while it is not
+			// empty, keep casting ONE spell at a time on the same line. That is
+			// the same evidence the sweep trusts, just without the blind batch,
+			// and it is bounded by spellTopUpCeiling and the deploy budget.
+			// A strategy-declared count is not a guess to be topped up: the phase
+			// already cast exactly that many, so blind top-ups here are cast into
+			// an empty card. Live 2026-11-11 the declared 11 ice casts became 23
+			// taps for this reason. `amount: All` keeps the top-up, because then
+			// the card's own state is the only count there is.
+			if n, err := strconv.Atoi(strings.TrimSpace(unit.Amount)); err == nil && n > 0 {
+				sd.logger.Info().
+					Str("unit", unit.Name).
+					Int("authored", n).
+					Int("round", round+1).
+					Msg("reconcile: the strategy declared this card's count and the phase cast it; not blind top-up casting on an unreadable badge")
+				return totalFired, false
+			}
+			if totalFired >= spellTopUpCeiling {
+				sd.logger.Warn().
+					Str("unit", unit.Name).
+					Int("round", round+1).
+					Int("extra_fired", totalFired).
+					Msg("reconcile: count unreadable and top-up ceiling reached; leaving the remainder to the sweep")
+				return totalFired, false
+			}
 			sd.logger.Warn().
 				Str("unit", unit.Name).
 				Int("round", round+1).
-				Msg("reconcile: card count unreadable and card not visually empty; stopping spell reconcile")
-			return totalFired, false
+				Int("extra_fired", totalFired).
+				Msg("reconcile: count unreadable but card not visually empty; casting one more spell on the same line")
+			sd.executor.TapSlot(slot, 8)
+			sd.executor.client.HumanSleep(150, 30)
+			one := unit
+			one.Amount = "1"
+			sd.firePass++
+			sd.DeploySpell(one, slot, targetEdge, phasePattern)
+			sd.firePass--
+			totalFired++
+			continue
 		}
 		if remaining <= 0 {
 			// OCR says 0 but the card still looks active (cursor
@@ -337,7 +379,7 @@ func (sd *SpellDeployer) deployFourSides(unit strategy.Unit, _ *TrackedSlot, tar
 				tx := targetPt.X + int(radius*math.Cos(angle))
 				ty := targetPt.Y + int(radius*math.Sin(angle))
 				jPt := sd.executor.addJitter(image.Pt(tx, ty), 6)
-				sd.executor.TapField(jPt.X, jPt.Y, 8.0)
+				sd.executor.TapCastField(jPt.X, jPt.Y, 8.0)
 				time.Sleep(50 * time.Millisecond)
 			}
 		} else {
@@ -384,7 +426,7 @@ func (sd *SpellDeployer) deployFourSides(unit strategy.Unit, _ *TrackedSlot, tar
 				tx := int(float64(p1.X) + float64(p2.X-p1.X)*pct)
 				ty := int(float64(p1.Y) + float64(p2.Y-p1.Y)*pct)
 				jPt := sd.executor.addJitter(image.Pt(tx, ty), 6)
-				sd.executor.TapField(jPt.X, jPt.Y, 8.0)
+				sd.executor.TapCastField(jPt.X, jPt.Y, 8.0)
 				time.Sleep(50 * time.Millisecond)
 			}
 		}
@@ -428,7 +470,7 @@ func (sd *SpellDeployer) deployPointSpell(unit strategy.Unit, slot *TrackedSlot,
 
 	for idx, pt := range points {
 		sd.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target point")
-		sd.executor.TapField(pt.X, pt.Y, 8.0)
+		sd.executor.TapCastField(pt.X, pt.Y, 8.0)
 		if idx < len(points)-1 {
 			sd.executor.client.HumanSleep(80, 20)
 		}
@@ -482,6 +524,22 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 	}
 
 	maxSpells := sd.resolveSpellCount(unit)
+
+	// A trusted zero is not proof the card is spent. Live 2026-11-11 the rage
+	// spell's badge read 0 while the card sat identified and full on the bar
+	// (x=583), so the phase logged "measurably empty ... firing no taps" and the
+	// whole card was forgotten — the user's "doesn't place all spells". The
+	// card's VISUAL state outranks a zero count here: if it is not visually
+	// empty, cast ONE probe and let VerifyAndReconcile top up from there (it
+	// stops the moment the card reads or looks empty).
+	if maxSpells == 0 && sd.troopCounter != nil && slot != nil {
+		if _, _, empty := sd.liveCountAndEmpty(slot); !empty {
+			sd.logger.Warn().
+				Str("unit", unit.Name).
+				Msg("spell count read zero but the card is not visually empty; casting one probe spell and reconciling on the visual check")
+			maxSpells = 1
+		}
+	}
 
 	// Special layout for 5 rage spells: 3 on Line A, 2 on Line B
 	if isRage && maxSpells == 5 {
@@ -541,7 +599,7 @@ func (sd *SpellDeployer) deployLineSpell(unit strategy.Unit, slot *TrackedSlot, 
 
 	for idx, pt := range points {
 		sd.logger.Info().Str("unit", unit.Name).Int("idx", idx).Interface("pt", pt).Msg("tapping spell target line")
-		sd.executor.TapField(pt.X, pt.Y, 8.0)
+		sd.executor.TapCastField(pt.X, pt.Y, 8.0)
 		if idx < len(points)-1 {
 			sd.executor.client.HumanSleep(80, 20)
 		}
@@ -577,7 +635,7 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 	deployed := 0
 	for idx, pt := range pointsA {
 		sd.logger.Info().Int("idx", idx).Interface("pt", pt).Msg("tapping rage spell Line A")
-		sd.executor.TapField(pt.X, pt.Y, 8.0)
+		sd.executor.TapCastField(pt.X, pt.Y, 8.0)
 		sd.executor.client.HumanSleep(80, 20)
 		deployed++
 	}
@@ -597,7 +655,7 @@ func (sd *SpellDeployer) deployRageSpecial(slot *TrackedSlot, edgeA, edgeB Manua
 	// iteration — that race condition was what dropped Line B tap #2.
 	for idx, pt := range pointsB {
 		sd.logger.Info().Int("idx", idx+3).Interface("pt", pt).Msg("tapping rage spell Line B")
-		sd.executor.TapField(pt.X, pt.Y, 8.0)
+		sd.executor.TapCastField(pt.X, pt.Y, 8.0)
 		deployed++
 		sd.executor.client.HumanSleep(80, 20)
 	}
@@ -739,14 +797,18 @@ func (sd *SpellDeployer) resolveSpellCount(unit strategy.Unit) int {
 	}
 
 	switch {
-	case authored >= 0 && haveMeasured && authored > measured:
-		sd.logger.Warn().
-			Str("unit", unit.Name).
-			Int("authored", authored).
-			Int("measured", measured).
-			Msg("authored spell count exceeds what the card measurably carries; clamping to the measured count")
-		return measured
 	case authored >= 0:
+		// A strategy-authored count outranks the OCR badge. The clamp to the
+		// measured count used to sit above this case, and it is exactly what
+		// under-deployed the spells: the spell badge is not readable at
+		// 1024x768 (a "5" reads 1, an "11" reads 1), so clamping 5 down to a
+		// misread 1 cast ONE rage spell and abandoned the other four — live
+		// 2026-11-11, the user's "it didn't place 4 rage spells".
+		//
+		// The safety that clamp provided is still here: the deploy budget, the
+		// per-round no-progress stop and the visual-empty check all bound the
+		// fires, and an authored count is the user saying how many the card
+		// carries. `amount: All` (below) keeps using the measurement.
 		return authored
 	case haveMeasured:
 		if measured == 0 {
@@ -1202,7 +1264,7 @@ func (sd *SpellDeployer) deployFormulaLines(unit strategy.Unit, slot *TrackedSlo
 				Int("idx", idx+deployed).
 				Interface("pt", pt).
 				Msg("tapping formula lines spell")
-			sd.executor.TapField(pt.X, pt.Y, 8.0)
+			sd.executor.TapCastField(pt.X, pt.Y, 8.0)
 			deployed++
 			sd.executor.client.HumanSleep(80, 20)
 		}
@@ -1487,7 +1549,7 @@ func (sd *SpellDeployer) tapSeries(unit strategy.Unit, points []image.Point, _ i
 			Int("idx", idx).
 			Interface("pt", pt).
 			Msg("tapping spell formula point")
-		sd.executor.TapField(pt.X, pt.Y, 8.0)
+		sd.executor.TapCastField(pt.X, pt.Y, 8.0)
 		sd.executor.client.HumanSleep(80, 20)
 	}
 }

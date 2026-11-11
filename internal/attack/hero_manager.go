@@ -1300,7 +1300,36 @@ func (hm *HeroManager) DeployTroops(
 // check (the drop animates ~1s). NO blind re-tap: a second tap while the machine
 // is dropping can hit the deployed machine (the retap-kills-siege bug the
 // single-tap path exists to avoid).
-func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) {
+// siegeVerdict is what one settled post-tap read of a siege card proves.
+//
+// Only siegeStillOnCard is evidence the machine was NOT placed: the count
+// label still shows it. Anything unreadable is siegeUnknown and is treated as
+// placed, because re-tapping a machine that did drop destroys it.
+type siegeVerdict int
+
+const (
+	siegeCommitted   siegeVerdict = iota // the machine left the card: never tap again
+	siegeUnknown                         // no usable reading: assume down
+	siegeStillOnCard                     // the label still shows the machine: the tap was refused
+)
+
+// siegeDropVerdict classifies a settled read. Kept pure so the rule can be
+// pinned by a test instead of by a live battle.
+func siegeDropVerdict(trusted bool, count int, ratioOK bool, ratio float64) siegeVerdict {
+	switch {
+	case trusted && count == 0:
+		return siegeCommitted
+	case ratioOK && ratio <= heroConsumedRatio:
+		// A spent card keeps a dimmed silhouette.
+		return siegeCommitted
+	case trusted && count > 0:
+		return siegeStillOnCard
+	default:
+		return siegeUnknown
+	}
+}
+
+func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) siegeVerdict {
 	// One settled look, not two. A spent siege card keeps a dimmed silhouette
 	// and the next queued icon can sit on the same slot, so the old pre/post
 	// delta pair proved no more than a single settled read plus the count label
@@ -1311,6 +1340,7 @@ func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) {
 	time.Sleep(250 * time.Millisecond)
 	ratio, ratioOK := hm.executor.CaptureSettledSlotRatio(hm.w, slot)
 	count, trusted, _ := hm.liveCountAndEmpty(slot)
+	verdict := siegeDropVerdict(trusted, count, ratioOK, ratio)
 	switch {
 	case trusted && count == 0:
 		hm.logger.Info().Str("unit", unit.Name).Msg("reconcile: siege count label gone; slot drained")
@@ -1318,6 +1348,12 @@ func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) {
 		hm.logger.Info().Str("unit", unit.Name).
 			Float64("post_ratio", ratio).
 			Msg("reconcile: siege slot dimmed after deploy tap")
+	case verdict == siegeStillOnCard:
+		hm.logger.Warn().Str("unit", unit.Name).
+			Float64("post_ratio", ratio).
+			Int("count", count).
+			Bool("count_read_trusted", trusted).
+			Msg("siege card still carries the machine after the deploy tap; the game refused that ground (nothing was placed, so one retry elsewhere cannot hit a deployed machine)")
 	case ratioOK:
 		hm.logger.Warn().Str("unit", unit.Name).
 			Float64("post_ratio", ratio).
@@ -1327,6 +1363,52 @@ func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) {
 	default:
 		hm.logger.Warn().Str("unit", unit.Name).Msg("siege settle check could not capture the screen; deployment unconfirmed")
 	}
+	return verdict
+}
+
+// siegeFallbackPoint is the ground a refused siege tap retries on: the middle
+// of the battle's deploy line (troops were accepted there seconds ago), or the
+// strategy edge's midpoint when no line exists.
+func (hm *HeroManager) siegeFallbackPoint() (image.Point, bool) {
+	if len(hm.deployLine.Points) >= 2 {
+		p1, p2 := hm.deployLine.Points[0], hm.deployLine.Points[len(hm.deployLine.Points)-1]
+		return hm.executor.addJitter(image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2), 10), true
+	}
+	if edge, ok := hm.pCfg.Edges[hm.targetEdge]; ok {
+		s := ScaleEdge(edge, hm.pCfg.Width, hm.pCfg.Height, hm.w, hm.h)
+		return hm.executor.addJitter(image.Pt((s.P1.X+s.P2.X)/2, (s.P1.Y+s.P2.Y)/2), 10), true
+	}
+	return image.Point{}, false
+}
+
+// retryRefusedSiege fires the ONE retry a proven refusal earns. The caller
+// passes the verdict from the first tap: only siegeStillOnCard is a proven
+// refusal, and it means nothing was placed, so the one-tap contract
+// (slot.SiegePlaced, set by PlaceSiege) has to be released first.
+//
+// Without this the machine was silently retired: DeploySiege marked the slot
+// deployed regardless, and the sweep refuses siege slots by design, so a
+// refused tap meant the machine never entered the battle at all — the user's
+// "sometimes forgets the siege machine".
+func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, verdict siegeVerdict) bool {
+	if verdict != siegeStillOnCard {
+		return false
+	}
+	alt, ok := hm.siegeFallbackPoint()
+	if !ok {
+		hm.logger.Warn().Str("unit", unit.Name).Msg("siege refused its ground and no fallback line exists; the machine stays on the card")
+		return false
+	}
+	hm.logger.Warn().
+		Str("unit", unit.Name).
+		Interface("retry_at", alt).
+		Msg("siege: retrying the refused placement once on the deploy line (the card still holds the machine, so nothing was placed)")
+	if slot != nil {
+		slot.SiegePlaced = false
+	}
+	hm.executor.PlaceSiege(slot, alt, 12.0)
+	hm.confirmSiegeDrop(unit, slot)
+	return true
 }
 
 func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
@@ -1356,14 +1438,16 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 			Interface("tap", tap).
 			Msg("siege placed on the user's pinned hero point (the one and only placement tap)")
 		hm.executor.PlaceSiege(slot, tap, 12.0)
-		hm.confirmSiegeDrop(unit, slot)
+		verdict := hm.confirmSiegeDrop(unit, slot)
+		hm.retryRefusedSiege(unit, slot, verdict)
 		markDone()
 		return true
 	}
 
 	if entry, ok := hm.formulaEntry(unit.Name); ok {
 		if hm.deploySiegeFromFormula(unit, slot, entry) {
-			hm.confirmSiegeDrop(unit, slot)
+			verdict := hm.confirmSiegeDrop(unit, slot)
+			hm.retryRefusedSiege(unit, slot, verdict)
 			markDone()
 			return true
 		}
@@ -1531,6 +1615,7 @@ func (hm *HeroManager) liveCountAndEmpty(slot *TrackedSlot) (int, bool, bool) {
 //     It is deliberately small and labelled `count_read_trusted=false` in
 //     the log so it can never be mistaken for a measurement; the reconcile
 //     loop is what guarantees the card actually drains.
+//
 // resolveLiveTapCount is the measurement-blind entry point: the count alone.
 // Kept for callers (and tests) that do not care how the number was obtained.
 func (hm *HeroManager) resolveLiveTapCount(unit strategy.Unit, slot *TrackedSlot, liveCount int, liveTrusted bool, detectedCount int) int {

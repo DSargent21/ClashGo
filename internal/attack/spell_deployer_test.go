@@ -179,18 +179,29 @@ func TestResolveSpellCount_MeasuredZeroFiresNothing(t *testing.T) {
 	}
 }
 
-func TestResolveSpellCount_AuthoredCountClampedToMeasured(t *testing.T) {
-	// The strategy asks for 10 casts but the card measurably carries 4:
-	// firing 10 lands six casts with an empty card selected.
-	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, map[int]int{100: 4}, []*TrackedSlot{spellSlot("rage spell", 100)})
-	unit := strategy.Unit{Name: "Rage Spell", Amount: "10"}
-	if got := sd.resolveSpellCount(unit); got != 4 {
-		t.Fatalf("authored 10 with measured 4 resolved to %d taps, want 4", got)
+// TestResolveSpellCount_AuthoredCountBeatsMisreadBadge pins the contract that
+// fixed the user's "it didn't place 4 rage spells".
+//
+// This used to clamp an authored count DOWN to the measured one, which sounds
+// safe and is not: the spell badge is unreadable at 1024x768, so a card holding
+// 5 reads as 1 and the clamp turned "cast 5" into "cast 1" — four rage spells
+// left on the bar, every battle. An authored count is the user telling the bot
+// what the card carries; the measurement only decides for `amount: All`.
+func TestResolveSpellCount_AuthoredCountBeatsMisreadBadge(t *testing.T) {
+	sd, _ := newSpellTestHarness(t, PrecisionConfig{}, nil, map[int]int{100: 1}, []*TrackedSlot{spellSlot("rage spell", 100)})
+	unit := strategy.Unit{Name: "Rage Spell", Amount: "5"}
+	if got := sd.resolveSpellCount(unit); got != 5 {
+		t.Fatalf("authored 5 with a misread badge of 1 resolved to %d taps, want 5", got)
 	}
 	// Authored below the measurement stays authored.
 	unit.Amount = "3"
 	if got := sd.resolveSpellCount(unit); got != 3 {
-		t.Fatalf("authored 3 with measured 4 resolved to %d taps, want 3", got)
+		t.Fatalf("authored 3 with measured 1 resolved to %d taps, want 3", got)
+	}
+	// `All` still follows the measurement, so the empty-card path is unchanged.
+	unit.Amount = "All"
+	if got := sd.resolveSpellCount(unit); got != 1 {
+		t.Fatalf("Amount=All with measured 1 resolved to %d taps, want 1", got)
 	}
 }
 
@@ -266,6 +277,20 @@ func TestDeployLineSpell_IceUsesLineB_AllTapsNearLineB(t *testing.T) {
 	}
 }
 
+// castGuard mirrors TapExecutor.avoidUIButtons on this harness screen (732 px
+// tall): a cast aimed into the bottom-left End Battle / Boost overlay is lifted
+// to y = cutoffY-15 before it is tapped. Tests compare against the point the tap
+// ought to have been, so they must apply the same guard the production tap does.
+func castGuard(pt image.Point) image.Point {
+	h := 732.0
+	cutoffY := int(h * 0.69)
+	cutoffX := int(h * 0.60)
+	if pt.X < cutoffX && pt.Y > cutoffY {
+		return image.Pt(pt.X, cutoffY-15)
+	}
+	return pt
+}
+
 func TestDeployLineSpell_RageSpecial_3OnA_2OnB(t *testing.T) {
 	pCfg := testLinePCfg()
 	sd, tl := newSpellTestHarness(t, pCfg, nil, nil, []*TrackedSlot{spellSlot("rage spell", 100)})
@@ -277,20 +302,22 @@ func TestDeployLineSpell_RageSpecial_3OnA_2OnB(t *testing.T) {
 	}
 	lineA := pCfg.SpellEdgesA["BottomRight"]
 	lineB := pCfg.SpellEdgesB["BottomRight"]
-	onA, onB := 0, 0
-	for _, pt := range tl.fieldTaps() {
-		switch {
-		case distToSegment(pt, lineA.P1, lineA.P2) <= 12:
-			onA++
-		case distToSegment(pt, lineB.P1, lineB.P2) <= 12:
-			onB++
-		default:
-			t.Errorf("tap at %v is on neither Line A (%.1fpx) nor Line B (%.1fpx)", pt,
-				distToSegment(pt, lineA.P1, lineA.P2), distToSegment(pt, lineB.P1, lineB.P2))
-		}
+	// Order is Line A (start, centre, end) then Line B (start, end). Each point is
+	// compared AFTER the cast guard, because a cast aimed into the bottom-left
+	// End Battle / Boost overlay is lifted out of it by TapCastField.
+	midA := image.Pt((lineA.P1.X+lineA.P2.X)/2, (lineA.P1.Y+lineA.P2.Y)/2)
+	want := []image.Point{
+		castGuard(lineA.P1), castGuard(midA), castGuard(lineA.P2),
+		castGuard(lineB.P1), castGuard(lineB.P2),
 	}
-	if onA != 3 || onB != 2 {
-		t.Fatalf("rage special split = %d on Line A / %d on Line B, want 3/2", onA, onB)
+	taps := tl.fieldTaps()
+	if len(taps) != 5 {
+		t.Fatalf("got %d taps, want 5", len(taps))
+	}
+	for i, pt := range taps {
+		if d := dist(pt, want[i]); d > 12 {
+			t.Errorf("tap %d at %v is %.1fpx from its slot in the 3-on-A/2-on-B layout (%v)", i, pt, d, want[i])
+		}
 	}
 	// The slot must be re-selected between the A and B drops or the
 	// second drop falls on an empty cursor (the historical dropped-tap bug).
@@ -328,7 +355,10 @@ func TestDeployLineSpell_RageSpecial_PlacesCastsOnLineEndsAndCentre(t *testing.T
 	// Tap order is Line A (start, centre, end) then Line B (start, end) — the
 	// same order the taps are logged in, so a cast that goes missing is visible
 	// in the log rather than averaged away.
-	want := []image.Point{lineA.P1, midA, lineA.P2, lineB.P1, lineB.P2}
+	want := []image.Point{
+		castGuard(lineA.P1), castGuard(midA), castGuard(lineA.P2),
+		castGuard(lineB.P1), castGuard(lineB.P2),
+	}
 	for i, pt := range taps {
 		if d := dist(pt, want[i]); d > 12 {
 			t.Errorf("tap %d at %v is %.1fpx from where the end/centre/end layout puts it (%v); jitter is ≤ 8 px per axis", i, pt, d, want[i])
@@ -338,7 +368,7 @@ func TestDeployLineSpell_RageSpecial_PlacesCastsOnLineEndsAndCentre(t *testing.T
 	// And the spread itself: the two ends of Line A are the full length of the
 	// line apart, which is the widest gap this geometry can carry. An insetted
 	// layout would fall 20% short of it.
-	lineALength := dist(lineA.P1, lineA.P2)
+	lineALength := dist(want[0], want[2])
 	if got := dist(taps[0], taps[2]); got < 0.75*lineALength {
 		t.Errorf("Line A's end casts are %.0fpx apart, want the full line (~%.0fpx): the casts are still insetted", got, lineALength)
 	}
@@ -1150,11 +1180,34 @@ func TestPhaseOffsetFallback_PerUnitOffsetWinsOverPhase(t *testing.T) {
 
 	// offset 10 → 10/300 ≈ 3% inward: taps stay near the raw edge line.
 	// With phase 130 wrongly applied they'd sit ~200px above it.
+	//
+	// One exception is now expected and required: a cast that lands inside the
+	// bottom-left End Battle / Boost overlay is moved up out of it by
+	// TapCastField (live 2026-11-11 the pinned BottomLeft Line A ends at
+	// (418,542), inside that overlay). This harness screen is 732 px tall, so
+	// that means y = int(732*0.69)-15 = 490 for x < int(732*0.60) = 439. Those
+	// taps are checked to be exactly on the guard line instead of on the edge;
+	// everything outside the overlay must still sit on the offset line.
+	harnessH := 732.0 // newSpellTestHarness screen height
+	cutoffY := int(harnessH * 0.69)
+	cutoffX := int(harnessH * 0.60)
 	edge := pCfg.Edges["BottomRight"]
-	for i, pt := range tl.fieldTaps() {
+	taps := tl.fieldTaps()
+	guarded := 0
+	for i, pt := range taps {
+		if pt.X < cutoffX && pt.Y <= cutoffY {
+			if pt.Y != cutoffY-15 {
+				t.Fatalf("tap %d at %v sits inside the bottom-left UI overlay; it must be lifted to y=%d", i, pt, cutoffY-15)
+			}
+			guarded++
+			continue
+		}
 		if d := distToSegment(pt, edge.P1, edge.P2); d > 40 {
 			t.Fatalf("tap %d at %v is %.0fpx off the edge — per-unit Offset=10 should have won over phase 130", i, pt, d)
 		}
+	}
+	if guarded == 0 {
+		t.Fatalf("no tap was lifted out of the UI overlay, so the guard never ran (taps=%v)", taps)
 	}
 }
 

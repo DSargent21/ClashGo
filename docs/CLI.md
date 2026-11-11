@@ -8,23 +8,32 @@ It runs the full bot engine without WebKit, web assets, or GUI overhead. Ideal f
 
 ## ⚡ Quick Start
 
-### 1. Build the Binary
+### 1. Install the Prebuilt Binary
+```bash
+curl -fsSL https://raw.githubusercontent.com/DSargent21/ClashGo/main/tools/install.sh | bash -s -- --cli
+```
+
+Installs the self-contained release (bundled OpenCV dylibs + `assets/`) and writes a launcher to `~/.local/bin/bot_cli`, so it runs from any directory without a source checkout or Homebrew. Override the locations with `--bin-dir <dir>` / `--data-dir <dir>`, install a specific tag with `--version v1.0.0`, and see `--help` for the rest. Updates keep your edited `assets/` tree unless `--force` is passed, and a broken archive rolls back to the previous binary.
+
+Downloads are verified against the release `SHA256SUMS` (fetched from the same GitHub release over HTTPS). That catches corrupted or mirror-swapped files; it is not a signature over the release.
+
+### 2. Build from Source (alternative)
 ```bash
 make build-cli
 ```
 Binary output: `build/bin/bot_cli`
 
-### 2. Verify ADB Device Connection
+### 3. Verify ADB Device Connection
 ```bash
 ./build/bin/bot_cli -devices
 ```
 
-### 3. Check Available Strategies
+### 4. Check Available Strategies
 ```bash
 ./build/bin/bot_cli -strategies
 ```
 
-### 4. Run Farming with Maximum Performance
+### 5. Run Farming with Maximum Performance
 ```bash
 ./build/bin/bot_cli -perf -gold 600000 -elixir 600000
 ```

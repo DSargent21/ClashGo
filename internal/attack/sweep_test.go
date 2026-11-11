@@ -120,3 +120,58 @@ func distance(a, b image.Point) float64 {
 	dy := float64(a.Y - b.Y)
 	return math.Hypot(dx, dy)
 }
+
+// TestResolveSweepLine_PutsSpellsOnThePinnedSpellLines pins the fix for the
+// live 2026-11-11 complaint "spells are not on the two lines I showed".
+//
+// The rage card the strategy did not declare was swept along the TROOP edge
+// (144,394)->(359,558) while the user's pinned spell lines for that side were
+// Line A (324,309)->(493,462) and Line B (204,321)->(369,478). A spell must be
+// cast on a spell line: rage on A, anything else on B.
+func TestResolveSweepLine_PutsSpellsOnThePinnedSpellLines(t *testing.T) {
+	pCfg := PrecisionConfig{
+		Width: 1024, Height: 768,
+		SpellEdgesA: map[string]ManualEdge{
+			"BottomLeft": {P1: image.Pt(204, 321), P2: image.Pt(369, 478)},
+		},
+		SpellEdgesB: map[string]ManualEdge{
+			"BottomLeft": {P1: image.Pt(286, 273), P2: image.Pt(435, 408)},
+		},
+	}
+	// The battle's deploy line is the troop edge for the same side.
+	deployLine := DeployLine{Points: []image.Point{image.Pt(144, 394), image.Pt(359, 558)}}
+	sw := &Sweeper{pCfg: pCfg, deployLine: deployLine, logger: zerolog.Nop()}
+
+	cases := []struct {
+		slot *TrackedSlot
+		want ManualEdge
+	}{
+		{&TrackedSlot{TroopSlot: TroopSlot{Category: "Spell"}, UnitName: "rage spell"}, pCfg.SpellEdgesA["BottomLeft"]},
+		{&TrackedSlot{TroopSlot: TroopSlot{Category: "Spell"}, UnitName: "ice spell"}, pCfg.SpellEdgesB["BottomLeft"]},
+	}
+	for _, c := range cases {
+		p1, p2, ok := sw.resolveSweepLine(c.slot, false)
+		if !ok {
+			t.Fatalf("%s: no sweep line", c.slot.UnitName)
+		}
+		if p1 != c.want.P1 || p2 != c.want.P2 {
+			t.Errorf("%s swept to (%d,%d)->(%d,%d), want its pinned spell line (%d,%d)->(%d,%d)",
+				c.slot.UnitName, p1.X, p1.Y, p2.X, p2.Y, c.want.P1.X, c.want.P1.Y, c.want.P2.X, c.want.P2.Y)
+		}
+	}
+
+	// A troop slot keeps the troop line: this fix must not move troops.
+	troop := &TrackedSlot{TroopSlot: TroopSlot{Category: "Troop"}, UnitName: "balloon"}
+	p1, p2, ok := sw.resolveSweepLine(troop, false)
+	if !ok || p1 != deployLine.Points[0] || p2 != deployLine.Points[1] {
+		t.Errorf("troop swept to (%d,%d)->(%d,%d), want the troop line", p1.X, p1.Y, p2.X, p2.Y)
+	}
+
+	// No spell pins at all: fall through to the troop line rather than refusing
+	// to place the card.
+	bare := &Sweeper{pCfg: PrecisionConfig{Width: 1024, Height: 768}, deployLine: deployLine, logger: zerolog.Nop()}
+	p1, p2, ok = bare.resolveSweepLine(cases[0].slot, false)
+	if !ok || p1 != deployLine.Points[0] || p2 != deployLine.Points[1] {
+		t.Errorf("spell with no pins swept to (%d,%d)->(%d,%d), want the fallback troop line", p1.X, p1.Y, p2.X, p2.Y)
+	}
+}

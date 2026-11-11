@@ -43,34 +43,55 @@
 # so Contents/Frameworks is a couple hundred MB and the DMG grows with it. That
 # is the price of launching without the user installing anything.
 #
+# Two layouts are supported, because the project ships two artifacts that both
+# link OpenCV:
+#
+#   app mode (GUI)   <bundle>.app/Contents/MacOS/ClashGO
+#                    <bundle>.app/Contents/Frameworks/*.dylib
+#   dir mode (CLI)   <dir>/bot_cli
+#                    <dir>/lib/*.dylib
+#
 # Usage:
 #   tools/bundle_dylibs.sh build/bin/ClashGO.app
+#   tools/bundle_dylibs.sh build/bin/cli-stage
 #
 # Runs after stage-app (assets injected, first signature) and before package /
-# build-zip, so both artifacts carry the Frameworks dir.
+# build-zip, so both artifacts carry the Frameworks dir. Dir mode runs on the
+# CLI archive stage so a downloaded bot_cli does not need Homebrew OpenCV.
 
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
   cat >&2 <<EOF
-usage: $(basename "$0") <path/to/ClashGO.app>
+usage: $(basename "$0") <path/to/ClashGO.app | path/to/cli-dir>
 
-  Copies every non-system dylib the app needs into
-  <app>/Contents/Frameworks and rewrites the load commands so the bundle no
-  longer depends on where OpenCV was installed.
+  Copies every non-system dylib the binary needs into <app>/Contents/Frameworks
+  (or <dir>/lib) and rewrites the load commands so the artifact no longer
+  depends on where OpenCV was installed.
 EOF
   exit 64
 fi
 
 APP="$1"
-BIN="$APP/Contents/MacOS/ClashGO"
-FW="$APP/Contents/Frameworks"
+if [[ "$APP" == *.app ]]; then
+  MODE=app
+  BIN="$APP/Contents/MacOS/ClashGO"
+  FW="$APP/Contents/Frameworks"
+  EXE_REF='@loader_path/../Frameworks'
+  EXE_RPATH='@executable_path/../Frameworks'
+else
+  MODE=dir
+  BIN="$APP/bot_cli"
+  FW="$APP/lib"
+  EXE_REF='@loader_path/lib'
+  EXE_RPATH='@executable_path/lib'
+fi
 
 log()  { printf "  \033[1;32m\u25b6\033[0m %s\n" "$*" >&2; }
 warn() { printf "  \033[1;33m\u26a0\033[0m %s\n" "$*" >&2; }
 fail() { printf "  \033[1;31m\u2716\033[0m %s\n" "$*" >&2; exit "${2:-1}"; }
 
-[[ -d "$APP" ]] || fail "app bundle not found: $APP" 66
+[[ -d "$APP" ]] || fail "artifact not found: $APP" 66
 [[ -x "$BIN" ]] || fail "no executable at $BIN" 66
 
 # Libraries that exist on every macOS install and must never be copied: the
@@ -259,7 +280,7 @@ while ((${#queue[@]} > 0)); do
 done
 
 if ((${#libs[@]} == 0)); then
-  log "nothing to bundle: the app links only system libraries"
+  log "nothing to bundle: the binary links only system libraries"
   exit 0
 fi
 
@@ -332,7 +353,7 @@ for p in "${libs[@]}"; do
   fi
   total=$((total + $(stat -f%z "$dest" 2>/dev/null || echo 0)))
 done
-log "copied ${#libs[@]} dylibs ($((total / 1000000)) MB) into Contents/Frameworks"
+log "copied ${#libs[@]} dylibs ($((total / 1000000)) MB) into $FW"
 
 # Recreate symlinks for known aliases so any reference by alias name resolves in $FW
 while IFS= read -r line; do
@@ -370,7 +391,7 @@ rewrite_file() {
     [[ "$base" == "$self" ]] && continue
     canonbase="$(map_lookup "$refmap" "$base")" || continue  # not part of the closure: leave it
     case "$kind" in
-      exe) want="@loader_path/../Frameworks/$canonbase" ;;
+      exe) want="$EXE_REF/$canonbase" ;;
       *)   want="@loader_path/$canonbase" ;;
     esac
     [[ "$ref" == "$want" ]] && continue
@@ -398,8 +419,8 @@ done
 # Belt and braces: an rpath that lands inside the bundle. Nothing after the
 # rewrite needs it (@loader_path covers every reference), so a failure here is
 # only noise — which is why it is a warn, not a fail.
-install_name_tool -add_rpath "@executable_path/../Frameworks" "$BIN" 2>/dev/null \
-  || warn "could not add @executable_path/../Frameworks rpath (references are already rewritten)"
+install_name_tool -add_rpath "$EXE_RPATH" "$BIN" 2>/dev/null \
+  || warn "could not add $EXE_RPATH rpath (references are already rewritten)"
 
 strip_external_rpaths "$BIN"
 for p in "${libs[@]}"; do strip_external_rpaths "$FW/$(basename "$p")"; done
@@ -417,11 +438,21 @@ for p in "${libs[@]}"; do
 done
 
 # ---- 4. Re-sign the bundle and prove the job is done. ----------------
-log "re-signing bundle (ad-hoc)"
-codesign --force --deep -s - "$APP" >/dev/null 2>&1 || warn "codesign --force --deep failed"
-codesign --verify --deep --strict "$APP" >/dev/null 2>&1 \
-  && log "bundle signature verified" \
-  || warn "codesign --verify failed — the shipped app may be flagged"
+if [[ "$MODE" == app ]]; then
+  log "re-signing bundle (ad-hoc)"
+  codesign --force --deep -s - "$APP" >/dev/null 2>&1 || warn "codesign --force --deep failed"
+  codesign --verify --deep --strict "$APP" >/dev/null 2>&1 \
+    && log "bundle signature verified" \
+    || warn "codesign --verify failed — the shipped app may be flagged"
+else
+  # A bare Mach-O still has to carry a valid ad-hoc signature on arm64; the
+  # dylibs were signed in the loop above, so only the executable is left.
+  log "re-signing executable (ad-hoc)"
+  codesign --force -s - "$BIN" >/dev/null 2>&1 || warn "codesign --force failed"
+  codesign --verify --strict "$BIN" >/dev/null 2>&1 \
+    && log "executable signature verified" \
+    || warn "codesign --verify failed — the shipped binary may be flagged"
+fi
 
 log "checking every reference resolves inside the bundle"
 leftovers=0
@@ -498,4 +529,4 @@ if [[ "${CLASHGO_BUNDLE_SMOKE:-0}" == "1" ]]; then
   log "smoke: loader accepted all load commands"
 fi
 
-log "self-contained: $(du -sh "$FW" | cut -f1) in Frameworks, no external dylib references"
+log "self-contained: $(du -sh "$FW" | cut -f1) of dylibs, no external references"

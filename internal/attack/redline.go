@@ -16,6 +16,10 @@ type RedZone struct {
 	BBox     image.Rectangle
 	Valid    bool
 	Contours int
+	// Confidence is the detector's own certainty in [0,1]. This detector leaves
+	// it at zero: it has no comparable measurement to report, and a number that is
+	// always zero is honest about that while a guessed one would not be.
+	Confidence float64
 
 	// Polygon is the outline of the red dashed line itself, as a closed loop
 	// in live-frame coordinates. The BBox is a bounding box and says nothing
@@ -82,6 +86,36 @@ func boundaryPlausible(rect image.Rectangle, w, uiCutoff int) (bool, string) {
 // where the playfield starts.
 const resourceHudRows = yTopMin
 
+// dashFillMax bounds how much of a candidate's own bounding box the red mask may
+// cover. The no-deploy boundary is a dashed one-pixel curve, so the mask of a
+// real one fills almost none of its box; warm terrain and the resource HUD fuse
+// into solid sheets that fill theirs. Measured live 2026-11-10 at 1024x768, the
+// rejected candidate was (0,20)-(1024,652) on a mask covering 19.6% of the
+// playfield, and the frame showed no red dashes at all — the detector was
+// reading trees, rocks and roofs.
+const dashFillMax = 0.30
+
+// dashFillOK reports whether a candidate looks like a thin curve rather than a
+// filled sheet, and returns the measured fill for the log.
+//
+// It counts mask pixels inside the box rather than using ContourArea: ContourArea
+// returns the area the outline *encloses*, so a thin closed ring measures the
+// same as a solid block of the same size and the test would reject the very
+// boundary it exists to accept.
+func dashFillOK(mask gocv.Mat, rect image.Rectangle) (bool, float64) {
+	if rect.Dx() <= 0 || rect.Dy() <= 0 {
+		return false, 0
+	}
+	b := rect.Intersect(image.Rect(0, 0, mask.Cols(), mask.Rows()))
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return false, 0
+	}
+	region := mask.Region(b)
+	defer region.Close()
+	fill := float64(gocv.CountNonZero(region)) / float64(rect.Dx()*rect.Dy())
+	return fill <= dashFillMax, fill
+}
+
 // Centre is the centroid of the red outline's bounding box, used as the origin
 // to push a blocked deploy point away from.
 func (z RedZone) Centre() (int, int) {
@@ -114,6 +148,101 @@ func pointInPolygon(x, y int, poly []image.Point) bool {
 	return inside
 }
 
+// RedCandidate is one red-mask contour the detector weighed, with the verdict it
+// reached and why. Exported for cmd/redprobe: the detector's whole job is to say
+// "there is no boundary in view" without lying, and the only way to check that
+// claim is to look at the same mask and the same verdicts the bot used.
+//
+// Enclosed is the contour's ContourArea, reported separately from Fill because
+// they disagree for exactly the shapes that matter: a thin closed ring encloses
+// a base-sized area while covering almost none of it.
+type RedCandidate struct {
+	Rect     image.Rectangle
+	Fill     float64
+	Enclosed float64
+	Accepted bool
+	Reason   string
+	// Polygon is the contour itself, in live-frame coordinates. The box cannot
+	// answer "is this tap inside the no-deploy area"; the outline can, and a
+	// reviewer has to see the same shape the bot would use.
+	Polygon []image.Point
+}
+
+// redCandidateSizeOK applies the two size rules every candidate must pass: big
+// enough to be the ring around a base, and not already spanning the frame. The
+// third return says the box spans the frame, which is the solid-sheet case.
+func redCandidateSizeOK(rect image.Rectangle, w, uiCutoff int) (ok bool, reason string, spansFrame bool) {
+	if rect.Dx() < int(float64(w)*0.55) || rect.Dy() < int(float64(uiCutoff)*0.55) {
+		return false, "too small to be the ring around a base", false
+	}
+	if rect.Dx() > int(float64(w)*0.97) && rect.Dy() > int(float64(uiCutoff)*0.97) {
+		return false, "spans the frame", true
+	}
+	return true, "", false
+}
+
+// Candidates reports every red-mask contour the detector weighed, largest first,
+// with the same verdict Detect reaches. It re-runs the contour scan rather than
+// sharing Detect's loop, but every decision it makes goes through the same three
+// predicates (redCandidateSizeOK, dashFillOK, boundaryPlausible), so a change to
+// what counts as a boundary cannot apply to one and not the other.
+func (r *RedLineDetector) Candidates(screen gocv.Mat, uiCutoff int) []RedCandidate {
+	h, w := screen.Rows(), screen.Cols()
+	roi := screen
+	if uiCutoff < h {
+		roi = screen.Region(image.Rect(0, 0, w, uiCutoff))
+		defer roi.Close()
+	}
+	mask := r.detectRedMask(roi)
+	defer mask.Close()
+
+	contours := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+	if contours.Size() == 0 {
+		return nil
+	}
+
+	type sized struct {
+		rect image.Rectangle
+		area float64
+		poly []image.Point
+	}
+	var boxes []sized
+	for i := 0; i < contours.Size(); i++ {
+		cnt := contours.At(i)
+		area := gocv.ContourArea(cnt)
+		if area < 400 {
+			continue
+		}
+		boxes = append(boxes, sized{rect: gocv.BoundingRect(cnt), area: area, poly: contourPoints(cnt)})
+	}
+	sort.Slice(boxes, func(i, j int) bool { return boxes[i].area > boxes[j].area })
+
+	out := make([]RedCandidate, 0, len(boxes))
+	for _, b := range boxes {
+		c := RedCandidate{Rect: b.rect, Enclosed: b.area, Polygon: b.poly}
+		sizeOK, sizeWhy, spansFrame := redCandidateSizeOK(b.rect, w, uiCutoff)
+		fillOK, fill := dashFillOK(mask, b.rect)
+		c.Fill = fill
+		switch {
+		case !sizeOK:
+			c.Reason = sizeWhy
+			if spansFrame {
+				c.Reason = "spans the frame"
+			}
+		case !fillOK:
+			c.Reason = fmt.Sprintf("solid sheet (fill %.2f of its own box), not a dashed boundary", fill)
+		default:
+			if plausible, why := boundaryPlausible(b.rect, w, uiCutoff); !plausible {
+				c.Reason = why
+			} else {
+				c.Accepted = true
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // RedLineDetector finds the red deployment boundary on screen.
 type RedLineDetector struct {
 	logger zerolog.Logger
@@ -131,10 +260,12 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 	h, w := screen.Rows(), screen.Cols()
 
 	roi := screen
-	if uiCutoff < h {
+	if uiCutoff > 0 && uiCutoff < h {
 		roi = screen.Region(image.Rect(0, 0, w, uiCutoff))
+		// Only a region is owned here. Closing the caller's frame would free a
+		// Mat the caller still owns, which is a double free once it closes it.
+		defer roi.Close()
 	}
-	defer roi.Close()
 
 	mask := r.detectRedMask(roi)
 	defer mask.Close()
@@ -175,14 +306,31 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 	minH := int(float64(uiCutoff) * 0.55)
 
 	rejected := ""
+	// solidSheet records that every candidate was a filled blob rather than a
+	// dashed curve. That is the expected view at the pinned zoom (the camera
+	// sits inside the map, so the base and its terrain fill the frame and the
+	// no-deploy ring is off-screen), which is worth an Info, not a WRN.
+	solidSheet := false
 	for _, b := range boxes {
 		rect := b.rect
 
-		if rect.Dx() < minW || rect.Dy() < minH {
+		// Size first, then fill. A contour that already spans the frame is a sheet
+		// before any fill test runs, so it has to set the sheet flag here or the
+		// union path below is the only place that can name it — and then the Info
+		// branch never fires. A merely too-small contour leaves rejected alone:
+		// boxes are sorted largest first, so the last one is the least interesting
+		// and naming it would misreport the reason.
+		if sizeOK, sizeWhy, spansFrame := redCandidateSizeOK(rect, w, uiCutoff); !sizeOK {
+			if spansFrame {
+				solidSheet = true
+				rejected = fmt.Sprintf("(%d,%d)-(%d,%d): %s", rect.Min.X, rect.Min.Y, rect.Max.X, rect.Max.Y, sizeWhy)
+			}
 			continue
 		}
 
-		if rect.Dx() > int(float64(w)*0.97) && rect.Dy() > int(float64(uiCutoff)*0.97) {
+		if fillOK, fill := dashFillOK(mask, rect); !fillOK {
+			solidSheet = true
+			rejected = fmt.Sprintf("(%d,%d)-(%d,%d): solid sheet (fill %.2f of its own box), not a dashed boundary", rect.Min.X, rect.Min.Y, rect.Max.X, rect.Max.Y, fill)
 			continue
 		}
 
@@ -231,7 +379,11 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 		// them), so the union is only usable when the polygon's own box says
 		// the same thing. Otherwise fall through to "no boundary known"
 		// rather than hand a mismatched outline to Inside().
-		if ok, why := boundaryPlausible(combined, w, uiCutoff); ok && boxes[0].rect == combined {
+		fillOK, fill := dashFillOK(mask, boxes[0].rect)
+		if !fillOK {
+			solidSheet = true
+			rejected = fmt.Sprintf("(%d,%d)-(%d,%d): solid sheet (fill %.2f of its own box), not a dashed boundary", combined.Min.X, combined.Min.Y, combined.Max.X, combined.Max.Y, fill)
+		} else if ok, why := boundaryPlausible(combined, w, uiCutoff); ok && boxes[0].rect == combined {
 			r.logger.Info().
 				Int("x", xMin).Int("y", yMin).
 				Int("w", combined.Dx()).Int("h", combined.Dy()).
@@ -252,9 +404,21 @@ func (r *RedLineDetector) Detect(screen gocv.Mat, uiCutoff int) RedZone {
 		}
 	}
 
+	// A solid sheet is not a failed measurement: at the pinned zoom the camera
+	// sits inside the map, so the base and its terrain fill the frame and the
+	// no-deploy ring is off-screen. The deploy path's SafeGroundRect is the
+	// right answer there. Keep the WRN for the case that IS a regression: a thin
+	// closed curve was found and the edge/HUD gate threw it away.
+	if solidSheet {
+		r.logger.Info().
+			Str("largest_rejected", rejected).
+			Msg("no deploy boundary in view: the base and terrain fill the frame, so all visible ground is deployable (largest_rejected says what was refused)")
+		return RedZone{Valid: false}
+	}
+
 	r.logger.Warn().
 		Str("largest_rejected", rejected).
-		Msg("red zone detection failed: no contour is a plausible no-deploy boundary (see largest_rejected for why)")
+		Msg("red zone detection failed: no contour is a plausible no-deploy boundary (see largest_rejected for why) — deploying with the pinned/safe line")
 	return RedZone{Valid: false}
 }
 
@@ -307,9 +471,14 @@ func redlineKernels() (gocv.Mat, gocv.Mat, gocv.Mat) {
 	return redlineKh, redlineKv, redlineKs
 }
 
-// detectRedMask creates binary mask of red/orange/pink/magenta pixels.
-// These colors form the deployment boundary dashed line.
-func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
+// detectRedMaskBase builds the union of the red/orange HSV windows: the colours
+// the deployment boundary's dashes are drawn in.
+//
+// Separate from detectRedMask because the closes it adds destroy a 1-px line
+// running at ~37 degrees, and its 9x9 close then fuses the surviving fragments
+// with nearby decor into exactly the solid sheet the contour path rejects. Tools
+// that need the raw pixels use this form.
+func (r *RedLineDetector) detectRedMaskBase(roi gocv.Mat) gocv.Mat {
 	hsv := vision.GetMat(roi.Rows(), roi.Cols(), gocv.MatTypeCV8UC3)
 	defer vision.PutMat(hsv)
 	gocv.CvtColor(roi, &hsv, gocv.ColorBGRToHSV)
@@ -325,11 +494,19 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	m5 := vision.GetMatFrom(hsv)
 	defer vision.PutMat(m5)
 
-	gocv.InRangeWithScalar(hsv, gocv.NewScalar(0, 100, 100, 0), gocv.NewScalar(12, 255, 255, 0), &m1)
-	gocv.InRangeWithScalar(hsv, gocv.NewScalar(168, 100, 100, 0), gocv.NewScalar(180, 255, 255, 0), &m2)
-	gocv.InRangeWithScalar(hsv, gocv.NewScalar(10, 120, 120, 0), gocv.NewScalar(24, 255, 255, 0), &m3)
-	gocv.InRangeWithScalar(hsv, gocv.NewScalar(140, 60, 160, 0), gocv.NewScalar(170, 220, 255, 0), &m4)
-	gocv.InRangeWithScalar(hsv, gocv.NewScalar(150, 80, 140, 0), gocv.NewScalar(175, 255, 255, 0), &m5)
+	// Tightened 2026-11-10 against live 1024x768 battle frames. The old windows
+	// (0-12 hue at S>=100, plus a 10-24 orange window at S>=120) matched 50.5% of
+	// the playfield: grass, trees, gold HUD, elixir purple, roofs and lava walls.
+	// The no-deploy dashes are a saturated pure red, so the windows now demand
+	// S>=170 and stay close to hue 0/180. The orange window is gone entirely: it
+	// was the biggest single source of terrain matches and could never describe a
+	// red dashes. Magenta/pink decorations need their own windows, but also
+	// saturated.
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(0, 170, 110, 0), gocv.NewScalar(8, 255, 255, 0), &m1)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(172, 150, 110, 0), gocv.NewScalar(180, 255, 255, 0), &m2)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(5, 220, 190, 0), gocv.NewScalar(15, 255, 255, 0), &m3)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(140, 140, 170, 0), gocv.NewScalar(170, 220, 255, 0), &m4)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(150, 150, 160, 0), gocv.NewScalar(175, 255, 255, 0), &m5)
 
 	mask := gocv.NewMat()
 
@@ -344,13 +521,20 @@ func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
 	gocv.BitwiseOr(mask, m5, &tmp)
 	tmp.CopyTo(&mask)
 
-	kh, kv, ks := redlineKernels()
-	gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, kh)
-	tmp.CopyTo(&mask)
-	gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, kv)
-	tmp.CopyTo(&mask)
-	gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, ks)
-	tmp.CopyTo(&mask)
+	return mask
+}
 
+// detectRedMask is the mask Detect searches: the base windows plus axis-aligned
+// closes that fuse dashes into blobs. cmd/redprobe uses it to show a human every
+// candidate the detector weighs.
+func (r *RedLineDetector) detectRedMask(roi gocv.Mat) gocv.Mat {
+	mask := r.detectRedMaskBase(roi)
+	tmp := gocv.NewMat()
+	defer tmp.Close()
+	kh, kv, ks := redlineKernels()
+	for _, k := range []gocv.Mat{kh, kv, ks} {
+		gocv.MorphologyEx(mask, &tmp, gocv.MorphClose, k)
+		tmp.CopyTo(&mask)
+	}
 	return mask
 }

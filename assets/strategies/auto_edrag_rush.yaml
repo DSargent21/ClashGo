@@ -34,9 +34,21 @@ phases:
 
   - name: "Spells"
     units:
-      - { name: "Rage Spell", amount: "All" }
-      - { name: "Ice Spell", amount: "All" }
-    pattern: "Line" # Formula drives coords (auto_edrag_rush_formula.json → "rage spell", "ice spell")
+      # Rage first, then ice: the armed saved recipe (slot 1) carries both (live
+      # 2026-11-11: rage template-matched at x=583, ice at x=699). Rage is
+      # declared here because leaving it undeclared did not place it later — it
+      # left the card for the sweep, which cast it AFTER the heroes (~35s in) and
+      # on the troop line instead of Line A. Declaring it puts it on Line A in
+      # the Spells phase, which is where the user pinned it. If the armed recipe
+      # ever drops rage again, this line must go with it: an empty declared card
+      # trips the training.full_army_before_attack guard.
+      # Counts are AUTHORED, not "All": the spell badge is unreadable at
+      # 1024x768 (a 5 reads 1, an 11 reads 1), so "All" handed the OCR a
+      # decision it cannot make and the card was abandoned after one cast. If
+      # the armed recipe changes, update these two numbers.
+      - { name: "Rage Spell", amount: "5" }
+      - { name: "Ice Spell", amount: "11" }
+    pattern: "Line" # Formula drives coords (auto_edrag_rush_formula.json → "ice spell")
     offset: 30 # Fallback only — used if formula is missing the unit
     retry: 3
     delay_after_ms: 10

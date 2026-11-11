@@ -16,8 +16,11 @@ phases:
 
   - name: "Earthquakes"
     units:
+      # Only the earthquake spell: the armed recipe (slot 4, "Imported Army 4")
+      # carries 44 valkyries, 11 earthquake spells and one siege machine — no
+      # event troop — so declaring one made the full-army guard reject the
+      # attack on a card that can never read above zero.
       - { name: "Earthquake Spell", amount: "All" }
-      - { name: "Event Troop", amount: "All" }
     pattern: "Point"
     position: "Center"
     delay_after_ms: 100

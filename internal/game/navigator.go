@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/vision"
@@ -51,6 +52,16 @@ type Navigator struct {
 	// NavigatorConfig because the field is feature-flag-shaped
 	// (operator-level switch), not a runtime tunable.
 	disableChestDismissal bool
+
+	// zoomStickyShape remembers which pinch shape actually moved the camera,
+	// encoded as variant+1 so the zero value means "not learned yet".
+	//
+	// Re-walking the ladder from shape 0 every battle is not just slow, it is two
+	// gestures of noise per battle: live 2026-11-11 on BlueStacks the ladder read
+	// 0.09% (variant 0) and 0.41% (variant 1) before variant 2 moved the view
+	// 96%. Persisting the shape means the battle path starts with the gesture the
+	// device is known to answer instead of rediscovering it five times an hour.
+	zoomStickyShape atomic.Int32
 }
 
 func NewNavigator(client Device, cal *Calibration, graph *StateGraph, classify func(gocv.Mat) (GameState, int), logger zerolog.Logger) *Navigator {
@@ -274,9 +285,39 @@ const zoomPinchRepeats = 3
 // clamp, not the gesture's reach). The limits below are belt-and-braces for
 // ZoomOutMax's loop, not a claim that they are reachable.
 const (
-	zoomOutMaxAttempts  = 5
+	// zoomOutMaxAttempts bounds the gestures ONE ZoomOutMax may fire. It has to
+	// cover both the search (a full ladder costs pinchVariantCount) and the
+	// confirmations below, or a legitimate zoom would exhaust the budget before
+	// it could prove saturation.
+	zoomOutMaxAttempts  = 8
 	zoomOutMaxThreshold = 5.0 // percent of thumbnail pixels; live village idle noise (water/trees/troops) is ~3.5%
 	zoomSettleMillis    = 900 // the camera eases after a pinch; less reads as still moving
+
+	// zoomBroadCellPct is how much of one 3x3 cell of the frame must change for
+	// that cell to count as part of a camera move.
+	zoomBroadCellPct = 25.0
+
+	// zoomBroadCells is how many of the nine cells must move before a change is
+	// accepted as the camera zooming.
+	//
+	// A zoom rescales the WHOLE battlefield, so every cell moves. An overlay, a
+	// banner, a clan-message popup or a beating HUD moves only its own rectangle,
+	// and the old test - "did more than 5% of the frame change" - counted all of
+	// them as a successful zoom. Live 2026-11-11: the real pinch read 96% and a
+	// saturated view read 1.4%, but a popup covering a fifth of the screen would
+	// have read as a zoom and made the NEXT (unmoved) gesture look like
+	// saturation, i.e. "max zoom-out confirmed" on a camera nobody moved.
+	zoomBroadCells = 6
+
+	// zoomSaturationConfirmations is how many consecutive gestures the sticky
+	// shape must fail to move before the view is called maxed out.
+	//
+	// One was not enough: the camera eases for ~900ms after a pinch, so a gesture
+	// delivered during the ease can produce a frame that looks unchanged while the
+	// zoom is still travelling. Requiring a second silent gesture costs ~2s per
+	// battle and removes the "declared max on a still-moving camera" case the
+	// deploy geometry depends on.
+	zoomSaturationConfirmations = 2
 )
 
 // ZoomOut is a single fixed zoom-out step; see ZoomOutMax for the closed-loop
@@ -288,7 +329,148 @@ const (
 // silently becomes a wrong-geometry attack.
 func (n *Navigator) ZoomOut() error {
 	n.logger.Info().Msg("performing focus-independent native zoom out...")
-	return n.pinch(true)
+	pre, err := n.captureSignature()
+	if err != nil {
+		return err
+	}
+	moved, _, post, _, err := n.pinchVerified(pre, true, pinchOrder(-1))
+	// post is always a live, caller-owned frame now (see pinchVerified), so this
+	// step owns it on every path out.
+	defer post.Close()
+	if err != nil {
+		return err
+	}
+	if !moved {
+		n.logger.Error().Msg("zoom-out: no pinch shape moved the view (the camera is already at its limit, or the game refused the gesture) — the zoom is NOT confirmed")
+		return ErrZoomInert
+	}
+	return nil
+}
+
+// ErrZoomInert reports that the pinches were delivered but the frame never
+// changed: the device accepted the gesture and the game ignored it. It is a
+// distinct error because the caller must not treat an unverified zoom as a
+// zoomed-out view — that was the live 2026-09-30 failure where an attack went on
+// with whatever zoom the game happened to have.
+var ErrZoomInert = errors.New("pinch gestures are delivered but the view never moves")
+
+// variantPincher is implemented by adb.Client. It is optional so the Device
+// interface stays small and test fakes only implement what they exercise.
+type variantPincher interface {
+	PinchZoomVariant(zoomOut bool, variant int) error
+}
+
+// pinchVariantCount mirrors adb's fieless pinchVariants; a device that does not
+// support variants can only ever be asked for shape 0.
+const pinchVariantCount = 4
+
+func (n *Navigator) pinchVariant(zoomOut bool, variant int) error {
+	if p, ok := n.client.(variantPincher); ok {
+		return p.PinchZoomVariant(zoomOut, variant)
+	}
+	if variant == 0 {
+		return n.client.PinchZoom(zoomOut)
+	}
+	return fmt.Errorf("pinch variant %d: device does not support gesture variants", variant)
+}
+
+// pinchOrder is the order the ladder tries gesture shapes in. Once a shape is
+// known to move the view it goes first and is the ONLY one tried: it is the
+// control, so "this shape no longer moves the camera" means the view is at its
+// zoom limit, and spending three more gestures on other shapes buys nothing.
+func pinchOrder(sticky int) []int {
+	if sticky >= 0 && sticky < pinchVariantCount {
+		return []int{sticky}
+	}
+	order := make([]int, 0, pinchVariantCount)
+	for v := 0; v < pinchVariantCount; v++ {
+		order = append(order, v)
+	}
+	return order
+}
+
+// pinchVerified fires gesture shapes until one MOVES the view and reports which
+// one did. pre is caller-owned and is closed here unless the no-move return
+// hands it back; post is ALWAYS a live, caller-owned frame (the moved frame, or
+// the last captured one when nothing moved) so a caller can keep probing
+// without reusing a released Mat. gestures is how many gestures were actually
+// delivered, so the caller can log the truth instead of counting loop
+// iterations.
+//
+// A device failure on one shape ends the walk with that error: a cancelled run
+// or a broken injector is not something a different gesture fixes.
+func (n *Navigator) pinchVerified(pre gocv.Mat, zoomOut bool, order []int) (moved bool, variant int, post gocv.Mat, gestures int, err error) {
+	for i, v := range order {
+		gestures = i + 1
+		if err := n.pinchVariant(zoomOut, v); err != nil {
+			pre.Close()
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				n.logger.Warn().Err(err).Int("variant", v).Msg("zoom aborted: the run's context is cancelled, so this zoom did NOT happen")
+			}
+			return false, v, gocv.Mat{}, gestures, err
+		}
+		time.Sleep(zoomSettleMillis * time.Millisecond)
+		cur, capErr := n.captureSignature()
+		if capErr != nil {
+			pre.Close()
+			return false, v, gocv.Mat{}, gestures, capErr
+		}
+		changed := vision.ChangedPercent(pre, cur, vision.DefaultChangeDelta)
+		cells, cellTotal := zoomChangeCells(pre, cur, vision.DefaultChangeDelta)
+		broad := cellTotal > 0 && cells >= zoomBroadCells
+		n.logger.Info().
+			Int("variant", v).
+			Float64("changed_pct", changed).
+			Int("cells", cells).
+			Int("cell_total", cellTotal).
+			Bool("broad", broad).
+			Bool("zoom_out", zoomOut).
+			Msg("zoom pinch verified against the frame")
+		pre.Close()
+		if changed >= zoomOutMaxThreshold && broad {
+			return true, v, cur, gestures, nil
+		}
+		pre = cur
+		if i == len(order)-1 {
+			// Hand the LIVE frame back rather than closing it: the caller still
+			// needs a valid Mat for its zoom-in probe, and closing here is what
+			// double-freed it (cgo Mat_Close, live 2026-11-11).
+			return false, -1, cur, gestures, nil
+		}
+	}
+	return false, -1, pre, gestures, nil
+}
+
+// zoomChangeCells splits both signatures into a 3x3 grid and reports how many
+// cells changed by at least zoomBroadCellPct, so a caller can tell a camera move
+// (every cell moves) from an overlay or HUD animation (a few cells move).
+//
+// A pair it cannot compare reports (0, 0): no evidence of a zoom, never an
+// assumption of one. Two gestures per frame at 90 rows is well under a
+// millisecond.
+func zoomChangeCells(prev, cur gocv.Mat, perChannelDelta float64) (cells, total int) {
+	const grid = 3
+	if prev.Cols() < grid || prev.Rows() < grid || prev.Cols() != cur.Cols() || prev.Rows() != cur.Rows() {
+		return 0, 0
+	}
+	cw, ch := cur.Cols()/grid, cur.Rows()/grid
+	if cw < 2 || ch < 2 {
+		return 0, 0
+	}
+	for row := 0; row < grid; row++ {
+		for col := 0; col < grid; col++ {
+			r := image.Rect(col*cw, row*ch, (col+1)*cw, (row+1)*ch)
+			p := prev.Region(r)
+			c := cur.Region(r)
+			if vision.ChangedPercent(p, c, perChannelDelta) >= zoomBroadCellPct {
+				cells++
+			}
+			total++
+			p.Close()
+			c.Close()
+		}
+	}
+	return cells, total
 }
 
 // ZoomIn is ZoomOut's counterpart; see ZoomOut for why it reports an error.
@@ -299,67 +481,162 @@ func (n *Navigator) ZoomIn() error {
 
 // ZoomOutMax zooms out until the view STOPS responding, then reports what it
 // saw. "As far out as the game allows" is a property of the screen, not of a
-// gesture count: the fixed 3-pinch loop below cannot tell a saturated view from
-// a stuck one, because both return nil after the same number of delivered
-// gestures. This one reads the frame.
+// gesture count: a fixed pinch loop cannot tell a saturated view from a stuck
+// one, because both deliver the same number of gestures and return nil.
 //
-// The loop: capture a signature, pinch, wait for the camera to settle, capture
-// again. When the two signatures agree (ChangedPercent under
-// zoomOutMaxThreshold), the view has stopped moving — saturated, or already at
-// max — and the last pinch changed nothing. Measured live: one pinch takes the
-// village from 0.0042 to 0.0144 green fraction and a second moves nothing, so
-// this exits after TWO delivered pinches in the common case — one that moved
-// the view, one that confirmed saturation — instead of a fixed three that never
-// verified anything.
+// Two things make this hardened rather than hopeful:
+//
+//   - Every pinch is verified against the frame (pinchVerified). A gesture the
+//     game silently ignores is indistinguishable from one that zoomed, unless
+//     you look at the pixels.
+//   - The gesture SHAPE is part of the search. A zoom recogniser may reject a
+//     fast, small pinch while accepting a wider, slower one, so the first
+//     attempt walks the variants and the shape that moved the view becomes
+//     sticky: it runs first and alone from then on, and its failing is what
+//     "the view has stopped responding" means.
+//
+// Live 2026-11-10 on BlueStacks Air: all four shapes were delivered and none
+// moved the frame (1.5-2.6%, idle animation), so this returns ErrZoomInert
+// instead of the old nil + warning that let an attack proceed on a view nobody
+// had zoomed.
+//
+// Saturation itself is confirmed twice and only by a BROAD change (see
+// zoomBroadCells): "this gesture changed nothing" is the claim the whole deploy
+// geometry rests on, so a single silent gesture - which a still-easing camera
+// also produces - is not accepted as proof. A camera that has not moved at all
+// in the call needs more than that: it has to fail the whole gesture ladder,
+// because a shape this screen ignores would otherwise masquerade as a maxed-out
+// camera. And a ladder that moves nothing at all is answered with a verified
+// zoom-in probe: a camera that can zoom in was not at its limit, and a camera
+// that cannot move in either direction is a broken injector, reported as
+// ErrZoomInert rather than passed off as a zoom.
 //
 // Every capture error is fatal to the loop rather than silently treated as "no
-// change": a zoom that cannot be verified did not verifiably happen, and the
-// caller needs that distinction. A cancelled context propagates unchanged.
+// change": a zoom that cannot be verified did not verifiably happen. A
+// cancelled context propagates unchanged.
 func (n *Navigator) ZoomOutMax() error {
 	n.logger.Info().Msg("zooming out until the view stops responding (max zoom-out)...")
-	delivered := 0
+	pre, err := n.captureSignature()
+	if err != nil {
+		n.logger.Warn().Err(err).Msg("zoom-out: could not capture a frame to verify against; the view may NOT be at max zoom-out")
+		return err
+	}
+
+	// Start from the shape this device answered last time; -1 walks the ladder.
+	sticky := -1
+	if v := int(n.zoomStickyShape.Load()); v > 0 {
+		sticky = v - 1
+	}
+
+	gestures := 0
+	confirmations := 0
+	movedThisCall := false
+	probedZoomIn := false
 	for attempt := 0; attempt < zoomOutMaxAttempts; attempt++ {
-		prevSig, err := n.captureSignature()
+		// Walk the whole ladder unless this call already has a shape that moved
+		// the camera, or there is a learned shape to probe first. The ladder is
+		// the expensive path; the learned shape is the fast one.
+		order := pinchOrder(-1)
+		switch {
+		case movedThisCall && sticky >= 0:
+			order = pinchOrder(sticky)
+		case !movedThisCall && sticky >= 0 && attempt == 0:
+			order = pinchOrder(sticky)
+		}
+
+		moved, variant, post, used, err := n.pinchVerified(pre, true, order)
+		gestures += used
 		if err != nil {
-			n.logger.Warn().Err(err).Int("delivered", delivered).
-				Msg("zoom-out: could not capture a frame to verify against; the view may NOT be at max zoom-out")
 			return err
 		}
-		if err := n.client.PinchZoom(true); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				n.logger.Warn().Err(err).Int("delivered", delivered).
-					Msg("zoom-out aborted: the run's context is cancelled, so this zoom did NOT happen")
-				return err
+		if moved {
+			confirmations = 0
+			movedThisCall = true
+			sticky = variant
+			n.zoomStickyShape.Store(int32(variant + 1))
+			pre = post
+			continue
+		}
+		// pinchVerified owns `pre` and hands back the live frame it finished on
+		// (nil-post only on the error paths above), so keep it: reusing a CLOSED
+		// frame here is the double free that killed the bot inside cgo Mat_Close
+		// (live 2026-11-11).
+		pre = post
+		if sticky < 0 {
+			// No shape moved zooming out. That is either the game's max zoom-out or a
+			// gesture that never reaches the game, and one direction cannot tell them
+			// apart. A verified zoom-IN can: it moves only if the camera responds at
+			// all. Live 2026-11-11: a fresh probe on an already-maxed battle view
+			// reported ErrZoomInert, which the battle guard turns into "refusing to
+			// deploy" — on a camera that was already exactly right.
+			if probedZoomIn {
+				n.logger.Error().
+					Ints("variants", order).
+					Msg("zoom-out: no shape moved the view in EITHER direction (the game refused the gesture) — the zoom is NOT confirmed")
+				return ErrZoomInert
 			}
-			n.logger.Warn().Err(err).Int("delivered", delivered).Msg("zoom-out pinch failed")
-			return err
-		}
-		delivered++
-		time.Sleep(zoomSettleMillis * time.Millisecond)
-		curSig, err := n.captureSignature()
-		if err != nil {
-			n.logger.Warn().Err(err).Int("delivered", delivered).
-				Msg("zoom-out: could not capture the post-pinch frame; the view may NOT be at max zoom-out")
-			return err
-		}
-		changed := vision.ChangedPercent(prevSig, curSig, vision.DefaultChangeDelta)
-		prevSig.Close()
-		curSig.Close()
-		n.logger.Info().
-			Int("attempt", attempt+1).
-			Int("delivered", delivered).
-			Float64("changed_pct", changed).
-			Msg("zoom-out pinch verified against the frame")
-		if changed < zoomOutMaxThreshold {
+			movedIn, inVariant, inPost, inUsed, inErr := n.pinchVerified(pre, false, pinchOrder(-1))
+			gestures += inUsed
+			if inErr != nil {
+				return inErr
+			}
+			if !movedIn {
+				inPost.Close()
+				n.logger.Error().
+					Ints("variants", order).
+					Msg("zoom-out: no shape moved the view in EITHER direction (the game refused the gesture) — the zoom is NOT confirmed")
+				return ErrZoomInert
+			}
 			n.logger.Info().
-				Int("pinches", delivered).
-				Float64("last_changed_pct", changed).
-				Msg("view stopped responding: at max zoom-out")
+				Int("variant", inVariant).
+				Msg("zoom-out moved nothing but zoom-in did: the camera was already at the game's max; re-walking the zoom-out ladder to prove it")
+			probedZoomIn = true
+			confirmations = 0
+			pre = inPost
+			continue
+		}
+
+		// The learned shape did not move the view. That is either saturation or a
+		// shape this screen simply ignores — and gesture acceptance IS screen
+		// dependent on this emulator (live 2026-11-11: shape 2 moved the village
+		// view 96%, while in a battle shape 0 moved it 60% and shapes 1-3 were
+		// silent). Until the camera has moved at least once in this call, a silent
+		// full ladder is the only acceptable proof of "no zoom left": otherwise a
+		// stale learned shape would report max zoom-out on a zoomed-in camera and
+		// every deploy tap would land on the wrong geometry.
+		if !movedThisCall && len(order) == pinchVariantCount {
+			n.logger.Info().
+				Int("gestures", gestures).
+				Ints("variants", order).
+				Msg("no pinch shape moves this view: at max zoom-out")
 			return nil
 		}
+
+		// Once the camera has demonstrably moved, the learned shape failing twice in
+		// a row is saturation: a pinch fired while the camera is still easing reads
+		// as silent too, which is what the second confirmation rules out.
+		confirmations++
+		if movedThisCall && confirmations >= zoomSaturationConfirmations {
+			n.logger.Info().
+				Int("gestures", gestures).
+				Int("variant", sticky).
+				Int("confirmations", confirmations).
+				Msg("view stopped responding on consecutive gestures: at max zoom-out")
+			return nil
+		}
+
+		// pinchVerified consumed pre; re-measure before the next gesture.
+		next, capErr := n.captureSignature()
+		if capErr != nil {
+			n.logger.Warn().Err(capErr).Msg("zoom-out: could not capture a frame for the saturation confirmation; the view may NOT be at max zoom-out")
+			return capErr
+		}
+		pre = next
 	}
+
+	pre.Close()
 	n.logger.Warn().
-		Int("pinches", delivered).
+		Int("gestures", gestures).
 		Msg("zoom-out: the view was STILL moving after the attempt budget; it may not be at max zoom-out")
 	return nil
 }

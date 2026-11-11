@@ -95,6 +95,10 @@ type server struct {
 	framePNG   []byte
 	capturedAt time.Time
 	captureErr string
+	// staticPNG, when set, is served as the frame: the picker then works on a saved
+	// battle image with no device attached.
+	staticPNG  []byte
+	staticPath string
 }
 
 func main() {
@@ -102,6 +106,7 @@ func main() {
 	device := flag.String("device", "localhost:5555", "ADB device to capture")
 	configPath := flag.String("config", "", "path to precision_config.json (default: the one the bot reads)")
 	open := flag.Bool("open", false, "open the picker in your browser")
+	framePath := flag.String("frame", "", "serve this static image at /frame.png instead of capturing the emulator")
 	flag.Parse()
 
 	s := &server{device: *device, configPath: *configPath}
@@ -109,6 +114,13 @@ func main() {
 		s.configPath = paths.Resolve(configName)
 	}
 	s.loadRef()
+
+	if *framePath != "" {
+		if err := s.loadStatic(*framePath); err != nil {
+			log.Fatalf("pick_coords: -frame: %v", err)
+		}
+		fmt.Printf("pick_coords: static frame %s (%dx%d), no device capture\n", *framePath, s.live.W, s.live.H)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
@@ -127,6 +139,30 @@ func main() {
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatalf("pick_coords: %v", err)
 	}
+}
+
+// loadStatic serves a saved frame instead of capturing one. The geometry the
+// user pins is screen-relative, so the picker does not need the game running, and
+// a capture failure must never be the reason the tool is unusable.
+func (s *server) loadStatic(path string) error {
+	mat := gocv.IMRead(path, gocv.IMReadColor)
+	if mat.Empty() {
+		return fmt.Errorf("cannot read %s", path)
+	}
+	defer mat.Close()
+	buf, err := gocv.IMEncode(gocv.PNGFileExt, mat)
+	if err != nil {
+		return err
+	}
+	defer buf.Close()
+	// GetBytes aliases the native buffer, which Close frees: keep a Go copy.
+	s.staticPNG = append([]byte(nil), buf.GetBytes()...)
+	s.staticPath = path
+	s.framePNG = s.staticPNG
+	s.live = dims{W: mat.Cols(), H: mat.Rows()}
+	s.capturedAt = time.Now()
+	s.captureErr = ""
+	return nil
 }
 
 // loadRef reads the reference geometry the config file declares.
@@ -185,7 +221,9 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 			SpellPoint: map[string]ptJSON{},
 		},
 	}
-	if s.captureErr != "" {
+	if len(s.staticPNG) > 0 {
+		st.Note = "static frame: " + s.staticPath + " (no device capture)"
+	} else if s.captureErr != "" {
 		st.Note = s.captureErr
 	}
 	raw, err := os.ReadFile(s.configPath)
@@ -234,6 +272,14 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 
 // handleFrame captures a fresh frame on demand and hands back its size.
 func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
+	if len(s.staticPNG) > 0 {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Frame-Width", fmt.Sprint(s.live.W))
+		w.Header().Set("X-Frame-Height", fmt.Sprint(s.live.H))
+		w.Write(s.staticPNG)
+		return
+	}
 	png, w0, h0, err := s.capture()
 	if err != nil {
 		s.captureErr = fmt.Sprintf("capture failed (%v): is the emulator up and CoC on screen?", err)
@@ -396,7 +442,8 @@ func (s *server) capture() ([]byte, int, int, error) {
 		return nil, 0, 0, err
 	}
 	defer buf.Close()
-	return buf.GetBytes(), mat.Cols(), mat.Rows(), nil
+	// GetBytes aliases the native buffer, which Close frees: keep a Go copy.
+	return append([]byte(nil), buf.GetBytes()...), mat.Cols(), mat.Rows(), nil
 }
 
 // ---------------------------------------------------------------- geometry
