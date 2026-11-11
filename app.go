@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/accounts"
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/logger"
@@ -47,6 +48,21 @@ type App struct {
 	updater       *updater.Service
 	updaterBgCtx  context.Context
 	updaterBgStop context.CancelFunc
+
+	// Multi-account registry. Loaded lazily (see ensureAccounts) so
+	// headless tests that only touch config keep the legacy layout.
+	accounts *accounts.Store
+	accOnce  sync.Once
+	accMu    sync.RWMutex
+	accErr   error
+
+	// switchMu serializes manual switches and rotation so two owners can
+	// never swap the process-wide account profile concurrently.
+	switchMu sync.Mutex
+	// rotateCh receives one notification when a bot ends its own session
+	// (attack cap or daily cap), which is the only moment rotation should
+	// hand the device to the next account.
+	rotateCh chan struct{}
 }
 
 type WailsLogWriter struct {
@@ -77,6 +93,7 @@ func NewApp() *App {
 	return &App{
 		logBuffer: make([]string, 0, 100),
 		updater:   updater.New(updater.DefaultConfig(version)),
+		rotateCh:  make(chan struct{}, 1),
 	}
 }
 
@@ -85,13 +102,27 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// Ensure fresh stats and history every boot
-	_ = os.Remove(paths.ResolveConfig("stats.json"))
-	_ = os.Remove(paths.ResolveConfig("attack_history.json"))
-
 	// Setup log bridge
 	wailsWriter := &WailsLogWriter{app: a}
 	logger.Init(os.Getenv("DEBUG") != "", wailsWriter)
+
+	// Multi-account: select the active account's profile before any other
+	// subsystem resolves paths.ResolveConfig. Stats and history are no
+	// longer wiped on every boot — with a fleet they are the per-account
+	// record the switcher displays, so deleting them would erase exactly
+	// the data this feature exists to keep.
+	if st, err := a.ensureAccounts(); err != nil {
+		log.Error().Err(err).Msg("account registry unavailable; falling back to the legacy single-profile state")
+	} else if acct, ok := st.Active(); ok {
+		if err := paths.SetProfile(acct.ID); err != nil {
+			log.Error().Err(err).Str("account", acct.ID).Msg("failed to select account profile")
+		} else {
+			a.mu.Lock()
+			a.lastStats = readAccountStats(acct.ID)
+			a.mu.Unlock()
+			log.Info().Str("account", acct.Name).Str("profile", acct.ID).Msg("active account profile loaded")
+		}
+	}
 
 	// Bring up the updater service. If NewApp wasn't used (rare
 	// test scaffold), construct lazily.
@@ -104,6 +135,7 @@ func (a *App) startup(ctx context.Context) {
 	a.updaterBgStop = bgCancel
 	a.updater.StartBackgroundPoller(bgCtx)
 	go a.forwardUpdaterStatus(bgCtx)
+	go a.rotationLoop(bgCtx)
 
 	// Skip the standalone web dashboard on `wails dev`. Wails injects
 	// its own dev proxy at :34115 → Vite at :5173 by parsing stdout
@@ -307,6 +339,21 @@ type BotStatus struct {
 // instead of finishing the boot and starting anyway (the old
 // behavior — see the concurrency notes in StopBot).
 func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled bool) BotStatus {
+	cfg := config.LoadOrDefault("config.json")
+	cfg.Search.MinLootGold = gold
+	cfg.Search.MinLootElixir = elixir
+	cfg.Search.MinLootDarkElixir = dark
+	cfg.Upgrade.UpgradeWalls = upgradeWalls
+	cfg.Search.Enabled = searchEnabled
+	return a.startBotWithConfig(cfg)
+}
+
+// startBotWithConfig is the single launcher behind StartBot and rotation.
+// It applies the active account's device binding and session cap, installs
+// the start placeholder and boots in the background.
+func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
+	a.applyAccountConfig(cfg)
+
 	a.mu.Lock()
 
 	if a.bot != nil {
@@ -317,13 +364,6 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 		a.mu.Unlock()
 		return BotStatus{Running: true, Message: "Bot is still starting up — wait for it to connect or press Stop first"}
 	}
-
-	cfg := config.LoadOrDefault("config.json")
-	cfg.Search.MinLootGold = gold
-	cfg.Search.MinLootElixir = elixir
-	cfg.Search.MinLootDarkElixir = dark
-	cfg.Upgrade.UpgradeWalls = upgradeWalls
-	cfg.Search.Enabled = searchEnabled
 
 	// Create a placeholder to indicate the bot is starting. The
 	// context is captured by value into the goroutine so a quick
@@ -383,6 +423,7 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 			// — well below the 0.5 Hz poll rate.
 			a.refreshHistory()
 			a.saveStats()
+			a.stopAtDailyCap(b)
 		}
 
 		a.mu.Lock()
@@ -522,6 +563,7 @@ func (a *App) StopBot() BotStatus {
 	// are atomic.Int* loads, so this is O(1) and non-blocking.
 	current := a.bot.Stats()
 	a.lastStats = mergeStats(a.lastStats, current)
+	a.recordAccountAttacks(current)
 
 	// Snapshot the bot pointer + synchronously cancel its context so
 	// the captureLoop and any in-flight executeAttackSequence see the
@@ -630,7 +672,9 @@ func (a *App) watchSessionEnd(done <-chan struct{}, stillCurrent func() bool, st
 			a.mu.Unlock()
 			return
 		}
-		a.lastStats = mergeStats(a.lastStats, stats())
+		session := stats()
+		a.lastStats = mergeStats(a.lastStats, session)
+		a.recordAccountAttacks(session)
 		if a.cancel != nil {
 			a.cancel()
 		}
@@ -640,6 +684,10 @@ func (a *App) watchSessionEnd(done <-chan struct{}, stillCurrent func() bool, st
 		// React's 2 s IsRunning() poll notices the cleared bot reference
 		// on its next tick, so no event is needed to flip the sidebar.
 		log.Info().Msg("bot finished its session (attack cap reached); marking it stopped")
+		// Natural end of session: the switcher may hand the device to the
+		// next account. A user Stop does not reach this branch (StopBot
+		// owns the teardown), which is what keeps manual stops manual.
+		a.notifySessionEnd()
 
 		go func() {
 			defer func() {
@@ -816,8 +864,6 @@ func (a *App) SaveFullConfig(cfg config.BotConfig) error {
 	}
 	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
 }
-
-
 
 // SetStorageConfig updates storage full halting options.
 func (a *App) SetStorageConfig(haltGold, haltElixir, haltDE bool, rule string, fullThresh, resumeThresh float64, dumpToWalls bool, autoCollect bool) error {

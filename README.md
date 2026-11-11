@@ -108,6 +108,7 @@ See [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for profiling details and optim
 ## 📚 Documentation Index
 
 - **[Architecture & Design](docs/DESIGN.md)**: State machine, vision pipelines, and subsystem layout.
+- **[Multi-Account Switching](docs/ACCOUNTS.md)**: Fleet model, device-bound profiles, safe switching, rotation, and CLI usage.
 - **[CLI Reference](docs/CLI.md)**: Headless CLI flags, execution modes, and environment variables.
 - **[Homebrew](docs/HOMEBREW.md)**: Cask install/upgrade, tap layout, and release-time tap sync.
 - **[Formula Authoring Guide](docs/formula-authoring.md)**: Designing custom deployment patterns and corner overrides.

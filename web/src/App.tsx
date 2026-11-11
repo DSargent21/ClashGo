@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
+import AccountsView from './components/AccountsView';
 import Analytics from './components/Analytics';
 import ConfigView from './components/ConfigView';
 import SettingsView from './components/SettingsView';
@@ -31,7 +32,16 @@ import {
   ClearSkippedVersion,
 } from '../wailsjs/go/main/App';
 import { bot } from '../wailsjs/go/models';
-import { TabType, UpdateStatus, DEFAULT_UPDATE_STATUS } from './types';
+import {
+  TabType,
+  UpdateStatus,
+  DEFAULT_UPDATE_STATUS,
+  AccountInput,
+  AccountView,
+  AccountsState,
+  Rotation,
+} from './types';
+import * as accountsApi from './accountsApi';
 import UpdateBanner from './components/UpdateBanner';
 import './App.css';
 
@@ -134,6 +144,25 @@ function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
   const [appVersion, setAppVersion] = useState('');
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+
+  // Multi-account switcher state. Kept at App level because the sidebar,
+  // header and Accounts page all read the same active account.
+  const [accountsState, setAccountsState] = useState<AccountsState | null>(null);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
+
+  const loadAccounts = useCallback(async (silent = false) => {
+    if (!silent) setAccountsLoading(true);
+    try {
+      const state = await accountsApi.getAccounts();
+      setAccountsState(state);
+      setAccountsError(null);
+    } catch (err) {
+      setAccountsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (!silent) setAccountsLoading(false);
+    }
+  }, []);
 
   // Config states
   const [goldThreshold, setGoldThreshold] = useState(400000);
@@ -330,13 +359,33 @@ function App() {
       setIsRunning(false);
     });
 
+    // The Go side emits the full switcher document after every account
+    // mutation or switch, so cards, the sidebar chip and the header
+    // converge without waiting for the next poll.
+    const unsubAccounts = safeEventsOn("accounts_changed", (data: AccountsState) => {
+      if (data && Array.isArray(data.accounts)) {
+        setAccountsState(data);
+        setAccountsError(null);
+      }
+    });
+
     return () => {
       clearInterval(interval);
       unsubUpdater();
       unsubBotError();
       unsubBotInitFailed();
+      unsubAccounts();
     };
   }, []);
+
+  // Account state is cheap (one small JSON read per profile) and drives the
+  // header chip, so poll it even when the Accounts tab is closed. Mutations
+  // still arrive immediately through the accounts_changed event.
+  useEffect(() => {
+    void loadAccounts();
+    const id = window.setInterval(() => { void loadAccounts(true); }, 5000);
+    return () => window.clearInterval(id);
+  }, [loadAccounts]);
 
   useEffect(() => {
     if (darkMode) {
@@ -419,6 +468,7 @@ function App() {
     try {
       const res = await StartBot(goldThreshold, elixirThreshold, deThreshold, upgradeWalls, searchEnabled);
       setIsRunning(res.running);
+      await loadAccounts(true);
     } catch (err) {
       console.error('Start failed:', err);
     }
@@ -428,6 +478,7 @@ function App() {
     try {
       const res = await StopBot();
       setIsRunning(res.running);
+      await loadAccounts(true);
     } catch (err) {
       console.error('Stop failed:', err);
     }
@@ -441,6 +492,39 @@ function App() {
     } catch (err) {
       console.error('Reset failed:', err);
     }
+  };
+
+  // --- Account switcher handlers -----------------------------------------
+  // Errors intentionally propagate: AccountsView catches them and shows the
+  // exact Go error instead of a generic toast.
+  const handleSwitchAccount = async (id: string, start: boolean) => {
+    const res = await accountsApi.switchAccount(id, start);
+    setIsRunning(res.started || (await IsRunning()));
+    await loadAccounts(true);
+  };
+
+  const handleSaveAccount = async (id: string | null, input: AccountInput) => {
+    if (id) {
+      await accountsApi.updateAccount(id, input);
+    } else {
+      await accountsApi.createAccount(input);
+    }
+    await loadAccounts(true);
+  };
+
+  const handleDeleteAccount = async (id: string) => {
+    await accountsApi.deleteAccount(id);
+    await loadAccounts(true);
+  };
+
+  const handleResetAccountUsage = async (id: string) => {
+    await accountsApi.resetAccountUsage(id);
+    await loadAccounts(true);
+  };
+
+  const handleRotation = async (rotation: Rotation) => {
+    await accountsApi.setRotation(rotation);
+    await loadAccounts(true);
   };
 
   // --- Updater handlers (bound to Wails methods on App) ---
@@ -488,6 +572,9 @@ function App() {
     history,
     logs,
   }), [stats, history, logs]);
+
+  const activeAccount: AccountView | null =
+    accountsState?.accounts.find((account) => account.active) ?? null;
 
   // ADB connection state — drives the header status pill. Labels stop
   // calling the local ADB server "localhost:{port}" because the bot
@@ -609,6 +696,7 @@ function App() {
         running={isRunning}
         onStart={handleStart}
         onStop={handleStop}
+        activeAccount={activeAccount}
       />
 
       <main 
@@ -642,6 +730,23 @@ function App() {
                 onClearSkip={handleUpdaterClearSkip}
                 onDismiss={() => setIsUpdateModalOpen(false)}
               />
+              <button
+                type="button"
+                onClick={() => setTab('accounts')}
+                aria-label="Manage accounts"
+                title={activeAccount ? `${activeAccount.name} · ${activeAccount.device.device_id}` : 'Manage accounts'}
+                className="bg-white dark:bg-zinc-900 px-5 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-3 shadow-premium dark:shadow-none no-drag backdrop-blur-md hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors"
+              >
+                <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black text-white ${activeAccount ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-300 dark:bg-zinc-800'}`}>
+                  {activeAccount ? activeAccount.name.trim().slice(0, 2).toUpperCase() : '—'}
+                </span>
+                <span className="flex flex-col items-start min-w-0">
+                  <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Account</span>
+                  <span className="text-[11px] font-black uppercase tracking-widest text-zinc-600 dark:text-zinc-300 max-w-[140px] truncate">
+                    {activeAccount ? activeAccount.name : 'None'}
+                  </span>
+                </span>
+              </button>
               <div className="bg-white dark:bg-zinc-900 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md" title={`ADB server port ${adbPort} — ${adbStateLabel}`}>
                 <div className="relative">
                   <div className={`w-2.5 h-2.5 rounded-full ${
@@ -661,6 +766,20 @@ function App() {
           </header>
 
           {tab === 'dashboard' && <Dashboard {...dashboardProps} />}
+          {tab === 'accounts' && (
+            <AccountsView
+              state={accountsState}
+              loading={accountsLoading}
+              error={accountsError}
+              onRefresh={() => void loadAccounts()}
+              onSwitch={handleSwitchAccount}
+              onStop={handleStop}
+              onSave={handleSaveAccount}
+              onDelete={handleDeleteAccount}
+              onResetUsage={handleResetAccountUsage}
+              onRotation={handleRotation}
+            />
+          )}
           {tab === 'analytics' && <Analytics stats={stats} />}
           {tab === 'config' && <ConfigView {...configProps} />}
           {tab === 'settings' && (

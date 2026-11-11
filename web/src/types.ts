@@ -101,7 +101,90 @@ export interface BotConfig {
   };
 }
 
-export type TabType = 'dashboard' | 'analytics' | 'config' | 'settings';
+export type TabType = 'dashboard' | 'accounts' | 'analytics' | 'config' | 'settings';
+
+// ---- Multi-account switcher --------------------------------------------
+// Shapes mirror internal/accounts (Go) and main.AccountView. An account is
+// bound to one emulator serial and owns its own config/stats/history tree.
+
+export interface AccountDevice {
+  adb_host: string;
+  adb_port: number;
+  device_id: string;
+}
+
+export interface AccountUsage {
+  date: string;
+  attacks: number;
+  switches: number;
+}
+
+export interface Account {
+  id: string;
+  name: string;
+  player_tag?: string;
+  town_hall?: number;
+  email?: string;
+  notes?: string;
+  device: AccountDevice;
+  enabled: boolean;
+  priority: number;
+  cooldown_minutes: number;
+  max_attacks_per_day: number;
+  max_attacks_per_session: number;
+  created_at: string;
+  last_used_at: string;
+  usage: AccountUsage;
+}
+
+export type AccountStatus = 'running' | 'ready' | 'cooldown' | 'daily_limit' | 'disabled';
+
+export interface AccountView extends Account {
+  active: boolean;
+  running: boolean;
+  stats: BotStats;
+  today_attacks: number;
+  status: AccountStatus;
+}
+
+export interface Rotation {
+  enabled: boolean;
+  order: 'round_robin' | 'priority';
+  auto_start: boolean;
+  attacks_per_account: number;
+}
+
+export interface AccountsState {
+  accounts: AccountView[];
+  active_id: string;
+  rotation: Rotation;
+}
+
+export interface AccountInput {
+  id?: string;
+  name: string;
+  player_tag: string;
+  town_hall: number;
+  email: string;
+  notes: string;
+  device: AccountDevice;
+  enabled: boolean;
+  priority: number;
+  cooldown_minutes: number;
+  max_attacks_per_day: number;
+  max_attacks_per_session: number;
+}
+
+export interface SwitchResult {
+  account: AccountView;
+  started: boolean;
+  message: string;
+}
+
+export interface BotStatus {
+  running: boolean;
+  message: string;
+}
 
 // UpdateStatus mirrors internal/updater.Status (Go side).
 // Casing follows Wails JSON convention (snake_case). Keep field names

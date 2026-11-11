@@ -47,6 +47,7 @@
 package paths
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -59,6 +60,11 @@ import (
 var (
 	assetsDir   string
 	migrateOnce sync.Once
+
+	// profileID selects the per-account state tree below the config dir
+	// (see SetProfile). Empty means the legacy single-profile layout.
+	profileMu sync.RWMutex
+	profileID string
 )
 
 // legacyStateFiles are the per-run state files that older bot versions
@@ -424,10 +430,70 @@ func Resolve(subpath string) string {
 	return filepath.Join(GetAssetsDir(), subpath)
 }
 
+// ProfileDir is the writable state tree for one account:
+// <configDir>/accounts/<id>. Kept separate from GetConfigDir so every
+// account has its own config, stats, history and debug artifacts without
+// any caller having to thread a path through the bot.
+func ProfileDir(id string) string {
+	return filepath.Join(GetConfigDir(), "accounts", id)
+}
+
+// SetProfile selects the per-account state tree ResolveConfig reads and
+// writes. An empty id restores the legacy single-profile layout. Invalid
+// ids (path separators, "..") are rejected so an account name can never
+// escape the accounts tree. The directory is created on selection because
+// every caller of ResolveConfig expects the tree to exist.
+func SetProfile(id string) error {
+	if id != "" && !validProfileID(id) {
+		return fmt.Errorf("invalid account profile id %q", id)
+	}
+	profileMu.Lock()
+	defer profileMu.Unlock()
+	if id != "" {
+		if err := os.MkdirAll(ProfileDir(id), 0o755); err != nil {
+			return err
+		}
+	}
+	profileID = id
+	return nil
+}
+
+// Profile returns the account profile currently selected, or "" for the
+// legacy layout.
+func Profile() string {
+	profileMu.RLock()
+	defer profileMu.RUnlock()
+	return profileID
+}
+
+// ResolveProfileConfig joins one account's tree with a subpath without
+// changing the process-wide selection. Use it to read another account's
+// metrics (the switcher does this) while a different profile is active.
+func ResolveProfileConfig(id, subpath string) string {
+	return filepath.Join(ProfileDir(id), subpath)
+}
+
+// validProfileID accepts the slug alphabet accounts uses for account IDs.
+func validProfileID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // ResolveConfig joins the config dir with a subpath (e.g.
 // ResolveConfig("stats.json") → <configDir>/stats.json). All
 // per-run state reads/writes should funnel through this so the
 // wails dev watcher never sees them.
 func ResolveConfig(subpath string) string {
+	if id := Profile(); id != "" {
+		return filepath.Join(ProfileDir(id), subpath)
+	}
 	return filepath.Join(GetConfigDir(), subpath)
 }

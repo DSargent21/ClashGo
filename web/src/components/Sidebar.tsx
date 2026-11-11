@@ -1,5 +1,5 @@
 import React from 'react';
-import { TabType } from '../types';
+import { AccountView, TabType } from '../types';
 import logo from '../assets/images/clashgo-logo.png';
 
 interface SidebarProps {
@@ -10,6 +10,7 @@ interface SidebarProps {
   running: boolean;
   onStart: () => void;
   onStop: () => void;
+  activeAccount?: AccountView | null;
 }
 
 const Sidebar: React.FC<SidebarProps> = React.memo(({
@@ -19,10 +20,12 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
   setExpanded,
   running,
   onStart,
-  onStop
+  onStop,
+  activeAccount,
 }) => {
   const menuItems: { id: TabType; label: string; icon: string }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
+    { id: 'accounts', label: 'Accounts', icon: 'group' },
     { id: 'analytics', label: 'Analytics', icon: 'monitoring' },
     { id: 'config', label: 'Config', icon: 'tune' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
@@ -84,6 +87,26 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
         </nav>
 
         <div className="mt-auto space-y-3">
+          <button
+            type="button"
+            onClick={() => setTab('accounts')}
+            title={activeAccount ? `${activeAccount.name} · ${activeAccount.device.device_id}` : 'Manage accounts'}
+            className="w-full h-12 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800/60 flex items-center overflow-hidden hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors relative"
+          >
+            <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-zinc-950 dark:bg-zinc-700 flex items-center justify-center text-[10px] font-black text-white">
+                {activeAccount ? activeAccount.name.trim().slice(0, 2).toUpperCase() : <span className="material-symbols-outlined text-base">group</span>}
+              </div>
+            </div>
+            <div className={`flex flex-col items-start min-w-0 transition-[opacity,transform] duration-200 ease-out ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 w-0 overflow-hidden'}`}>
+              <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Account</span>
+              <span className="text-xs font-bold text-zinc-950 dark:text-white truncate max-w-[140px]">
+                {activeAccount ? activeAccount.name : 'No account'}
+              </span>
+            </div>
+            <span className={`absolute right-3 w-1.5 h-1.5 rounded-full ${running ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-300 dark:bg-zinc-600'} ${expanded ? 'opacity-100' : 'opacity-0'}`} />
+          </button>
+
           <button
             onClick={running ? onStop : onStart}
             title={expanded ? undefined : (running ? 'Stop bot' : 'Start bot')}

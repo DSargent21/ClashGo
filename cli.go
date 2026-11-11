@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/accounts"
 	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/config"
@@ -26,6 +27,17 @@ import (
 var deployOnly bool
 
 func main() {
+	accountID := findAccountArg(os.Args[1:])
+	var selectedAccount *accounts.Account
+	if accountID != "" {
+		acct, err := selectAccount(accountID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		selectedAccount = &acct
+	}
+
 	configPath := findConfigArg(os.Args[1:])
 	cfg := loadConfig(configPath)
 
@@ -37,6 +49,7 @@ func main() {
 		showVersion   bool
 		listDevices   bool
 		listStrats    bool
+		listAccounts  bool
 		quiet         bool
 		debugLog      bool
 		noScreenshots bool
@@ -45,6 +58,7 @@ func main() {
 	fs.BoolVar(&showVersion, "v", false, "Print version and exit (shorthand)")
 	fs.BoolVar(&listDevices, "devices", false, "List connected ADB devices and exit")
 	fs.BoolVar(&listStrats, "strategies", false, "List available attack strategies and exit")
+	fs.BoolVar(&listAccounts, "accounts", false, "List configured accounts and exit")
 	fs.BoolVar(&quiet, "quiet", false, "Suppress periodic 10s status ticker")
 	fs.BoolVar(&quiet, "q", false, "Suppress periodic 10s status ticker (shorthand)")
 	fs.BoolVar(&debugLog, "debug", os.Getenv("DEBUG") != "", "Enable verbose debug logging")
@@ -54,6 +68,10 @@ func main() {
 	var flagConfig string
 	fs.StringVar(&flagConfig, "config", configPath, "Path to configuration file")
 	fs.StringVar(&flagConfig, "c", configPath, "Path to configuration file (shorthand)")
+	// Registered so fs.Parse accepts the value findAccountArg already consumed;
+	// the profile itself was selected before the config was loaded.
+	var flagAccount string
+	fs.StringVar(&flagAccount, "account", accountID, "Configured account ID (selects its profile and device)")
 
 	// Connection flags
 	deviceID := fs.String("device", cfg.Device.DeviceID, "ADB device serial (e.g. localhost:5555)")
@@ -109,6 +127,11 @@ func main() {
 		return
 	}
 
+	if listAccounts {
+		runListAccounts()
+		return
+	}
+
 	// Logging initialization
 	logger.Init(debugLog)
 	fmt.Printf("ClashGO v%s (commit: %.7s) [CLI Mode]\n", version, commit)
@@ -144,6 +167,21 @@ func main() {
 		cfg.Storage.HaltRule = strings.ToUpper(*haltRule)
 	}
 	cfg.Performance.PerfMode = *perf
+
+	// The account's device binding wins over the config file: it is the
+	// account's identity, and mixing the two silently farms the wrong
+	// emulator. Explicit CLI flags still win, so ad-hoc runs stay possible.
+	if selectedAccount != nil {
+		if !flagWasSet(fs, "device") && !flagWasSet(fs, "adb-host") && !flagWasSet(fs, "adb-port") {
+			cfg.Device.ADBHost = selectedAccount.Device.ADBHost
+			cfg.Device.ADBPort = selectedAccount.Device.ADBPort
+			cfg.Device.DeviceID = selectedAccount.Device.DeviceID
+		}
+		if selectedAccount.MaxAttacksPerSession > 0 && !flagWasSet(fs, "max-attacks") && !flagWasSet(fs, "n") {
+			cfg.Attack.MaxAttackPerSession = selectedAccount.MaxAttacksPerSession
+		}
+		fmt.Printf("Account: %s (%s) → %s\n", selectedAccount.Name, selectedAccount.ID, cfg.Device.DeviceID)
+	}
 
 	if *noRestart {
 		cfg.Device.RestartOnStartup = false
@@ -268,6 +306,86 @@ func findConfigArg(args []string) string {
 	return ""
 }
 
+// findAccountArg extracts -account before config loading: the profile must be
+// selected before config.LoadOrDefault resolves paths.ResolveConfig.
+func findAccountArg(args []string) string {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if (arg == "-account" || arg == "--account") && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(arg, "-account=") {
+			return strings.SplitN(arg, "=", 2)[1]
+		}
+		if strings.HasPrefix(arg, "--account=") {
+			return strings.SplitN(arg, "=", 2)[1]
+		}
+	}
+	return ""
+}
+
+// selectAccount loads the registry, validates the requested account and makes
+// its profile the one every later config read/write resolves to.
+func selectAccount(id string) (accounts.Account, error) {
+	st, err := accounts.Open(paths.GetConfigDir())
+	if err != nil {
+		return accounts.Account{}, fmt.Errorf("load accounts: %w", err)
+	}
+	acct, ok := st.Get(id)
+	if !ok {
+		ids := make([]string, 0, len(st.List()))
+		for _, a := range st.List() {
+			ids = append(ids, a.ID)
+		}
+		return accounts.Account{}, fmt.Errorf("account %q not found (known: %s)", id, strings.Join(ids, ", "))
+	}
+	if err := paths.SetProfile(acct.ID); err != nil {
+		return accounts.Account{}, err
+	}
+	return acct, nil
+}
+
+func runListAccounts() {
+	st, err := accounts.Open(paths.GetConfigDir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load accounts: %v\n", err)
+		os.Exit(1)
+	}
+	activeID := st.ActiveID()
+	fmt.Printf("Configured Accounts (%s):\n", st.Path())
+	if len(st.List()) == 0 {
+		fmt.Println("  (no accounts configured)")
+		return
+	}
+	for _, a := range st.List() {
+		marker := " "
+		if a.ID == activeID {
+			marker = "*"
+		}
+		state := "ready"
+		if !a.Enabled {
+			state = "disabled"
+		}
+		fmt.Printf("  %s %-16s %-22s %-24s %-9s TH%-2d %s\n",
+			marker, a.ID, a.Name, a.Device.DeviceID, state, a.TownHall, a.PlayerTag)
+	}
+	rot := st.Rotation()
+	fmt.Printf("\nRotation: enabled=%t order=%s auto_start=%t attacks_per_account=%d\n",
+		rot.Enabled, rot.Order, rot.AutoStart, rot.AttacksPerAccount)
+}
+
+// flagWasSet reports whether the user explicitly passed name. It lets the
+// account binding apply by default while an explicit CLI flag still wins.
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func loadConfig(customPath string) *config.BotConfig {
 	if customPath != "" {
 		cfg, err := config.Load(customPath)
@@ -382,12 +500,14 @@ func printUsage(fs *flag.FlagSet) func() {
 		fmt.Println("Commands & Information:")
 		fmt.Println("  -devices           List connected ADB devices and exit")
 		fmt.Println("  -strategies        List available strategy YAML files and exit")
+		fmt.Println("  -accounts          List configured accounts and exit")
 		fmt.Println("  -v, -version       Print version and exit")
 		fmt.Println("  -h, --help         Show this help message")
 		fmt.Println()
 
 		fmt.Println("Core Automation:")
 		fmt.Println("  -c, -config <file> Custom config JSON file (default: config.json or app config)")
+		fmt.Println("  -account <id>      Run as a configured account (uses its profile + device)")
 		fmt.Println("  -s, -strategy <f>  Strategy YAML file (default: valk_spam.yaml)")
 		fmt.Println("  -n, -max-attacks N Max attacks before exiting (default: 0, unlimited)")
 		fmt.Println("  -once              Run exactly 1 attack, then exit cleanly")
@@ -424,6 +544,10 @@ func printUsage(fs *flag.FlagSet) func() {
 		fmt.Println("Examples:")
 		fmt.Println("  # Check connected ADB devices")
 		fmt.Println("  bot_cli -devices")
+		fmt.Println()
+		fmt.Println("  # List accounts, then farm the second village")
+		fmt.Println("  bot_cli -accounts")
+		fmt.Println("  bot_cli -account mini -perf")
 		fmt.Println()
 		fmt.Println("  # Unattended farming with max performance")
 		fmt.Println("  bot_cli -perf -gold 600000 -elixir 600000")
