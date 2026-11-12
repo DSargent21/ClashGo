@@ -4,7 +4,9 @@
 package main
 
 import (
+	"context"
 	"embed"
+	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -16,8 +18,16 @@ import (
 var assets embed.FS
 
 func main() {
+	liveSmoke := liveSmokeRequested()
+	if liveSmoke {
+		// Fail closed: closing the window before the raid check completes is
+		// not a pass. runLiveSmoke clears this only after verification.
+		liveSmokeExitCode.Store(1)
+	}
+
 	// Create an instance of the app structure
 	app := NewApp()
+	app.liveSmoke = liveSmoke
 
 	// Create application with options
 	err := wails.Run(&options.App{
@@ -30,8 +40,13 @@ func main() {
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 9, G: 9, B: 11, A: 1},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
+		OnStartup: func(ctx context.Context) {
+			app.startup(ctx)
+			if liveSmoke {
+				go app.runLiveSmoke(ctx)
+			}
+		},
+		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,
 		},
@@ -55,5 +70,9 @@ func main() {
 
 	if err != nil {
 		println("Error:", err.Error())
+		liveSmokeExitCode.Store(1)
+	}
+	if liveSmoke {
+		os.Exit(int(liveSmokeExitCode.Load()))
 	}
 }

@@ -105,10 +105,10 @@ func TestOutwardHeroLadderStepsAwayFromCentreWhenTheLineIsUnusable(t *testing.T)
 }
 
 // TestHeroDropCandidatesOrdersOutwardFirst is the end-to-end property, restated
-// 2026-10-05: the whole candidate list is sorted outward-first — the pin keeps
-// no privileged lead (its lead was refused 11/12 live in run1/probe3), so the
-// first tap is the farthest-out ground and every later candidate is a step back
-// toward the middle rather than another tap on the refused point.
+// 2026-11-12: the authored point keeps the first tap (live 2026-11-12 the
+// outward lead was refused 4/4 while the nearer authored ground landed 4/4),
+// and the RETRY candidates are sorted outward-first so a refused drop walks out
+// of the no-deploy pocket instead of re-tapping the point that failed.
 func TestHeroDropCandidatesOrdersOutwardFirst(t *testing.T) {
 	const w, h = 1280, 720
 	hm := &HeroManager{
@@ -127,22 +127,21 @@ func TestHeroDropCandidatesOrdersOutwardFirst(t *testing.T) {
 	}
 
 	cands := hm.heroDropCandidates(&TrackedSlot{UnitName: "Dragon Duke"}, "dragon duke")
-	if len(cands) < 2 {
+	if len(cands) < 3 {
 		t.Fatalf("expected the outward ladder plus alternates, got %d candidates", len(cands))
 	}
 	pin := image.Pt(230, 469)
 	mid := image.Pt(w/2, h/2)
-	// Strictly ordered: farthest from the field centre first.
-	for i := 1; i < len(cands); i++ {
+	if cands[0] != pin {
+		t.Fatalf("first candidate = %v, want the authored pin %v", cands[0], pin)
+	}
+	// Every RETRY is strictly ordered: farthest from the field centre first.
+	for i := 2; i < len(cands); i++ {
 		prev, cur := dist2(cands[i-1], mid), dist2(cands[i], mid)
 		if cur > prev {
-			t.Fatalf("candidates are not outward-first: %v (%d) is closer in than %v (%d) at index %d",
+			t.Fatalf("retry candidates are not outward-first: %v (%d) is closer in than %v (%d) at index %d",
 				cands[i], cur, cands[i-1], prev, i)
 		}
-	}
-	if dist2(cands[0], mid) <= dist2(pin, mid) {
-		t.Fatalf("first candidate = %v, not further out than the pin %v; the pin-led tap was the refused one",
-			cands[0], pin)
 	}
 	for i, c := range cands {
 		if c.Y < BandTop() || c.Y > UICutoff(h) {

@@ -46,7 +46,7 @@ func main() {
 		}
 		x, _ := strconv.Atoi(os.Args[2])
 		y, _ := strconv.Atoi(os.Args[3])
-		err = client.TapFast(x, y, 60)
+		err = client.TapFast(x, y, 0)
 		if err == nil {
 			fmt.Printf("tapped %d,%d\n", x, y)
 		}

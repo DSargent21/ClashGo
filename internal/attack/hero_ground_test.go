@@ -175,8 +175,10 @@ func TestHeroDeploy_ExhaustedFieldRetriesCostNoCardTap(t *testing.T) {
 	if hm.deploySingleHero(d, pre) {
 		t.Fatal("deploySingleHero must not claim success when nothing confirms")
 	}
-	if got := len(tl.slotTaps()); got != 2 {
-		t.Errorf("card taps = %d, want exactly 2 (the placement plus one re-arm)", got)
+	// One re-arm per field retry: a refused tap deselects the card, so a retry
+	// that skips its own re-arm fires at an unselected card and can never land.
+	if got := len(tl.slotTaps()); got != 1+heroFieldRetries {
+		t.Errorf("card taps = %d, want %d (the placement plus one re-arm per field retry)", got, 1+heroFieldRetries)
 	}
 	if slot.SpotTaps != 1 {
 		t.Errorf("placement budget spent = %d, want 1: retries must never cost the ability's tap", slot.SpotTaps)
@@ -184,8 +186,11 @@ func TestHeroDeploy_ExhaustedFieldRetriesCostNoCardTap(t *testing.T) {
 	if got := len(tl.fieldTaps()); got != 1+heroFieldRetries {
 		t.Errorf("field taps = %d, want %d (the drop plus %d retries)", got, 1+heroFieldRetries, heroFieldRetries)
 	}
+	if slot.SpotRearms != heroFieldRetries {
+		t.Errorf("re-arms = %d, want %d (one per field retry)", slot.SpotRearms, heroFieldRetries)
+	}
 	if hm.executor.RearmSlot(slot) {
-		t.Error("a second re-arm must be refused: maxHeroRearms bounds how often the card may be re-tapped")
+		t.Error("the re-arm budget must be bounded: maxHeroRearms stops the card being re-tapped forever")
 	}
 	if !hm.executor.HeroSpotTapBudgetLeft(slot) {
 		t.Error("a card tap must remain for the sweep/verifier to recover the hero, and for its ability")
@@ -279,5 +284,68 @@ func TestHeroGround_ChosenGroundIsTheClearOne(t *testing.T) {
 	}
 	if hm.zone.Inside(cands[0].X, cands[0].Y) {
 		t.Errorf("chosen ground %v is inside the red line", cands[0])
+	}
+}
+
+// TestHeroDropCandidatesDoNotSampleDiagonalTroopLineInterior is the 2026-11-11
+// fix. The TopLeft pin ran diagonally across the village, the hero path took
+// fractions along it, the game refused all four heroes there, and the sweep's
+// authored point beside the line placed every one of them on its first tap.
+// A diagonal troop line is not a set of proven hero tiles: only its ENDPOINTS
+// are the anchors the pass fired first.
+func TestHeroDropCandidatesDoNotSampleDiagonalTroopLineInterior(t *testing.T) {
+	line := lineFromPoints(image.Pt(461, 130), image.Pt(198, 305), "TopLeft", linePoints)
+	hm := &HeroManager{
+		targetEdge:   "TopLeft",
+		pinnedGround: true,
+		pCfg: PrecisionConfig{
+			Width:  1024,
+			Height: 768,
+			HeroTargets: map[string]image.Point{
+				"TopLeft": {X: 321, Y: 207},
+			},
+		},
+		deployLine:  line,
+		troopGround: []image.Point{{X: 461, Y: 130}, {X: 198, Y: 305}},
+		w:           1024,
+		h:           768,
+	}
+
+	cands := hm.heroDropCandidates(&TrackedSlot{UnitName: "archer queen"}, "archer queen")
+	if len(cands) < 2 {
+		t.Fatalf("got %d candidates, want authored ground plus retries", len(cands))
+	}
+	for _, p := range []image.Point{{X: 395, Y: 174}, {X: 264, Y: 261}, {X: 422, Y: 156}, {X: 238, Y: 278}} {
+		if containsPoint(cands, p) {
+			t.Fatalf("candidate %v is an interior fraction of the diagonal troop line; the game refused every hero dropped there live", p)
+		}
+	}
+	for i, c := range cands {
+		if c.Y < BandTop() || c.Y > UICutoff(hm.h) {
+			t.Fatalf("candidate %d = %v sits outside the deploy band", i, c)
+		}
+	}
+}
+
+// TestRunHeroFieldRetriesRearmsBeforeEveryRetry: every refused field tap
+// deselects the card, so a retry that does not re-arm fires at nothing. The
+// live 2026-11-11 run measured exactly that (delta 0.0003 and 0.0000 on the
+// second and third retries) before this rule.
+func TestRunHeroFieldRetriesRearmsBeforeEveryRetry(t *testing.T) {
+	cands := []image.Point{{X: 10, Y: 10}, {X: 20, Y: 10}, {X: 30, Y: 10}, {X: 40, Y: 10}}
+	rearms, fired := 0, 0
+	won := runHeroFieldRetries(
+		cands, 0.7, true,
+		func() bool { rearms++; return true },
+		func(image.Point) { fired++ },
+		func() (float64, bool) { return 0.7, true }, // never transitions
+		func() bool { return false },
+		func(int, image.Point, float64, float64, float64, bool) {},
+	)
+	if won {
+		t.Fatal("no retry transitions the card, so the run must not report a placement")
+	}
+	if rearms != heroFieldRetries || fired != heroFieldRetries {
+		t.Fatalf("re-arms = %d, field taps = %d, want %d of each (one re-arm per retry)", rearms, fired, heroFieldRetries)
 	}
 }

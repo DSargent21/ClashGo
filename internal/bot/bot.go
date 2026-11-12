@@ -55,12 +55,15 @@ type Bot struct {
 	totalElixir atomic.Int64
 	totalDE     atomic.Int64
 	totalStars  atomic.Int32
-	stars0      atomic.Int32
-	stars1      atomic.Int32
-	stars2      atomic.Int32
-	stars3      atomic.Int32
-	seqRunning  atomic.Bool
-	zoomedOut   atomic.Bool
+	// uptimeOffset accumulates time removed by ResetStats so a live
+	// session can zero its displayed uptime without racing startedAt.
+	uptimeOffset atomic.Int64
+	stars0       atomic.Int32
+	stars1       atomic.Int32
+	stars2       atomic.Int32
+	stars3       atomic.Int32
+	seqRunning   atomic.Bool
+	zoomedOut    atomic.Bool
 
 	chestDismissInFlight    atomic.Bool
 	splashDismissInFlight   atomic.Bool
@@ -2602,7 +2605,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		Int32("attacks", b.attackCount.Load()).
 		Str("stars", fmt.Sprintf("3⭐:%d | 2⭐:%d | 1⭐:%d | 0⭐:%d", b.stars3.Load(), b.stars2.Load(), b.stars1.Load(), b.stars0.Load())).
 		Str("loot", fmt.Sprintf("Gold: %d | Elixir: %d | DE: %d", b.totalGold.Load(), b.totalElixir.Load(), b.totalDE.Load())).
-		Dur("uptime", time.Since(b.startedAt)).
+		Dur("uptime", b.uptime()).
 		Msg("=== SESSION SUMMARY ===")
 
 	// Only reset zoomedOut if wall upgrades are enabled: the attack button
@@ -3675,6 +3678,29 @@ func resolveAutoEndSetting(overrides map[string]bool, base, stratName string, ya
 	return false
 }
 
+// uptime reports the displayable session time, excluding time cleared by
+// ResetStats.
+func (b *Bot) uptime() time.Duration {
+	return time.Since(b.startedAt) - time.Duration(b.uptimeOffset.Load())
+}
+
+// ResetStats zeroes the session counters while the bot keeps running.
+// Uptime restarts from zero without touching startedAt, so a reset live
+// session does not race the goroutine that reads Stats.
+func (b *Bot) ResetStats() {
+	b.attackCount.Store(0)
+	b.skipsCount.Store(0)
+	b.totalGold.Store(0)
+	b.totalElixir.Store(0)
+	b.totalDE.Store(0)
+	b.totalStars.Store(0)
+	b.stars0.Store(0)
+	b.stars1.Store(0)
+	b.stars2.Store(0)
+	b.stars3.Store(0)
+	b.uptimeOffset.Store(int64(time.Since(b.startedAt)))
+}
+
 func (b *Bot) Stats() BotStats {
 	s := BotStats{
 		AttacksCompleted: b.attackCount.Load(),
@@ -3686,7 +3712,7 @@ func (b *Bot) Stats() BotStats {
 		Stars1:           b.stars1.Load(),
 		Stars2:           b.stars2.Load(),
 		Stars3:           b.stars3.Load(),
-		Uptime:           time.Since(b.startedAt),
+		Uptime:           b.uptime(),
 		AdbHealth:        b.client.Health(),
 		CPUTimeSec:       CPUTime().Seconds(),
 		CPUCores:         b.cpuSampler.Usage(),

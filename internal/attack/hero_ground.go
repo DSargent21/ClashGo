@@ -515,6 +515,7 @@ func runHeroFieldRetries(
 	cands []image.Point,
 	baseline float64,
 	baselineOK bool,
+	rearm func() bool,
 	fire func(image.Point),
 	sample func() (float64, bool),
 	budgetGone func() bool,
@@ -523,6 +524,15 @@ func runHeroFieldRetries(
 	prev := baseline
 	for i := 1; i < len(cands) && i-1 < heroFieldRetries; i++ {
 		if !baselineOK || budgetGone() {
+			return false
+		}
+		// A refused field tap DESELECTS the card, so every retry needs the card
+		// re-armed before its tap can land. Retries that skip this fire at an
+		// unselected card and change nothing: live 2026-11-11 every second/third
+		// retry measured delta 0.0003 and 0.0000 while the armed first retry
+		// placed the hero. A nil rearm keeps the caller's own arming (the sweep
+		// spends its single card tap itself).
+		if rearm != nil && !rearm() {
 			return false
 		}
 		fire(cands[i])
@@ -551,4 +561,23 @@ func bestDeployLinePoint(points []image.Point, h int) (image.Point, bool) {
 		return image.Point{}, false
 	}
 	return cands[0], true
+}
+
+// dedupePoints drops repeated coordinates, keeping the first occurrence. The
+// ground lists mix authored points, axis snaps and red-line pushes, which can
+// land on the same tile; a duplicate is a wasted field tap.
+func dedupePoints(pts []image.Point) []image.Point {
+	if len(pts) < 2 {
+		return pts
+	}
+	seen := make(map[image.Point]bool, len(pts))
+	out := make([]image.Point, 0, len(pts))
+	for _, p := range pts {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }

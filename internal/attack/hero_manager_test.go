@@ -1,6 +1,7 @@
 package attack
 
 import (
+	"image"
 	"testing"
 
 	"github.com/Ducky705/ClashGO/pkg/strategy"
@@ -188,5 +189,63 @@ func TestPadCount_SafetyPadFloor(t *testing.T) {
 		if got := padCount(c.in); got != c.want {
 			t.Errorf("padCount(%d) = %d, want %d", c.in, got, c.want)
 		}
+	}
+}
+
+// TestDeployTroops_NudgesRefusedLineOutwardAndRetries is the user's rule: verify
+// the drop, and when the ground was refused (the card's count did not move at
+// all after a pass) move the line slightly back from the base and try again
+// there instead of re-firing the same refused tiles.
+//
+// Live 2026-11-11: the pinned TopLeft line ran across the village, most of its
+// interior taps were refused, and every reconcile round re-fired the same
+// diagonal.
+func TestDeployTroops_NudgesRefusedLineOutwardAndRetries(t *testing.T) {
+	exec, probe := newTapProbe(t)
+	hm := NewHeroManager(exec, &SlotManager{}, PrecisionConfig{}, "TopLeft", 1024, 768,
+		nil, nil, DeployLine{}, zerolog.Nop())
+	slot := &TrackedSlot{TroopSlot: TroopSlot{X: 200, Y: 705, Category: "Troop"}, UnitName: "balloon"}
+
+	// A vertical pin near the left edge: both ends are left of the frame centre,
+	// so one nudge step must move the whole line further left.
+	hm.pinnedGround = true
+	hm.deployLine = lineFromPoints(image.Pt(150, 200), image.Pt(150, 600), "TopLeft", linePoints)
+
+	reads := 0
+	hm.liveHook = func() (int, bool, bool) {
+		reads++
+		if reads <= 2 { // the pass's read plus its confirmation read
+			return 10, true, false // nothing landed: the ground was refused
+		}
+		return 0, true, true // the nudged line accepted every remaining unit
+	}
+
+	if !hm.DeployTroops(strategy.Unit{Name: "Balloon", Amount: "All"}, slot, "Line", 0, "Line",
+		gocv.NewMat(), 10, true) {
+		t.Fatal("a pass that lands after the line was nudged must be reported as deployed")
+	}
+	if reads != 3 {
+		t.Fatalf("live reads = %d, want 3 (the refused pass, its confirmation, then the nudged pass)", reads)
+	}
+	if hm.lastTroopLineP1.X >= 150 {
+		t.Fatalf("deploy line start = %v; a refused line must be moved back from the base", hm.lastTroopLineP1)
+	}
+
+	// The taps must actually land on both grounds: the refused original and the
+	// nudged line further from the base.
+	orig, nudged := 0, 0
+	for _, p := range probe.fields() {
+		switch {
+		case p.X >= 140:
+			orig++
+		case p.X <= 125:
+			nudged++
+		}
+	}
+	if orig == 0 {
+		t.Fatal("no tap was fired on the original line")
+	}
+	if nudged == 0 {
+		t.Fatal("no tap was fired on the nudged line: the retry re-used the refused ground")
 	}
 }

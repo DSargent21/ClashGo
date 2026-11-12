@@ -313,13 +313,13 @@ func TestRearmDoesNotStealTheAbility(t *testing.T) {
 	if !hm.executor.TapHeroAbility(slot) {
 		t.Fatal("the ability tap must still be available after a re-arm: the re-arm replaces a tap the game never registered as a placement")
 	}
-	// Three physical card taps, and that is the documented ceiling: the placement,
-	// the single re-arm that a refusal makes necessary, and the ability. What is
-	// preserved is the CONTRACT the 2-tap rule protects — exactly one placement and
-	// exactly one ability, never a second placement — which is why the re-arm is
-	// accounted separately from the placement budget.
-	if got := len(tl.slotTaps()); got != 2+maxHeroRearms {
-		t.Fatalf("total card taps = %d, want %d (placement + re-arm + ability)", got, 2+maxHeroRearms)
+	// Three physical card taps here, and that is the documented contract: the
+	// placement, the one re-arm this drop's single retry needs, and the ability.
+	// What is preserved is exactly one placement and exactly one ability, never a
+	// second placement — which is why the re-arm is accounted separately from the
+	// placement budget.
+	if got := len(tl.slotTaps()); got != 3 {
+		t.Fatalf("total card taps = %d, want 3 (placement + one re-arm + ability)", got)
 	}
 	// After the ability: the placement counter still holds exactly the one
 	// placement (the re-arm and the ability are accounted elsewhere), and the

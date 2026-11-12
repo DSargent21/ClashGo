@@ -75,7 +75,7 @@ ifneq ($(OPENCV_LIBDIR),)
     CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names,-dead_strip_dylibs
 endif
 
-.PHONY: all build build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask
+.PHONY: all build build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask smoke-live smoke-live-app
 
 all: build-cli build-gui
 
@@ -92,6 +92,20 @@ test-go:
 	go vet ./...
 	@echo "Running go test ./..."
 	go test $(GOTEST_LDFLAGS) ./...
+
+# smoke-live: real one-raid check through the Wails App bindings (headless).
+# Starts the same StartBot/StopBot path the window uses, waits for exactly
+# one attack, verifies stats.json + attack_history.json, then stops. Spends
+# a real army and needs BlueStacks/ADB connected; not part of `make test`.
+smoke-live:
+	@echo "LIVE SMOKE: one real attack will be spent on the active account"
+	go test -tags livesmoke -run '^TestLiveWailsSmoke$$' -count=1 -v -timeout 15m $(GOTEST_LDFLAGS) .
+
+# smoke-live-app: packaged binary self-test. Builds the Wails app, launches
+# it with --live-smoke, runs one real raid, then exits 0 on pass / 1 on fail.
+smoke-live-app: build-gui
+	@echo "LIVE SMOKE (packaged app): one real attack will be spent on the active account"
+	@MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) $(BUILD_DIR)/ClashGO.app/Contents/MacOS/ClashGO --live-smoke
 
 # Locate a python3 interpreter that actually has pytest + pyyaml. The
 # macOS system python3 (CLT 3.9) lacks both, while framework/homebrew

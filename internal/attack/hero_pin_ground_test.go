@@ -66,13 +66,13 @@ func TestPinnedHeroPointFoundForPinnedSide(t *testing.T) {
 	}
 }
 
-// TestHeroDropCandidatesDemotesRefusedPin pins the 2026-10-05 ordering fix.
+// TestHeroDropCandidatesDemotesRefusedPin pins the 2026-11-12 ordering rule.
 //
-// The pin used to lead every candidate list (ground_source=pinned in the log),
-// and live run1 + probe3 then refused that first tap 11/12 while the outward
-// points beside it landed on the rescue taps. With no axis to prove (this pin's
-// troop line is diagonal, so groundAxis never matches), the outward order is
-// the only evidence left — it must beat both the pin and the formula mirror.
+// 2026-10-05 sorted the WHOLE list outward (the pin included) because a
+// pin-led first tap was refused 11/12 live. 2026-11-12 measured the other half
+// of that rule: the outward lead was refused 4/4 for heroes while the next
+// candidate, nearer the authored ground, landed 4/4. So the authored lead is
+// kept and the RETRY candidates walk outward from it.
 func TestHeroDropCandidatesDemotesRefusedPin(t *testing.T) {
 	hm := pinnedHM()
 
@@ -90,16 +90,15 @@ func TestHeroDropCandidatesDemotesRefusedPin(t *testing.T) {
 		t.Fatal("no hero drop candidates")
 	}
 	pin := image.Point{X: 281, Y: 181}
-	if cands[0] == pin {
-		t.Fatalf("first candidate = the pin %v; a pin-led first tap was refused 11/12 live — outward ground must lead", cands[0])
-	}
-	if cands[0] == (image.Point{X: 192, Y: 216}) {
-		t.Fatalf("first candidate = the formula mirror %v; the pin's side must not take the formula's point", cands[0])
+	if cands[0] != pin {
+		t.Fatalf("first candidate = %v, want the user's pin %v; the authored lead is what landed live", cands[0], pin)
 	}
 	mid := image.Pt(hm.w/2, hm.h/2)
-	if dist2(cands[0], mid) <= dist2(pin, mid) {
-		t.Fatalf("first candidate %v is not further from the field centre than the pin %v; the first tap must be the outward ground",
-			cands[0], pin)
+	for i := 2; i < len(cands); i++ {
+		if dist2(cands[i], mid) > dist2(cands[i-1], mid) {
+			t.Fatalf("retry candidate %v is closer in than %v at index %d; retries must walk outward",
+				cands[i], cands[i-1], i)
+		}
 	}
 }
 

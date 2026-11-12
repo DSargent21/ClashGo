@@ -2,6 +2,7 @@ package attack
 
 import (
 	"image"
+	"math"
 
 	"github.com/rs/zerolog"
 )
@@ -399,4 +400,44 @@ func clamp(v, min, max int) int {
 		return max
 	}
 	return v
+}
+
+// nudgeTiles is how far one verify-and-retry step moves a refused deploy line,
+// in village tiles. "Slightly back" on purpose: the red no-deploy line hugs the
+// base, so a two-tile step leaves the refused pocket without throwing away the
+// side the user pinned.
+const nudgeTiles = 2
+
+// nudgeDeployLineOutward moves both ends of a deploy line one short step away
+// from the field centre, which is where the base (and its no-deploy pocket)
+// sits. It preserves the drawn direction and the side.
+//
+// It exists for the verify-and-back-off rule in DeployTroops: a pass that lands
+// nothing is the game refusing that ground ("You cannot deploy troops on the Red
+// area!"), and re-firing the same tiles only spends taps. Reports whether either
+// end actually moved — a line already against the field edge has nowhere to go
+// and the caller must stop retrying it.
+func nudgeDeployLineOutward(p1, p2 image.Point, w, h, px int) (image.Point, image.Point, bool) {
+	if px <= 0 {
+		px = tileStepPx(h) * nudgeTiles
+	}
+	midX, midY := w/2, h/2
+	step := func(p image.Point) image.Point {
+		dx := float64(p.X - midX)
+		dy := float64(p.Y - midY)
+		length := math.Hypot(dx, dy)
+		if length < 1 {
+			// Dead centre: the only way out is straight up, away from the troop bar.
+			return clampToField(image.Pt(p.X, p.Y-px), w, h)
+		}
+		return clampToField(image.Pt(
+			p.X+int(math.Round(dx/length*float64(px))),
+			p.Y+int(math.Round(dy/length*float64(px))),
+		), w, h)
+	}
+	np1, np2 := step(p1), step(p2)
+	if np1 == p1 && np2 == p2 {
+		return p1, p2, false
+	}
+	return np1, np2, true
 }

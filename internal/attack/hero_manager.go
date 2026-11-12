@@ -67,6 +67,10 @@ type HeroManager struct {
 	// captureSlotRatio. Test seam only — nil in production.
 	ratioHook func() (float64, bool)
 
+	// liveHook, when non-nil, replaces the capture + OCR inside
+	// liveCountAndEmpty. Test seam only — nil in production.
+	liveHook func() (int, bool, bool)
+
 	// activateAbility gates the post-deploy auto-activation loop inside
 	// activateAbilities. The orchestrator keeps it false — abilities are
 	// owned by the dedicated "Abilities" phase, which runs AFTER the spell
@@ -339,16 +343,18 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 			}
 		}
 
-		// A refused drop DESELECTS the card, so the field can only be re-aimed
-		// after the card is re-selected (see maxHeroRearms). The re-arm is not a
-		// placement and spends no placement budget — the hero keeps its one
-		// placement and its one ability.
-		if !hm.executor.RearmSlot(p.d.Slot) {
-			continue
+		// A refused drop DESELECTS the card, so every retry is re-armed first
+		// (see maxHeroRearms). A re-arm is not a placement and spends no
+		// placement budget — the hero keeps its one placement and its one ability.
+		rearm := func() bool {
+			if !hm.executor.RearmSlot(p.d.Slot) {
+				return false
+			}
+			hm.executor.client.HumanSleep(heroArmSettleMs, 30)
+			return true
 		}
-		hm.executor.client.HumanSleep(heroArmSettleMs, 30)
 		hm.debugDump("rescue_" + p.d.Unit.Name + "_pre")
-		if hm.retryHeroFieldTaps(p.d.Slot, p.d.Unit.Name, retryCands, p.last, true, "batch-confirm") {
+		if hm.retryHeroFieldTaps(p.d.Slot, p.d.Unit.Name, retryCands, p.last, true, "batch-confirm", rearm) {
 			p.placed = true
 		}
 	}
@@ -536,9 +542,11 @@ func (hm *HeroManager) retryHeroFieldTaps(
 	baseline float64,
 	baselineOK bool,
 	preSrc string,
+	rearm func() bool,
 ) bool {
 	return runHeroFieldRetries(
 		cands, baseline, baselineOK,
+		rearm,
 		func(pt image.Point) { hm.fireHeroDrop(unitName, pt, false, 3) },
 		func() (float64, bool) {
 			hm.executor.client.HumanSleep(300, 40)
@@ -587,9 +595,9 @@ func containsPoint(pts []image.Point, p image.Point) bool {
 // heroDropCandidates returns the ground points a hero may drop on, best first.
 //
 // Order of evidence:
-//  1. The ground this battle's troop pass just used (the axis those accepted
-//     taps share) — proven in THIS battle, so it leads whenever it exists.
-//  2. The user's pinned hero point / the strategy formula's point.
+//  1. The user's pinned hero point, else the strategy formula's per-unit point.
+//  2. The axis this battle's troop pass just used, when those accepted taps
+//     share one (a diagonal line does NOT: its interior is not proven ground).
 //  3. The outward ladder from that intent, then the deploy line's band points.
 //
 // With no red outline to check against, the whole list is then ordered
@@ -600,47 +608,41 @@ func containsPoint(pts []image.Point, p image.Point) bool {
 // seconds later. The log's ground_source names whichever ground actually leads
 // after all of it.
 func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []image.Point {
-	// The verified line just used by troops is proven legal ground in this exact battle.
-	// Centering heroes on it prevents red-area refusals and costly retry loops.
-	if hm.hasTroopLine {
-		p1, p2 := hm.lastTroopLineP1, hm.lastTroopLineP2
-		var candidates []image.Point
-		for _, frac := range []float64{0.25, 0.75, 0.15, 0.85, 0.35, 0.65} {
-			pt := image.Pt(p1.X+int(frac*float64(p2.X-p1.X)), p1.Y+int(frac*float64(p2.Y-p1.Y)))
-			if hm.executor == nil || hm.executor.clearsSiege(pt) {
-				candidates = append(candidates, pt)
-			}
-		}
-		if len(candidates) > 0 {
-			return candidates
-		}
-		return []image.Point{image.Pt((p1.X+p2.X)/2, (p1.Y+p2.Y)/2)}
-	}
-
 	entry, hasFormula := hm.formulaEntry(unitName)
-	var cands []image.Point
-	source := "deploy_line"
-
 	pinnedPt, havePin := hm.pinnedHeroPoint()
 
-	// The ground the troop pass just used wins: snap this hero's intent onto the
-	// axis those accepted taps share.
+	// The authored intent for this hero: the user's pin for this side, else the
+	// strategy formula's per-unit point. Both are ground a human picked, and the
+	// sweep (which places heroes at the formula point) lands it on the first tap
+	// in every live battle where the phases do not.
+	var formulaPts []image.Point
+	if hasFormula {
+		formulaPts = heroFormulaCandidates(entry, hm.h)
+	}
 	var intent image.Point
 	haveIntent := false
-	switch {
-	case havePin:
+	if havePin {
 		intent, haveIntent = pinnedPt, true
-	case hasFormula:
-		if fc := heroFormulaCandidates(entry, hm.h); len(fc) > 0 {
-			intent, haveIntent = fc[0], true
-		}
+	} else if len(formulaPts) > 0 {
+		intent, haveIntent = formulaPts[0], true
 	}
-	// The troop pass's ground leads whenever this battle left some: those taps
-	// were accepted by the game seconds ago. Before this fix the pin was
-	// prepended OVER the axis and the source string overwritten with "pinned",
-	// so the axis path was dead in every pinned battle (and a diagonal pin line
-	// never matches groundAxis anyway — see troopGround).
-	var axisCands, formulaPts []image.Point
+
+	var cands []image.Point
+	source := "deploy_line"
+	if havePin {
+		cands = append(cands, pinnedPt)
+		source = "pinned"
+	}
+
+	// The ground the troop pass just used, snapped onto the axis those accepted
+	// taps share. Only a SHARED AXIS is evidence: the interior of a diagonal line
+	// is not proven ground just because the line was used. Live 2026-11-11
+	// (TopLeft pin (461,130)->(198,305), diagonal across the village): the hero
+	// path sampled fractions along that line, every hero was refused there, and
+	// the sweep's authored point beside the line landed on its first tap. Those
+	// fractions are gone for that reason; the axis snap stays, because a vertical
+	// or horizontal troop line really is the axis the game just accepted.
+	var axisCands []image.Point
 	if axis, vertical, ok := groundAxis(hm.troopGround); ok {
 		if !haveIntent {
 			intent, _ = hm.resolveHeroTarget(slot)
@@ -648,29 +650,16 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 		}
 		if haveIntent {
 			axisCands = axisCandidates(intent, axis, vertical, hm.h, hm.w)
-		}
-	}
-	if len(axisCands) > 0 {
-		cands = append(cands, axisCands...)
-		source = "troop_ground_axis"
-	}
-	if havePin {
-		if len(axisCands) > 0 {
-			// Battle evidence leads; the pin rides as an alternate instead of
-			// being deleted — the user's choice stays reachable, it just no
-			// longer spends the first tap on ground the game keeps refusing.
-			cands = append(cands, pinnedPt)
-		} else {
-			cands = append([]image.Point{pinnedPt}, cands...)
-			source = "pinned"
-		}
-	} else if hasFormula {
-		if fc := heroFormulaCandidates(entry, hm.h); len(fc) > 0 {
-			formulaPts = fc
-			cands = append(cands, fc...)
+			cands = append(cands, axisCands...)
 			if source == "deploy_line" {
-				source = "formula"
+				source = "troop_ground_axis"
 			}
+		}
+	}
+	if len(formulaPts) > 0 {
+		cands = append(cands, formulaPts...)
+		if source == "deploy_line" {
+			source = "formula"
 		}
 	}
 	// A refused drop has to move OUTWARD from the point that was refused. Without
@@ -718,26 +707,48 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 		}
 	}
 
-	// First-tap ordering when this battle's red line is UNKNOWN. The no-deploy
-	// pocket hugs the middle of the map, so the farther a candidate sits from
-	// the screen centre the more likely the game accepts it. Live 2026-10-01
-	// (BottomLeft, three attacks): with the pinned point consumed by the
-	// siege-clearance filter above, the ladder's NEAREST point led every drop
-	// and was refused four times out of five while the outward point beside it
-	// landed every time — each refusal then cost a re-arm plus a retry tap.
-	// The pin used to keep its lead here when it survived the filter; run1 and
-	// probe3 (2026-10-04/05) then refused that lead 11/12, so now the pin is
-	// re-ordered with everything else. With a red outline present the
-	// zone-clearance order (heroGroundCandidates) is strictly better and is
+	// Nothing inside the red line is hero ground. With a measured outline the
+	// authored point gets pushed clear instead of dropped, so the first tap stays
+	// on the user's side; whatever cannot be pushed is discarded.
+	if len(hm.zone.Polygon) >= 3 {
+		cx, cy := hm.zone.Centre()
+		step := tileStepPx(hm.h)
+		free := make([]image.Point, 0, len(cands))
+		for _, p := range cands {
+			if !hm.zone.Inside(p.X, p.Y) {
+				free = append(free, p)
+				continue
+			}
+			if pushed, ok := pushPointOutOfZone(p, cx, cy, step, hm.zone); ok {
+				free = append(free, clampToField(pushed, hm.w, hm.h))
+			}
+		}
+		if len(free) > 0 {
+			if moved := len(cands) - len(free); moved > 0 {
+				hm.logger.Info().
+					Str("unit", unitName).
+					Int("dropped", moved).
+					Msg("dropped hero ground that could not be pushed clear of the red line")
+			}
+			cands = dedupePoints(free)
+		}
+	}
+	cands = dedupePoints(cands)
+
+	// Retry ordering when this battle's red line is UNKNOWN. The no-deploy pocket
+	// hugs the middle of the map, so the farther a retry sits from the screen
+	// centre the more likely the game accepts it (live 2026-10-01, three attacks;
+	// 2026-10-04/05 run1 + probe3). The FIRST candidate keeps its authored lead:
+	// live 2026-11-12 the whole list was sorted outward, every hero's first tap
+	// went to the farthest tile and was refused 4/4, while the next candidate —
+	// the one nearer the authored ground — landed 4/4. With a measured outline
+	// the zone-clearance order (heroGroundCandidates) is strictly better and is
 	// left alone.
-	reordered := false
-	if len(hm.zone.Polygon) < 3 && len(cands) > 1 {
-		// Outward-first over the WHOLE list, pin included: the pin's protected
-		// lead was the refusal pattern (its first tap lost ~11/12 live), and the
-		// outward points around it are the ones that landed. The comment above
-		// this block used to keep the pin at [0]; the evidence says the opposite.
-		orderOutwardFirst(cands, hm.w, hm.h)
-		reordered = true
+	if len(hm.zone.Polygon) < 3 && len(cands) > 2 {
+		lead := cands[0]
+		rest := cands[1:]
+		orderOutwardFirst(rest, hm.w, hm.h)
+		cands = append([]image.Point{lead}, rest...)
 	}
 
 	if len(cands) == 0 {
@@ -748,9 +759,8 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 		cands = cands[:maxHeroGroundCandidates]
 	}
 
-	// ground_source must describe what actually LEADS the list: the siege
-	// filter and the outward order both move the pin, and this field is how the
-	// next live run judges whether the ordering fix worked.
+	// ground_source must describe what actually LEADS the list: the siege and
+	// red-line filters can both move the authored point.
 	switch {
 	case containsPoint(axisCands, cands[0]):
 		source = "troop_ground_axis"
@@ -758,8 +768,6 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 		source = "pinned"
 	case containsPoint(formulaPts, cands[0]):
 		source = "formula"
-	case reordered:
-		source = "outward_first"
 	}
 	hm.logger.Info().
 		Str("unit", unitName).
@@ -1149,6 +1157,15 @@ func (hm *HeroManager) DeployTroops(
 	// count label will not come back after its own deployment. See the stop rule
 	// in the loop.
 	unreadableReads := 0
+	// progressBase is the last count read that is expected to DROP as the pass
+	// lands units. -1 means nothing was measured, so a refused ground cannot be
+	// proven and no nudge is attempted.
+	progressBase := -1
+	if preTrusted && preCount > 0 {
+		progressBase = preCount
+	} else if detectedTrusted && detectedCount > 0 {
+		progressBase = detectedCount
+	}
 	for round := 0; round < reconcileRounds; round++ {
 		// Battle-timer guard: the reconcile top-ups exist to catch genuine
 		// drops CoC swallowed, not to re-fire a spent card forever. Once
@@ -1236,6 +1253,42 @@ func (hm *HeroManager) DeployTroops(
 		// Fire what is left. When the count is untrusted there is no number to
 		// fire, so use the bounded blind batch and let the visual check on the
 		// next round decide — never invent a count from nothing.
+		//
+		// Before re-firing, VERIFY THE GROUND. A count that has not moved at all
+		// after a pass is not a slow card, it is the game refusing those tiles
+		// ("You cannot deploy troops on the Red area!"), and re-tapping the same
+		// line is what filled the deploy window with refused taps. Step the line
+		// slightly back from the base and spend this round on the new ground.
+		if trusted && progressBase > 0 && live >= progressBase {
+			// One confirmation read first: the card's label lags its own animation,
+			// and moving a line because a frame was mid-animation would send the
+			// rest of the army to ground nobody proved was refused.
+			hm.executor.HumanSleep(300, 40)
+			if again, ok, _ := hm.liveCountAndEmpty(slot); ok && again >= progressBase {
+				live = again
+				if np1, np2, moved := nudgeDeployLineOutward(p1, p2, hm.w, hm.h, 0); moved {
+					hm.logger.Warn().
+						Str("unit", unit.Name).
+						Int("round", round+1).
+						Int("count_before", progressBase).
+						Int("count_after", live).
+						Interface("was_p1", p1).
+						Interface("was_p2", p2).
+						Interface("p1", np1).
+						Interface("p2", np2).
+						Msg("deploy line landed nothing, so the game refused that ground; moving the line slightly back from the base and retrying there")
+					p1, p2 = np1, np2
+					if p1 != p2 {
+						hm.lastTroopLineP1, hm.lastTroopLineP2 = p1, p2
+						hm.hasTroopLine = true
+					}
+					hm.recordGround(p1, p2)
+				}
+			}
+		}
+		if trusted {
+			progressBase = live
+		}
 		fire := live
 		if !trusted || fire <= 0 {
 			fire = blindBatchTaps
@@ -1587,6 +1640,9 @@ const maxUnreadableReconcileReads = 2
 // helper in live_count.go. Kept as a method to keep call-site code
 // readable inside HeroManager.DeployTroops's reconcile loop.
 func (hm *HeroManager) liveCountAndEmpty(slot *TrackedSlot) (int, bool, bool) {
+	if hm.liveHook != nil {
+		return hm.liveHook()
+	}
 	return captureSlotLiveCount(
 		hm.executor,
 		hm.troopCounter,

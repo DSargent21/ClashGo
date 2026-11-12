@@ -24,6 +24,7 @@ import (
 // App struct
 type App struct {
 	ctx       context.Context
+	liveSmoke bool
 	bot       *bot.Bot
 	botCtx    context.Context
 	cancel    context.CancelFunc
@@ -63,6 +64,16 @@ type App struct {
 	// (attack cap or daily cap), which is the only moment rotation should
 	// hand the device to the next account.
 	rotateCh chan struct{}
+}
+
+// emit sends a Wails event when the app has a Wails context. Headless callers
+// (the live smoke test) intentionally leave ctx nil; runtime.EventsEmit fatals
+// on a plain context, so error paths must go through here.
+func (a *App) emit(event string, data ...interface{}) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, event, data...)
 }
 
 type WailsLogWriter struct {
@@ -107,10 +118,9 @@ func (a *App) startup(ctx context.Context) {
 	logger.Init(os.Getenv("DEBUG") != "", wailsWriter)
 
 	// Multi-account: select the active account's profile before any other
-	// subsystem resolves paths.ResolveConfig. Stats and history are no
-	// longer wiped on every boot — with a fleet they are the per-account
-	// record the switcher displays, so deleting them would erase exactly
-	// the data this feature exists to keep.
+	// subsystem resolves paths.ResolveConfig. Stats are session-scoped: each
+	// launch starts the dashboard totals at zero, while attack_history.json
+	// (Attack activity) and the accounts' daily usage counters persist.
 	if st, err := a.ensureAccounts(); err != nil {
 		log.Error().Err(err).Msg("account registry unavailable; falling back to the legacy single-profile state")
 	} else if acct, ok := st.Active(); ok {
@@ -118,10 +128,16 @@ func (a *App) startup(ctx context.Context) {
 			log.Error().Err(err).Str("account", acct.ID).Msg("failed to select account profile")
 		} else {
 			a.mu.Lock()
-			a.lastStats = readAccountStats(acct.ID)
+			a.lastStats = bot.BotStats{}
 			a.mu.Unlock()
-			log.Info().Str("account", acct.Name).Str("profile", acct.ID).Msg("active account profile loaded")
+			_ = os.Remove(paths.ResolveConfig("stats.json"))
+			log.Info().Str("account", acct.Name).Str("profile", acct.ID).Msg("active account profile loaded; session stats reset")
 		}
+	}
+
+	if a.liveSmoke {
+		log.Info().Msg("live smoke mode: updater, web dashboard and account rotation disabled")
+		return
 	}
 
 	// Bring up the updater service. If NewApp wasn't used (rare
@@ -264,8 +280,7 @@ func (a *App) ResetStats() {
 	a.mu.Lock()
 	a.lastStats = bot.BotStats{}
 	if a.bot != nil {
-		// We can't easily reset atomic counters in a running bot without adding a Reset method there too.
-		// For now, stopping the bot might be required for a full reset, or we just clear the persistent part.
+		a.bot.ResetStats()
 	}
 	a.mu.Unlock()
 	// Drop the cached history so the next GetAttackHistory re-reads
@@ -394,8 +409,8 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 			// surfaces `error="..."` so the user no longer has to
 			// grep app.log to see what failed.
 			log.Error().Err(err).Msg("failed to initialize bot")
-			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Initialization Error: %v", err))
-			runtime.EventsEmit(a.ctx, "bot_init_failed", map[string]interface{}{
+			a.emit("bot_error", fmt.Sprintf("Initialization Error: %v", err))
+			a.emit("bot_init_failed", map[string]interface{}{
 				"message": err.Error(),
 			})
 
@@ -474,7 +489,7 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 			}
 
 			log.Error().Err(err).Msg("failed to start bot")
-			runtime.EventsEmit(a.ctx, "bot_error", fmt.Sprintf("Start Error: %v", err))
+			a.emit("bot_error", fmt.Sprintf("Start Error: %v", err))
 
 			// Clear the WHOLE start placeholder (bot AND cancel/botCtx)
 			// — leaving a.cancel set would make every future StartBot
@@ -705,6 +720,15 @@ func (a *App) IsRunning() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.bot != nil
+}
+
+// isStarting reports whether a StartBot boot is still in flight. IsRunning is
+// deliberately false until the bot exists, so wait loops need both states to
+// distinguish a slow boot from a failed one.
+func (a *App) isStarting() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cancel != nil
 }
 
 // GetConfig returns the current config.json settings

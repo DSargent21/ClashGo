@@ -280,7 +280,14 @@ const (
 // budget, which is what keeps the 2-tap contract (one placement, one ability,
 // never spam) intact. The physical ceiling per hero is
 // maxHeroSpotTaps + maxHeroRearms.
-const maxHeroRearms = 1
+//
+// One re-arm per field retry, not one per hero. Every refused field tap
+// deselects the card again, so a single re-arm leaves the second and third
+// retries firing at an unselected card — live 2026-11-11 those two measured
+// delta 0.0003 and 0.0000 (nothing happened) and the hero was left to the sweep
+// eleven seconds later. The retries stay field taps; only their arming is paid
+// for, which is what makes a walk out of the no-deploy pocket actually work.
+const maxHeroRearms = heroFieldRetries
 
 // isHeroCardSlot reports whether a slot is a real hero card the cap applies
 // to. Fallback-labeled "heroes" are bonus troops wearing a stale manual

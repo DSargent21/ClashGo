@@ -1372,6 +1372,7 @@ func (sw *Sweeper) deployHeroSlotOnce(slot *TrackedSlot) bool {
 	if capturedPost {
 		won := runHeroFieldRetries(
 			cands, postRatio, true,
+			nil, // the sweep spends its own single card tap; it has no re-arm budget
 			sw.fireHeroFieldTap,
 			func() (float64, bool) {
 				sw.executor.HumanSleep(300, 40)
