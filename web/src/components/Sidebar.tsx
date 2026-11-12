@@ -1,132 +1,103 @@
 import React from 'react';
-import { AccountView, TabType } from '../types';
+import { TabType } from '../types';
+import Icon, { IconName } from './ui/Icon';
 import logo from '../assets/images/clashgo-logo.png';
 
 interface SidebarProps {
   tab: TabType;
   setTab: (tab: TabType) => void;
   expanded: boolean;
-  setExpanded: (expanded: boolean) => void;
   running: boolean;
   onStart: () => void;
   onStop: () => void;
-  activeAccount?: AccountView | null;
 }
+
+interface NavItem {
+  id: TabType;
+  label: string;
+  icon: IconName;
+}
+
+const OVERVIEW: NavItem[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
+  { id: 'army', label: 'Army', icon: 'layers' },
+  { id: 'analytics', label: 'Analytics', icon: 'chart' },
+];
+
+const FLEET: NavItem[] = [
+  { id: 'accounts', label: 'Accounts', icon: 'users' },
+];
+
+const CONFIGURE: NavItem[] = [
+  { id: 'config', label: 'Config', icon: 'sliders' },
+  { id: 'settings', label: 'Settings', icon: 'settings' },
+];
 
 const Sidebar: React.FC<SidebarProps> = React.memo(({
   tab,
   setTab,
   expanded,
-  setExpanded,
   running,
   onStart,
   onStop,
-  activeAccount,
 }) => {
-  const menuItems: { id: TabType; label: string; icon: string }[] = [
-    { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
-    { id: 'accounts', label: 'Accounts', icon: 'group' },
-    { id: 'analytics', label: 'Analytics', icon: 'monitoring' },
-    { id: 'config', label: 'Config', icon: 'tune' },
-    { id: 'settings', label: 'Settings', icon: 'settings' },
-  ];
+  const renderNav = (items: NavItem[]) => items.map((item) => {
+    const active = tab === item.id;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        onClick={() => setTab(item.id)}
+        className={`nav-btn ${active ? 'active' : ''}`.trim()}
+        title={expanded ? undefined : item.label}
+        aria-label={item.label}
+        aria-current={active ? 'page' : undefined}
+      >
+        <Icon name={item.icon} size={17} />
+        <span className="nav-label">{item.label}</span>
+      </button>
+    );
+  });
 
   return (
-    <aside
-      className={`fixed left-0 top-0 h-full bg-white dark:bg-zinc-900 border-r border-zinc-100/50 dark:border-zinc-800/50 z-50 transition-[width,background-color] duration-200 ease-out group overflow-hidden ${expanded ? 'w-64 shadow-premium-lg dark:shadow-none' : 'w-20'}`}
-      style={{
-        position: 'fixed',
-        left: 0,
-        top: 0,
-        height: '100%',
-        width: expanded ? '256px' : '80px',
-        zIndex: 50,
-        willChange: 'width'
-      }}
-      onMouseEnter={() => setExpanded(true)}
-      onMouseLeave={() => setExpanded(false)}
-    >
-      <div className="draggable absolute top-0 left-0 right-0 h-8 z-10" />
-      <div className="flex flex-col h-full py-8 px-4 relative z-20">
-        <div className="flex items-center mb-10 px-0 overflow-hidden draggable">
-          <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center no-drag">
-            <img
-              src={logo}
-              alt="ClashGO Logo"
-              className="w-9 h-9 object-contain dark:invert"
-            />
-          </div>
-          <div className={`transition-[opacity,transform] duration-200 ease-out ml-2 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 w-0 overflow-hidden'}`}>
-            <h1 className="font-headline text-lg font-bold tracking-tight whitespace-nowrap text-zinc-950 dark:text-white">Clash<span className="text-zinc-400 dark:text-zinc-500 font-medium ml-0.5">GO</span></h1>
-          </div>
+    <aside id="app-sidebar" className={`sidebar ${expanded ? '' : 'collapsed'}`.trim()}>
+      <div className="side-drag draggable" />
+
+      <div className="brand">
+        <div className="brand-mark">
+          <img src={logo} alt="" className="no-drag" />
         </div>
-
-        <nav className="space-y-1.5 flex-grow">
-          {menuItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setTab(item.id)}
-              title={expanded ? undefined : item.label}
-              aria-label={item.label}
-              className={`w-full flex items-center h-11 rounded-xl transition-all duration-150 active:scale-[0.97] relative group/btn ${
-                tab === item.id
-                  ? 'bg-zinc-950 dark:bg-zinc-800 text-white dark:text-zinc-200 shadow-premium dark:shadow-none'
-                  : 'text-zinc-500 dark:text-zinc-500 hover:bg-zinc-100/80 dark:hover:bg-zinc-800/40 hover:text-zinc-900 dark:hover:text-zinc-200'
-              }`}
-            >
-              <div className="w-11 h-11 flex-shrink-0 flex items-center justify-center">
-                <span className={`material-symbols-outlined text-[20px] transition-transform duration-150 ${tab === item.id ? 'scale-110' : 'group-hover/btn:scale-110'}`}>
-                  {item.icon}
-                </span>
-              </div>
-              <span className={`text-[13px] font-bold tracking-tight transition-[opacity,transform] duration-200 ease-out whitespace-nowrap ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 w-0 overflow-hidden'}`}>
-                {item.label}
-              </span>
-            </button>
-          ))}
-        </nav>
-
-        <div className="mt-auto space-y-3">
-          <button
-            type="button"
-            onClick={() => setTab('accounts')}
-            title={activeAccount ? `${activeAccount.name} · ${activeAccount.device.device_id}` : 'Manage accounts'}
-            className="w-full h-12 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800/60 flex items-center overflow-hidden hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors relative"
-          >
-            <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center">
-              <div className="w-8 h-8 rounded-lg bg-zinc-950 dark:bg-zinc-700 flex items-center justify-center text-[10px] font-black text-white">
-                {activeAccount ? activeAccount.name.trim().slice(0, 2).toUpperCase() : <span className="material-symbols-outlined text-base">group</span>}
-              </div>
-            </div>
-            <div className={`flex flex-col items-start min-w-0 transition-[opacity,transform] duration-200 ease-out ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 w-0 overflow-hidden'}`}>
-              <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Account</span>
-              <span className="text-xs font-bold text-zinc-950 dark:text-white truncate max-w-[140px]">
-                {activeAccount ? activeAccount.name : 'No account'}
-              </span>
-            </div>
-            <span className={`absolute right-3 w-1.5 h-1.5 rounded-full ${running ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-300 dark:bg-zinc-600'} ${expanded ? 'opacity-100' : 'opacity-0'}`} />
-          </button>
-
-          <button
-            onClick={running ? onStop : onStart}
-            title={expanded ? undefined : (running ? 'Stop bot' : 'Start bot')}
-            className={`w-full h-12 rounded-2xl font-black text-[10px] tracking-[0.2em] transition-all duration-200 flex items-center relative overflow-hidden group/start ${
-              running
-                ? 'bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/50 border border-rose-100 dark:border-rose-900/30'
-                : 'bg-zinc-950 dark:bg-zinc-800 text-white dark:text-zinc-300 hover:bg-zinc-800 dark:hover:bg-zinc-700 shadow-premium dark:shadow-none border border-transparent dark:border-zinc-700/50'
-            }`}
-          >
-            <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center z-10 transition-transform duration-200 group-hover/start:scale-110">
-              <span className="material-symbols-outlined text-[18px]">{running ? 'stop' : 'play_arrow'}</span>
-            </div>
-            <span className={`transition-[opacity,transform] duration-200 ease-out whitespace-nowrap z-10 ${expanded ? 'opacity-100 translate-x-0' : 'opacity-0 w-0 -translate-x-2 overflow-hidden'}`}>
-              {running ? 'STOP BOT' : 'START BOT'}
-            </span>
-          </button>
+        <div className="brand-text">
+          <b>ClashGO</b>
+          <span>Mission control</span>
         </div>
+      </div>
+
+      <nav className="side-nav" aria-label="Primary">
+        <div className="nav-group">Overview</div>
+        {renderNav(OVERVIEW)}
+        <div className="nav-group">Fleet</div>
+        {renderNav(FLEET)}
+        <div className="nav-group">Configure</div>
+        {renderNav(CONFIGURE)}
+      </nav>
+
+      <div className="side-foot">
+        <button
+          type="button"
+          onClick={running ? onStop : onStart}
+          className={`engine-power ${running ? 'stop' : 'start'}`.trim()}
+          aria-label={running ? 'Stop bot' : 'Start bot'}
+          title={running ? 'Stop bot' : 'Start bot'}
+        >
+          <Icon name={running ? 'stop' : 'play'} size={11} />
+          <span>{running ? 'Stop bot' : 'Start bot'}</span>
+        </button>
       </div>
     </aside>
   );
 });
+
+Sidebar.displayName = 'Sidebar';
 
 export default Sidebar;

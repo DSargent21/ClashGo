@@ -14,12 +14,28 @@ export function ClearSkippedVersion() {
   return window['go']['main']['App']['ClearSkippedVersion']();
 }
 
+export function CreateAccount(arg1) {
+  return window['go']['main']['App']['CreateAccount'](arg1);
+}
+
+export function DeleteAccount(arg1) {
+  return window['go']['main']['App']['DeleteAccount'](arg1);
+}
+
 export function DownloadUpdate() {
   return window['go']['main']['App']['DownloadUpdate']();
 }
 
+export function GetAccounts() {
+  return window['go']['main']['App']['GetAccounts']();
+}
+
 export function GetAppVersion() {
   return window['go']['main']['App']['GetAppVersion']();
+}
+
+export function GetArmyPlans() {
+  return window['go']['main']['App']['GetArmyPlans']();
 }
 
 export function GetAttackHistory() {
@@ -54,6 +70,10 @@ export function IsRunning() {
   return window['go']['main']['App']['IsRunning']();
 }
 
+export function ResetAccountUsage(arg1) {
+  return window['go']['main']['App']['ResetAccountUsage'](arg1);
+}
+
 export function ResetStats() {
   return window['go']['main']['App']['ResetStats']();
 }
@@ -68,6 +88,10 @@ export function SaveFullConfig(arg1) {
 
 export function SetAutoUpgradeConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19, arg20) {
   return window['go']['main']['App']['SetAutoUpgradeConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19, arg20);
+}
+
+export function SetRotation(arg1) {
+  return window['go']['main']['App']['SetRotation'](arg1);
 }
 
 export function SetScheduleConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
@@ -96,4 +120,12 @@ export function StartBot(arg1, arg2, arg3, arg4, arg5) {
 
 export function StopBot() {
   return window['go']['main']['App']['StopBot']();
+}
+
+export function SwitchAccount(arg1, arg2) {
+  return window['go']['main']['App']['SwitchAccount'](arg1, arg2);
+}
+
+export function UpdateAccount(arg1, arg2) {
+  return window['go']['main']['App']['UpdateAccount'](arg1, arg2);
 }

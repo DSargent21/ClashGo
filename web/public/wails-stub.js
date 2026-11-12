@@ -132,13 +132,182 @@
             };
         };
 
+        // Localhost-only fixtures so frontend work can review the populated
+        // dashboard, table, and report drawer. Never installed outside
+        // localhost (see the resulting gates above).
+        var minutesAgo = function (minutes) {
+            return new Date(Date.now() - minutes * 60000).toISOString();
+        };
+        var sampleHistory = [
+            {
+                timestamp: minutesAgo(4), strategy: 'assets/strategies/auto_edrag_rush.yaml',
+                target_edge: 'right', deploy_success: true, undeployed_slots: 0,
+                parsed_results: true, stars: 3, gold_stolen: 684210, elixir_stolen: 592140,
+                dark_elixir_stolen: 4120, bonus_gold: 108000, bonus_elixir: 108000, bonus_de: 0,
+                total_attacks_session: 42,
+            },
+            {
+                timestamp: minutesAgo(19), strategy: 'assets/strategies/valk_spam.yaml',
+                target_edge: 'bottom', deploy_success: true, undeployed_slots: 0,
+                parsed_results: true, stars: 2, gold_stolen: 431800, elixir_stolen: 388600,
+                dark_elixir_stolen: 2210, bonus_gold: 0, bonus_elixir: 0, bonus_de: 0,
+                total_attacks_session: 41,
+            },
+            {
+                timestamp: minutesAgo(37), strategy: 'assets/strategies/auto_edrag_rush.yaml',
+                target_edge: 'left', deploy_success: true, undeployed_slots: 1,
+                parsed_results: true, stars: 2, gold_stolen: 512400, elixir_stolen: 286100,
+                dark_elixir_stolen: 1840, bonus_gold: 0, bonus_elixir: 0, bonus_de: 0,
+                total_attacks_session: 40,
+            },
+            {
+                timestamp: minutesAgo(58), strategy: 'assets/strategies/balloon_edrag_rush.yaml',
+                target_edge: 'top', deploy_success: true, undeployed_slots: 0,
+                parsed_results: true, stars: 3, gold_stolen: 721390, elixir_stolen: 648220,
+                dark_elixir_stolen: 5120, bonus_gold: 114000, bonus_elixir: 114000, bonus_de: 0,
+                total_attacks_session: 39,
+            },
+            {
+                timestamp: minutesAgo(96), strategy: 'assets/strategies/valk_spam.yaml',
+                target_edge: 'right', deploy_success: false, undeployed_slots: 3,
+                deploy_error: 'army card slot not readable after deploy window',
+                parsed_results: false, stars: 0, gold_stolen: 0, elixir_stolen: 0,
+                dark_elixir_stolen: 0, bonus_gold: 0, bonus_elixir: 0, bonus_de: 0,
+                total_attacks_session: 38,
+            },
+            {
+                timestamp: minutesAgo(140), strategy: 'assets/strategies/auto_edrag_rush.yaml',
+                target_edge: 'left', deploy_success: true, undeployed_slots: 0,
+                parsed_results: true, stars: 1, gold_stolen: 198400, elixir_stolen: 164700,
+                dark_elixir_stolen: 620, bonus_gold: 0, bonus_elixir: 0, bonus_de: 0,
+                total_attacks_session: 37,
+            },
+            {
+                timestamp: minutesAgo(188), strategy: 'assets/strategies/top_edrag_rush.yaml',
+                target_edge: 'top', deploy_success: true, undeployed_slots: 0,
+                parsed_results: true, stars: 3, gold_stolen: 556300, elixir_stolen: 604900,
+                dark_elixir_stolen: 3180, bonus_gold: 96000, bonus_elixir: 96000, bonus_de: 0,
+                total_attacks_session: 36,
+            },
+            {
+                timestamp: minutesAgo(242), strategy: 'assets/strategies/bottom_edrag_rush.yaml',
+                target_edge: 'bottom', deploy_success: true, undeployed_slots: 0,
+                parsed_results: true, stars: 2, gold_stolen: 364200, elixir_stolen: 301500,
+                dark_elixir_stolen: 1440, bonus_gold: 0, bonus_elixir: 0, bonus_de: 0,
+                total_attacks_session: 35,
+            },
+        ];
+
+        // Older, localhost-only reports so the activity heatmap and strategy
+        // table can be reviewed with multi-week data. Newest stays first.
+        for (var day = 1; day <= 300; day += 1) {
+            if (day % 4 === 0) continue;
+            var hits = day % 9 === 0 ? 4 : day % 5 === 0 ? 2 : 1;
+            for (var hit = 0; hit < hits; hit += 1) {
+                var stars = (day * 3 + hit) % 4;
+                var failed = day % 29 === 0 && hit === 0;
+                sampleHistory.push({
+                    timestamp: minutesAgo(day * 1440 + hit * 45),
+                    strategy: day % 2 === 0
+                        ? 'assets/strategies/auto_edrag_rush.yaml'
+                        : 'assets/strategies/valk_spam.yaml',
+                    target_edge: ['left', 'right', 'top', 'bottom'][(day + hit) % 4],
+                    deploy_success: !failed,
+                    undeployed_slots: failed ? 2 : 0,
+                    deploy_error: failed ? 'army card slot not readable after deploy window' : '',
+                    parsed_results: !failed,
+                    stars: failed ? 0 : stars,
+                    gold_stolen: failed ? 0 : 160000 + stars * 120000 + (day % 7) * 9000,
+                    elixir_stolen: failed ? 0 : 140000 + stars * 105000 + (day % 5) * 8000,
+                    dark_elixir_stolen: failed ? 0 : stars * 900 + (day % 3) * 120,
+                    bonus_gold: stars === 3 ? 96000 : 0,
+                    bonus_elixir: stars === 3 ? 96000 : 0,
+                    bonus_de: 0,
+                    total_attacks_session: 20 + (day % 12),
+                });
+            }
+        }
+
+        var sampleAccounts = [
+            {
+                id: 'acc-main', name: 'Main village', player_tag: '#2P0Y8LQGR', town_hall: 13,
+                notes: 'Primary push account. Heroes down until Friday.',
+                device: { adb_host: '127.0.0.1', adb_port: 5555, device_id: 'localhost:5555' },
+                enabled: true, priority: 100, cooldown_minutes: 10,
+                max_attacks_per_day: 0, max_attacks_per_session: 0,
+                created_at: minutesAgo(43200), last_used_at: minutesAgo(4),
+                usage: { date: new Date().toISOString().slice(0, 10), attacks: 42, switches: 3 },
+                active: true, running: false, today_attacks: 42, status: 'ready',
+                stats: {
+                    attacks_completed: 42, search_skips: 7, total_gold: 1854321,
+                    total_elixir: 2109876, total_de: 5421,
+                    stars_0: 3, stars_1: 5, stars_2: 12, stars_3: 22,
+                    uptime: 3600000000000, cpu_time_sec: 1380, cpu_cores: 0.14,
+                    adb_health: { avg_capture_ms: 73, consecutive_fails: 0, last_error: '' },
+                },
+            },
+            {
+                id: 'acc-alt', name: 'Alt · TH11', player_tag: '#8QJ2L0PV', town_hall: 11,
+                notes: 'Farming base. Switch only after main hits its daily cap.',
+                device: { adb_host: '127.0.0.1', adb_port: 5557, device_id: 'localhost:5557' },
+                enabled: true, priority: 60, cooldown_minutes: 25,
+                max_attacks_per_day: 40, max_attacks_per_session: 12,
+                created_at: minutesAgo(28800), last_used_at: minutesAgo(95),
+                usage: { date: new Date().toISOString().slice(0, 10), attacks: 12, switches: 1 },
+                active: false, running: false, today_attacks: 12, status: 'cooldown',
+                stats: {
+                    attacks_completed: 12, search_skips: 3, total_gold: 402100,
+                    total_elixir: 388400, total_de: 890,
+                    stars_0: 1, stars_1: 2, stars_2: 4, stars_3: 5,
+                    uptime: 0, cpu_time_sec: 0, cpu_cores: 0,
+                    adb_health: { avg_capture_ms: 0, consecutive_fails: 0, last_error: '' },
+                },
+            },
+        ];
+
         window.go = {
             main: {
                 App: {
+                    GetArmyPlans: resolve([
+                        {
+                            file: 'auto_edrag_rush.yaml',
+                            name: 'Auto EDrag Rush',
+                            description: 'Professional Balloon + EDrag attack with Double Diamond precision.',
+                            emblem: 'Balloon',
+                            target_edge: 'Random',
+                            army_slot: 1,
+                            end_at_percent: 0,
+                            active: true,
+                            phases: [
+                                { name: 'Balloons', units: [{ name: 'Balloon', amount: 'All' }] },
+                                { name: 'Electro Dragons', units: [{ name: 'Electro Dragon', amount: 'All' }] },
+                                { name: 'Siege Machine', units: [{ name: 'Stone Slammer', amount: 'All' }] },
+                                { name: 'Spells', units: [{ name: 'Rage Spell', amount: '5' }, { name: 'Ice Spell', amount: '11' }] },
+                                { name: 'Heroes', units: [{ name: 'Barbarian King', amount: 'All' }, { name: 'Archer Queen', amount: 'All' }, { name: 'Grand Warden', amount: 'All' }, { name: 'Minion Prince', amount: 'All' }, { name: 'Dragon Duke', amount: 'All' }, { name: 'Royal Champion', amount: 'All' }] },
+                                { name: 'Abilities', units: [{ name: 'Barbarian King', amount: 'All' }, { name: 'Archer Queen', amount: 'All' }, { name: 'Grand Warden', amount: 'All' }, { name: 'Minion Prince', amount: 'All' }, { name: 'Dragon Duke', amount: 'All' }, { name: 'Royal Champion', amount: 'All' }] },
+                            ],
+                        },
+                        {
+                            file: 'valk_spam.yaml',
+                            name: 'Valkyrie Earthquake Spam',
+                            description: 'Spam Valkyries on all 4 sides, followed by Heroes/Siege and Earthquakes.',
+                            emblem: 'Valkyrie',
+                            target_edge: 'Random',
+                            army_slot: 4,
+                            end_at_percent: 50,
+                            active: false,
+                            phases: [
+                                { name: 'Valkyrie Spam', units: [{ name: 'Valkyrie', amount: 'All' }] },
+                                { name: 'Earthquakes', units: [{ name: 'Earthquake Spell', amount: 'All' }] },
+                                { name: 'Siege & Heroes', units: [{ name: 'Stone Slammer', amount: 'All' }, { name: 'Barbarian King', amount: 'All' }, { name: 'Archer Queen', amount: 'All' }, { name: 'Grand Warden', amount: 'All' }, { name: 'Dragon Duke', amount: 'All' }] },
+                                { name: 'Abilities', units: [{ name: 'Barbarian King', amount: 'All' }, { name: 'Archer Queen', amount: 'All' }, { name: 'Grand Warden', amount: 'All' }] },
+                            ],
+                        },
+                    ]),
                     GetConfig: resolve({
                         search: { min_loot_gold: 400000, min_loot_elixir: 400000, min_loot_de: 2000, enabled: true },
                         upgrade: { upgrade_walls: false },
-                        attack: { strategy_file: 'default.csv', stall_timer_seconds: 30 },
+                        attack: { strategy_file: 'assets/strategies/auto_edrag_rush.yaml', stall_timer_seconds: 30 },
                         device: { adb_port: 5555 },
                     }),
                     IsRunning: resolve(false),
@@ -154,16 +323,18 @@
                     ]),
                     ResetStats: resolve(null),
                     GetStats: resolve({
-                        attacks_completed: 42,
+                        attacks_completed: sampleHistory.length,
                         search_skips: 7,
-                        total_gold: 1854321,
-                        total_elixir: 2109876,
-                        total_de: 5421,
-                        stars_0: 3,
-                        stars_1: 5,
-                        stars_2: 12,
-                        stars_3: 22,
+                        total_gold: sampleHistory.reduce(function (sum, r) { return sum + r.gold_stolen; }, 0),
+                        total_elixir: sampleHistory.reduce(function (sum, r) { return sum + r.elixir_stolen; }, 0),
+                        total_de: sampleHistory.reduce(function (sum, r) { return sum + r.dark_elixir_stolen; }, 0),
+                        stars_0: sampleHistory.filter(function (r) { return r.stars === 0; }).length,
+                        stars_1: sampleHistory.filter(function (r) { return r.stars === 1; }).length,
+                        stars_2: sampleHistory.filter(function (r) { return r.stars === 2; }).length,
+                        stars_3: sampleHistory.filter(function (r) { return r.stars === 3; }).length,
                         uptime: 3600000000000,
+                        cpu_time_sec: 1380,
+                        cpu_cores: 0.14,
                         adb_health: {
                             avg_capture_ms: 73,
                             consecutive_fails: 0,
@@ -172,7 +343,14 @@
                             last_error: '',
                         },
                     }),
-                    GetAttackHistory: resolve([]),
+                    GetAttackHistory: resolve(sampleHistory),
+                    GetAccounts: resolve({
+                        accounts: sampleAccounts,
+                        active_id: 'acc-main',
+                        rotation: { enabled: false, order: 'round_robin', auto_start: false, attacks_per_account: 20 },
+                    }),
+                    SetRotation: resolve(null),
+                    SwitchAccount: resolve({ account: sampleAccounts[0], started: false, message: 'browser-stub' }),
                     GetLogs: resolve([
                         'ClashGO mission control online',
                         'Connected to ADB on port 5555',
@@ -180,6 +358,9 @@
                     ]),
                     GetLiveScreenshot: resolve(''),
                     SaveConfig: resolve(null),
+                    SetStorageConfig: resolve(null),
+                    SetScheduleConfig: resolve(null),
+                    SetAutoUpgradeConfig: resolve(null),
                     SetStrategyArmySlot: resolve(null),
                     SetStrategyAutoEnd: resolve(null),
                     StartBot: resolve({ running: false, message: 'browser-stub' }),

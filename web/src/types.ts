@@ -19,6 +19,8 @@ export interface BotStats {
   adb_health: {
     avg_capture_ms: number;
     consecutive_fails: number;
+    captures_total: number;
+    errors_total: number;
     last_error?: string;
   };
 }
@@ -101,7 +103,7 @@ export interface BotConfig {
   };
 }
 
-export type TabType = 'dashboard' | 'accounts' | 'analytics' | 'config' | 'settings';
+export type TabType = 'dashboard' | 'army' | 'accounts' | 'analytics' | 'config' | 'settings';
 
 // ---- Multi-account switcher --------------------------------------------
 // Shapes mirror internal/accounts (Go) and main.AccountView. An account is

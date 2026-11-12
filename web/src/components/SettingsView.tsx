@@ -1,11 +1,23 @@
 import React from 'react';
-import { BotStats, UpdateStatus } from '../types';
+import { BotStats, TabType, UpdateStatus } from '../types';
+import Icon from './ui/Icon';
+import { SwitchRow } from './ui/Switch';
 
 interface SettingsViewProps {
   stats: BotStats;
   adbPort: number;
   darkMode: boolean;
   setDarkMode: (val: boolean) => void;
+  reduceMotion: boolean;
+  setReduceMotion: (val: boolean) => void;
+  compactMode: boolean;
+  setCompactMode: (val: boolean) => void;
+  clock24h: boolean;
+  setClock24h: (val: boolean) => void;
+  defaultTab: TabType;
+  setDefaultTab: (val: TabType) => void;
+  confirmStop: boolean;
+  setConfirmStop: (val: boolean) => void;
   onResetStats: () => void;
   appVersion: string;
   updateStatus: UpdateStatus;
@@ -14,19 +26,50 @@ interface SettingsViewProps {
   onOpenUpdateModal?: () => void;
 }
 
+const DEFAULT_PAGE_OPTIONS: { value: TabType; label: string }[] = [
+  { value: 'dashboard', label: 'Dashboard' },
+  { value: 'army', label: 'Army' },
+  { value: 'analytics', label: 'Analytics' },
+  { value: 'accounts', label: 'Accounts' },
+  { value: 'config', label: 'Config' },
+  { value: 'settings', label: 'Settings' },
+];
+
 const SettingsView: React.FC<SettingsViewProps> = React.memo(({
-  stats, adbPort, darkMode, setDarkMode, onResetStats,
-  appVersion, updateStatus, onCheckUpdates, onClearSkip,
+  stats,
+  adbPort,
+  darkMode,
+  setDarkMode,
+  reduceMotion,
+  setReduceMotion,
+  compactMode,
+  setCompactMode,
+  clock24h,
+  setClock24h,
+  defaultTab,
+  setDefaultTab,
+  confirmStop,
+  setConfirmStop,
+  onResetStats,
+  appVersion,
+  updateStatus,
+  onCheckUpdates,
+  onClearSkip,
   onOpenUpdateModal,
 }) => {
-  // Destructive action protection: the first click only ARMS the reset
-  // (visual shift + "click again" prompt); a second click within 4s
-  // actually fires it. Prevents fat-finger stat wipes.
+  // Destructive action protection: first click arms, second click within 4s
+  // fires. Prevents fat-finger stat wipes.
   const [resetArmed, setResetArmed] = React.useState(false);
+  const [prefsArmed, setPrefsArmed] = React.useState(false);
+  const [exported, setExported] = React.useState(false);
   const resetTimerRef = React.useRef<number | null>(null);
+  const prefsTimerRef = React.useRef<number | null>(null);
+  const exportTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => () => {
     if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+    if (prefsTimerRef.current) window.clearTimeout(prefsTimerRef.current);
+    if (exportTimerRef.current) window.clearTimeout(exportTimerRef.current);
   }, []);
 
   const handleResetClick = () => {
@@ -40,193 +83,328 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
     onResetStats();
   };
 
-  return (
-    <div className="bg-white dark:bg-zinc-900 p-10 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none max-w-2xl mx-auto transition-all duration-500">
+  const handleResetPreferences = () => {
+    if (!prefsArmed) {
+      setPrefsArmed(true);
+      prefsTimerRef.current = window.setTimeout(() => setPrefsArmed(false), 4000);
+      return;
+    }
+    if (prefsTimerRef.current) window.clearTimeout(prefsTimerRef.current);
+    ['darkMode', 'sidebarExpanded', 'reduceMotion', 'compactMode', 'clock24h', 'confirmStop', 'defaultTab']
+      .forEach((key) => localStorage.removeItem(key));
+    window.location.reload();
+  };
 
-      <div className="flex justify-between items-center mb-12">
+  const handleExportDiagnostics = () => {
+    const generatedAt = new Date();
+    const payload = {
+      generated_at: generatedAt.toISOString(),
+      app_version: appVersion || '0.0.0',
+      build_channel: appVersion.includes('-dev') ? 'development' : 'release',
+      platform: navigator.platform || 'unknown',
+      adb: {
+        port: adbPort,
+        consecutive_fails: stats.adb_health.consecutive_fails,
+        captures_total: stats.adb_health.captures_total,
+        errors_total: stats.adb_health.errors_total,
+        avg_capture_ms: stats.adb_health.avg_capture_ms,
+        last_error: stats.adb_health.last_error || '',
+      },
+      stats: {
+        attacks_completed: stats.attacks_completed,
+        search_skips: stats.search_skips,
+        total_gold: stats.total_gold,
+        total_elixir: stats.total_elixir,
+        total_de: stats.total_de,
+        stars_0: stats.stars_0,
+        stars_1: stats.stars_1,
+        stars_2: stats.stars_2,
+        stars_3: stats.stars_3,
+        uptime_ns: stats.uptime,
+        cpu_time_sec: stats.cpu_time_sec,
+        cpu_cores: stats.cpu_cores,
+      },
+      updater: {
+        state: updateStatus.state,
+        available: updateStatus.available,
+        latest_version: updateStatus.latest_version,
+        skip_version: updateStatus.skip_version,
+      },
+      preferences: {
+        dark_mode: darkMode,
+        reduce_motion: reduceMotion,
+        compact_mode: compactMode,
+        clock_24h: clock24h,
+        default_tab: defaultTab,
+        confirm_stop: confirmStop,
+      },
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `clashgo-diagnostics-${generatedAt.toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+
+    setExported(true);
+    if (exportTimerRef.current) window.clearTimeout(exportTimerRef.current);
+    exportTimerRef.current = window.setTimeout(() => setExported(false), 2200);
+  };
+
+  const connectionOk = stats.adb_health.consecutive_fails === 0;
+  const latency = Number.isFinite(stats.adb_health.avg_capture_ms)
+    ? `${stats.adb_health.avg_capture_ms.toFixed(1)} ms`
+    : '0 ms';
+  const cpuUsage = Number.isFinite(stats.cpu_cores)
+    ? `${(stats.cpu_cores * (navigator.hardwareConcurrency || 1) * 100).toFixed(1)}%`
+    : '0%';
+  const cpuTime = Number.isFinite(stats.cpu_time_sec)
+    ? `${stats.cpu_time_sec.toFixed(1)}s`
+    : '—';
+  const updateReady = updateStatus.available || updateStatus.state === 'ready';
+
+  return (
+    <div>
+      <div className="page-head">
         <div>
-          <h3 className="text-2xl font-bold text-zinc-950 dark:text-white mb-2 tracking-tight">System Settings</h3>
-          <p className="text-sm text-zinc-500 dark:text-zinc-500 font-medium">Core application and connection status.</p>
+          <h1>Settings</h1>
+          <p>Preferences, connection health, diagnostics, and application updates.</p>
         </div>
-        <div className="w-14 h-14 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm transition-colors">
-          <span className="material-symbols-outlined text-zinc-500 dark:text-zinc-500 text-2xl">memory</span>
+        <div className="page-side">
+          <span className="tag">v{appVersion || '0.0.0'}</span>
         </div>
       </div>
 
-      <div className="space-y-4">
-        {/* Dark Mode Toggle */}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={darkMode}
-          onClick={() => setDarkMode(!darkMode)}
-          className="w-full flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group cursor-pointer text-left"
-        >
-          <div className="flex items-center gap-5">
-            <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 group-hover:scale-105 transition-all duration-300 shadow-sm">
-              <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">
-                {darkMode ? 'dark_mode' : 'light_mode'}
-              </span>
-            </div>
-            <div className="flex flex-col">
-              <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">App Theme</span>
-              <span className="text-sm font-bold text-zinc-950 dark:text-white">{darkMode ? 'Dark' : 'Light'}</span>
+      <div className="settings-grid">
+        <section className="card settings-appearance">
+          <div className="card-head">
+            <div>
+              <h3>Appearance</h3>
+              <p className="card-sub">Display preferences persist on this machine</p>
             </div>
           </div>
-          <div 
-            className={`w-12 h-6 rounded-full p-1 transition-all duration-500 ease-in-out relative ${darkMode ? 'bg-zinc-700' : 'bg-zinc-200'}`}
-          >
-            <div className={`w-4 h-4 rounded-full bg-white dark:bg-zinc-400 transition-all duration-500 ease-in-out shadow-md ${darkMode ? 'translate-x-6' : 'translate-x-0'}`}></div>
+          <div className="card-body">
+            <SwitchRow
+              checked={darkMode}
+              onChange={setDarkMode}
+              label="Dark theme"
+              description="Command surfaces stay dark; switch off for the light palette."
+            />
+            <SwitchRow
+              checked={compactMode}
+              onChange={setCompactMode}
+              label="Compact density"
+              description="Tighter page, card, and settings spacing for smaller screens."
+            />
+            <SwitchRow
+              checked={reduceMotion}
+              onChange={setReduceMotion}
+              label="Reduce motion"
+              description="Stops decorative animation and shortens interface transitions."
+            />
+            <SwitchRow
+              checked={clock24h}
+              onChange={setClock24h}
+              label="24-hour clock"
+              description="Use 24-hour time in the top bar instead of AM/PM."
+            />
           </div>
-        </button>
+        </section>
 
-          {[
-            { label: 'Connection Status', value: stats.adb_health.consecutive_fails === 0 ? 'Optimal' : 'Interrupted', status: stats.adb_health.consecutive_fails === 0 ? 'success' : 'error', icon: 'hub', detail: stats.adb_health.last_error },
-            { label: 'ADB Port', value: adbPort.toString(), status: 'info', icon: 'router' },
-            { label: 'Capture Latency', value: isNaN(stats.adb_health.avg_capture_ms) ? '0ms' : `${stats.adb_health.avg_capture_ms.toFixed(1)}ms`, status: stats.adb_health.avg_capture_ms < 200 ? 'success' : 'info', icon: 'speed' },
-            // cpu_time_sec is device-independent (absolute CPU seconds since
-            // start). cpu_cores is a fraction of one core; scaled by the host's
-            // logical core count only to render a familiar 0-100% number.
-            { label: 'CPU Time', value: `${stats.cpu_time_sec.toFixed(1)}s`, status: 'info', icon: 'schedule' },
-            { label: 'CPU Usage', value: isNaN(stats.cpu_cores) ? '0%' : `${(stats.cpu_cores * (navigator.hardwareConcurrency || 1) * 100).toFixed(1)}%`, status: stats.cpu_cores < 0.5 ? 'success' : 'info', icon: 'memory' },
-          ].map((item, i) => (
-
-          <div key={i} className="flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group">
-            <div className="flex items-center gap-5">
-              <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-zinc-100 dark:border-zinc-800 group-hover:scale-105 transition-all duration-300 shadow-sm">
-                <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">{item.icon}</span>
+        <section className="card settings-behavior">
+          <div className="card-head">
+            <div>
+              <h3>Behavior</h3>
+              <p className="card-sub">Launch and engine safety preferences</p>
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="setting-row">
+              <div className="setting-label">
+                <b>Default page</b>
+                <span>Opened when ClashGO starts</span>
               </div>
-              <div className="flex flex-col min-w-0">
-                <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">{item.label}</span>
-                <span className={`text-sm font-bold tracking-tight ${item.status === 'error' ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-950 dark:text-white'}`}>{item.value}</span>
-                {item.detail && (
-                  <span className="mt-1 text-[10px] font-mono text-rose-500/70 truncate max-w-[220px]" title={item.detail}>{item.detail}</span>
-                )}
+              <div className="setting-value">
+                <select
+                  className="field setting-select"
+                  value={defaultTab}
+                  onChange={(event) => setDefaultTab(event.target.value as TabType)}
+                  aria-label="Default page"
+                >
+                  {DEFAULT_PAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-               <div className={`w-2 h-2 rounded-full ${
-                 item.status === 'success' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]' :
-                 item.status === 'error' ? 'bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.4)]' : 'bg-zinc-300 dark:bg-zinc-600'
-               }`}></div>
-            </div>
+            <SwitchRow
+              checked={confirmStop}
+              onChange={setConfirmStop}
+              label="Confirm before stopping"
+              description="Ask before stopping a running bot from any page."
+            />
           </div>
-        ))}
+        </section>
 
-        {/* Update row — surfaces current version + a manual check
-            button so users can force a refresh without waiting for the
-            6h background poller. Rendered as a keyboard-accessible
-            div[role=button] because it contains a real <button>
-            (Resume notifications) — nesting buttons would be
-            invalid HTML. */}
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => {
-            if ((updateStatus.available || updateStatus.state === 'ready') && onOpenUpdateModal) {
-              onOpenUpdateModal();
-            } else {
-              onCheckUpdates();
-            }
-          }}
-          onKeyDown={(e) => {
-            // Ignore keydowns originating from nested buttons
-            if (e.target !== e.currentTarget) return;
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              if ((updateStatus.available || updateStatus.state === 'ready') && onOpenUpdateModal) {
-                onOpenUpdateModal();
-              } else {
-                onCheckUpdates();
-              }
-            }
-          }}
-          className="w-full flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/30 p-6 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 hover:bg-white dark:hover:bg-zinc-800/60 hover:shadow-premium dark:hover:shadow-none transition-all duration-300 group cursor-pointer text-left"
-        >
-          <div className="flex items-center gap-5">
-            <div className="w-12 h-12 rounded-xl bg-white dark:bg-zinc-900 flex items-center justify-center border border-zinc-100 dark:border-zinc-800 group-hover:scale-105 transition-all duration-300 shadow-sm">
-              <span className="material-symbols-outlined text-xl text-zinc-500 dark:text-zinc-500">system_update</span>
-            </div>
-            <div className="flex flex-col">
-              <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">
-                App Version
-              </span>
-              <span className="text-sm font-bold tracking-tight text-zinc-950 dark:text-white tabular-nums">
-                v{appVersion || '0.0.0'}
-                {updateStatus.available && (
-                  <span className="ml-3 text-[10px] font-black uppercase tracking-widest text-emerald-500">
-                    Update {updateStatus.latest_version} available
-                  </span>
-                )}
-                {updateStatus.state === 'ready' && (
-                  <span className="ml-3 text-[10px] font-black uppercase tracking-widest text-emerald-500">
-                    v{updateStatus.latest_version} ready to install
-                  </span>
-                )}
-              </span>
+        <section className="card settings-system">
+          <div className="card-head">
+            <div>
+              <h3>System</h3>
+              <p className="card-sub">Connection and runtime diagnostics</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            {(updateStatus.available || updateStatus.state === 'ready') && onOpenUpdateModal && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenUpdateModal();
-                }}
-                className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] font-black uppercase tracking-[0.2em] transition-all duration-300 flex items-center gap-1.5 shadow-sm active:scale-95"
-              >
-                <span className="material-symbols-outlined text-xs">rocket_launch</span>
-                {updateStatus.state === 'ready' ? 'Install Now' : 'Update Now'}
+          <div className="card-body">
+            <div className="setting-row">
+              <div className="setting-label"><b>Connection</b><span>ADB bridge state</span></div>
+              <div className="setting-value">
+                <span className={`status-pill ${connectionOk ? 'green' : 'error'}`}>
+                  <i />{connectionOk ? 'Optimal' : 'Interrupted'}
+                </span>
+              </div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-label"><b>ADB port</b><span>Local ADB server listen port</span></div>
+              <div className="setting-value"><b>{adbPort}</b></div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-label"><b>Capture latency</b><span>Rolling average per frame</span></div>
+              <div className="setting-value">
+                <b>{latency}</b>
+                <span className="status-pill" style={{ marginTop: 4, display: 'inline-flex' }}>
+                  <i />{stats.adb_health.avg_capture_ms < 200 ? 'Healthy' : 'Slow'}
+                </span>
+              </div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-label"><b>CPU time</b><span>Process CPU seconds since start</span></div>
+              <div className="setting-value"><b>{cpuTime}</b></div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-label"><b>CPU usage</b><span>Across all logical cores</span></div>
+              <div className="setting-value"><b>{cpuUsage}</b></div>
+            </div>
+            {stats.adb_health.last_error ? (
+              <div className="error-banner" style={{ marginTop: 12 }}>
+                <Icon name="alert" size={14} />
+                <span className="mono" style={{ fontSize: 10.5, wordBreak: 'break-word' }}>
+                  {stats.adb_health.last_error}
+                </span>
+              </div>
+            ) : null}
+            <div className="settings-actions">
+              <button type="button" className="btn sm" onClick={handleExportDiagnostics}>
+                <Icon name={exported ? 'check' : 'download'} size={12} />
+                {exported ? 'Exported' : 'Export diagnostics'}
               </button>
-            )}
-            {updateStatus.skip_version && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onClearSkip(); }}
-                className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
-                title={`Resume notifications for v${updateStatus.skip_version}`}
-              >
-                Resume notifications
-              </button>
-            )}
-            <span className="material-symbols-outlined text-zinc-300 dark:text-zinc-700 group-hover:translate-x-1 transition-transform">
-              {(updateStatus.available || updateStatus.state === 'ready') ? 'arrow_forward' : 'refresh'}
-            </span>
+              <span className="muted">JSON · no account credentials</span>
+            </div>
           </div>
-        </div>
+        </section>
 
+        <section className="card settings-updates">
+          <div className="card-head">
+            <div>
+              <h3>Updates</h3>
+              <p className="card-sub">Signed in-app updates from GitHub releases</p>
+            </div>
+          </div>
+          <div className="card-body">
+            <div className="setting-row">
+              <div className="setting-label">
+                <b>App version</b>
+                <span>
+                  {updateStatus.available
+                    ? `v${updateStatus.latest_version} available`
+                    : updateStatus.state === 'ready'
+                      ? `v${updateStatus.latest_version} ready to install`
+                      : 'You are on the installed build'}
+                </span>
+              </div>
+              <div className="setting-value">
+                <b>v{appVersion || '0.0.0'}</b>
+              </div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-label"><b>Release channel</b><span>Manual checks plus a 6h background poll</span></div>
+              <div className="setting-value">
+                <button type="button" className="btn sm" onClick={onCheckUpdates}>
+                  <Icon name="refresh" size={12} />
+                  Check now
+                </button>
+              </div>
+            </div>
+            {updateReady && onOpenUpdateModal ? (
+              <div className="setting-row">
+                <div className="setting-label">
+                  <b>Install update</b>
+                  <span>Downloads, verifies, swaps the bundle, and restarts.</span>
+                </div>
+                <div className="setting-value">
+                  <button type="button" className="btn primary sm" onClick={onOpenUpdateModal}>
+                    Review update
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {updateStatus.skip_version ? (
+              <div className="setting-row">
+                <div className="setting-label">
+                  <b>Muted version</b>
+                  <span>v{updateStatus.skip_version} is skipped</span>
+                </div>
+                <div className="setting-value">
+                  <button type="button" className="btn sm" onClick={onClearSkip}>
+                    Resume
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </section>
 
-        {/* Reset Section — armed-confirm to protect against misclicks. */}
-        <div className="pt-8 mt-8 border-t border-zinc-50 dark:border-zinc-800/50">
-           <button
-             onClick={handleResetClick}
-             aria-live="polite"
-             className={`w-full flex justify-between items-center p-6 rounded-2xl border transition-all duration-300 group ${
-               resetArmed
-                 ? 'bg-rose-500 border-rose-600 text-white shadow-[0_0_30px_-6px_rgba(244,63,94,0.5)]'
-                 : 'bg-rose-50/50 dark:bg-rose-950/10 border-rose-100/50 dark:border-rose-900/20 hover:bg-rose-100/50 dark:hover:bg-rose-950/20'
-             }`}
-           >
-             <div className="flex items-center gap-5">
-               <div className={`w-12 h-12 rounded-xl flex items-center justify-center border transition-all duration-300 shadow-sm ${
-                 resetArmed ? 'bg-white/20 border-white/30' : 'bg-white dark:bg-zinc-900 border-rose-100 dark:border-rose-900 group-hover:scale-105'
-               }`}>
-                 <span className={`material-symbols-outlined text-xl ${resetArmed ? 'text-white animate-pulse' : 'text-rose-500 dark:text-rose-400'}`} style={{ fontVariationSettings: "'FILL' 1" }}>{resetArmed ? 'warning' : 'delete_forever'}</span>
-               </div>
-               <div className="flex flex-col text-left">
-                 <span className={`text-[10px] font-black uppercase tracking-[0.2em] mb-0.5 ${resetArmed ? 'text-white/80' : 'text-rose-600 dark:text-rose-500'}`}>Danger Zone</span>
-                 <span className={`text-sm font-bold ${resetArmed ? 'text-white' : 'text-rose-600 dark:text-rose-400'}`}>
-                   {resetArmed ? 'Click again to confirm — wipes all stats' : 'Reset All Statistics'}
-                 </span>
-               </div>
-             </div>
-             <span className={`material-symbols-outlined transition-transform ${resetArmed ? 'text-white animate-pulse' : 'text-rose-400 dark:text-rose-800 group-hover:translate-x-1'}`}>
-               {resetArmed ? 'error' : 'chevron_right'}
-             </span>
-           </button>
-        </div>
+        <section className="card danger-card settings-danger">
+          <div className="card-head">
+            <div>
+              <h3>Danger zone</h3>
+              <p className="card-sub">Irreversible actions for this profile</p>
+            </div>
+          </div>
+          <div className="card-body">
+            <button
+              type="button"
+              onClick={handleResetClick}
+              aria-live="polite"
+              className={`reset-btn ${resetArmed ? 'armed' : ''}`.trim()}
+            >
+              <Icon name={resetArmed ? 'alert' : 'trash'} size={16} />
+              <span>
+                <b>{resetArmed ? 'Click again to confirm' : 'Reset all statistics'}</b>
+                <span>{resetArmed ? 'This wipes attacks, loot, stars, search skips, and uptime.' : 'Clears attack, loot, star, search, and uptime totals.'}</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleResetPreferences}
+              aria-live="polite"
+              className={`reset-btn secondary ${prefsArmed ? 'armed' : ''}`.trim()}
+            >
+              <Icon name={prefsArmed ? 'alert' : 'refresh'} size={16} />
+              <span>
+                <b>{prefsArmed ? 'Click again to confirm' : 'Reset interface preferences'}</b>
+                <span>{prefsArmed ? 'Theme, density, motion, clock, launch page, and stop confirmation.' : 'Restores defaults without touching stats, config, or accounts.'}</span>
+              </span>
+            </button>
+          </div>
+        </section>
       </div>
     </div>
   );
 });
+
+SettingsView.displayName = 'SettingsView';
 
 export default SettingsView;

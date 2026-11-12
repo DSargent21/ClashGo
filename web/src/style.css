@@ -2,16 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  font-family: 'Inter', sans-serif;
-}
-
-body {
-  margin: 0;
-  padding: 0;
-}
-
-#root {
-  width: 100%;
-  height: 100%;
-}
+/* Application styling lives in src/styles/design.css (tokens, frame,
+   primitives) and src/styles/views.css (per-view layout). main.tsx imports
+   them after this file so the design layer wins over Tailwind preflight.
+   Tailwind stays installed for tooling parity; views use semantic classes. */

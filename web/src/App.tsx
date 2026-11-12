@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import AccountsView from './components/AccountsView';
 import Analytics from './components/Analytics';
+import ArmyView from './components/ArmyView';
 import ConfigView from './components/ConfigView';
 import SettingsView from './components/SettingsView';
 import { EventsOn } from '../wailsjs/runtime';
@@ -37,13 +38,15 @@ import {
   UpdateStatus,
   DEFAULT_UPDATE_STATUS,
   AccountInput,
-  AccountView,
   AccountsState,
   Rotation,
 } from './types';
 import * as accountsApi from './accountsApi';
+import * as armyApi from './armyApi';
+import type { ArmyPlan } from './armyApi';
 import UpdateBanner from './components/UpdateBanner';
-import './App.css';
+import Icon from './components/ui/Icon';
+import { formatClock } from './utils';
 
 /**
  * Defensive wrapper around the Wails-generated `EventsOn` that returns
@@ -87,18 +90,12 @@ const getInitialDarkMode = (): boolean => {
   try {
     const stored = localStorage.getItem('darkMode');
     if (stored !== null) return stored === 'true';
-    // Default to LIGHT, not OS preference.
-    //
-    // macOS's system appearance is dark by default, so honoring
-    // `prefers-color-scheme: dark` here stacks dark on top of dark:
-    // Tailwind `bg-zinc-950` (#09090b) over Wails' macOS dark window
-    // chrome over the WkWebView's transparent layer. The visual result
-    // reads as "black screen" to the user even though every component
-    // is technically painted. The SettingsView toggle still round-trips
-    // the user's explicit choice via `localStorage`.
-    return false;
+    // Command is a dark-first interface. An explicit light choice persists
+    // through the Settings toggle; new installs start dark to match the
+    // app's window chrome and the painted --bg token (no OS guessing).
+    return true;
   } catch {
-    return false;
+    return true;
   }
 };
 
@@ -106,14 +103,73 @@ const getInitialSidebarExpanded = (): boolean => {
   try {
     const stored = localStorage.getItem('sidebarExpanded');
     if (stored !== null) return stored === 'true';
-    return true;
+    // Start as a rail on narrow windows; the explicit toggle still wins.
+    return window.innerWidth > 1150;
   } catch {
     return true;
   }
 };
 
+const TAB_LABELS: Record<TabType, string> = {
+  dashboard: 'Dashboard',
+  army: 'Army',
+  accounts: 'Accounts',
+  analytics: 'Analytics',
+  config: 'Config',
+  settings: 'Settings',
+};
+
+const getInitialTab = (): TabType => {
+  try {
+    const stored = localStorage.getItem('defaultTab');
+    if (stored && Object.prototype.hasOwnProperty.call(TAB_LABELS, stored)) {
+      return stored as TabType;
+    }
+  } catch {
+    // fall through
+  }
+  return 'dashboard';
+};
+
+// Shallow value checks used to reject no-op IPC payloads (see fetchData).
+const sameStringList = (a: string[], b: string[]): boolean => {
+  if (a === b) return true;
+  if (!Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+
+const samePayload = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+};
+
+const getInitialBoolean = (key: string, fallback: boolean): boolean => {
+  try {
+    const stored = localStorage.getItem(key);
+    if (stored !== null) return stored === 'true';
+  } catch {
+    // fall through
+  }
+  return fallback;
+};
+
+/** Self-contained ticker so the 1 Hz clock cannot re-render the views. */
+const Clock = ({ use24Hour }: { use24Hour: boolean }) => {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <span className="clock">{formatClock(now, use24Hour)}</span>;
+};
+
 function App() {
-  const [tab, setTab] = useState<TabType>('dashboard');
+  const [tab, setTab] = useState<TabType>(getInitialTab);
   const [stats, setStats] = useState<bot.BotStats>(new bot.BotStats({
     attacks_completed: 0,
     search_skips: 0,
@@ -135,10 +191,18 @@ function App() {
   }));
   const [isRunning, setIsRunning] = useState(false);
   const [history, setHistory] = useState<bot.AttackReport[]>([]);
+  // The launch timestamp separates this session's attacks from the persistent
+  // history used by Analytics > Attack activity.
+  const [sessionStart] = useState(() => Date.now());
   const [logs, setLogs] = useState<string[]>([]);
   const [adbPort, setAdbPort] = useState(5555);
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
   const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarExpanded);
+  const [reduceMotion, setReduceMotion] = useState(() => getInitialBoolean('reduceMotion', false));
+  const [compactMode, setCompactMode] = useState(() => getInitialBoolean('compactMode', false));
+  const [clock24h, setClock24h] = useState(() => getInitialBoolean('clock24h', true));
+  const [confirmStop, setConfirmStop] = useState(() => getInitialBoolean('confirmStop', false));
+  const [defaultTab, setDefaultTab] = useState<TabType>(getInitialTab);
 
   // Updater state — pushed via `updater_status` event from Go.
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
@@ -150,6 +214,14 @@ function App() {
   const [accountsState, setAccountsState] = useState<AccountsState | null>(null);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [accountsError, setAccountsError] = useState<string | null>(null);
+
+  const sessionHistory = useMemo(
+    () => history.filter((report) => {
+      const observed = new Date(report.timestamp).getTime();
+      return Number.isFinite(observed) && observed >= sessionStart;
+    }),
+    [history, sessionStart],
+  );
 
   const loadAccounts = useCallback(async (silent = false) => {
     if (!silent) setAccountsLoading(true);
@@ -175,6 +247,11 @@ function App() {
   const [stallTimer, setStallTimer] = useState(30);
   const [strategySlots, setStrategySlots] = useState<Record<string, number>>({});
   const [strategyAutoEnd, setStrategyAutoEnd] = useState<Record<string, boolean>>({});
+
+  // Real strategy YAML plans plus the effective slots/auto-end values.
+  const [armyPlans, setArmyPlans] = useState<ArmyPlan[]>([]);
+  const [armyLoading, setArmyLoading] = useState(true);
+  const [armyError, setArmyError] = useState<string | null>(null);
 
   // Storage states
   const [haltGold, setHaltGold] = useState(true);
@@ -216,6 +293,20 @@ function App() {
   const [wallMinElixirReserve, setWallMinElixirReserve] = useState(2000000);
   const [autoCollect, setAutoCollect] = useState(true);
   const [dryRun, setDryRun] = useState(false);
+
+  const refreshArmyPlans = useCallback(async () => {
+    setArmyLoading(true);
+    try {
+      const plans = await armyApi.getArmyPlans();
+      setArmyPlans(plans);
+      setArmyError(null);
+    } catch (err) {
+      setArmyError(err instanceof Error ? err.message : String(err));
+      throw err;
+    } finally {
+      setArmyLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const init = async () => {
@@ -306,19 +397,31 @@ function App() {
       } catch (err) {
         console.warn('GetUpdateStatus failed:', err);
       }
+      try {
+        await refreshArmyPlans();
+      } catch {
+        // The Army page renders the exact bridge/YAML error.
+      }
     };
     init();
 
+    // Nothing polls while the window is minimised: the poll does three IPC
+    // round-trips plus a React commit every 2s, and none of it is visible.
+    // Coming back triggers one immediate fetch so the UI is never stale.
     const fetchData = async () => {
+      if (document.hidden) return;
       try {
         const [s, h, l] = await Promise.all([
           GetStats(),
           GetAttackHistory(),
           GetLogs()
         ]);
-        setStats(s);
-        setHistory(h);
-        setLogs(l);
+        // Keep the previous object when the payload is identical: the IPC
+        // boundary hands back fresh objects every poll, so without this the
+        // whole tree re-commits every 2s even when nothing changed.
+        setStats((prev) => samePayload(prev, s) ? prev : s);
+        setHistory((prev) => samePayload(prev, h) ? prev : h);
+        setLogs((prev) => sameStringList(prev, l) ? prev : l);
       } catch (err) {
         console.error('Data fetch failed:', err);
       }
@@ -326,6 +429,10 @@ function App() {
 
     fetchData();
     const interval = setInterval(fetchData, 2000);
+    const onVisibility = () => {
+      if (!document.hidden) void fetchData();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
 
     // The 1 Hz screenshot poll used to live here. It moved into
     // <Feed/>'s own useEffect so it only runs when the Live View tab
@@ -371,19 +478,28 @@ function App() {
 
     return () => {
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
       unsubUpdater();
       unsubBotError();
       unsubBotInitFailed();
       unsubAccounts();
     };
-  }, []);
+  }, [refreshArmyPlans]);
+
+  // Strategy slots or the active file can change outside this page
+  // (Config save, direct config.json edit), so refresh when Army opens.
+  useEffect(() => {
+    if (tab === 'army') void refreshArmyPlans().catch(() => {});
+  }, [tab, refreshArmyPlans]);
 
   // Account state is cheap (one small JSON read per profile) and drives the
   // header chip, so poll it even when the Accounts tab is closed. Mutations
   // still arrive immediately through the accounts_changed event.
   useEffect(() => {
     void loadAccounts();
-    const id = window.setInterval(() => { void loadAccounts(true); }, 5000);
+    const id = window.setInterval(() => {
+      if (!document.hidden) void loadAccounts(true);
+    }, 5000);
     return () => window.clearInterval(id);
   }, [loadAccounts]);
 
@@ -407,6 +523,59 @@ function App() {
       console.warn('Failed to save sidebarExpanded preference:', e);
     }
   }, [sidebarExpanded]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('reduce-motion', reduceMotion);
+    try {
+      localStorage.setItem('reduceMotion', String(reduceMotion));
+    } catch (e) {
+      console.warn('Failed to save reduceMotion preference:', e);
+    }
+  }, [reduceMotion]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('compact', compactMode);
+    try {
+      localStorage.setItem('compactMode', String(compactMode));
+    } catch (e) {
+      console.warn('Failed to save compactMode preference:', e);
+    }
+  }, [compactMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('clock24h', String(clock24h));
+    } catch (e) {
+      console.warn('Failed to save clock24h preference:', e);
+    }
+  }, [clock24h]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('confirmStop', String(confirmStop));
+    } catch (e) {
+      console.warn('Failed to save confirmStop preference:', e);
+    }
+  }, [confirmStop]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('defaultTab', defaultTab);
+    } catch (e) {
+      console.warn('Failed to save defaultTab preference:', e);
+    }
+  }, [defaultTab]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        setSidebarExpanded((value) => !value);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const saveSettings = async () => {
     await SaveConfig(
@@ -462,6 +631,11 @@ function App() {
       wallMinElixirReserve,
       dryRun,
     );
+    try {
+      await refreshArmyPlans();
+    } catch {
+      // The plan refresher already stored the error for the Army page.
+    }
   };
 
   const handleStart = async () => {
@@ -475,6 +649,7 @@ function App() {
   };
 
   const handleStop = async () => {
+    if (isRunning && confirmStop && !window.confirm('Stop the running bot?')) return;
     try {
       const res = await StopBot();
       setIsRunning(res.running);
@@ -569,47 +744,30 @@ function App() {
 
   const dashboardProps = useMemo(() => ({
     stats,
-    history,
+    history: sessionHistory,
     logs,
-  }), [stats, history, logs]);
+  }), [stats, sessionHistory, logs]);
 
-  const activeAccount: AccountView | null =
-    accountsState?.accounts.find((account) => account.active) ?? null;
-
-  // ADB connection state — drives the header status pill. Labels stop
-  // calling the local ADB server "localhost:{port}" because the bot
-  // can legitimately attach to remote devices via `adb connect
-  // <ip>:{port}`; the port number is just the local ADB server's
-  // listen port, not the device host regardless.
-  const adbState: 'connected' | 'degraded' | 'disconnected' | 'awaiting' =
-    stats.attacks_completed + stats.search_skips > 0
-      ? stats.adb_health.consecutive_fails === 0
-        ? 'connected'
-        : stats.adb_health.consecutive_fails < 5
-          ? 'degraded'
-          : 'disconnected'
-      : 'awaiting';
-  const adbStateLabel =
-    adbState === 'connected'
-      ? 'Connected'
-      : adbState === 'degraded'
-        ? 'Degraded'
-        : adbState === 'disconnected'
-          ? 'Disconnected'
-          : 'Awaiting';
   const configProps = useMemo(() => {
-    // Default slot based on strategy if not explicitly set in config
+    // Prefer the effective values reported by Go so the config page agrees
+    // with the recipe and auto-end the bot actually arms.
     const stratBase = selectedStrategy.split('/').pop() || '';
-    const currentArmySlot = strategySlots[stratBase] ?? (stratBase.includes('valk') ? 4 : 1);
-    const isValk = stratBase.toLowerCase().includes('valk');
-    const currentAutoEnd = strategyAutoEnd[stratBase] ?? isValk;
+    const activePlan = armyPlans.find((plan) => plan.active && plan.file === stratBase);
+    const currentArmySlot = activePlan?.army_slot
+      ?? strategySlots[stratBase]
+      ?? (stratBase.includes('valk') ? 4 : 1);
+    const currentAutoEnd = activePlan
+      ? activePlan.end_at_percent > 0
+      : (strategyAutoEnd[stratBase] ?? stratBase.toLowerCase().includes('valk'));
 
     const handleSetArmySlot = async (slot: number) => {
       setStrategySlots(prev => ({ ...prev, [stratBase]: slot }));
       try {
         await SetStrategyArmySlot(selectedStrategy, slot);
+        await refreshArmyPlans();
       } catch (err) {
         console.error('Failed to set strategy army slot:', err);
+        setArmyError(err instanceof Error ? err.message : String(err));
       }
     };
 
@@ -617,8 +775,29 @@ function App() {
       setStrategyAutoEnd(prev => ({ ...prev, [stratBase]: enabled }));
       try {
         await SetStrategyAutoEnd(selectedStrategy, enabled);
+        await refreshArmyPlans();
       } catch (err) {
         console.error('Failed to set strategy auto end:', err);
+        setArmyError(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    const handleUseArmy = async (file: string) => {
+      try {
+        await SaveConfig(
+          goldThreshold,
+          elixirThreshold,
+          deThreshold,
+          upgradeWalls,
+          file,
+          searchEnabled,
+          stallTimer,
+        );
+        setSelectedStrategy(file);
+        await refreshArmyPlans();
+      } catch (err) {
+        setArmyError(err instanceof Error ? err.message : String(err));
+        throw err;
       }
     };
 
@@ -635,6 +814,7 @@ function App() {
       onSetArmySlot: handleSetArmySlot,
       autoEnd: currentAutoEnd,
       onSetAutoEnd: handleSetAutoEnd,
+      onActivateArmy: handleUseArmy,
       haltGold, setHaltGold,
       haltElixir, setHaltElixir,
       haltDE, setHaltDE,
@@ -676,7 +856,7 @@ function App() {
     };
   }, [
     goldThreshold, elixirThreshold, deThreshold,
-    selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd,
+    selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd, armyPlans, refreshArmyPlans,
     haltGold, haltElixir, haltDE, haltRule, storageThreshold, dumpToWallsBeforeHalt, autoCollect,
     scheduleEnabled, activeHoursStart, activeHoursEnd, sessionDuration, breakDuration, forceStopOnBreak, maxPerHour, maxPerDay,
     autoBuilders, reserveBuilders, upgradeStrategy, upgradeDefenses, upgradeResources, upgradeArmy, upgradeTraps, upgradeHeroes,
@@ -687,85 +867,74 @@ function App() {
   ]);
 
   return (
-    <div className="app-shell bg-zinc-50 dark:bg-zinc-950 text-zinc-950 dark:text-zinc-50 transition-colors duration-500" style={{ display: 'flex', width: '100vw', height: '100vh' }}>
-      <Sidebar 
-        tab={tab} 
+    <div className="app-shell">
+      <Sidebar
+        tab={tab}
         setTab={setTab}
         expanded={sidebarExpanded}
-        setExpanded={setSidebarExpanded}
         running={isRunning}
         onStart={handleStart}
         onStop={handleStop}
-        activeAccount={activeAccount}
       />
 
-      <main 
-        className={`flex-1 bg-zinc-50 dark:bg-zinc-950 transition-[margin-left,background-color] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] min-h-screen overflow-y-auto ${sidebarExpanded ? 'ml-64' : 'ml-20'}`}
-      >
-        <div className="draggable sticky top-0 left-0 right-0 h-12 z-40 bg-transparent pointer-events-auto" />
-        <div className="max-w-[1600px] mx-auto p-4 md:p-6 lg:p-8 xl:p-12 pt-0 -mt-12">
-          <header className="mb-8 flex justify-between items-end draggable">
-            <div className="space-y-1">
-              <div className="flex items-center gap-3">
-                <div className="flex gap-1">
-                  <span className={`w-1.5 h-1.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-300 dark:bg-zinc-800'}`}></span>
-                  <span className="w-1.5 h-1.5 bg-zinc-300 dark:bg-zinc-800 rounded-full"></span>
-                </div>
-                <h2 className="text-[11px] text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.4em] font-black">ClashGO System</h2>
-              </div>
-              <h1 className="font-headline text-5xl font-bold tracking-tight capitalize text-zinc-950 dark:text-white">{tab}</h1>
+      <main className={`main ${sidebarExpanded ? '' : 'main--collapsed'}`}>
+        <header className="topbar draggable">
+          <div className="topbar-left">
+            <button
+              type="button"
+              onClick={() => setSidebarExpanded(!sidebarExpanded)}
+              className="icon-btn plain no-drag"
+              aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+              aria-expanded={sidebarExpanded}
+              aria-controls="app-sidebar"
+              title={`${sidebarExpanded ? 'Collapse' : 'Expand'} sidebar (⌘B)`}
+            >
+              <Icon name="sidebar" size={16} />
+            </button>
+            <div className="crumb no-drag">
+              <span>ClashGO</span>
+              <Icon name="chevronRight" size={12} />
+              <b>{TAB_LABELS[tab]}</b>
             </div>
-            <div className="flex gap-4 items-center">
-              <UpdateBanner
-                status={updateStatus}
-                appVersion={appVersion}
-                isBotRunning={isRunning}
-                isOpen={isUpdateModalOpen}
-                onOpenChange={setIsUpdateModalOpen}
-                onCheckNow={handleUpdaterCheck}
-                onDownload={handleUpdaterDownload}
-                onApply={handleUpdaterApply}
-                onUpdateAndRestart={handleUpdaterOneClick}
-                onSkip={handleUpdaterSkip}
-                onClearSkip={handleUpdaterClearSkip}
-                onDismiss={() => setIsUpdateModalOpen(false)}
-              />
-              <button
-                type="button"
-                onClick={() => setTab('accounts')}
-                aria-label="Manage accounts"
-                title={activeAccount ? `${activeAccount.name} · ${activeAccount.device.device_id}` : 'Manage accounts'}
-                className="bg-white dark:bg-zinc-900 px-5 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-3 shadow-premium dark:shadow-none no-drag backdrop-blur-md hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors"
-              >
-                <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-black text-white ${activeAccount ? 'bg-zinc-950 dark:bg-zinc-700' : 'bg-zinc-300 dark:bg-zinc-800'}`}>
-                  {activeAccount ? activeAccount.name.trim().slice(0, 2).toUpperCase() : '—'}
-                </span>
-                <span className="flex flex-col items-start min-w-0">
-                  <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Account</span>
-                  <span className="text-[11px] font-black uppercase tracking-widest text-zinc-600 dark:text-zinc-300 max-w-[140px] truncate">
-                    {activeAccount ? activeAccount.name : 'None'}
-                  </span>
-                </span>
-              </button>
-              <div className="bg-white dark:bg-zinc-900 px-6 py-3.5 rounded-2xl border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-4 shadow-premium dark:shadow-none no-drag backdrop-blur-md" title={`ADB server port ${adbPort} — ${adbStateLabel}`}>
-                <div className="relative">
-                  <div className={`w-2.5 h-2.5 rounded-full ${
-                    adbState === 'connected' ? 'bg-emerald-500'
-                    : adbState === 'disconnected' ? 'bg-rose-500 animate-pulse'
-                    : 'bg-amber-500 animate-pulse'
-                  }`}></div>
-                  {adbState === 'connected' && <div className="absolute inset-0 w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping opacity-20"></div>}
-                </div>
-                <span className={`text-[11px] font-black uppercase tracking-widest ${
-                  adbState === 'connected' ? 'text-zinc-500 dark:text-zinc-400'
-                  : adbState === 'disconnected' ? 'text-rose-500'
-                  : 'text-amber-600 dark:text-amber-400'
-                }`}>ADB: {adbPort} · {adbStateLabel}</span>
-              </div>
-            </div>
-          </header>
+          </div>
 
-          {tab === 'dashboard' && <Dashboard {...dashboardProps} />}
+          <div className="top-actions">
+            <UpdateBanner
+              status={updateStatus}
+              appVersion={appVersion}
+              isBotRunning={isRunning}
+              isOpen={isUpdateModalOpen}
+              onOpenChange={setIsUpdateModalOpen}
+              onCheckNow={handleUpdaterCheck}
+              onDownload={handleUpdaterDownload}
+              onApply={handleUpdaterApply}
+              onUpdateAndRestart={handleUpdaterOneClick}
+              onSkip={handleUpdaterSkip}
+              onClearSkip={handleUpdaterClearSkip}
+              onDismiss={() => setIsUpdateModalOpen(false)}
+            />
+            <Clock use24Hour={clock24h} />
+          </div>
+        </header>
+
+        <div className="content">
+          {tab === 'dashboard' && (
+            <Dashboard
+              {...dashboardProps}
+              running={isRunning}
+              strategy={selectedStrategy}
+              adbPort={adbPort}
+            />
+          )}
+          {tab === 'army' && (
+            <ArmyView
+              plans={armyPlans}
+              loading={armyLoading}
+              error={armyError}
+              onSetSlot={configProps.onSetArmySlot}
+              onActivate={configProps.onActivateArmy}
+            />
+          )}
           {tab === 'accounts' && (
             <AccountsView
               state={accountsState}
@@ -780,7 +949,9 @@ function App() {
               onRotation={handleRotation}
             />
           )}
-          {tab === 'analytics' && <Analytics stats={stats} />}
+          {tab === 'analytics' && (
+            <Analytics stats={stats} history={sessionHistory} activityHistory={history} />
+          )}
           {tab === 'config' && <ConfigView {...configProps} />}
           {tab === 'settings' && (
             <SettingsView
@@ -788,6 +959,16 @@ function App() {
               adbPort={adbPort}
               darkMode={darkMode}
               setDarkMode={setDarkMode}
+              reduceMotion={reduceMotion}
+              setReduceMotion={setReduceMotion}
+              compactMode={compactMode}
+              setCompactMode={setCompactMode}
+              clock24h={clock24h}
+              setClock24h={setClock24h}
+              defaultTab={defaultTab}
+              setDefaultTab={setDefaultTab}
+              confirmStop={confirmStop}
+              setConfirmStop={setConfirmStop}
               onResetStats={handleReset}
               appVersion={appVersion}
               updateStatus={updateStatus}

@@ -1,122 +1,536 @@
 import React from 'react';
-import { BotStats } from '../types';
+import { AttackReport, BotStats } from '../types';
+import { compactNumber, exactNumber, strategyLabel } from '../utils';
+import Icon from './ui/Icon';
 
 interface AnalyticsProps {
   stats: BotStats;
+  history: AttackReport[];
+  activityHistory: AttackReport[];
 }
 
-const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats }) => {
-  // `color` drives Tailwind bar classes; `hex` feeds the conic-gradient
-  // (Tailwind class names are NOT valid CSS color values — using them
-  // inside the gradient string would silently drop the donut).
-  const starData = [
-    { label: '3 Stars', count: stats.stars_3, color: 'bg-emerald-500', hex: '#10b981', bg: 'bg-emerald-500/10' },
-    { label: '2 Stars', count: stats.stars_2, color: 'bg-zinc-800', hex: '#27272a', bg: 'bg-zinc-800/10' },
-    { label: '1 Star', count: stats.stars_1, color: 'bg-zinc-400', hex: '#a1a1aa', bg: 'bg-zinc-400/10' },
-    { label: '0 Stars', count: stats.stars_0, color: 'bg-rose-500', hex: '#f43f5e', bg: 'bg-rose-500/10' },
-  ];
+const ACTIVITY_WEEKS = 52;
 
-  const totalAttacks = stats.stars_3 + stats.stars_2 + stats.stars_1 + stats.stars_0;
-  const getPercent = (count: number) => totalAttacks > 0 ? Math.round((count / totalAttacks) * 100) : 0;
-  const threeStarRate = totalAttacks > 0 ? Math.round((stats.stars_3 / totalAttacks) * 100) : 0;
+const pad2 = (value: number): string => String(value).padStart(2, '0');
 
-  // CSS-only donut (conic-gradient — no chart dependency). Each
-  // segment's sweep is the star-rate percentage mapped to degrees;
-  // zero-count segments collapse to a 0deg stop and stay invisible.
-  let sweep = 0;
-  const gradientStops = starData.map((s) => {
-    const from = sweep;
-    sweep += getPercent(s.count) * 3.6;
-    return `${s.hex} ${from}deg ${Math.max(sweep, from)}deg`;
+const dayKey = (date: Date): string =>
+  `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+
+const dateLabel = (date: Date): string =>
+  date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+interface ActivityDay {
+  date: Date;
+  key: string;
+  count: number;
+  level: number;
+  future: boolean;
+}
+
+interface ActivityData {
+  days: ActivityDay[];
+  total: number;
+  activeDays: number;
+  best: number;
+  streak: number;
+  monthLabels: string[];
+}
+
+const buildActivity = (history: AttackReport[]): ActivityData => {
+  const counts = new Map<string, number>();
+  history.forEach((report) => {
+    const date = new Date(report.timestamp);
+    if (Number.isNaN(date.getTime())) return;
+    const key = dayKey(date);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
   });
-  // Donut is only rendered when totalAttacks > 0; zero-count segments
-  // collapse to a 0deg stop and stay invisible.
-  const donutBg = `conic-gradient(${gradientStops.join(', ')})`;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - today.getDay());
+  const start = new Date(weekStart);
+  start.setDate(weekStart.getDate() - (ACTIVITY_WEEKS - 1) * 7);
+
+  const raw: { date: Date; key: string; count: number; future: boolean }[] = [];
+  for (let index = 0; index < ACTIVITY_WEEKS * 7; index += 1) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    raw.push({
+      date,
+      key: dayKey(date),
+      count: counts.get(dayKey(date)) ?? 0,
+      future: date.getTime() > today.getTime(),
+    });
+  }
+
+  const max = Math.max(1, ...raw.map((day) => day.count));
+  const days: ActivityDay[] = raw.map((day) => ({
+    ...day,
+    level: day.future || day.count === 0 ? 0 : Math.min(4, Math.ceil((day.count / max) * 4)),
+  }));
+  const past = days.filter((day) => !day.future);
+
+  let streak = 0;
+  for (let index = past.length - 1; index >= 0; index -= 1) {
+    if (past[index].count === 0) break;
+    streak += 1;
+  }
+
+  const monthLabels: string[] = [];
+  let lastMonth = -1;
+  for (let week = 0; week < ACTIVITY_WEEKS; week += 1) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + week * 7);
+    const month = date.getMonth();
+    monthLabels.push(month !== lastMonth ? date.toLocaleDateString('en-US', { month: 'short' }) : '');
+    lastMonth = month;
+  }
+
+  return {
+    days,
+    total: past.reduce((sum, day) => sum + day.count, 0),
+    activeDays: past.filter((day) => day.count > 0).length,
+    best: Math.max(0, ...past.map((day) => day.count)),
+    streak,
+    monthLabels,
+  };
+};
+
+interface StrategyRow {
+  label: string;
+  attacks: number;
+  avgStars: number;
+  threeStarRate: number;
+  lootPerAttack: number;
+  deployRate: number;
+}
+
+const CHART_SERIES = [
+  { key: 'gold' as const, label: 'Gold', color: 'var(--gold)', scale: 1 },
+  { key: 'elixir' as const, label: 'Elixir', color: 'var(--elixir)', scale: 1 },
+  { key: 'de' as const, label: 'Dark ×40', color: 'var(--de)', scale: 40 },
+] as const;
+
+type ChartSeriesKey = typeof CHART_SERIES[number]['key'];
+
+const LootChart: React.FC<{ history: AttackReport[] }> = ({ history }) => {
+  const [visible, setVisible] = React.useState<Record<ChartSeriesKey, boolean>>({
+    gold: true,
+    elixir: true,
+    de: true,
+  });
+
+  const reports = React.useMemo(() => history.slice(0, 16).reverse(), [history]);
+  const width = 760;
+  const height = 110;
+  const left = 46;
+  const right = 12;
+  const top = 8;
+  const bottom = 20;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const totals = reports.map((report) => CHART_SERIES.reduce(
+    (sum, series) => sum + (visible[series.key] ? report[
+      series.key === 'gold' ? 'gold_stolen' : series.key === 'elixir' ? 'elixir_stolen' : 'dark_elixir_stolen'
+    ] * series.scale : 0),
+    0,
+  ));
+  const max = Math.max(1, ...totals);
+  const slot = plotWidth / Math.max(1, reports.length);
+  const barWidth = Math.min(26, slot * 0.54);
+  const yFor = (value: number) => top + plotHeight - (value / max) * plotHeight;
+
+  const toggleSeries = (key: ChartSeriesKey) => {
+    setVisible((current) => {
+      if (current[key] && Object.values(current).filter(Boolean).length === 1) return current;
+      return { ...current, [key]: !current[key] };
+    });
+  };
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 max-w-6xl mx-auto">
-
-      <div className="bg-white dark:bg-zinc-900 p-8 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none group transition-all duration-500">
-        <div className="flex justify-between items-center mb-8">
-          <h3 className="text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">Attack Success</h3>
-          <div className="w-12 h-12 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm transition-transform group-hover:scale-110">
-            <span className="material-symbols-outlined text-zinc-500 dark:text-zinc-500">equalizer</span>
-          </div>
+    <section className="card chart-card">
+      <div className="card-head">
+        <div>
+          <h3>Loot per raid</h3>
+          <p className="card-sub">Stacked resource yield · last 16 reported raids</p>
         </div>
-        {totalAttacks === 0 ? (
-          <div className="py-12 text-center text-zinc-400 dark:text-zinc-700 text-[11px] font-black uppercase tracking-[0.3em] italic">
-            No attacks recorded yet // Run the bot to populate analytics
-          </div>
-        ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-10 items-center">
-          {/* Star-distribution donut — center hole carries the 3★ rate. */}
-          <div className="relative w-36 h-36 mx-auto rounded-full transition-transform duration-500 group-hover:scale-[1.03]" style={{ background: donutBg }}>
-            <div className="absolute inset-[16px] bg-white dark:bg-zinc-900 rounded-full flex flex-col items-center justify-center border border-zinc-100 dark:border-zinc-800/60 shadow-sm">
-              <span className="text-3xl font-bold text-zinc-950 dark:text-white tabular-nums tracking-tight leading-none">{threeStarRate}%</span>
-              <span className="mt-1.5 text-[9px] font-black text-zinc-400 dark:text-zinc-600 uppercase tracking-[0.2em]">3★ Rate</span>
-            </div>
-          </div>
-          <div className="space-y-6">
-            {starData.map((item, idx) => {
-              const percent = getPercent(item.count);
-              return (
-                <div key={idx} className="space-y-4">
-                  <div className="flex justify-between text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em]">
-                    <span>{item.label}</span>
-                    <span className="text-zinc-950 dark:text-white tabular-nums">{item.count} <span className="text-zinc-400 dark:text-zinc-700 ml-2 font-bold">({percent}%)</span></span>
-                  </div>
-                  <div className="w-full bg-zinc-50 dark:bg-zinc-800/50 h-3.5 rounded-full overflow-hidden p-0.5 border border-zinc-100/50 dark:border-zinc-800/50">
-                    <div 
-                      className={`h-full transition-all duration-1000 rounded-full ${item.color} shadow-sm`} 
-                      style={{ width: `${percent}%` }}
-                    ></div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        )}
-      </div>
-
-      <div className="bg-white dark:bg-zinc-900 p-8 rounded-[3rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none transition-all duration-500">
-        <div className="flex justify-between items-center mb-8">
-          <h3 className="text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">Financial Performance</h3>
-          <div className="w-12 h-12 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm">
-            <span className="material-symbols-outlined text-zinc-500 dark:text-zinc-500">insights</span>
-          </div>
-        </div>
-        {stats.attacks_completed === 0 ? (
-          <div className="py-12 text-center text-zinc-400 dark:text-zinc-700 text-[11px] font-black uppercase tracking-[0.3em] italic">
-            No revenue recorded yet // Run the bot to populate metrics
-          </div>
-        ) : (
-        <div className="space-y-8">
-          {[
-            { label: 'Total Revenue', value: (stats.total_gold + stats.total_elixir).toLocaleString(), icon: 'account_balance_wallet', color: 'text-zinc-950 dark:text-zinc-100' },
-            { label: 'Avg Gold / Attack', value: stats.attacks_completed > 0 ? Math.round(stats.total_gold / stats.attacks_completed).toLocaleString() : '0', icon: 'monetization_on', color: 'text-amber-500' },
-            { label: 'Avg Elixir / Attack', value: stats.attacks_completed > 0 ? Math.round(stats.total_elixir / stats.attacks_completed).toLocaleString() : '0', icon: 'water_drop', color: 'text-fuchsia-500' },
-            { label: 'Avg Dark Elixir / Attack', value: stats.attacks_completed > 0 ? Math.round(stats.total_de / stats.attacks_completed).toLocaleString() : '0', icon: 'water_drop', color: 'text-zinc-950 dark:text-zinc-100' }
-          ].map((m, i) => (
-            <div key={i} className="flex justify-between items-center group">
-              <div className="flex items-center gap-6">
-                <div className="w-14 h-14 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm group-hover:scale-110 transition-transform duration-300">
-                  <span className={`material-symbols-outlined ${m.color} text-2xl`}>{m.icon}</span>
-                </div>
-                <div>
-                  <span className="block text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-1">{m.label}</span>
-                  <div className="text-xs text-zinc-400 dark:text-zinc-700 font-bold uppercase tracking-widest">Calculated Average</div>
-                </div>
-              </div>
-              <span className="text-3xl font-bold text-zinc-950 dark:text-white tracking-tight tabular-nums">{m.value}</span>
-            </div>
+        <div className="chart-legend" role="group" aria-label="Chart series">
+          {CHART_SERIES.map((series) => (
+            <button
+              key={series.key}
+              type="button"
+              className={`chart-legend-chip ${visible[series.key] ? '' : 'off'}`.trim()}
+              onClick={() => toggleSeries(series.key)}
+              aria-pressed={visible[series.key]}
+            >
+              <i style={{ background: series.color }} />
+              {series.label}
+            </button>
           ))}
         </div>
-        )}
       </div>
 
+      {reports.length === 0 ? (
+        <div className="empty">
+          <span className="empty-ico"><Icon name="chart" size={20} /></span>
+          <b>No raid yield yet</b>
+          <p>Completed attacks will draw the last 16 loot stacks here.</p>
+        </div>
+      ) : (
+        <div className="chart-wrap">
+          <svg
+            className="loot-chart"
+            viewBox={`0 0 ${width} ${height}`}
+            role="img"
+            aria-label={`Stacked loot chart for ${reports.length} raids`}
+          >
+            {[0, 0.25, 0.5, 0.75, 1].map((fraction) => {
+              const y = top + plotHeight * (1 - fraction);
+              return (
+                <g key={fraction}>
+                  <line x1={left} y1={y} x2={width - right} y2={y} className="chart-grid" />
+                  <text x={left - 9} y={y + 4} textAnchor="end" className="chart-axis">
+                    {compactNumber(max * fraction)}
+                  </text>
+                </g>
+              );
+            })}
+
+            {reports.map((report, index) => {
+              const x = left + index * slot + (slot - barWidth) / 2;
+              let cursor = top + plotHeight;
+              return (
+                <g key={`${report.timestamp}-${index}`}>
+                  {CHART_SERIES.map((series) => {
+                    if (!visible[series.key]) return null;
+                    const value = report[
+                      series.key === 'gold' ? 'gold_stolen' : series.key === 'elixir' ? 'elixir_stolen' : 'dark_elixir_stolen'
+                    ] * series.scale;
+                    const segment = (value / max) * plotHeight;
+                    if (segment <= 0) return null;
+                    cursor -= segment;
+                    return (
+                      <rect
+                        key={series.key}
+                        className="chart-bar"
+                        x={x}
+                        y={cursor}
+                        width={barWidth}
+                        height={Math.max(segment, 1)}
+                        fill={series.color}
+                        opacity="0.9"
+                        style={{ animationDelay: `${index * 18}ms` }}
+                      >
+                        <title>{`${series.label}: ${exactNumber(report[
+                          series.key === 'gold' ? 'gold_stolen' : series.key === 'elixir' ? 'elixir_stolen' : 'dark_elixir_stolen'
+                        ])}`}</title>
+                      </rect>
+                    );
+                  })}
+                  {(index % Math.max(1, Math.ceil(reports.length / 7)) === 0 || index === reports.length - 1) ? (
+                    <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" className="chart-axis">
+                      {new Date(report.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                    </text>
+                  ) : null}
+                </g>
+              );
+            })}
+          </svg>
+          <div className="chart-caption">
+            <span>Older</span>
+            <span>Newest</span>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+};
+
+const buildStrategyRows = (history: AttackReport[]): StrategyRow[] => {
+  const rows = new Map<string, {
+    label: string;
+    attacks: number;
+    stars: number;
+    threeStar: number;
+    loot: number;
+    success: number;
+  }>();
+
+  history.forEach((report) => {
+    const key = report.strategy || 'unknown';
+    const row = rows.get(key) ?? {
+      label: strategyLabel(key),
+      attacks: 0,
+      stars: 0,
+      threeStar: 0,
+      loot: 0,
+      success: 0,
+    };
+    row.attacks += 1;
+    row.stars += report.stars || 0;
+    row.threeStar += report.stars === 3 ? 1 : 0;
+    row.loot += report.gold_stolen + report.elixir_stolen + report.dark_elixir_stolen;
+    row.success += report.deploy_success ? 1 : 0;
+    rows.set(key, row);
+  });
+
+  return [...rows.values()]
+    .map((row) => ({
+      label: row.label,
+      attacks: row.attacks,
+      avgStars: row.stars / row.attacks,
+      threeStarRate: Math.round((row.threeStar / row.attacks) * 100),
+      lootPerAttack: row.loot / row.attacks,
+      deployRate: Math.round((row.success / row.attacks) * 100),
+    }))
+    .sort((a, b) => b.attacks - a.attacks || b.avgStars - a.avgStars);
+};
+
+const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activityHistory }) => {
+  const starData = [
+    { label: '3★', count: stats.stars_3, color: 'var(--gold)' },
+    { label: '2★', count: stats.stars_2, color: 'var(--blue)' },
+    { label: '1★', count: stats.stars_1, color: 'var(--violet)' },
+    { label: '0★', count: stats.stars_0, color: 'var(--red)' },
+  ];
+
+  const totalAttacks = starData.reduce((sum, row) => sum + row.count, 0);
+  // Revenue counters cover every completed attack; the star buckets only
+  // cover attacks that produced a parsed report. Use the attack total for
+  // loot averages so a partial report window cannot inflate them.
+  const completedAttacks = stats.attacks_completed > 0 ? stats.attacks_completed : totalAttacks;
+  const percent = (count: number) => totalAttacks > 0 ? Math.round((count / totalAttacks) * 100) : 0;
+  const threeStarRate = percent(stats.stars_3);
+  const avgGold = completedAttacks > 0 ? Math.round(stats.total_gold / completedAttacks) : 0;
+  const avgElixir = completedAttacks > 0 ? Math.round(stats.total_elixir / completedAttacks) : 0;
+  const avgDe = completedAttacks > 0 ? Math.round(stats.total_de / completedAttacks) : 0;
+  const avgAll = completedAttacks > 0 ? Math.round((stats.total_gold + stats.total_elixir + stats.total_de) / completedAttacks) : 0;
+  const avgStars = totalAttacks > 0
+    ? ((stats.stars_3 * 3 + stats.stars_2 * 2 + stats.stars_1) / totalAttacks).toFixed(2)
+    : '0.00';
+
+  const activity = React.useMemo(() => buildActivity(activityHistory), [activityHistory]);
+  const strategyRows = React.useMemo(() => buildStrategyRows(history), [history]);
+
+  return (
+    <div className="analytics-page">
+      <div className="page-head">
+        <div>
+          <h1>Analytics</h1>
+          <p>Loot throughput, attack outcomes, and daily activity for this profile.</p>
+        </div>
+      </div>
+
+      <div className="analytics-kpis">
+        <div className="analytics-kpi"><b>{exactNumber(stats.attacks_completed)}</b><span>attacks</span></div>
+        <div className="analytics-kpi"><b>{threeStarRate}%</b><span>three-star</span></div>
+        <div className="analytics-kpi"><b>{compactNumber(avgAll)}</b><span>avg loot / raid</span></div>
+        <div className="analytics-kpi"><b>{avgStars}</b><span>avg stars</span></div>
+      </div>
+
+      <LootChart history={history} />
+
+      <div className="analytics-grid">
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <h3>Attack outcomes</h3>
+              <p className="card-sub">Star distribution across reported attacks</p>
+            </div>
+          </div>
+
+          {totalAttacks === 0 ? (
+            <div className="empty">
+              <span className="empty-ico"><Icon name="chart" size={20} /></span>
+              <b>No attack data yet</b>
+              <p>Run the bot once and star distribution will populate here.</p>
+            </div>
+          ) : (
+            <div className="star-summary">
+              <div className="star-rate">
+                <b>{threeStarRate}%</b>
+                <span>3★ rate</span>
+              </div>
+              <div className="dist">
+                {starData.map((row) => (
+                  <div key={row.label} className="dist-row">
+                    <span className="dist-lab" style={{ color: row.color }}>{row.label}</span>
+                    <span className="dist-bar">
+                      <i style={{ width: `${percent(row.count)}%`, background: row.color }} />
+                    </span>
+                    <span className="dist-val">
+                      {exactNumber(row.count)} · {percent(row.count)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <h3>Revenue</h3>
+              <p className="card-sub">Session totals and per-attack averages</p>
+            </div>
+          </div>
+
+          {completedAttacks === 0 ? (
+            <div className="empty">
+              <span className="empty-ico"><Icon name="coin" size={20} /></span>
+              <b>No revenue recorded yet</b>
+              <p>Loot totals appear after the first completed attack.</p>
+            </div>
+          ) : (
+            <div className="revenue-grid">
+              <div className="rev-tile gold">
+                <span>Gold</span>
+                <b>{compactNumber(stats.total_gold)}</b>
+                <small>avg {compactNumber(avgGold)} / raid</small>
+              </div>
+              <div className="rev-tile elixir">
+                <span>Elixir</span>
+                <b>{compactNumber(stats.total_elixir)}</b>
+                <small>avg {compactNumber(avgElixir)} / raid</small>
+              </div>
+              <div className="rev-tile de">
+                <span>Dark elixir</span>
+                <b>{compactNumber(stats.total_de)}</b>
+                <small>avg {compactNumber(avgDe)} / raid</small>
+              </div>
+              <div className="rev-tile combined">
+                <span>Combined</span>
+                <b>{compactNumber(stats.total_gold + stats.total_elixir + stats.total_de)}</b>
+                <small>avg {compactNumber(avgAll)} / raid</small>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+
+      <div className="analytics-lower">
+        <section className="card analytics-activity">
+          <div className="card-head">
+            <div>
+              <h3>Attack activity</h3>
+              <p className="card-sub">Daily raids across the last year</p>
+            </div>
+            <div className="card-tools">
+              <span className="tag">{exactNumber(activity.total)} in range</span>
+            </div>
+          </div>
+
+          {activityHistory.length === 0 ? (
+            <div className="empty">
+              <span className="empty-ico"><Icon name="calendar" size={20} /></span>
+              <b>No activity in this window</b>
+              <p>Completed attacks populate this calendar by day.</p>
+            </div>
+          ) : (
+            <>
+              <div className="heatmap">
+                <div className="heat-days" aria-hidden="true">
+                  <span />
+                  <span>Mon</span>
+                  <span />
+                  <span>Wed</span>
+                  <span />
+                  <span>Fri</span>
+                  <span />
+                </div>
+                <div className="heat-weeks">
+                  <div className="heat-months" aria-hidden="true">
+                    {activity.monthLabels.map((label, index) => (
+                      <span key={`${label}-${index}`}>{label}</span>
+                    ))}
+                  </div>
+                  <div
+                    className="heat-grid"
+                    role="img"
+                    aria-label={`${activity.total} attacks across ${activity.activeDays} active days in the last year`}
+                  >
+                    {activity.days.map((day) => (
+                      <span
+                        key={day.key}
+                        className={`heat-cell l${day.level}${day.future ? ' future' : ''}`}
+                        title={day.future ? undefined : `${day.count} ${day.count === 1 ? 'attack' : 'attacks'} on ${dateLabel(day.date)}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="heat-foot">
+                <div className="heat-metrics">
+                  <div className="heat-metric"><span>Attacks</span><b>{exactNumber(activity.total)}</b></div>
+                  <div className="heat-metric"><span>Active days</span><b>{exactNumber(activity.activeDays)}</b></div>
+                  <div className="heat-metric"><span>Best day</span><b>{exactNumber(activity.best)}</b></div>
+                  <div className="heat-metric"><span>Streak</span><b>{activity.streak > 0 ? `${activity.streak}d` : '—'}</b></div>
+                </div>
+                <div className="heat-legend" aria-hidden="true">
+                  Less
+                  {[0, 1, 2, 3, 4].map((level) => (
+                    <span key={level} className={`heat-cell l${level}`} />
+                  ))}
+                  More
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className="card analytics-strategies">
+          <div className="card-head">
+            <div>
+              <h3>Strategy performance</h3>
+              <p className="card-sub">Aggregated from the current report window</p>
+            </div>
+          </div>
+
+          {strategyRows.length === 0 ? (
+            <div className="empty">
+              <span className="empty-ico"><Icon name="layers" size={20} /></span>
+              <b>No strategy results yet</b>
+              <p>Reports are grouped by strategy once attacks complete.</p>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Strategy</th>
+                    <th className="num">Raids</th>
+                    <th className="num">Avg stars</th>
+                    <th className="num">3★</th>
+                    <th className="num">Loot / raid</th>
+                    <th className="num">Deploy</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {strategyRows.map((row) => (
+                    <tr key={row.label}>
+                      <td>
+                        <span className="strategy-name"><i />{row.label}</span>
+                      </td>
+                      <td className="num">{exactNumber(row.attacks)}</td>
+                      <td className="num">{row.avgStars.toFixed(2)}</td>
+                      <td className="num">{row.threeStarRate}%</td>
+                      <td className="num">{compactNumber(row.lootPerAttack)}</td>
+                      <td className="num">{row.deployRate}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 });
+
+Analytics.displayName = 'Analytics';
 
 export default Analytics;

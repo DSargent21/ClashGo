@@ -1,11 +1,24 @@
 import React from 'react';
 import { BotStats, AttackReport } from '../types';
-import { formatUptime, parseLogLine, LogSeverity } from '../utils';
+import {
+  formatUptime,
+  parseLogLineCached,
+  LogSeverity,
+  compactNumber,
+  exactNumber,
+  relativeTime,
+  strategyLabel,
+} from '../utils';
+import Icon from './ui/Icon';
+import Drawer from './ui/Drawer';
 
 interface DashboardProps {
   stats: BotStats;
   history: AttackReport[];
   logs: string[];
+  running: boolean;
+  strategy: string;
+  adbPort: number;
 }
 
 const getTerminalAutoScroll = (): boolean => {
@@ -35,10 +48,215 @@ const copyText = async (text: string): Promise<void> => {
   }
 };
 
+const LEVEL_LABEL: Record<LogSeverity, string> = {
+  debug: 'DBG',
+  info: 'INF',
+  success: 'OK',
+  warn: 'WRN',
+  error: 'ERR',
+};
+
+const LEVEL_CLASS: Record<LogSeverity, string> = {
+  debug: 'lvl-debug',
+  info: 'lvl-info',
+  success: 'lvl-success',
+  warn: 'lvl-warn',
+  error: 'lvl-error',
+};
+
+const SEVERITIES: { id: LogSeverity | 'all'; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'debug', label: 'Debug' },
+  { id: 'info', label: 'Info' },
+  { id: 'success', label: 'Success' },
+  { id: 'warn', label: 'Warn' },
+  { id: 'error', label: 'Error' },
+];
+
+const Stars: React.FC<{ count: number; big?: boolean }> = ({ count, big = false }) => (
+  <span className={`stars ${big ? 'big' : ''}`.trim()} aria-label={`${count} of 3 stars`}>
+    {[1, 2, 3].map((index) => (
+      <Icon
+        key={index}
+        name="star"
+        size={big ? 25 : 12}
+        className={`icon ${index <= count ? 'on' : ''}`.trim()}
+      />
+    ))}
+  </span>
+);
+
+/** Tiny dependency-free sparkline. Values are drawn left → right (oldest → newest). */
+const Sparkline: React.FC<{ values: number[]; tone: 'gold' | 'elixir' | 'de' }> = ({ values, tone }) => {
+  const gradientId = React.useId().replace(/:/g, '');
+  const width = 260;
+  const height = 38;
+  const pad = 1;
+  const hasData = values.length > 0;
+  const data = values.length >= 2 ? values : values.length === 1 ? [values[0], values[0]] : [0, 0];
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const span = max - min || 1;
+  const x = (index: number) => pad + index * (width - pad * 2) / (data.length - 1);
+  const y = (value: number) => height - pad - ((value - min) / span) * (height - pad * 2);
+
+  let line = `M${x(0).toFixed(1)},${y(data[0]).toFixed(1)}`;
+  for (let i = 1; i < data.length; i++) {
+    const px = x(i - 1);
+    const cx = (px + x(i)) / 2;
+    line += ` C${cx.toFixed(1)},${y(data[i - 1]).toFixed(1)} ${cx.toFixed(1)},${y(data[i]).toFixed(1)} ${x(i).toFixed(1)},${y(data[i]).toFixed(1)}`;
+  }
+
+  const color = tone === 'gold' ? 'var(--gold)' : tone === 'elixir' ? 'var(--elixir)' : 'var(--de)';
+  const area = `${line} L${x(data.length - 1).toFixed(1)},${height} L${x(0).toFixed(1)},${height} Z`;
+
+  return (
+    <svg
+      className="spark"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <defs>
+        <linearGradient id={`spark-${gradientId}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={color} stopOpacity=".16" />
+          <stop offset="1" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path className="spark-area" d={area} fill={`url(#spark-${gradientId})`} />
+      <path
+        className="spark-line"
+        d={line}
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        vectorEffect="non-scaling-stroke"
+        pathLength={1}
+        opacity=".9"
+      />
+      {hasData ? <circle cx={x(data.length - 1)} cy={y(data[data.length - 1])} r="2.4" fill={color} /> : null}
+    </svg>
+  );
+};
+
+const rateLabel = (total: number, uptimeHours: number): string => {
+  if (uptimeHours < 0.01 || total === 0) return '+0/hr';
+  return `+${compactNumber(total / uptimeHours)}/hr`;
+};
+
+const safeTimestamp = (iso: string): string => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso || 'Unknown' : date.toLocaleString();
+};
+
+const LootRow: React.FC<{
+  label: string;
+  value: number;
+  max: number;
+  tone: 'gold' | 'elixir' | 'de';
+  icon: 'coin' | 'drop';
+  bonus?: number;
+}> = ({ label, value, max, tone, icon, bonus = 0 }) => (
+  <>
+    <div className={`loot-row ${tone}`.trim()}>
+      <span className="li"><Icon name={icon} size={13} /></span>
+      <span className="ll">{label}</span>
+      <span className="lb">
+        <i
+          style={{
+            width: `${Math.min(100, Math.max(1.5, (value / Math.max(max, 1)) * 100))}%`,
+            background: tone === 'gold' ? 'var(--gold)' : tone === 'elixir' ? 'var(--elixir)' : 'var(--de)',
+          }}
+        />
+      </span>
+      <span className="lv">{exactNumber(value)}</span>
+    </div>
+    {bonus > 0 ? <div className="bonus-line">+ {exactNumber(bonus)} bonus</div> : null}
+  </>
+);
+
+const RaidReport: React.FC<{ report: AttackReport }> = ({ report }) => {
+  const maxLoot = Math.max(report.gold_stolen, report.elixir_stolen, report.dark_elixir_stolen, 1);
+  const clean = report.deploy_success;
+  const partial = !clean && report.undeployed_slots > 0;
+  const edge = report.target_edge || 'Auto';
+  const parsedAt = safeTimestamp(report.timestamp);
+
+  return (
+    <>
+      <div className="report-result">
+        <Stars count={report.stars} big />
+        <div className={`report-word ${report.stars > 0 ? 'win' : 'lose'}`}>
+          {report.stars > 0 ? 'Victory' : 'No stars'} · {report.stars}/3
+        </div>
+      </div>
+
+      <div className="dr-sec">Loot secured</div>
+      <LootRow label="Gold" value={report.gold_stolen} max={maxLoot} tone="gold" icon="coin" bonus={report.bonus_gold} />
+      <LootRow label="Elixir" value={report.elixir_stolen} max={maxLoot} tone="elixir" icon="drop" bonus={report.bonus_elixir} />
+      <LootRow label="Dark" value={report.dark_elixir_stolen} max={maxLoot} tone="de" icon="drop" bonus={report.bonus_de} />
+
+      <div className="dr-sec">Deployment</div>
+      <div className="meta-grid">
+        <div>
+          <span>Strategy</span>
+          <b>{strategyLabel(report.strategy)}</b>
+        </div>
+        <div>
+          <span>Target edge</span>
+          <b>{edge.charAt(0).toUpperCase() + edge.slice(1)}</b>
+        </div>
+        <div>
+          <span>Deploy health</span>
+          <b className={clean ? 'pos' : undefined}>{clean ? 'Clean' : partial ? 'Partial' : 'Failed'}</b>
+        </div>
+        <div>
+          <span>Undeployed slots</span>
+          <b>{report.undeployed_slots}</b>
+        </div>
+        <div>
+          <span>Result parsing</span>
+          <b>{report.parsed_results ? 'Parsed' : 'Not parsed'}</b>
+        </div>
+        <div>
+          <span>Session attack</span>
+          <b>#{report.total_attacks_session}</b>
+        </div>
+      </div>
+
+      <div className="dr-sec">Timestamp</div>
+      <div className="meta-grid">
+        <div>
+          <span>Observed</span>
+          <b>{relativeTime(report.timestamp, 'unknown')}</b>
+        </div>
+        <div>
+          <span>Exact</span>
+          <b title={parsedAt}>{parsedAt.length > 24 ? `${parsedAt.slice(0, 24)}…` : parsedAt}</b>
+        </div>
+      </div>
+
+      {report.deploy_error ? (
+        <>
+          <div className="dr-sec">Deploy error</div>
+          <div className="error-banner">
+            <Icon name="alert" size={14} />
+            <span className="mono" style={{ fontSize: 11, wordBreak: 'break-word' }}>{report.deploy_error}</span>
+          </div>
+        </>
+      ) : null}
+    </>
+  );
+};
+
 const Dashboard: React.FC<DashboardProps> = React.memo(({
   stats,
   history,
   logs,
+  running,
+  strategy,
+  adbPort,
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [terminalAutoScroll, setTerminalAutoScroll] = React.useState(getTerminalAutoScroll);
@@ -46,6 +264,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   const [logFilter, setLogFilter] = React.useState('');
   const [severityFilter, setSeverityFilter] = React.useState<LogSeverity | 'all'>('all');
   const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null);
+  const [report, setReport] = React.useState<AttackReport | null>(null);
   const copiedTimerRef = React.useRef<number | null>(null);
   const uptimeHours = stats.uptime / (1e9 * 3600);
 
@@ -57,38 +276,43 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
     }
   }, [terminalAutoScroll]);
 
-  // Unmount-only cleanup for the copy-feedback timer.
   React.useEffect(() => () => {
     if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
   }, []);
 
-  // Parse once per log update — the raw strings are stable between
-  // polls, so memoizing on `logs` keeps re-renders cheap.
-  const parsedLogs = React.useMemo(() => logs.map(parseLogLine), [logs]);
+  const parsedLogs = React.useMemo(() => logs.map(parseLogLineCached), [logs]);
 
   const severityCounts = React.useMemo(() => {
     const counts: Record<LogSeverity, number> = { debug: 0, info: 0, success: 0, warn: 0, error: 0 };
-    for (const l of parsedLogs) counts[l.level]++;
+    for (const line of parsedLogs) counts[line.level] += 1;
     return counts;
   }, [parsedLogs]);
 
   const filteredLogs = React.useMemo(() => {
     const needle = logFilter.trim().toLowerCase();
     if (!needle && severityFilter === 'all') return parsedLogs;
-    return parsedLogs.filter((l) => {
-      if (severityFilter !== 'all' && l.level !== severityFilter) return false;
-      if (needle && !l.message.toLowerCase().includes(needle)) return false;
+    return parsedLogs.filter((line) => {
+      if (severityFilter !== 'all' && line.level !== severityFilter) return false;
+      if (needle && !line.message.toLowerCase().includes(needle)) return false;
       return true;
     });
   }, [parsedLogs, logFilter, severityFilter]);
 
-  // ANSI-free export: rebuild each line from the parsed structure so
-  // the copied log never carries zerolog escape codes.
-  const exportText = React.useMemo(() =>
-    parsedLogs
-      .map((l) => `${l.timestamp ? l.timestamp + ' | ' : ''}${l.level.toUpperCase()} | ${l.message}`)
-      .join('\n'),
-  [parsedLogs]);
+  // Built on click, not every poll: the buffer only changes when the bot
+  // writes, and the string is ~10KB.
+  const exportLogs = () => {
+    void copyText(parsedLogs
+      .map((line) => `${line.timestamp ? `${line.timestamp} | ` : ''}${levelUpper(line.level)} | ${line.message}`)
+      .join('\n'));
+  };
+
+  React.useEffect(() => {
+    if (!terminalAutoScroll || terminalHovered) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
+    if (isAtBottom) container.scrollTop = container.scrollHeight;
+  }, [filteredLogs, terminalAutoScroll, terminalHovered]);
 
   const copyLine = (idx: number, text: string) => {
     void copyText(text);
@@ -97,272 +321,297 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
     copiedTimerRef.current = window.setTimeout(() => setCopiedIdx(null), 1200);
   };
 
-  // Wrap every (case-insensitive) occurrence of the filter text in
-  // <mark> so matches pop out while the message keeps its color.
   const highlightMatch = (message: string): React.ReactNode => {
     const needle = logFilter.trim().toLowerCase();
     if (!needle) return message;
     const lower = message.toLowerCase();
     const parts: React.ReactNode[] = [];
     let last = 0;
-    let i = lower.indexOf(needle);
-    while (i !== -1) {
-      parts.push(message.slice(last, i));
-      parts.push(<mark key={i}>{message.slice(i, i + needle.length)}</mark>);
-      last = i + needle.length;
-      i = lower.indexOf(needle, last);
+    let index = lower.indexOf(needle);
+    while (index !== -1) {
+      parts.push(message.slice(last, index));
+      parts.push(<mark key={index}>{message.slice(index, index + needle.length)}</mark>);
+      last = index + needle.length;
+      index = lower.indexOf(needle, last);
     }
     parts.push(message.slice(last));
     return parts;
   };
 
-  React.useEffect(() => {
-    if (!terminalAutoScroll || terminalHovered) return;
-
-    const container = containerRef.current;
-    if (!container) return;
-
-    // Smart scroll: only if already at bottom (within 100px). While
-    // hovering, auto-scroll is suspended so the user can inspect/copy
-    // freely — resuming the moment the pointer leaves.
-    const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
-    if (isAtBottom) {
-      container.scrollTop = container.scrollHeight;
-    }
-  }, [filteredLogs, terminalAutoScroll, terminalHovered]);
-
-  const getRate = (total: number) => {
-    if (uptimeHours < 0.01 || total === 0) return '+0/hr';
-    const rate = total / uptimeHours;
-    if (rate > 1e6) return `+${(rate / 1e6).toFixed(1)}M/hr`;
-    if (rate > 1e3) return `+${(rate / 1e3).toFixed(0)}k/hr`;
-    return `+${rate.toFixed(0)}/hr`;
+  const openReport = (event: React.MouseEvent | React.KeyboardEvent, item: AttackReport) => {
+    if ((event.target as HTMLElement).closest('button')) return;
+    setReport(item);
   };
 
-  const severityChips: { id: LogSeverity | 'all'; label: string; active: string; dot: string }[] = [
-    { id: 'all', label: 'All', active: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-white border-zinc-200 dark:border-zinc-700', dot: 'bg-zinc-400' },
-    { id: 'debug', label: 'Debug', active: 'bg-violet-500/15 text-violet-600 dark:text-violet-400 border-violet-500/40', dot: 'bg-violet-500' },
-    { id: 'info', label: 'Info', active: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-white border-zinc-200 dark:border-zinc-700', dot: 'bg-zinc-400' },
-    { id: 'success', label: 'Success', active: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/40', dot: 'bg-emerald-500' },
-    { id: 'warn', label: 'Warn', active: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/40', dot: 'bg-amber-500' },
-    { id: 'error', label: 'Error', active: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/40', dot: 'bg-rose-500' },
+  const resources = [
+    {
+      key: 'gold' as const,
+      label: 'Gold looted',
+      icon: 'coin' as const,
+      value: stats.total_gold,
+      series: history.slice(0, 24).map((item) => item.gold_stolen).reverse(),
+    },
+    {
+      key: 'elixir' as const,
+      label: 'Elixir looted',
+      icon: 'drop' as const,
+      value: stats.total_elixir,
+      series: history.slice(0, 24).map((item) => item.elixir_stolen).reverse(),
+    },
+    {
+      key: 'de' as const,
+      label: 'Dark elixir',
+      icon: 'drop' as const,
+      value: stats.total_de,
+      series: history.slice(0, 24).map((item) => item.dark_elixir_stolen).reverse(),
+    },
   ];
 
+  const adbState =
+    stats.attacks_completed + stats.search_skips > 0
+      ? stats.adb_health.consecutive_fails === 0
+        ? { label: 'Connected', tone: 'green' }
+        : stats.adb_health.consecutive_fails < 5
+          ? { label: 'Degraded', tone: 'warn' }
+          : { label: 'Disconnected', tone: 'error' }
+      : { label: 'Awaiting', tone: 'warn' };
+
+  const latency = Number.isFinite(stats.adb_health.avg_capture_ms)
+    ? `${stats.adb_health.avg_capture_ms.toFixed(1)} ms`
+    : '—';
+
+  const recentReports = history.slice(0, 8);
+
   return (
-    <div className="space-y-6">
-      {/* Metrics Row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        {[
-          { label: 'Gold Looted', value: stats.total_gold, color: 'text-amber-500', bg: 'bg-amber-500/10', icon: 'monetization_on', rate: getRate(stats.total_gold) },
-          { label: 'Elixir Looted', value: stats.total_elixir, color: 'text-fuchsia-500', bg: 'bg-fuchsia-500/10', icon: 'water_drop', rate: getRate(stats.total_elixir) },
-          { label: 'Dark Elixir', value: stats.total_de, color: 'text-zinc-950 dark:text-zinc-100', bg: 'bg-zinc-100 dark:bg-zinc-800', icon: 'water_drop', rate: getRate(stats.total_de) }
-        ].map((item, idx) => (
-          <div key={idx} className="bg-white dark:bg-zinc-900 p-6 rounded-[2.5rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none hover:shadow-premium-hover dark:hover:bg-zinc-800/50 transition-all duration-300 group">
-            <div className="flex items-center justify-between mb-5">
-              <div className={`w-14 h-14 rounded-2xl ${item.bg} flex items-center justify-center transition-transform group-hover:scale-110 duration-300 shadow-sm`}>
-                 <span className={`material-symbols-outlined ${item.color} text-2xl`}>{item.icon}</span>
+    <div>
+      <div className="page-head">
+        <div>
+          <h1>Dashboard</h1>
+          <p>Loot, raids, and engine health — live from the bot.</p>
+        </div>
+      </div>
+
+      <div className="res-grid">
+        {resources.map((resource) => (
+          <article key={resource.key} className={`card res-card ${resource.key}`.trim()}>
+            <div className="res-top">
+              <div className="res-label">
+                <span className="res-ico"><Icon name={resource.icon} size={14} /></span>
+                {resource.label}
               </div>
-              <div className="px-4 py-1.5 bg-zinc-50 dark:bg-zinc-800 rounded-full border border-zinc-100 dark:border-zinc-700 flex items-center justify-center min-w-[80px]">
-                <span className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-widest leading-none">{item.rate}</span>
-              </div>
+              <span className="rate">{rateLabel(resource.value, uptimeHours)}</span>
             </div>
-            <div className="space-y-1">
-              <span className="text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em]">{item.label}</span>
-              <div className="text-4xl font-bold tracking-tight text-zinc-950 dark:text-white">{item.value.toLocaleString()}</div>
-            </div>
-          </div>
+            <div className="res-value">{exactNumber(resource.value)}</div>
+            <div className="res-meta">Session total</div>
+            <Sparkline values={resource.series} tone={resource.key} />
+          </article>
         ))}
       </div>
 
-      {/* Attack Log Table */}
-      <div className="bg-white dark:bg-zinc-900 rounded-[2.5rem] border border-zinc-100/50 dark:border-zinc-800/50 shadow-premium dark:shadow-none overflow-hidden transition-all duration-500">
-        <div className="px-6 py-5 border-b border-zinc-50 dark:border-zinc-800/50 flex justify-between items-center bg-zinc-50/30 dark:bg-zinc-800/20">
-          <div>
-            <h3 className="text-xl font-bold text-zinc-950 dark:text-white tracking-tight">Attack History</h3>
-            <p className="text-sm text-zinc-500 dark:text-zinc-500 font-medium">Recent combat deployments and results.</p>
+      <div className="dash-grid">
+        <div className="card history-card">
+          <div className="card-head">
+            <div>
+              <h3>Attack history</h3>
+              <p className="card-sub">Recent deployments and results</p>
+            </div>
+            <div className="card-tools history-meta">
+              {running ? <span className="live"><i />Live</span> : null}
+              <span className="hist-count">{history.length} raids</span>
+            </div>
           </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr>
-                <th className="px-6 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10">Loot Collected</th>
-                <th className="px-6 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10 text-center">Stars</th>
-                <th className="px-6 py-4 text-[11px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] bg-zinc-50/10 dark:bg-zinc-800/10 text-right">Timestamp</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-50 dark:divide-zinc-800/50">
-              {history.length === 0 ? (
-                <tr>
-                  <td colSpan={3} className="px-6 py-24 text-center text-zinc-400 dark:text-zinc-700 text-[11px] font-black uppercase tracking-[0.3em] italic">No data available // Waiting for activity</td>
-                </tr>
-              ) : (
-                history.slice(0, 5).map((rep, i) => (
-                  <tr key={i} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/40 transition-colors group">
-                    <td className="px-6 py-4">
-                      <div className="flex gap-5">
-                        <div className="flex flex-col">
-                          <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                            <span className="material-symbols-outlined text-amber-500 text-base">monetization_on</span>
-                            {rep.gold_stolen.toLocaleString()}
-                          </div>
-                          {rep.bonus_gold > 0 && (
-                            <div className="text-[10px] font-black text-amber-500/60 uppercase tracking-widest pl-6">
-                              + {rep.bonus_gold.toLocaleString()} bonus
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex flex-col">
-                          <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                            <span className="material-symbols-outlined text-fuchsia-500 text-base">water_drop</span>
-                            {rep.elixir_stolen.toLocaleString()}
-                          </div>
-                          {rep.bonus_elixir > 0 && (
-                            <div className="text-[10px] font-black text-fuchsia-500/60 uppercase tracking-widest pl-6">
-                              + {rep.bonus_elixir.toLocaleString()} bonus
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex flex-col">
-                          <div className="flex items-center gap-2 text-sm font-bold text-zinc-700 dark:text-zinc-300 tabular-nums">
-                            <span className="material-symbols-outlined text-zinc-900 dark:text-zinc-400 text-base">water_drop</span>
-                            {rep.dark_elixir_stolen.toLocaleString()}
-                          </div>
-                          {rep.bonus_de > 0 && (
-                            <div className="text-[10px] font-black text-zinc-500/60 uppercase tracking-widest pl-6">
-                              + {rep.bonus_de.toLocaleString()} bonus
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                       <div className="flex justify-center gap-1.5">
-                        {[...Array(3)].map((_, sIdx) => (
-                          <span
-                            key={sIdx}
-                            className={`material-symbols-outlined text-2xl ${sIdx < rep.stars ? 'text-amber-400' : 'text-zinc-200 dark:text-zinc-800'}`}
-                            style={{ fontVariationSettings: sIdx < rep.stars ? "'FILL' 1" : "'FILL' 0" }}
-                          >
-                            star
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-right text-xs font-black text-zinc-500 dark:text-zinc-500 tabular-nums uppercase tracking-widest">
-                      {new Date(rep.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </td>
+
+          {history.length === 0 ? (
+            <div className="empty">
+              <span className="empty-ico"><Icon name="target" size={20} /></span>
+              <b>No raids recorded yet</b>
+              <p>Reports appear here after the bot completes its first attack.</p>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Result</th>
+                    <th>Loot collected</th>
+                    <th>Strategy</th>
+                    <th>Edge</th>
+                    <th>Time</th>
+                    <th aria-label="Open report" />
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                </thead>
+                <tbody>
+                  {recentReports.map((item, index) => (
+                    <tr
+                      key={`${item.timestamp}-${index}`}
+                      tabIndex={0}
+                      aria-label={`Open report for ${strategyLabel(item.strategy)}`}
+                      onClick={(event) => openReport(event, item)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openReport(event, item);
+                        }
+                      }}
+                    >
+                      <td><Stars count={item.stars} /></td>
+                      <td>
+                        <div className="loot-cell">
+                          <span className="loot">
+                            <span title={`${exactNumber(item.gold_stolen)} gold`}><i className="dot gold" />{compactNumber(item.gold_stolen)}</span>
+                            <span title={`${exactNumber(item.elixir_stolen)} elixir`}><i className="dot elixir" />{compactNumber(item.elixir_stolen)}</span>
+                            <span title={`${exactNumber(item.dark_elixir_stolen)} dark elixir`}><i className="dot de" />{compactNumber(item.dark_elixir_stolen)}</span>
+                          </span>
+                          {item.bonus_gold + item.bonus_elixir + item.bonus_de > 0 ? (
+                            <span className="loot-bonus">
+                              {item.bonus_gold > 0 ? <span className="gold">+{compactNumber(item.bonus_gold)}</span> : null}
+                              {item.bonus_elixir > 0 ? <span className="elixir">+{compactNumber(item.bonus_elixir)}</span> : null}
+                              {item.bonus_de > 0 ? <span className="de">+{compactNumber(item.bonus_de)}</span> : null}
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td>
+                        <span className="strategy-cell" title={item.strategy}>
+                          {strategyLabel(item.strategy)}
+                        </span>
+                        {!item.deploy_success ? <span className="tag danger" style={{ marginLeft: 6 }}>Deploy</span> : null}
+                      </td>
+                      <td>
+                        <span className="tag">{item.target_edge || 'auto'}</span>
+                      </td>
+                      <td className="time-cell" title={safeTimestamp(item.timestamp)}>
+                        {relativeTime(item.timestamp, 'unknown')}
+                      </td>
+                      <td style={{ width: 40 }}>
+                        <button
+                          type="button"
+                          className="icon-btn plain sm"
+                          aria-label={`Open report for ${strategyLabel(item.strategy)}`}
+                          onClick={() => setReport(item)}
+                        >
+                          <Icon name="chevronRight" size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="dash-rail">
+          <div className="card">
+            <div className="card-head">
+              <div>
+                <h3>Engine</h3>
+                <p className="card-sub">Autonomous raiding</p>
+              </div>
+              <span className={`status-pill ${running ? 'running' : ''}`.trim()}>
+                <i />{running ? 'Running' : 'Idle'}
+              </span>
+            </div>
+            <div className="kv-list">
+              <div className="kv"><span>Strategy</span><b title={strategy}>{strategyLabel(strategy)}</b></div>
+              <div className="kv"><span>Uptime</span><b>{formatUptime(stats.uptime)}</b></div>
+              <div className="kv"><span>Searches</span><b>{exactNumber(stats.search_skips + stats.attacks_completed)}</b></div>
+              <div className="kv"><span>Skips</span><b>{exactNumber(stats.search_skips)}</b></div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <div>
+                <h3>Device</h3>
+                <p className="card-sub">ADB bridge</p>
+              </div>
+              <span className={`status-pill ${adbState.tone}`}>
+                <i />{adbState.label}
+              </span>
+            </div>
+            <div className="kv-list">
+              <div className="kv"><span>Port</span><b>{adbPort}</b></div>
+              <div className="kv"><span>Capture latency</span><b>{latency}</b></div>
+              <div className="kv"><span>Consecutive fails</span><b>{stats.adb_health.consecutive_fails}</b></div>
+              <div className="kv">
+                <span>Last error</span>
+                <b className={stats.adb_health.last_error ? 'wrap' : undefined} title={stats.adb_health.last_error || undefined}>
+                  {stats.adb_health.last_error || 'None'}
+                </b>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Summary Row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-8">
-        {[
-          { label: 'Bases Searched', value: stats.search_skips + stats.attacks_completed, icon: 'search', detail: `${stats.search_skips} skips` },
-          { label: 'Attacks', value: stats.attacks_completed, icon: 'bolt' },
-          { label: 'Total Revenue', value: `${((stats.total_gold + stats.total_elixir) / 1e6).toFixed(1)}M`, icon: 'trending_up' },
-          { label: 'System Uptime', value: formatUptime(stats.uptime), icon: 'timer' }
-        ].map((item, idx) => (
-          <div key={idx} className="group bg-white dark:bg-zinc-900 p-5 rounded-[2rem] border border-zinc-100/50 dark:border-zinc-800/50 flex items-center gap-6 shadow-premium dark:shadow-none transition-all duration-500 hover:bg-zinc-50 dark:hover:bg-zinc-800/40">
-             <div className="w-14 h-14 rounded-2xl bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center border border-zinc-100 dark:border-zinc-700 shadow-sm transition-transform group-hover:scale-110">
-                <span className="material-symbols-outlined text-zinc-500 dark:text-zinc-500 text-2xl">{item.icon}</span>
-             </div>
-             <div className="flex flex-col min-w-0">
-                <div className="text-[10px] font-black text-zinc-500 dark:text-zinc-500 uppercase tracking-[0.2em] mb-0.5">{item.label}</div>
-                <div className="flex items-baseline gap-2">
-                  <div className="text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">{item.value}</div>
-                  {item.detail && (
-                    <div className="text-[9px] font-black text-zinc-400 dark:text-zinc-700 uppercase tracking-widest tabular-nums">{item.detail}</div>
-                  )}
-                </div>
-             </div>
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h3>System console</h3>
+            <p className="card-sub">Live bot output · click a line to copy</p>
           </div>
-        ))}
-      </div>
-
-      {/* Logs Terminal */}
-      <section className="bg-white dark:bg-black rounded-[3rem] p-3 shadow-premium-lg border border-zinc-200/60 dark:border-zinc-900/80 transition-all duration-500">
-        <div className="px-8 py-3 flex flex-wrap items-center gap-4 justify-between border-b border-zinc-100 dark:border-zinc-900/50">
-          <div className="flex items-center gap-4">
-            <div className="flex gap-2">
-              <div className="w-3 h-3 rounded-full bg-rose-500/20 border border-rose-500/40"></div>
-              <div className="w-3 h-3 rounded-full bg-amber-500/20 border border-amber-500/40"></div>
-              <div className="w-3 h-3 rounded-full bg-emerald-500/20 border border-emerald-500/40"></div>
-            </div>
-            <span className="text-[10px] font-black text-zinc-600 dark:text-zinc-500 uppercase tracking-[0.3em]">System Console</span>
-          </div>
-          <div className="flex items-center gap-3">
+          <div className="card-tools">
+            <span className="muted mono">
+              {filteredLogs.length}/{parsedLogs.length}
+            </span>
             <button
+              type="button"
               onClick={() => setTerminalAutoScroll(!terminalAutoScroll)}
-              className={`flex items-center gap-2 h-9 px-4 rounded-xl transition-all uppercase tracking-[0.2em] text-[10px] font-black border ${
-                terminalAutoScroll
-                  ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/20'
-                  : 'bg-zinc-100 dark:bg-zinc-900/50 text-zinc-500 border-zinc-200 dark:border-zinc-800/50 hover:text-zinc-700 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-800'
-              }`}
-              title={terminalAutoScroll ? 'Auto-scroll enabled (click to disable)' : 'Auto-scroll disabled (click to enable)'}
+              className={`btn sm ${terminalAutoScroll ? '' : 'ghost'}`.trim()}
+              aria-pressed={terminalAutoScroll}
+              title={terminalAutoScroll ? 'Auto-scroll enabled' : 'Auto-scroll disabled'}
             >
-              <span className="material-symbols-outlined text-sm">
-                {terminalAutoScroll ? 'keyboard_arrow_down' : 'keyboard_arrow_up'}
-              </span>
+              <Icon name={terminalAutoScroll ? 'chevronDown' : 'chevronUp'} size={12} />
               Auto
             </button>
             <button
-              onClick={() => void copyText(exportText)}
-              className="h-9 px-5 rounded-xl bg-zinc-100 dark:bg-zinc-900/50 text-[10px] font-black text-zinc-500 hover:text-zinc-700 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-all uppercase tracking-[0.2em] border border-zinc-200 dark:border-zinc-800/50 active:scale-95"
+              type="button"
+              onClick={exportLogs}
+              className="btn sm"
               title="Copy the full console to the clipboard (ANSI-free)"
             >
-              Export Logs
+              <Icon name="download" size={12} />
+              Export logs
             </button>
           </div>
         </div>
 
-        {/* Filter bar: text search + severity chips. */}
-        <div className="px-8 py-3 flex flex-wrap items-center gap-3 border-b border-zinc-100 dark:border-zinc-900/50">
-          <div className="relative flex-1 min-w-[180px] max-w-sm">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-sm text-zinc-600">search</span>
+        <div className="console-toolbar">
+          <label className="search">
+            <Icon name="search" size={14} />
             <input
               value={logFilter}
-              onChange={(e) => setLogFilter(e.target.value)}
+              onChange={(event) => setLogFilter(event.target.value)}
               placeholder="Filter logs…"
               aria-label="Filter logs by text"
-              className="w-full h-9 pl-9 pr-8 rounded-xl bg-white dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800/60 text-xs font-bold text-zinc-800 dark:text-zinc-200 placeholder:text-zinc-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/40 focus:ring-2 focus:ring-emerald-500/10 transition-all"
             />
-            {logFilter && (
+            {logFilter ? (
               <button
+                type="button"
                 onClick={() => setLogFilter('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 dark:text-zinc-600 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
+                className="icon-btn plain sm"
                 aria-label="Clear log filter"
               >
-                <span className="material-symbols-outlined text-sm">close</span>
+                <Icon name="x" size={12} />
               </button>
-            )}
-          </div>
-          <div className="flex items-center gap-2 text-[10px] font-black text-zinc-400 dark:text-zinc-600 uppercase tracking-widest tabular-nums whitespace-nowrap" aria-live="polite">
-            {filteredLogs.length}<span className="text-zinc-300 dark:text-zinc-700">/</span>{parsedLogs.length} lines
-          </div>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {severityChips.map((chip) => {
+            ) : null}
+          </label>
+          <div className="chipbar" aria-label="Filter by severity">
+            {SEVERITIES.map((chip) => {
               const count = chip.id === 'all' ? parsedLogs.length : severityCounts[chip.id];
-              const isActive = severityFilter === chip.id;
+              const active = severityFilter === chip.id;
               return (
                 <button
                   key={chip.id}
+                  type="button"
                   onClick={() => setSeverityFilter(chip.id)}
-                  aria-pressed={isActive}
-                  className={`h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-widest border transition-all flex items-center gap-1.5 ${
-                    isActive
-                      ? chip.active
-                      : 'text-zinc-500 border-zinc-200 dark:border-zinc-800/50 hover:text-zinc-700 dark:hover:text-zinc-300 hover:border-zinc-300 dark:hover:border-zinc-700'
-                  }`}
+                  aria-pressed={active}
+                  className={`chip ${active ? 'active' : ''}`.trim()}
+                  title={`${count} ${chip.label.toLowerCase()} lines`}
                 >
-                  <span className={`w-1.5 h-1.5 rounded-full ${chip.dot} ${isActive ? '' : 'opacity-40'}`}></span>
+                  {chip.id === 'all' ? null : <i className={LEVEL_CLASS[chip.id]} />}
                   {chip.label}
-                  <span className={`tabular-nums ${isActive ? '' : 'opacity-40'}`}>{count}</span>
                 </button>
               );
             })}
@@ -375,62 +624,48 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           aria-label="System console — live bot output"
           onMouseEnter={() => setTerminalHovered(true)}
           onMouseLeave={() => setTerminalHovered(false)}
-          className="p-5 h-80 terminal-scroll overflow-y-auto font-mono text-[13px] leading-relaxed text-zinc-600 dark:text-zinc-400 selection:bg-emerald-500/20"
+          className="console"
         >
-          <div className="space-y-1">
-            {parsedLogs.length === 0 ? (
-              <div className="flex items-center gap-4 text-zinc-400 dark:text-zinc-700 py-2">
-                <div className="w-2 h-2 bg-zinc-300 dark:bg-zinc-700 rounded-full animate-pulse"></div>
-                <span className="italic uppercase tracking-[0.3em] font-black text-[10px]">Initializing connection...</span>
+          {parsedLogs.length === 0 ? (
+            <div className="muted" style={{ padding: '6px 2px' }}>Initializing connection…</div>
+          ) : filteredLogs.length === 0 ? (
+            <div className="muted" style={{ padding: '6px 2px' }}>No lines match the current filter.</div>
+          ) : (
+            filteredLogs.map((line, index) => (
+              <div key={`${line.timestamp}-${index}`} className="log-row">
+                <span className="log-time">{line.timestamp || '--:--:--'}</span>
+                <span className={`log-lvl ${LEVEL_CLASS[line.level]}`.trim()}>{LEVEL_LABEL[line.level]}</span>
+                <span className="log-msg">{highlightMatch(line.message)}</span>
+                <button
+                  type="button"
+                  onClick={() => copyLine(index, line.message)}
+                  className="icon-btn plain sm log-copy"
+                  title="Copy line"
+                  aria-label="Copy log line"
+                >
+                  <Icon name={copiedIdx === index ? 'check' : 'file'} size={12} />
+                </button>
               </div>
-            ) : filteredLogs.length === 0 ? (
-              <div className="text-zinc-400 dark:text-zinc-700 py-2 text-[11px] font-bold uppercase tracking-[0.25em]">
-                No logs match the current filter
-              </div>
-            ) : (
-              filteredLogs.map((line, i) => (
-                <div key={i} className="flex items-start gap-3 group/log hover:bg-zinc-100 dark:hover:bg-zinc-900/50 rounded-lg px-2 -mx-2 py-1 transition-colors">
-                  <span className="text-zinc-400 dark:text-zinc-700 shrink-0 font-bold tabular-nums text-xs pt-px">
-                    {line.timestamp || '--:--:--'}
-                  </span>
-                  <span className="shrink-0 text-[10px] font-black w-12 pt-px text-center uppercase tracking-wider tabular-nums">
-                    <span className={line.level === 'error' ? 'text-rose-500' : line.level === 'warn' ? 'text-amber-500' : line.level === 'debug' ? 'text-violet-500' : line.level === 'success' ? 'text-emerald-500' : 'text-zinc-600'}>
-                      {line.level === 'success' ? 'OK' : line.level}
-                    </span>
-                  </span>
-                  <span
-                    className={`flex-1 break-words ${
-                      line.level === 'error' ? 'text-rose-600 dark:text-rose-400 font-semibold' :
-                      line.level === 'warn' ? 'text-amber-600 dark:text-amber-300/90' :
-                      line.level === 'debug' ? 'text-violet-600 dark:text-violet-300/70' :
-                      line.level === 'success' ? 'text-emerald-600 dark:text-emerald-400' :
-                      'text-zinc-600 dark:text-zinc-300'
-                    }`}
-                  >
-                    {highlightMatch(line.message)}
-                  </span>
-                  <button
-                    onClick={() => copyLine(i, line.message)}
-                    className={`opacity-0 group-hover/log:opacity-100 transition-all p-0.5 -mr-1 ${
-                      copiedIdx === i
-                        ? 'text-emerald-500 opacity-100'
-                        : 'text-zinc-400 dark:text-zinc-600 hover:text-zinc-700 dark:hover:text-white'
-                    }`}
-                    title="Copy line"
-                    aria-label="Copy log line"
-                  >
-                    <span className="material-symbols-outlined text-sm">
-                      {copiedIdx === i ? 'check' : 'content_copy'}
-                    </span>
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
+            ))
+          )}
         </div>
       </section>
+
+      <Drawer
+        open={report !== null}
+        onClose={() => setReport(null)}
+        kicker={report ? `Raid report · ${report.total_attacks_session} in session` : 'Raid report'}
+        title={report ? strategyLabel(report.strategy) : 'Raid report'}
+        footer={<button type="button" className="btn block" onClick={() => setReport(null)}>Close</button>}
+      >
+        {report ? <RaidReport report={report} /> : null}
+      </Drawer>
     </div>
   );
 });
+
+const levelUpper = (level: LogSeverity): string => LEVEL_LABEL[level];
+
+Dashboard.displayName = 'Dashboard';
 
 export default Dashboard;

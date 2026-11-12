@@ -1,3 +1,94 @@
+export namespace accounts {
+	
+	export class Device {
+	    adb_host: string;
+	    adb_port: number;
+	    device_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Device(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.adb_host = source["adb_host"];
+	        this.adb_port = source["adb_port"];
+	        this.device_id = source["device_id"];
+	    }
+	}
+	export class Input {
+	    id?: string;
+	    name: string;
+	    player_tag: string;
+	    town_hall: number;
+	    email: string;
+	    notes: string;
+	    device: Device;
+	    enabled: boolean;
+	    priority: number;
+	    cooldown_minutes: number;
+	    max_attacks_per_day: number;
+	    max_attacks_per_session: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Input(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.player_tag = source["player_tag"];
+	        this.town_hall = source["town_hall"];
+	        this.email = source["email"];
+	        this.notes = source["notes"];
+	        this.device = this.convertValues(source["device"], Device);
+	        this.enabled = source["enabled"];
+	        this.priority = source["priority"];
+	        this.cooldown_minutes = source["cooldown_minutes"];
+	        this.max_attacks_per_day = source["max_attacks_per_day"];
+	        this.max_attacks_per_session = source["max_attacks_per_session"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Rotation {
+	    enabled: boolean;
+	    order: string;
+	    auto_start: boolean;
+	    attacks_per_account: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Rotation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.order = source["order"];
+	        this.auto_start = source["auto_start"];
+	        this.attacks_per_account = source["attacks_per_account"];
+	    }
+	}
+
+}
+
 export namespace adb {
 	
 	export class CaptureCacheStats {
@@ -584,6 +675,205 @@ export namespace config {
 
 export namespace main {
 	
+	export class AccountView {
+	    id: string;
+	    name: string;
+	    player_tag?: string;
+	    town_hall?: number;
+	    email?: string;
+	    notes?: string;
+	    device: accounts.Device;
+	    enabled: boolean;
+	    priority: number;
+	    cooldown_minutes: number;
+	    max_attacks_per_day: number;
+	    max_attacks_per_session: number;
+	    // Go type: time
+	    created_at: any;
+	    // Go type: time
+	    last_used_at: any;
+	    // Go type: accounts
+	    usage: any;
+	    active: boolean;
+	    running: boolean;
+	    stats: bot.BotStats;
+	    today_attacks: number;
+	    status: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AccountView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.player_tag = source["player_tag"];
+	        this.town_hall = source["town_hall"];
+	        this.email = source["email"];
+	        this.notes = source["notes"];
+	        this.device = this.convertValues(source["device"], accounts.Device);
+	        this.enabled = source["enabled"];
+	        this.priority = source["priority"];
+	        this.cooldown_minutes = source["cooldown_minutes"];
+	        this.max_attacks_per_day = source["max_attacks_per_day"];
+	        this.max_attacks_per_session = source["max_attacks_per_session"];
+	        this.created_at = this.convertValues(source["created_at"], null);
+	        this.last_used_at = this.convertValues(source["last_used_at"], null);
+	        this.usage = this.convertValues(source["usage"], null);
+	        this.active = source["active"];
+	        this.running = source["running"];
+	        this.stats = this.convertValues(source["stats"], bot.BotStats);
+	        this.today_attacks = source["today_attacks"];
+	        this.status = source["status"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class AccountsState {
+	    accounts: AccountView[];
+	    active_id: string;
+	    rotation: accounts.Rotation;
+	
+	    static createFrom(source: any = {}) {
+	        return new AccountsState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.accounts = this.convertValues(source["accounts"], AccountView);
+	        this.active_id = source["active_id"];
+	        this.rotation = this.convertValues(source["rotation"], accounts.Rotation);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ArmyPlanUnit {
+	    name: string;
+	    amount: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ArmyPlanUnit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.amount = source["amount"];
+	    }
+	}
+	export class ArmyPlanPhase {
+	    name: string;
+	    units: ArmyPlanUnit[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ArmyPlanPhase(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.units = this.convertValues(source["units"], ArmyPlanUnit);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ArmyPlan {
+	    file: string;
+	    name: string;
+	    description: string;
+	    emblem: string;
+	    target_edge: string;
+	    army_slot: number;
+	    end_at_percent: number;
+	    active: boolean;
+	    phases: ArmyPlanPhase[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ArmyPlan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.file = source["file"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.emblem = source["emblem"];
+	        this.target_edge = source["target_edge"];
+	        this.army_slot = source["army_slot"];
+	        this.end_at_percent = source["end_at_percent"];
+	        this.active = source["active"];
+	        this.phases = this.convertValues(source["phases"], ArmyPlanPhase);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
 	export class BotStatus {
 	    running: boolean;
 	    message: string;
@@ -597,6 +887,40 @@ export namespace main {
 	        this.running = source["running"];
 	        this.message = source["message"];
 	    }
+	}
+	export class SwitchResult {
+	    account: AccountView;
+	    started: boolean;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SwitchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.account = this.convertValues(source["account"], AccountView);
+	        this.started = source["started"];
+	        this.message = source["message"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
