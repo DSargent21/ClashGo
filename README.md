@@ -84,6 +84,10 @@ ClashGO includes a suite of developer and calibration utilities in `cmd/`:
 | `make attack-replay` | Macro replayer: fire recorded attack JSON at cadence |
 | `make see` | Terminal ASCII screen inspector and vision debug eye |
 | `./tools/observe.sh` | Terminal capture + classifier + Apple Vision OCR dump |
+| `make smoke-live` | Headless Wails App smoke: one real raid, verify stats + history, stop |
+| `make smoke-live-app` | Packaged-app self-test: build, launch with `--live-smoke`, run one real raid, exit 0/1 |
+
+Live smoke commands spend one real attack on the active account and require a connected BlueStacks device. The packaged binary also accepts `--live-smoke` directly.
 
 ---
 
