@@ -13,6 +13,7 @@ the reference for extending it. Architecture lives in [`DESIGN.md`](DESIGN.md).
 | `web/src/style.css` | Tailwind entrypoint (kept for tooling; views use semantic classes) |
 | `web/src/components/ui/Icon.tsx` | Inline SVG icon set (no icon font) |
 | `web/src/components/ui/Switch.tsx` | `Switch` control + `SwitchRow` |
+| `web/src/components/LaunchSetup.tsx` | First-run army → builders → settings wizard |
 | `web/src/components/ui/Drawer.tsx` | Right-side drawer with focus/ESC/scroll handling |
 | `web/src/components/ui/StatCard.tsx` | Shared stat tile |
 | `web/src/utils.ts` | `compactNumber`, `exactNumber`, `relativeTime`, `formatUptime`, log parsing |
@@ -25,15 +26,19 @@ design layer wins over Tailwind preflight.
 ## Principles
 
 1. **One accent.** Gold marks brand, focus, selection, and primary data. Status
-   colors are reserved for state (green/red/blue/amber).
+   colors are reserved for state (green/red/blue/amber). It is not a structural
+   marker: no colored edge bars, glows, or tinted panel borders.
 2. **Borders over shadows.** Cards use a 1px hairline and a near-invisible
    shadow; elevation is for overlays only.
 3. **Numbers are mono.** Every figure, timestamp, port, and counter uses
    JetBrains Mono with `font-variant-numeric: tabular-nums`.
-4. **Quiet labels, loud values.** Uppercase 10.5px labels carry context; values
-   carry the weight.
+4. **Quiet labels, loud values.** Uppercase 10.5px labels carry context in data
+   views; setup and settings use sentence case. Values carry the weight.
 5. **No invented data.** The UI only renders fields the Go side actually sends.
-6. **Small motion.** 150–350ms, 6px max travel; reduced motion is honored.
+6. **Fast, quiet motion.** Feedback lands in 90–140ms, state changes in 180ms,
+   entrances in 240ms, overlays in 280ms. Animate transform and opacity,
+   decelerate with ease-out, keep travel at 4–6px, and never bounce or loop
+   decorative elements. Reduced motion is honored.
 
 ## Tokens
 
@@ -67,6 +72,32 @@ Type scale: body 14/1.55; page title 22/600; card title 14/600; micro-label
 Spacing is 4px based with 8/12/16/24 gaps; page padding 28px; content max
 1500px including padding.
 
+### Motion
+
+The timings follow the consensus in [Apple's HIG](https://developer.apple.com/design/human-interface-guidelines/motion),
+[Vercel's Web Interface Guidelines](https://vercel.com/design/guidelines),
+[Atlassian's motion system](https://atlassian.design/foundations/motion), and
+[Nielsen Norman Group's duration research](https://www.nngroup.com/articles/animation-duration/):
+hover and press feedback under 150ms, small state changes around 180ms,
+overlays under 300ms, and deceleration rather than spring or bounce.
+
+| Token | Value | Use |
+| --- | --- | --- |
+| `--motion-press` | `90ms` | Button and control press scale |
+| `--motion-fast` | `140ms` | Hover fills, borders, color, focus |
+| `--motion-base` | `180ms` | Toggles, tabs, status, small state |
+| `--motion-enter` | `240ms` | View and card entrances |
+| `--motion-exit` | `160ms` | Drawer and scrim exits |
+| `--motion-overlay` | `280ms` | Drawers, modals, setup panel |
+| `--ease-out` | `cubic-bezier(.16,1,.3,1)` | Entrances and hover feedback |
+| `--ease-in-out` | `cubic-bezier(.65,0,.35,1)` | Exits and reversible state |
+
+Entrances are opacity plus 4–6px of travel; press feedback is `.98` scale.
+Nothing moves while the user is typing, and status pulses are the only infinite
+animation besides loading spinners. Data viz does not get entrance animation:
+the Wails webview can freeze CSS animations while its window is not painting,
+which once left the sparkline drawn only part-way across its card.
+
 ## Frame
 
 - Fixed sidebar: 38px draggable strip reserved for macOS traffic lights, brand,
@@ -79,6 +110,27 @@ Spacing is 4px based with 8/12/16/24 gaps; page padding 28px; content max
 
 Wails rules: any new draggable region gets `draggable`; buttons inside it get
 `no-drag`. Do not wrap the shell in a transform — it breaks fixed overlays.
+
+## Launch setup
+
+`LaunchSetup.tsx` is the first-run wizard: army → builders → settings. It is a
+two-pane overlay, up to 1000×670, with a 228px orientation rail and one decision
+per step. Start lives on the last step and writes army, builders, and search floors
+together.
+
+- The active rail step is `--overlay` with neutral text; no accent bar, glow,
+  or gradient. Completed steps use a small check.
+- Sections are separated by rules and whitespace, not nested cards. Only plan
+  choices and inputs get a fill.
+- Gold is limited to the primary CTA, selected radio dot, switches, the
+  recommended label, and status. Everything else is neutral.
+- Builders covers the full progression loop: plan, types, wall reserve, lab
+  research order, and pet order. Lab and pets follow the engine switch.
+- Plan choices are stacked radio rows, not equal marketing cards. The rate is
+  the loudest value; the recommendation is plain accent text.
+- Adaptive loot owns the floors: while it is on, the three floor inputs are
+  disabled and dimmed. Turning it off restores manual editing.
+- Dry run is a Config → Upgrades control, not part of setup.
 
 ## Component recipes
 
@@ -166,3 +218,8 @@ and no column is left with a tall blank gap.
 - Don't invent metrics (base names, win rate, session totals) the Go side does
   not send.
 - Don't introduce a chart, router, or component library for this UI.
+- Don't mark active navigation with a colored edge, glow, or accent fill.
+- Don't turn a two-option choice into an equal card grid with badges and
+  gradients; use a radio list.
+- Don't add decorative loops, parallax, spring/bounce easing, or entrance
+  animation on data viz; use the motion tokens above and keep it stateful.

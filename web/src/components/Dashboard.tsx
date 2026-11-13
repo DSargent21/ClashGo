@@ -92,8 +92,11 @@ const Sparkline: React.FC<{ values: number[]; tone: 'gold' | 'elixir' | 'de' }> 
   const width = 260;
   const height = 38;
   const pad = 1;
-  const hasData = values.length > 0;
-  const data = values.length >= 2 ? values : values.length === 1 ? [values[0], values[0]] : [0, 0];
+  // A flat rule at the baseline is not a trend. Until a raid lands there is
+  // nothing to plot, and drawing the empty series read as a broken border
+  // under the card; skip the chart and let the card stay compact.
+  if (values.length < 2) return null;
+  const data = values;
   const min = Math.min(...data);
   const max = Math.max(...data);
   const span = max - min || 1;
@@ -135,9 +138,32 @@ const Sparkline: React.FC<{ values: number[]; tone: 'gold' | 'elixir' | 'de' }> 
         pathLength={1}
         opacity=".9"
       />
-      {hasData ? <circle cx={x(data.length - 1)} cy={y(data[data.length - 1])} r="2.4" fill={color} /> : null}
+      <circle cx={x(data.length - 1)} cy={y(data[data.length - 1])} r="2.4" fill={color} />
     </svg>
   );
+};
+
+// cumulativeSeries turns per-raid loot into the session total the card shows:
+// the line has to climb as raids add up, not spike and fall back. The leading 0
+// is the session start, so a single raid already draws a rise instead of the
+// flat line a one-point series collapses to.
+const cumulativeSeries = (perRaid: number[]): number[] => {
+  const out = [0];
+  let total = 0;
+  for (const value of perRaid) {
+    total += value;
+    out.push(total);
+  }
+  return out;
+};
+
+// lootSeries feeds the card's sparkline. Raid history is the real trend; when
+// the session has loot but no per-raid rows yet (restored stats), the line is
+// the session's own 0 → total climb. Zero loot draws nothing, so the card never
+// shows a meaningless flat rule.
+const lootSeries = (perRaid: number[], total: number): number[] => {
+  if (perRaid.length > 0) return cumulativeSeries(perRaid);
+  return total > 0 ? [0, total] : [];
 };
 
 const rateLabel = (total: number, uptimeHours: number): string => {
@@ -349,21 +375,21 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       label: 'Gold looted',
       icon: 'coin' as const,
       value: stats.total_gold,
-      series: history.slice(0, 24).map((item) => item.gold_stolen).reverse(),
+      series: lootSeries(history.slice(0, 24).map((item) => item.gold_stolen).reverse(), stats.total_gold),
     },
     {
       key: 'elixir' as const,
       label: 'Elixir looted',
       icon: 'drop' as const,
       value: stats.total_elixir,
-      series: history.slice(0, 24).map((item) => item.elixir_stolen).reverse(),
+      series: lootSeries(history.slice(0, 24).map((item) => item.elixir_stolen).reverse(), stats.total_elixir),
     },
     {
       key: 'de' as const,
       label: 'Dark elixir',
       icon: 'drop' as const,
       value: stats.total_de,
-      series: history.slice(0, 24).map((item) => item.dark_elixir_stolen).reverse(),
+      series: lootSeries(history.slice(0, 24).map((item) => item.dark_elixir_stolen).reverse(), stats.total_de),
     },
   ];
 

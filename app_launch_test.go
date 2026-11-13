@@ -96,6 +96,70 @@ func TestEstimateLootPerHour_FiltersByArmy(t *testing.T) {
 	}
 }
 
+func TestSaveUpgradeSetup_ArmsLabAndPets(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	err := a.SaveUpgradeSetup(
+		true, "strategic_rush",
+		true, true, true, true, true, true,
+		true, "troops_first", true,
+	)
+	if err != nil {
+		t.Fatalf("SaveUpgradeSetup failed: %v", err)
+	}
+
+	cfg := config.LoadOrDefault("config.json")
+	if !cfg.Upgrade.AutoBuilders || !cfg.Upgrade.AutoLab || !cfg.Upgrade.AutoPets {
+		t.Fatalf("strategic rush must arm builders, lab, and pets: %+v", cfg.Upgrade)
+	}
+	if cfg.Upgrade.LabStrategy != "troops_first" {
+		t.Errorf("LabStrategy = %q, want troops_first", cfg.Upgrade.LabStrategy)
+	}
+	if len(cfg.Upgrade.PetPriorities) != 12 || cfg.Upgrade.PetPriorities[0] != "Phoenix" {
+		t.Errorf("PetPriorities = %v, want the 12-pet recommended queue starting with Phoenix", cfg.Upgrade.PetPriorities)
+	}
+}
+
+func TestSaveUpgradeSetup_NormalizesLegacyPetOrder(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	cfg := config.DefaultConfig()
+	cfg.Upgrade.PetPriorities = []string{"Diggy", "Unicorn", "Frosty", "Phoenix", "Spirit Fox"}
+	if err := writeConfigFile(cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	a := NewApp()
+	if err := a.SaveUpgradeSetup(true, "strategic_rush", true, true, true, true, true, true, true, "troops_first", true); err != nil {
+		t.Fatalf("SaveUpgradeSetup failed: %v", err)
+	}
+
+	loaded := config.LoadOrDefault("config.json")
+	if len(loaded.Upgrade.PetPriorities) != 12 || loaded.Upgrade.PetPriorities[0] != "Phoenix" {
+		t.Fatalf("legacy pet order was not upgraded: %v", loaded.Upgrade.PetPriorities)
+	}
+}
+
+func TestSaveUpgradeSetup_KeepsCustomPetOrder(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	custom := []string{"Unicorn", "Phoenix"}
+	cfg := config.DefaultConfig()
+	cfg.Upgrade.PetPriorities = custom
+	if err := writeConfigFile(cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	a := NewApp()
+	if err := a.SaveUpgradeSetup(true, "strategic_rush", true, true, true, true, true, true, true, "troops_first", true); err != nil {
+		t.Fatalf("SaveUpgradeSetup failed: %v", err)
+	}
+
+	loaded := config.LoadOrDefault("config.json")
+	if len(loaded.Upgrade.PetPriorities) != len(custom) || loaded.Upgrade.PetPriorities[0] != custom[0] {
+		t.Fatalf("custom pet order was overwritten: %v", loaded.Upgrade.PetPriorities)
+	}
+}
+
 func TestLaunchOptions_RecommendsHigherEstimate(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLASHGO_CONFIG_DIR", dir)
@@ -113,6 +177,9 @@ func TestLaunchOptions_RecommendsHigherEstimate(t *testing.T) {
 	for _, option := range options.Options {
 		if option.Recommended {
 			recommended++
+			if option.Key != "edrag" {
+				t.Errorf("recommended %s, want edrag by default", option.Key)
+			}
 		}
 		if option.LootPerHour <= 0 {
 			t.Errorf("%s has no loot estimate", option.Key)
@@ -173,6 +240,20 @@ func TestChooseArmy_RejectsUnknownAndNonYAML(t *testing.T) {
 	}
 	if after := config.LoadOrDefault("config.json").Attack.StrategyFile; after != before {
 		t.Errorf("a rejected choice still changed the config: %q -> %q", before, after)
+	}
+}
+
+func TestSaveUpgradeSetup_DisablingEngineStopsResearch(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	if err := a.SaveUpgradeSetup(false, "strategic_rush", true, true, true, true, true, true, true, "troops_first", true); err != nil {
+		t.Fatalf("SaveUpgradeSetup failed: %v", err)
+	}
+
+	cfg := config.LoadOrDefault("config.json")
+	if cfg.Upgrade.AutoLab || cfg.Upgrade.AutoPets {
+		t.Fatalf("lab and pets must follow the engine switch: %+v", cfg.Upgrade)
 	}
 }
 

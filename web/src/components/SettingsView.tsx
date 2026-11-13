@@ -1,4 +1,5 @@
 import React from 'react';
+import { TestDeviceMenu } from '../../wailsjs/go/main/App';
 import { BotStats, TabType, UpdateStatus } from '../types';
 import Icon from './ui/Icon';
 import { SwitchRow } from './ui/Switch';
@@ -24,6 +25,8 @@ interface SettingsViewProps {
   onCheckUpdates: () => void;
   onClearSkip: () => void;
   onOpenUpdateModal?: () => void;
+  onOpenSetupWizard: () => void;
+  isBotRunning: boolean;
 }
 
 const DEFAULT_PAGE_OPTIONS: { value: TabType; label: string }[] = [
@@ -56,12 +59,16 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
   onCheckUpdates,
   onClearSkip,
   onOpenUpdateModal,
+  onOpenSetupWizard,
+  isBotRunning,
 }) => {
   // Destructive action protection: first click arms, second click within 4s
   // fires. Prevents fat-finger stat wipes.
   const [resetArmed, setResetArmed] = React.useState(false);
   const [prefsArmed, setPrefsArmed] = React.useState(false);
   const [exported, setExported] = React.useState(false);
+  const [testBusy, setTestBusy] = React.useState('');
+  const [testNote, setTestNote] = React.useState('');
   const resetTimerRef = React.useRef<number | null>(null);
   const prefsTimerRef = React.useRef<number | null>(null);
   const exportTimerRef = React.useRef<number | null>(null);
@@ -93,6 +100,19 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
     ['darkMode', 'sidebarExpanded', 'reduceMotion', 'compactMode', 'clock24h', 'confirmStop', 'defaultTab']
       .forEach((key) => localStorage.removeItem(key));
     window.location.reload();
+  };
+
+  const runDeviceTest = async (action: 'open' | 'filters' | 'close', label: string) => {
+    setTestBusy(action);
+    setTestNote(`${label}…`);
+    try {
+      await TestDeviceMenu(action);
+      setTestNote(`${label} sent.`);
+    } catch (err) {
+      setTestNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestBusy('');
+    }
   };
 
   const handleExportDiagnostics = () => {
@@ -362,6 +382,62 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                   </button>
                 </div>
               </div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="card settings-testing">
+          <div className="card-head">
+            <div>
+              <h3>Testing</h3>
+              <p className="card-sub">Pop up the in-game build menu without starting the bot</p>
+            </div>
+          </div>
+          <div className="card-body">
+            <p className="hint">
+              Sit in the main village first. These only tap navigation — no upgrade is confirmed or bought.
+            </p>
+            <div className="settings-actions">
+              <button
+                type="button"
+                className="btn sm"
+                onClick={onOpenSetupWizard}
+                disabled={isBotRunning}
+              >
+                <Icon name="sliders" size={12} />
+                Open setup wizard
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => void runDeviceTest('open', 'Opening builder menu')}
+                disabled={isBotRunning || testBusy !== ''}
+              >
+                <Icon name="device" size={12} />
+                {testBusy === 'open' ? 'Opening…' : 'Open builder menu'}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => void runDeviceTest('filters', 'Opening build filters')}
+                disabled={isBotRunning || testBusy !== ''}
+              >
+                <Icon name="sliders" size={12} />
+                {testBusy === 'filters' ? 'Opening…' : 'Open filters'}
+              </button>
+              <button
+                type="button"
+                className="btn sm ghost"
+                onClick={() => void runDeviceTest('close', 'Closing builder menu')}
+                disabled={isBotRunning || testBusy !== ''}
+              >
+                Close menu
+              </button>
+            </div>
+            {isBotRunning ? (
+              <p className="hint">Stop the bot before using test tools.</p>
+            ) : testNote ? (
+              <p className="hint" aria-live="polite">{testNote}</p>
             ) : null}
           </div>
         </section>

@@ -33,6 +33,10 @@ import {
   InstallAndRestart,
   SkipCurrentVersion,
   ClearSkippedVersion,
+  GetLootAutotune,
+  ApplyLootAutotune,
+  SetAutoLoot,
+  ResetLootAutotune,
   GetLaunchOptions,
   ChooseArmy,
 } from '../wailsjs/go/main/App';
@@ -229,6 +233,11 @@ function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
   const [appVersion, setAppVersion] = useState('');
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+
+  // Loot autotune snapshot. Read when Config opens and after every action, not
+  // on the poll: it parses the search history, and nothing else displays it.
+  const [autotune, setAutotune] = useState<main.AutotuneStatus | null>(null);
+  const [autotuneBusy, setAutotuneBusy] = useState(false);
 
   // Launch quick-setup state.
   const [launchOpen, setLaunchOpen] = useState(getInitialLaunchOpen);
@@ -774,6 +783,59 @@ function App() {
     logs,
   }), [stats, sessionHistory, logs]);
 
+  const loadAutotune = useCallback(async () => {
+    try {
+      setAutotune(await GetLootAutotune());
+    } catch (err) {
+      console.warn('GetLootAutotune failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab !== 'config') return;
+    void loadAutotune();
+  }, [tab, loadAutotune]);
+
+  const handleToggleAutoLoot = useCallback(async (enabled: boolean) => {
+    setAutotuneBusy(true);
+    try {
+      await SetAutoLoot(enabled);
+      await loadAutotune();
+    } catch (err) {
+      console.error('Toggle auto loot failed:', err);
+    } finally {
+      setAutotuneBusy(false);
+    }
+  }, [loadAutotune]);
+
+  const handleApplyAutoLoot = useCallback(async () => {
+    setAutotuneBusy(true);
+    try {
+      setAutotune(await ApplyLootAutotune());
+      // The form inputs mirror config.json, so re-read what was just written
+      // instead of leaving the fields showing the pre-tuning values.
+      const conf = await GetConfig();
+      setGoldThreshold(conf.search.min_loot_gold);
+      setElixirThreshold(conf.search.min_loot_elixir);
+      setDeThreshold(conf.search.min_loot_de);
+    } catch (err) {
+      console.error('Apply loot tuning failed:', err);
+    } finally {
+      setAutotuneBusy(false);
+    }
+  }, []);
+
+  const handleResetAutoLoot = useCallback(async () => {
+    setAutotuneBusy(true);
+    try {
+      setAutotune(await ResetLootAutotune());
+    } catch (err) {
+      console.error('Reset loot tuning failed:', err);
+    } finally {
+      setAutotuneBusy(false);
+    }
+  }, []);
+
   const finishLaunch = useCallback(() => {
     try {
       localStorage.setItem('launchSetupDone', '1');
@@ -814,12 +876,14 @@ function App() {
         upgrades.resources,
         upgrades.traps,
         upgrades.wallBuilder,
+        upgrades.lab,
+        upgrades.labMode,
+        upgrades.pets,
       );
-      await SaveLaunchSettings(tuning.minGold, tuning.minElixir, tuning.minDark, tuning.dryRun);
+      await SaveLaunchSettings(tuning.minGold, tuning.minElixir, tuning.minDark);
       setGoldThreshold(tuning.minGold);
       setElixirThreshold(tuning.minElixir);
       setDeThreshold(tuning.minDark);
-      setDryRun(tuning.dryRun);
       setAutoBuilders(upgrades.enabled);
       setUpgradeStrategy(upgrades.mode);
       setUpgradeHeroes(upgrades.heroes);
@@ -829,12 +893,16 @@ function App() {
       setUpgradeTraps(upgrades.traps);
       setUpgradeWalls(upgrades.wallBuilder);
       setReserveBuilders(upgrades.wallBuilder ? 1 : 0);
+      setAutoLab(upgrades.enabled && upgrades.lab);
+      setLabStrategy(upgrades.labMode);
+      setAutoPets(upgrades.enabled && upgrades.pets);
       // Mirror what was written into config.json so the Config form and the
       // Army page agree with the choice immediately.
       const conf = await GetConfig();
       setSelectedStrategy(conf.attack.strategy_file);
       setSearchEnabled(conf.search.enabled);
       await refreshArmyPlans().catch(() => undefined);
+      await loadAutotune();
       finishLaunch();
       setTab('dashboard');
     } catch (err) {
@@ -842,7 +910,7 @@ function App() {
     } finally {
       setLaunchBusy(false);
     }
-  }, [finishLaunch, refreshArmyPlans]);
+  }, [finishLaunch, loadAutotune, refreshArmyPlans]);
 
   const handleManualSetup = useCallback(() => {
     finishLaunch();
@@ -911,6 +979,11 @@ function App() {
       searchEnabled, setSearchEnabled,
       upgradeWalls, setUpgradeWalls,
       stallTimer, setStallTimer,
+      autoLoot: autotune,
+      autoLootBusy: autotuneBusy,
+      onToggleAutoLoot: handleToggleAutoLoot,
+      onApplyAutoLoot: handleApplyAutoLoot,
+      onResetAutoLoot: handleResetAutoLoot,
       armySlot: currentArmySlot,
       onSetArmySlot: handleSetArmySlot,
       autoEnd: currentAutoEnd,
@@ -958,6 +1031,7 @@ function App() {
   }, [
     goldThreshold, elixirThreshold, deThreshold,
     selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd, armyPlans, refreshArmyPlans,
+    autotune, autotuneBusy, handleToggleAutoLoot, handleApplyAutoLoot, handleResetAutoLoot,
     haltGold, haltElixir, haltDE, haltRule, storageThreshold, dumpToWallsBeforeHalt, autoCollect,
     scheduleEnabled, activeHoursStart, activeHoursEnd, sessionDuration, breakDuration, forceStopOnBreak, maxPerHour, maxPerDay,
     autoBuilders, reserveBuilders, upgradeStrategy, upgradeDefenses, upgradeResources, upgradeArmy, upgradeTraps, upgradeHeroes,
@@ -1076,6 +1150,8 @@ function App() {
               onCheckUpdates={handleUpdaterCheck}
               onClearSkip={handleUpdaterClearSkip}
               onOpenUpdateModal={() => setIsUpdateModalOpen(true)}
+              onOpenSetupWizard={() => setLaunchOpen(true)}
+              isBotRunning={isRunning}
             />
           )}
         </div>

@@ -19,6 +19,7 @@ High-performance, lightweight Clash of Clans automation engine written in Go and
 - **Interactive Visual Calibration**: Launch browser-based interactive tools (`make roi-picker`, `make pick-coords`) to drag boxes, crop templates, and calibrate HUD coordinates live on emulator frames.
 - **1-Click In-App Updater**: Automated GitHub Releases integration. Detects new versions, verifies SHA-256 signatures, applies detached hot-swaps, and relaunches with zero manual re-installation.
 - **Headless CLI (`bot_cli`) & Desktop GUI (Wails)**: Run the full bot engine headlessly inside `tmux` for 24/7 background farming (~25–40 MB RSS), or launch the modern React/Wails UI for visual analytics and live control.
+- **Guided First-Run Setup**: Pick an army, an upgrade plan, and loot floors in a three-step wizard. Auto EDrag Rush is recommended by default from its higher estimated loot per hour, adaptive loot takes over the search floors once it has enough samples, and pet upgrades start from the 2026 Phoenix → Spirit Fox → Sneezy queue.
 
 ---
 

@@ -66,12 +66,33 @@ Capture Loop (200ms ticker)
 ### 4. Village Progression & Economy Engine
 
 The Build Overview 2.0 engine (`internal/bot/builder_manager.go`) automates base progression between attacks:
-- **Prioritization Filters**: `heroes_first`, `cheapest_first`, `most_expensive_first`.
+- **Upgrade Plans**: `strategic_rush` (heroes and core offense first) and `max` (most expensive affordable upgrade). Legacy filters `heroes_first`, `cheapest_first`, `most_expensive_first`, and `balanced` still load from old configs.
 - **Builder Allocation Policies**: `reserve_builders` policy ensures an unassigned builder remains available for continuous wall dumps.
 - **Resource Spend Limits**: `max_gold_per_upgrade`, `max_elixir_per_upgrade`, `max_de_per_upgrade`.
 - **Laboratory Research**: Automated category taps (`troops_first`, `spells_first`, `siege_first`) respecting Dark Elixir permissions (`lab_allow_de`).
 - **Hero Pets**: Priority queue ordering across active hero pets.
 - **Wall Upgrades**: Single-resource targeted upgrades (`gold`, `elixir`, `both`) with kinetic inertia dampening and camera repositioning.
+
+### 5. First-Run Setup
+
+The Wails launcher opens a three-step setup wizard (`LaunchSetup.tsx`) on first
+run: **Army → Builders → Settings**. It writes the chosen strategy, upgrade plan,
+and search floors as one launch action, so the player can start from defaults
+without visiting Config.
+
+- **Army**: `GetLaunchOptions` ranks shipped strategies by estimated loot per
+  hour. It uses measured history once a profile has 8+ raids; before that it
+  falls back to placeholders (EDrag 5.8M/hr, Valkyrie 4.9M/hr), which makes
+  Auto EDrag Rush the default recommendation.
+- **Builders**: upgrade engine on/off, `strategic_rush` vs `max`, category
+  filters, the reserve-one-builder-for-walls toggle, laboratory research order,
+  and pet automation. Lab and pets are gated by the engine switch; pet order is
+  read from `pet_priorities` and shown in setup. Fresh and legacy-default
+  installs use the 12-pet 2026 recommendation (Phoenix → Spirit Fox → Sneezy);
+  custom queues are preserved.
+- **Settings**: adaptive loot and manual search floors. Adaptive locks the
+  floor inputs because autotune owns them; dry run remains in Config →
+  Upgrades and is never changed by setup.
 
 ---
 

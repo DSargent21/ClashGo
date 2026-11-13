@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ducky705/ClashGO/internal/autotune"
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/paths"
@@ -59,7 +60,7 @@ type LaunchOptions struct {
 	MinGold       int                `json:"min_gold"`
 	MinElixir     int                `json:"min_elixir"`
 	MinDark       int                `json:"min_dark"`
-	DryRun        bool               `json:"dry_run"`
+	PetPriorities []string           `json:"pet_priorities"`
 }
 
 // placeholderLootPerHour is a stand-in until real numbers exist.
@@ -70,8 +71,8 @@ type LaunchOptions struct {
 // only the first-launch answer, when there is no history at all. Replacing it
 // with telemetry needs no code change here — just raids.
 var placeholderLootPerHour = map[string]int64{
-	"valk":  5_200_000,
-	"edrag": 4_600_000,
+	"edrag": 5_800_000,
+	"valk":  4_900_000,
 }
 
 // launchPitch is the one-line "what is this army" copy.
@@ -92,7 +93,7 @@ func (a *App) GetLaunchOptions() LaunchOptions {
 	history := a.GetAttackHistory()
 
 	options := make([]LaunchArmyOption, 0, len(placeholderLootPerHour))
-	for _, key := range []string{"valk", "edrag"} {
+	for _, key := range []string{"edrag", "valk"} {
 		plan, ok := findPlan(plans, key)
 		if !ok {
 			continue
@@ -126,27 +127,33 @@ func (a *App) GetLaunchOptions() LaunchOptions {
 		options[best].Recommended = true
 	}
 
+	samples := len(lootStore().Samples())
 	return LaunchOptions{
 		Options:       options,
 		AdaptiveLoot:  cfg.Search.AutoLoot,
-		AdaptiveReady: false,
-		Samples:       0,
-		MinSamples:    adaptiveMinSamples,
+		AdaptiveReady: samples >= autotune.DefaultOptions().MinSamples,
+		Samples:       samples,
+		MinSamples:    autotune.DefaultOptions().MinSamples,
 		MaxArmySlots:  maxArmySlots,
 		MinGold:       cfg.Search.MinLootGold,
 		MinElixir:     cfg.Search.MinLootElixir,
 		MinDark:       cfg.Search.MinLootDarkElixir,
-		DryRun:        cfg.Upgrade.DryRun,
+		PetPriorities: launchPetPriorities(cfg.Upgrade.PetPriorities),
 	}
+}
+
+// launchPetPriorities upgrades the old five-pet default to the researched
+// queue without touching a custom order.
+func launchPetPriorities(priorities []string) []string {
+	if len(priorities) == 0 || config.IsLegacyPetOrder(priorities) {
+		return config.DefaultPetPriorities()
+	}
+	return priorities
 }
 
 // maxArmySlots is how many saved-army recipes the game holds. The launch screen
 // offers exactly these, so a slot the player picks is one the game can show.
 const maxArmySlots = 4
-
-// adaptiveMinSamples is the number of searched bases auto-loot needs before it
-// trusts its own numbers. Mirrors internal/autotune's default.
-const adaptiveMinSamples = 40
 
 // planLoadout reads the strategy's optional loadout block, i.e. the army the
 // player has to save into the recipe before the bot can run it.

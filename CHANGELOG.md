@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Guided First-Run Setup** (`web/src/components/LaunchSetup.tsx`, `app_launch.go`):
+  - Three-step wizard (army → builders → settings) with a calm two-pane layout, neutral active navigation, flat sections, and a single gold accent.
+  - Builders step covers lab research order and pet automation alongside building categories and wall reserve; lab and pets follow the engine switch.
+  - Pet queue defaults to the 2026 12-pet order (Phoenix → Spirit Fox → Sneezy → Angry Jelly → Frosty → Diggy → Greedy Raven → Unicorn → Electro Owl → L.A.S.S.I → Mighty Yak → Poison Lizard). The old five-pet default migrates; custom orders are preserved.
+  - Loot-per-hour estimates drive the recommendation; Auto EDrag Rush is the default at 5.8M/hr versus Valkyrie at 4.9M/hr, switching to measured history once the profile has enough raids.
+  - Adaptive loot disables and dims the manual floor inputs; dry run stays in Config → Upgrades.
 - **One-Command Terminal Installer** (`tools/install.sh`, `Makefile`, `.github/workflows/release.yml`, `tests/test_install_sh.sh`):
   - `curl -fsSL …/tools/install.sh | bash` installs the GUI into `/Applications` (or `~/Applications` when not writable), mounts the DMG, swaps bundles with rollback, and strips quarantine — no sudo.
   - `--cli` installs a self-contained `bot_cli` (OpenCV dylibs bundled into `lib/`) into `~/.local/share/clashgo` plus a `~/.local/bin/bot_cli` launcher that pins `CLASHGO_ASSETS_DIR`; user-edited `assets/` survive updates unless `--force` is passed.

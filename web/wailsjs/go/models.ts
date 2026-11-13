@@ -1097,7 +1097,7 @@ export namespace main {
 	    min_gold: number;
 	    min_elixir: number;
 	    min_dark: number;
-	    dry_run: boolean;
+	    pet_priorities: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new LaunchOptions(source);
@@ -1114,7 +1114,7 @@ export namespace main {
 	        this.min_gold = source["min_gold"];
 	        this.min_elixir = source["min_elixir"];
 	        this.min_dark = source["min_dark"];
-	        this.dry_run = source["dry_run"];
+	        this.pet_priorities = source["pet_priorities"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

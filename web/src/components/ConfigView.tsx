@@ -1,6 +1,7 @@
 import React from 'react';
 import { SaveConfig } from '../../wailsjs/go/main/App';
-import { strategyLabel } from '../utils';
+import { main } from '../../wailsjs/go/models';
+import { compactNumber, exactNumber, strategyLabel } from '../utils';
 import Icon, { IconName } from './ui/Icon';
 import { Switch, SwitchRow } from './ui/Switch';
 
@@ -20,6 +21,11 @@ interface ConfigViewProps {
   setUpgradeWalls: (v: boolean) => void;
   stallTimer: number;
   setStallTimer: (v: number) => void;
+  autoLoot: main.AutotuneStatus | null;
+  autoLootBusy: boolean;
+  onToggleAutoLoot: (enabled: boolean) => void;
+  onApplyAutoLoot: () => void;
+  onResetAutoLoot: () => void;
   armySlot: number;
   onSetArmySlot: (slot: number) => void;
   autoEnd: boolean;
@@ -132,6 +138,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   searchEnabled, setSearchEnabled,
   upgradeWalls, setUpgradeWalls,
   stallTimer, setStallTimer,
+  autoLoot, autoLootBusy, onToggleAutoLoot, onApplyAutoLoot, onResetAutoLoot,
   armySlot, onSetArmySlot,
   autoEnd, onSetAutoEnd,
   haltGold, setHaltGold,
@@ -178,8 +185,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   const errorTimerRef = React.useRef<number | null>(null);
 
   const allKnownPets = React.useMemo(() => [
-    'Diggy', 'Unicorn', 'Frosty', 'Phoenix', 'Spirit Fox',
-    'Angry Jelly', 'L.A.S.S.I', 'Electro Owl', 'Mighty Yak', 'Poison Lizard',
+    'Phoenix', 'Spirit Fox', 'Sneezy', 'Angry Jelly', 'Frosty', 'Diggy',
+    'Greedy Raven', 'Unicorn', 'Electro Owl', 'L.A.S.S.I', 'Mighty Yak', 'Poison Lizard',
   ], []);
 
   const movePet = (index: number, direction: 'up' | 'down') => {
@@ -354,7 +361,83 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   })}
                 </div>
 
-                <div className="set-row" style={{ marginTop: 6 }}>
+                <div className="set-row">
+                  <div className="set-label">
+                    <b>Auto loot tuning</b>
+                    <span>
+                      Derive the minimums above from the loot the bot reads on every searched base,
+                      optimising loot per hour. Falls back to your numbers until it has enough data.
+                    </span>
+                  </div>
+                  <div className="set-ctl">
+                    <Switch
+                      checked={autoLoot?.enabled ?? false}
+                      onChange={(v) => void onToggleAutoLoot(v)}
+                      ariaLabel="Auto loot tuning"
+                    />
+                  </div>
+                </div>
+
+                {autoLoot ? (
+                  <div className="autotune" aria-live="polite">
+                    <div className="autotune-head">
+                      <span className={`status-pill ${autoLoot.ready ? 'running' : ''}`.trim()}>
+                        <i />{autoLoot.ready ? 'Tuned' : 'Learning'}
+                      </span>
+                      <span className="muted mono">
+                        {autoLoot.samples}/{autoLoot.recorded} bases read
+                      </span>
+                    </div>
+                    <p className="hint">{autoLoot.reason}</p>
+                    {autoLoot.ready ? (
+                      <div className="autotune-rows">
+                        {autoLoot.advice.map((row) => {
+                          const gain = row.per_hour_now > 0
+                            ? Math.round((row.per_hour_new / row.per_hour_now - 1) * 100)
+                            : 0;
+                          return (
+                            <div key={row.key} className="autotune-row">
+                              <span className="at-label">
+                                {row.label}
+                                {row.changed && gain > 0 ? <em className="at-gain">+{gain}%</em> : null}
+                              </span>
+                              <span className="at-values mono">
+                                <b>{exactNumber(row.suggested)}</b>
+                                <s>{exactNumber(row.current)}</s>
+                              </span>
+                              {row.per_hour_now > 0 ? (
+                                <span className="at-rate mono">
+                                  {compactNumber(Math.round(row.per_hour_new))}/h
+                                </span>
+                              ) : <span className="at-rate" />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    <div className="autotune-actions">
+                      <button
+                        type="button"
+                        className="btn sm primary"
+                        onClick={onApplyAutoLoot}
+                        disabled={!autoLoot.ready || autoLootBusy}
+                      >
+                        Apply suggestion
+                      </button>
+                      <button
+                        type="button"
+                        className="btn sm ghost"
+                        onClick={onResetAutoLoot}
+                        disabled={autoLootBusy}
+                        title="Delete the search history and learn again from the current trophy range"
+                      >
+                        Reset history
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="set-row">
                   <div className="set-label">
                     <b>Attack strategy</b>
                     <span>Saved immediately when changed.</span>

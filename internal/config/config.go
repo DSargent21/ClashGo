@@ -292,6 +292,34 @@ type UpgradeConfig struct {
 	DryRun               bool     `json:"dry_run"`
 }
 
+// DefaultPetPriorities is the upgrade queue for the current pet roster. It
+// front-loads pets that work in most armies: Phoenix for the extra life,
+// Spirit Fox for invisibility, Sneezy and Angry Jelly for air/defense control,
+// then the slower utility pets. Greedy Raven sits ahead of Unicorn because the
+// bot farms: its resource-building damage pays back before queen-walk healing.
+func DefaultPetPriorities() []string {
+	return []string{
+		"Phoenix", "Spirit Fox", "Sneezy", "Angry Jelly", "Frosty", "Diggy",
+		"Greedy Raven", "Unicorn", "Electro Owl", "L.A.S.S.I", "Mighty Yak", "Poison Lizard",
+	}
+}
+
+// IsLegacyPetOrder reports whether a queue is the old five-pet default. The
+// setup wizard uses it to migrate that default without overwriting a custom
+// order.
+func IsLegacyPetOrder(priorities []string) bool {
+	legacy := []string{"Diggy", "Unicorn", "Frosty", "Phoenix", "Spirit Fox"}
+	if len(priorities) != len(legacy) {
+		return false
+	}
+	for i := range legacy {
+		if priorities[i] != legacy[i] {
+			return false
+		}
+	}
+	return true
+}
+
 type Duration struct {
 	time.Duration
 }
@@ -413,7 +441,7 @@ func DefaultConfig() *BotConfig {
 			LabAllowDE:           true,
 			LabPriorities:        []string{"Troops", "Spells", "Siege"},
 			AutoPets:             false,
-			PetPriorities:        []string{"Diggy", "Unicorn", "Frosty", "Phoenix", "Spirit Fox"},
+			PetPriorities:        DefaultPetPriorities(),
 		},
 		Debug: DebugConfig{
 			CaptureDebug:       false,

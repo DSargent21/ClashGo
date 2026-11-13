@@ -78,9 +78,46 @@ available for the Config tab and older config files.
   that hero with books, then move the builder to the next-closest hero.
 - Before max Town Hall, one hero down is enough. At max Town Hall, run as many
   heroes as builders allow.
+- The 2026 rank is Archer Queen → Grand Warden → Royal Champion → Minion Prince
+  → Barbarian King → Dragon Duke. Queen and Warden carry the widest set of
+  armies and have the longest timers; Champion is the next finisher. Prince
+  comes before King for the EDrag/air plan, and Duke last because his level
+  pool is small and hero upgrades are manual anyway.
 
 The bot only chooses the next building row; it does not start hero upgrades
 itself (heroes are not rows in the builder overview).
+
+## Laboratory and pets
+
+Strategic rush also arms the other progression menus during setup:
+
+- **Laboratory**: research runs between builder upgrades. The setup default is
+  `troops_first`, with spells, siege, or cheapest first available in the same
+  step or later in Config.
+- **Hero pets**: pet upgrades follow `pet_priorities`. The setup step shows
+  the active order; reorder it in Config → Lab & Pets.
+
+Default pet queue (2026 roster):
+
+1. Phoenix — extra life; works on every hero.
+2. Spirit Fox — invisibility for Queen/Champion dives.
+3. Sneezy — air support and distraction; strongest for the EDrag plan.
+4. Angry Jelly — forces heroes onto defenses.
+5. Frosty — freeze/distraction support.
+6. Diggy — stun and defense damage.
+7. Greedy Raven — farming value; melts resource buildings.
+8. Unicorn — healing, mainly for Queen walks; lower for EDrag.
+9. Electro Owl — ranged chip damage.
+10. L.A.S.S.I — situational tank.
+11. Mighty Yak — wall damage, low value.
+12. Poison Lizard — situational damage, last.
+
+The old five-pet default (Diggy first) is migrated when setup is applied.
+A custom queue is never reordered.
+
+Both toggles are on by default in setup and are switched off with the upgrade
+engine. They only run while at least one builder is free, so research and pet
+upgrades do not compete with the building queue.
 
 ## Army buildings
 
@@ -130,11 +167,27 @@ Turning the toggle off sets `upgrade_walls: false` and `reserve_builders: 0`.
 ## Where this lives in the app
 
 - Setup: army picker → **Auto upgrades** page (enable, plan, types, wall
-  builder).
+  builder, lab order, pet order) → **Settings** page (adaptive loot and manual
+  loot floors).
 - Config → Upgrades: same plan and categories, plus spend caps, lab, pets, and
-  dry run.
+  dry run. Dry run is never changed by the setup wizard.
+- Adaptive loot owns the floors while it is on; the setup inputs are read-only
+  until it is turned off.
 - Config file: `upgrade.upgrade_strategy`, `upgrade.upgrade_walls`,
-  `upgrade.reserve_builders`, and the `upgrade_*` category booleans.
+  `upgrade.reserve_builders`, `upgrade.pet_priorities`, and the `upgrade_*`
+  category booleans.
 
 The bot never upgrades the Town Hall, places buildings, or spends magic items.
+
+## Priority research
+
+Pet order checked 13 November 2026 against:
+
+- [Base Drop — Best Pets for Every Hero (2026)](https://cocbasedrop.com/blog/best-pets-every-hero-coc-2026-tier-list)
+- [Blueprint CoC — Pet Upgrade Guide](https://blueprintcoc.com/blogs/clash-of-clans-guides/best-pet-upgrade-guide)
+- [1337wiki — All 12 Pets and Best Pairs](https://clash-of-clans.1337wiki.com/pets)
+
+Hero order checked against [TrophyCoach — Which Hero to Upgrade First (2026)](https://trophycoach.com/clash-of-clans/guides/hero-upgrade-order).
+No community list agrees exactly; the app picks a farming/air-leaning order and
+keeps custom queues untouched.
 Those stay manual; this automation only picks the next builder row.

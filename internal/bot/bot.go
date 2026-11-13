@@ -17,6 +17,7 @@ import (
 
 	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/attack"
+	"github.com/Ducky705/ClashGO/internal/autotune"
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/paths"
@@ -35,6 +36,15 @@ type Bot struct {
 	templates  *game.TemplateStore
 	recognizer *game.Recognizer
 	cfg        *config.BotConfig
+
+	// samples is the loot log behind search.auto_loot (internal/autotune).
+	// Every searched base appends one line; the gate reads the recommendation
+	// back out of it. Writing is best-effort and never interrupts an attack.
+	samples           *autotune.Store
+	sampleWriteFailed atomic.Bool
+	// autoLootLast is the last tuned threshold set the log announced, so a
+	// change is reported once instead of on every base.
+	autoLootLast autotune.Thresholds
 
 	classify func(gocv.Mat) (game.GameState, int)
 
@@ -78,11 +88,7 @@ type Bot struct {
 	hudHealLast   time.Time
 	// armyEmpty latches the "Train an army before attacking!" panel seen by
 	// pressPanelAction, so the attack cycle idles instead of restarting.
-	armyEmpty   atomic.Bool
-	armyEmptyAt atomic.Int64 // UnixNano of the last empty-army latch
-	// armyTrainAt is the UnixNano of the last saved-recipe USE press, so the
-	// empty-army recovery queues once per cooldown instead of once per poll.
-	armyTrainAt atomic.Int64
+	armyEmpty atomic.Bool
 	// strategyArmyMissing latches the deploy refusal that means "this strategy's
 	// core troops are not on the bar". Without it the attack cycle re-enters a
 	// battle, refuses again and returns home roughly every 50s (observed live
@@ -433,6 +439,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		templates:         templates,
 		recognizer:        recognizer,
 		cfg:               cfg,
+		samples:           autotune.Open(paths.ResolveConfig("search_samples.jsonl")),
 		attackExec:        attackExec,
 		ctx:               ctx,
 		cancel:            cancel,
@@ -1500,6 +1507,13 @@ var (
 	attackButtonWarmUpper = gocv.NewScalar(160, 230, 255, 0)
 )
 
+// emptyArmyIdle is how long the cycle idles when the camps hold nothing.
+// This bot does not train: the army comes from the saved-recipe slot the
+// strategy names (army_slot), so an empty army means the slot was never armed
+// in-game. Idling keeps the runner alive without restarting the game or
+// tapping anything the user did not ask for.
+const emptyArmyIdle = 60 * time.Second
+
 // emptyArmyPanel reports whether the Start Attack dialog is the empty-army
 // variant ("Train an army before attacking!" + green EDIT ARMY button).
 // Probes the green button by normalized position, measured on a live
@@ -1557,121 +1571,6 @@ func (b *Bot) awaitEmptyArmyPanel(d time.Duration) bool {
 		}
 		time.Sleep(400 * time.Millisecond)
 	}
-}
-
-// Empty-army recovery.
-//
-// The Start Attack panel's "Train an army before attacking!" means the camps
-// hold nothing, and no attack step can fix that: this bot has no trainer of its
-// own (docs/ROADMAP.md). The old answer was a flat 60s sleep and the same error
-// every cycle, plus a game restart ten minutes in that could not conjure a
-// single troop — to a user watching the screen, a stuck bot.
-//
-// The game has the action: the army sheet's Saved Recipes tab re-queues a whole
-// army with one USE press (measured live 2026-11-11 at 1024x768: EDIT ARMY ->
-// Saved Recipes -> USE sets the recipe and refills the barracks). So the cycle
-// presses that once per cooldown, waits for the camps in short polls with
-// honest progress logs, and stops the run at the budget instead of idling on.
-// Only recipes on the sheet's first three rows can be pressed; a deeper recipe
-// is reported instead of guessed at.
-const (
-	armyWaitBudget    = 10 * time.Minute
-	armyPollInterval  = 15 * time.Second
-	armyTrainCooldown = 2 * time.Minute
-)
-
-// armyRecipeRowsVisible is how many saved-recipe rows fit on the sheet: the
-// list starts at y 0.333 and steps 0.222, so row 4 would land at y 0.999,
-// below the frame. Queueing a recipe the bot cannot see is not an option (it
-// would press whatever row is there instead), so only the visible rows are
-// supported and the rest are reported rather than guessed at.
-const armyRecipeRowsVisible = 3
-
-// armyRecipeRow is the USE button of a visible saved-recipe row.
-func armyRecipeRow(slot int) ([2]float64, bool) {
-	if slot < 1 || slot > armyRecipeRowsVisible {
-		return [2]float64{}, false
-	}
-	return [2]float64{0.875, 0.333 + 0.222*float64(slot-1)}, true
-}
-
-// armySheetPoints is the measured geometry of the queue action, as frame
-// fractions so it survives a display-scale change: the empty-army panel's EDIT
-// ARMY button, the sheet's Saved Recipes tab, the USE button of recipe `slot`,
-// and the sheet's close button. ok is false when that recipe is not on screen.
-func armySheetPoints(slot int) (editArmy, tab, use, closeBtn [2]float64, ok bool) {
-	editArmy = [2]float64{0.319, 0.730} // emptyArmyPanel's green button, same probe
-	tab = [2]float64{0.523, 0.229}
-	closeBtn = [2]float64{0.921, 0.219}
-	use, ok = armyRecipeRow(slot)
-	return
-}
-
-// queueSavedArmy drives EDIT ARMY -> Saved Recipes -> USE -> close, i.e. the
-// game's own "put my army back in the barracks". It reports only that the taps
-// were delivered; whether troops arrive is decided by the caller's wait.
-func (b *Bot) queueSavedArmy() bool {
-	w, h := b.cal.PhysicalW, b.cal.PhysicalH
-	if w <= 0 || h <= 0 {
-		return false
-	}
-	editArmy, tab, use, closeBtn, visible := armySheetPoints(b.armySlot)
-	if !visible {
-		b.logger.Warn().
-			Int("army_slot", b.armySlot).
-			Int("visible_rows", armyRecipeRowsVisible).
-			Msg("empty army: this recipe sits below the saved-recipe list's visible rows; queue it in-game, the bot will not press a row it cannot see")
-		return false
-	}
-	tap := func(p [2]float64, d time.Duration) bool {
-		if err := b.client.TapRandomized(int(p[0]*float64(w)), int(p[1]*float64(h))); err != nil {
-			return false
-		}
-		b.client.JitteredSleep(d)
-		return true
-	}
-	if !tap(editArmy, 1600*time.Millisecond) {
-		return false
-	}
-	if !tap(tab, 1200*time.Millisecond) {
-		return false
-	}
-	if !tap(use, 1500*time.Millisecond) {
-		return false
-	}
-	_ = tap(closeBtn, 900*time.Millisecond)
-	return true
-}
-
-// recoverEmptyArmy is what every empty-army branch calls: queue the saved
-// recipe (rate-limited), wait in short polls while saying what it is waiting
-// for, and stop the run at the budget. It never restarts the game.
-func (b *Bot) recoverEmptyArmy() {
-	emptySince := time.Unix(0, b.armyEmptyAt.Load())
-	if time.Since(time.Unix(0, b.armyTrainAt.Load())) >= armyTrainCooldown {
-		b.armyTrainAt.Store(time.Now().UnixNano())
-		if b.queueSavedArmy() {
-			b.logger.Info().
-				Int("army_slot", b.armySlot).
-				Msg("empty army: queued the saved recipe (EDIT ARMY -> Saved Recipes -> USE); waiting for the camps")
-			sleepCtx(b.ctx, armyPollInterval)
-			return
-		}
-		b.logger.Warn().Msg("empty army: the saved-recipe sheet did not take the taps; waiting for the camps")
-	}
-	if waited := time.Since(emptySince); waited >= armyWaitBudget {
-		b.logger.Error().
-			Dur("waited", waited.Round(time.Second)).
-			Dur("budget", armyWaitBudget).
-			Msg("empty army: still no troops after queueing the saved recipe; stopping the run instead of idling forever (train in-game or fix the recipe, then start again)")
-		b.cancel()
-		return
-	}
-	b.logger.Info().
-		Dur("waited", time.Since(emptySince).Round(time.Second)).
-		Dur("budget", armyWaitBudget).
-		Msg("empty army: waiting for the camps to finish training")
-	sleepCtx(b.ctx, armyPollInterval)
 }
 
 // sleepCtx waits for d or until ctx is cancelled.
@@ -2013,10 +1912,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			// game alone and let the next cycle re-check.
 			// An empty army is not a broken UI, so it never justifies a restart,
 			// however long it lasts: restarting cannot train troops, and it costs
-			// a splash plus the mandatory zoom-out. recoverEmptyArmy already
-			// queued the saved recipe and logged why nothing is happening.
+			// a splash plus the mandatory zoom-out. The empty-army branch above
+			// already logged why nothing is happening.
 			if b.armyEmpty.Load() {
-				b.logger.Error().Msg("no troops trained; not restarting the game — the saved recipe is queued, the bot resumes as soon as troops exist")
+				b.logger.Error().Msg("no troops trained; not restarting the game — train an army in-game (or pick a slot that holds one), then start again")
 				return
 			}
 			b.logger.Warn().Msg("attack click sequence failed, restarting game to recover...")
@@ -2036,6 +1935,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	var searchSkips int = 0
 
 	searchStart := time.Now()
+	lastLootSample := searchStart
 	for {
 		// Stop check: a user Stop must abort the search loop even
 		// though CaptureToMat below would silently reconnect a closed
@@ -2134,9 +2034,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				Int("de", loot.DarkElixir).
 				Msg("loot detected")
 
-			meetsReq = loot.Gold >= b.cfg.Search.MinLootGold &&
-				loot.Elixir >= b.cfg.Search.MinLootElixir &&
-				loot.DarkElixir >= b.cfg.Search.MinLootDarkElixir
+			minGold, minElixir, minDE := b.searchThresholds()
+			meetsReq = loot.Gold >= minGold &&
+				loot.Elixir >= minElixir &&
+				loot.DarkElixir >= minDE
 
 			if !meetsReq && b.cfg.Search.AttackIfDarkElixirGT > 0 && loot.DarkElixir >= b.cfg.Search.AttackIfDarkElixirGT {
 				b.logger.Info().
@@ -2144,6 +2045,14 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 					Int("threshold", b.cfg.Search.AttackIfDarkElixirGT).
 					Msg("Dark Elixir threshold met; attacking base")
 				meetsReq = true
+			}
+
+			if lootErr == nil {
+				// One sample per base the recognizer could actually read, whether
+				// it was skipped or attacked: both outcomes are what the threshold
+				// is tuned against.
+				b.recordLootSample(loot, meetsReq, time.Since(lastLootSample))
+				lastLootSample = time.Now()
 			}
 		}
 
@@ -2660,9 +2569,8 @@ func (b *Bot) clickSequence() bool {
 		// before the Find a Match search runs, and without the latch the
 		// escalation path saw armyEmpty=false and restarted the game anyway.
 		b.armyEmpty.Store(true)
-		b.armyEmptyAt.Store(time.Now().UnixNano())
-		b.logger.Error().Msg("no troops trained: the Start Attack panel says \"Train an army before attacking!\"; queueing the saved recipe and waiting for the camps")
-		b.recoverEmptyArmy()
+		b.logger.Error().Msg("no troops trained: the Start Attack panel says \"Train an army before attacking!\"; idling until troops exist (train in-game, or pick a slot that holds them)")
+		sleepCtx(b.ctx, emptyArmyIdle)
 		return false
 	}
 
@@ -2679,7 +2587,7 @@ func (b *Bot) clickSequence() bool {
 		_, menuUp := b.pressPanelAction("Find Match", attackMenuActionRegion, 8*time.Second)
 		if !menuUp {
 			if b.armyEmpty.Load() {
-				b.recoverEmptyArmy()
+				sleepCtx(b.ctx, emptyArmyIdle)
 				return false
 			}
 			b.logger.Warn().Msg("attack menu did not open after tapping Attack; clearing whatever swallowed " +
@@ -2694,7 +2602,7 @@ func (b *Bot) clickSequence() bool {
 			// ARMY button is what the Find a Match search keeps finding), so
 			// idle instead of escalating to a game restart.
 			if b.armyEmpty.Load() {
-				b.recoverEmptyArmy()
+				sleepCtx(b.ctx, emptyArmyIdle)
 				return false
 			}
 			b.logger.Warn().Msg("could not locate the attack menu's Find a Match button in the live frame")
@@ -2864,7 +2772,6 @@ func (b *Bot) pressPanelAction(step string, region [4]float64, timeout time.Dura
 			if step == "Find Match" && emptyArmyPanel(screen) {
 				screen.Close()
 				b.armyEmpty.Store(true)
-				b.armyEmptyAt.Store(time.Now().UnixNano())
 				b.logger.Error().Msg("no troops trained: the Start Attack panel shows \"Train an army before attacking!\"; not tapping its EDIT ARMY button as Find Match")
 				return vision.ActionButton{}, false
 			}
@@ -3830,4 +3737,48 @@ func (a *adbLogAdapter) WithFields(fields map[string]any) adb.Logger {
 
 func init() {
 	runtime.GOMAXPROCS(0)
+}
+
+// searchThresholds returns the minimum loot the next base must offer.
+//
+// With search.auto_loot enabled and enough history, the minimums come from
+// internal/autotune — the loot-per-hour optimum for the distribution the game
+// is currently serving. Until then, and whenever auto mode is off, the manual
+// config values are used unchanged, so the gate never silently weakens.
+func (b *Bot) searchThresholds() (gold, elixir, de int) {
+	gold, elixir, de = b.cfg.Search.MinLootGold, b.cfg.Search.MinLootElixir, b.cfg.Search.MinLootDarkElixir
+	if !b.cfg.Search.AutoLoot || b.samples == nil {
+		return gold, elixir, de
+	}
+
+	rec := autotune.Recommend(b.samples.Samples(),
+		autotune.Thresholds{Gold: gold, Elixir: elixir, DE: de},
+		autotune.DefaultOptions())
+	if !rec.Ready {
+		return gold, elixir, de
+	}
+
+	if rec.Thresholds != b.autoLootLast {
+		b.logger.Info().
+			Int("gold", rec.Thresholds.Gold).
+			Int("elixir", rec.Thresholds.Elixir).
+			Int("de", rec.Thresholds.DE).
+			Int("samples", rec.Samples).
+			Msg("auto loot: thresholds tuned from searched bases")
+		b.autoLootLast = rec.Thresholds
+	}
+	return rec.Thresholds.Gold, rec.Thresholds.Elixir, rec.Thresholds.DE
+}
+
+// recordLootSample appends one searched base to the tuning log. Both outcomes
+// are recorded: a base the gate skipped is as much evidence about the loot
+// distribution as one it attacked.
+func (b *Bot) recordLootSample(loot game.Resources, taken bool, gap time.Duration) {
+	if b.samples == nil {
+		return
+	}
+	sample := autotune.NewSample(time.Now(), loot.Gold, loot.Elixir, loot.DarkElixir, taken, gap)
+	if err := b.samples.Append(sample); err != nil && !b.sampleWriteFailed.Swap(true) {
+		b.logger.Warn().Err(err).Msg("loot tuning sample could not be written; continuing without it")
+	}
 }

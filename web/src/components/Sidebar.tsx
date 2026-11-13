@@ -20,7 +20,7 @@ interface NavItem {
 
 const OVERVIEW: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
-  { id: 'army', label: 'Army', icon: 'layers' },
+  { id: 'army', label: 'Army', icon: 'swords' },
   { id: 'analytics', label: 'Analytics', icon: 'chart' },
 ];
 

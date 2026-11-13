@@ -6,6 +6,8 @@ import {accounts} from '../models';
 import {bot} from '../models';
 import {config} from '../models';
 
+export function ApplyLootAutotune():Promise<main.AutotuneStatus>;
+
 export function ApplyUpdate():Promise<void>;
 
 export function CheckForUpdate():Promise<updater.Status>;
@@ -34,6 +36,8 @@ export function GetLaunchOptions():Promise<main.LaunchOptions>;
 
 export function GetLogs():Promise<Array<string>>;
 
+export function GetLootAutotune():Promise<main.AutotuneStatus>;
+
 export function GetStats():Promise<bot.BotStats>;
 
 export function GetStrategies():Promise<Array<string>>;
@@ -46,15 +50,19 @@ export function IsRunning():Promise<boolean>;
 
 export function ResetAccountUsage(arg1:string):Promise<void>;
 
+export function ResetLootAutotune():Promise<main.AutotuneStatus>;
+
 export function ResetStats():Promise<void>;
 
 export function SaveConfig(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:string,arg6:boolean,arg7:number):Promise<void>;
 
 export function SaveFullConfig(arg1:config.BotConfig):Promise<void>;
 
-export function SaveLaunchSettings(arg1:number,arg2:number,arg3:number,arg4:boolean):Promise<void>;
+export function SaveLaunchSettings(arg1:number,arg2:number,arg3:number):Promise<void>;
 
-export function SaveUpgradeSetup(arg1:boolean,arg2:string,arg3:boolean,arg4:boolean,arg5:boolean,arg6:boolean,arg7:boolean,arg8:boolean):Promise<void>;
+export function SaveUpgradeSetup(arg1:boolean,arg2:string,arg3:boolean,arg4:boolean,arg5:boolean,arg6:boolean,arg7:boolean,arg8:boolean,arg9:boolean,arg10:string,arg11:boolean):Promise<void>;
+
+export function SetAutoLoot(arg1:boolean):Promise<void>;
 
 export function SetAutoUpgradeConfig(arg1:boolean,arg2:number,arg3:string,arg4:boolean,arg5:boolean,arg6:boolean,arg7:boolean,arg8:boolean,arg9:number,arg10:number,arg11:number,arg12:boolean,arg13:string,arg14:boolean,arg15:boolean,arg16:Array<string>,arg17:string,arg18:number,arg19:number,arg20:boolean):Promise<void>;
 
@@ -75,5 +83,7 @@ export function StartBot(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:b
 export function StopBot():Promise<main.BotStatus>;
 
 export function SwitchAccount(arg1:string,arg2:boolean):Promise<main.SwitchResult>;
+
+export function TestDeviceMenu(arg1:string):Promise<void>;
 
 export function UpdateAccount(arg1:string,arg2:accounts.Input):Promise<main.AccountView>;

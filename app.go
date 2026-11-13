@@ -1014,11 +1014,16 @@ func (a *App) SetAutoUpgradeConfig(
 // SaveUpgradeSetup applies the launch screen's auto-upgrade page: whether
 // builders run, the plan (strategic rush or max), which categories may be
 // upgraded, and whether one builder is reserved for wall dumping.
-func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, resources, traps, wallBuilder bool) error {
+func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, resources, traps, wallBuilder bool, autoLab bool, labStrategy string, autoPets bool) error {
 	switch mode {
 	case "strategic_rush", "max", "heroes_first", "cheapest_first", "most_expensive_first", "balanced":
 	default:
 		return fmt.Errorf("unknown upgrade mode %q", mode)
+	}
+	switch labStrategy {
+	case "", "cheapest_first", "troops_first", "spells_first", "siege_first":
+	default:
+		return fmt.Errorf("unknown lab strategy %q", labStrategy)
 	}
 
 	a.mu.Lock()
@@ -1032,6 +1037,14 @@ func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, r
 	cfg.Upgrade.UpgradeDefenses = defenses
 	cfg.Upgrade.UpgradeResources = resources
 	cfg.Upgrade.UpgradeTraps = traps
+	cfg.Upgrade.AutoLab = auto && autoLab
+	if labStrategy != "" {
+		cfg.Upgrade.LabStrategy = labStrategy
+	}
+	cfg.Upgrade.AutoPets = auto && autoPets
+	if len(cfg.Upgrade.PetPriorities) == 0 || config.IsLegacyPetOrder(cfg.Upgrade.PetPriorities) {
+		cfg.Upgrade.PetPriorities = config.DefaultPetPriorities()
+	}
 	if wallBuilder {
 		cfg.Upgrade.UpgradeWalls = true
 		cfg.Upgrade.ReserveBuilders = 1
@@ -1049,10 +1062,10 @@ func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, r
 	return writeConfigFile(cfg)
 }
 
-// SaveLaunchSettings applies the setup wizard's loot step: search floors and
-// the dry-run safety switch. Separate from SaveConfig so it cannot overwrite
-// the army or wall choices made in the earlier steps.
-func (a *App) SaveLaunchSettings(minGold, minElixir, minDark int, dryRun bool) error {
+// SaveLaunchSettings applies the setup wizard's loot step: search floors.
+// Separate from SaveConfig so it cannot overwrite the army or wall choices
+// made in the earlier steps.
+func (a *App) SaveLaunchSettings(minGold, minElixir, minDark int) error {
 	if minGold < 0 || minElixir < 0 || minDark < 0 {
 		return fmt.Errorf("loot floors must be >= 0")
 	}
@@ -1063,7 +1076,6 @@ func (a *App) SaveLaunchSettings(minGold, minElixir, minDark int, dryRun bool) e
 	cfg.Search.MinLootGold = minGold
 	cfg.Search.MinLootElixir = minElixir
 	cfg.Search.MinLootDarkElixir = minDark
-	cfg.Upgrade.DryRun = dryRun
 
 	if a.bot != nil {
 		a.bot.UpdateConfig(cfg)
