@@ -58,7 +58,7 @@ Defined on `:root` (dark) and `html:not(.dark)` (light).
 | `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#A9791C` / `#9C3FB4` / `#6351C9` | Resource series |
 | `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#1E8E5A` / `#C62F35` / `#2277B8` | Status |
 | `--r` / `--r-sm` / `--r-xs` | `12px` / `8px` / `6px` | same | Cards / controls / chips |
-| `--sidebar-w` / `--rail-w` / `--topbar-h` | `232px` / `68px` / `56px` | same | Frame |
+| `--sidebar-w` / `--rail-w` / `--topbar-h` | `232px` / `84px` / `56px` | same | Frame |
 | `--font` / `--mono` | Inter / JetBrains Mono | same | Typography |
 
 Type scale: body 14/1.55; page title 22/600; card title 14/600; micro-label
@@ -69,8 +69,8 @@ Spacing is 4px based with 8/12/16/24 gaps; page padding 28px; content max
 
 ## Frame
 
-- Fixed sidebar: 28px draggable strip reserved for macOS traffic lights, brand,
-  grouped nav, and one Start/Stop control. Starts as a 68px rail
+- Fixed sidebar: 38px draggable strip reserved for macOS traffic lights, brand,
+  grouped nav, and one Start/Stop control. Starts as an 84px rail
   below 1150px on first run; the top-bar toggle or Cmd/Ctrl+B collapses and
   expands it at any width. The preference persists.
 - Sticky 56px top bar: breadcrumb, ADB status pill, updater chip, theme toggle,

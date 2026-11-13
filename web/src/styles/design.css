@@ -71,7 +71,7 @@
   --pill: 999px;
 
   --sidebar-w: 232px;
-  --rail-w: 68px;
+  --rail-w: 84px;
   --topbar-h: 56px;
 
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -205,13 +205,14 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   padding: 0 12px 14px;
   background: var(--surface);
   border-right: 1px solid var(--border);
-  transition: width .2s var(--ease);
+  overflow: hidden;
+  transition: width .2s var(--ease), padding .2s var(--ease);
 }
 
 .sidebar.collapsed { width: var(--rail-w); padding: 0 10px 14px; }
 
 .side-drag {
-  height: 28px;
+  height: 38px;
   flex: none;
 }
 
@@ -223,6 +224,7 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   margin-bottom: 12px;
   border-bottom: 1px solid var(--border);
   min-width: 0;
+  transition: padding-left .2s var(--ease);
 }
 
 .brand-mark {
@@ -244,7 +246,12 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   filter: var(--logo-filter);
 }
 
-.brand-text { min-width: 0; }
+.brand-text {
+  min-width: 0;
+  max-width: 200px;
+  overflow: hidden;
+  transition: max-width .2s var(--ease), opacity .1s ease .06s;
+}
 .brand-text b {
   display: block;
   font-size: 13.5px;
@@ -259,8 +266,14 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   white-space: nowrap;
 }
 
-.sidebar.collapsed .brand { justify-content: center; padding: 2px 0 14px; }
-.sidebar.collapsed .brand-text { display: none; }
+/* Collapse is animated, not switched: text fades and clips while the rail
+   narrows, and the brand tile glides to the centre of the rail. */
+.sidebar.collapsed .brand { padding-left: 15px; }
+.sidebar.collapsed .brand-text {
+  max-width: 0;
+  opacity: 0;
+  transition: max-width .2s var(--ease), opacity .08s ease;
+}
 
 .side-nav {
   flex: 1;
@@ -274,11 +287,14 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
 
 .nav-group {
   padding: 12px 10px 5px;
+  max-height: 36px;
+  overflow: hidden;
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: .08em;
   text-transform: uppercase;
   color: var(--text-faint);
+  transition: max-height .2s var(--ease), padding .2s var(--ease), opacity .1s ease .06s;
 }
 
 .nav-btn {
@@ -294,18 +310,37 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   font-size: 13px;
   font-weight: 500;
   text-align: left;
-  transition: background .15s, color .15s;
+  transition: background .15s, color .15s, padding .2s var(--ease);
 }
 
 .nav-btn svg { flex: none; }
 .nav-btn:hover { background: var(--raised); color: var(--text); }
 .nav-btn.active { background: var(--overlay); color: var(--text); }
 .nav-btn.active svg { color: var(--accent); }
-.nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-label {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: max-width .2s var(--ease), opacity .1s ease .06s;
+}
 
-.sidebar.collapsed .nav-group { display: none; }
-.sidebar.collapsed .nav-btn { justify-content: center; padding: 0; }
-.sidebar.collapsed .nav-label { display: none; }
+.sidebar.collapsed .nav-group {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  transition: max-height .2s var(--ease), padding .2s var(--ease), opacity .08s ease;
+}
+/* Same icon position in both states (rail centre), reached by animating the
+   button's inset rather than snapping justify-content. */
+.sidebar.collapsed .nav-btn { padding: 0 10px 0 23.5px; }
+.sidebar.collapsed .nav-label {
+  max-width: 0;
+  opacity: 0;
+  transition: max-width .2s var(--ease), opacity .08s ease;
+}
 
 .side-foot {
   margin-top: auto;
@@ -370,7 +405,13 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   border: 1px solid var(--border);
   font-size: 12px;
   font-weight: 600;
-  transition: background .15s, border-color .15s, filter .15s;
+  transition: background .15s, border-color .15s, filter .15s, gap .2s var(--ease);
+}
+.engine-power span {
+  max-width: 120px;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: max-width .2s var(--ease), opacity .1s ease .06s;
 }
 .engine-power.start {
   border-color: rgba(227, 179, 65, .32);
@@ -384,8 +425,12 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
 }
 .engine-power:hover { filter: brightness(1.08); }
 
-.sidebar.collapsed .engine-power { padding: 0; }
-.sidebar.collapsed .engine-power span { display: none; }
+.sidebar.collapsed .engine-power { padding: 0; gap: 0; }
+.sidebar.collapsed .engine-power span {
+  max-width: 0;
+  opacity: 0;
+  transition: max-width .2s var(--ease), opacity .08s ease;
+}
 
 .main {
   flex: 1;
