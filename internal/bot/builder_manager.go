@@ -124,6 +124,14 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 
 	k := bm.cal.DisplayScale()
 
+	// Align the game's own filter popup with the configured categories before
+	// reading rows: the menu otherwise shows whatever the user left selected.
+	if bm.cfg.AutoBuilders {
+		if err := bm.ApplyBuildingInGameFilter(); err != nil {
+			bm.logger.Warn().Err(err).Msg("could not set build menu filters; using the menu as-is")
+		}
+	}
+
 	// Capture frame to inspect tab counters and suggested items
 	stats := bm.inspectMenuFrame()
 
@@ -178,15 +186,12 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 	return nil
 }
 
-func (bm *BuilderManager) executeBuildingUpgrade(stats BuilderOverviewStats, k float64) {
-	bm.logger.Info().Str("strategy", bm.cfg.UpgradeStrategy).Msg("selecting best building upgrade")
-
-	// Determine target item to tap
-	tapPt := image.Pt(int(706*k), int(309*k)) // default row 1: ~(800, 350)
-	selectedName := "Suggested Row 1"
-
-	var eligible []UpgradeItem
-	for _, it := range stats.Items {
+// selectBuildingUpgrade applies the category toggles and per-currency spend
+// caps, then orders the survivors by the configured strategy. Split out from
+// the tap sequence so the menu filters can be tested without a device.
+func (bm *BuilderManager) selectBuildingUpgrade(items []UpgradeItem) (UpgradeItem, bool) {
+	eligible := make([]UpgradeItem, 0, len(items))
+	for _, it := range items {
 		if !bm.isCategoryAllowed(it.Category) {
 			continue
 		}
@@ -201,10 +206,8 @@ func (bm *BuilderManager) executeBuildingUpgrade(stats BuilderOverviewStats, k f
 		}
 		eligible = append(eligible, it)
 	}
-
 	if len(eligible) == 0 {
-		bm.logger.Info().Msg("no eligible building upgrades found matching filters; skipping building upgrade")
-		return
+		return UpgradeItem{}, false
 	}
 
 	best := eligible[0]
@@ -229,8 +232,23 @@ func (bm *BuilderManager) executeBuildingUpgrade(stats BuilderOverviewStats, k f
 			}
 		}
 	}
-	tapPt = best.Region.Center()
-	selectedName = best.Name
+	return best, true
+}
+
+func (bm *BuilderManager) executeBuildingUpgrade(stats BuilderOverviewStats, k float64) {
+	bm.logger.Info().Str("strategy", bm.cfg.UpgradeStrategy).Msg("selecting best building upgrade")
+
+	best, ok := bm.selectBuildingUpgrade(stats.Items)
+	if !ok {
+		bm.logger.Info().Msg("no eligible building upgrades found matching filters; skipping building upgrade")
+		return
+	}
+	if best.Region.W <= 0 || best.Region.H <= 0 {
+		bm.logger.Warn().Str("item", best.Name).Msg("parsed upgrade item has no tap region; skipping instead of tapping")
+		return
+	}
+	tapPt := best.Region.Center()
+	selectedName := best.Name
 
 	bm.logger.Info().Str("item", selectedName).Int("x", tapPt.X).Int("y", tapPt.Y).Msg("tapping upgrade item")
 	_ = bm.client.Tap(tapPt.X, tapPt.Y)
@@ -274,6 +292,223 @@ func (bm *BuilderManager) executeBuildingUpgrade(stats BuilderOverviewStats, k f
 
 	// Re-open overview menu
 	_ = bm.OpenMenu()
+}
+
+// filterPopupPoint converts a fraction of the live screen into a tap point.
+// The filter popup is laid out against the full frame, so ratios keep it usable
+// at the resolutions the bot supports.
+func filterPopupPoint(cal *game.Calibration, fx, fy float64) image.Point {
+	if cal == nil || cal.PhysicalW <= 0 || cal.PhysicalH <= 0 {
+		return image.Point{}
+	}
+	return image.Pt(int(fx*float64(cal.PhysicalW)), int(fy*float64(cal.PhysicalH)))
+}
+
+// menuButtonSelected reports whether a filter-popup button is drawn in the
+// selected (gold) style. It samples the top-inside strip of the button, above
+// the label: selected fill there is bright gold (live BGR 53,166,219), while an
+// unselected button is brown with B≈76. Sampling the label row or the area
+// above the button both read wrong (white glyphs / popup background).
+func menuButtonSelected(m gocv.Mat, cx, cy int) bool {
+	if m.Empty() || cx <= 0 || cy <= 0 {
+		return false
+	}
+	x1, y1 := cx-15, cy-9
+	x2, y2 := cx+15, cy-3
+	if x1 < 0 {
+		x1 = 0
+	}
+	if y1 < 0 {
+		y1 = 0
+	}
+	if x2 > m.Cols() {
+		x2 = m.Cols()
+	}
+	if y2 > m.Rows() {
+		y2 = m.Rows()
+	}
+	if x2 <= x1 || y2 <= y1 {
+		return false
+	}
+	roi := m.Region(image.Rect(x1, y1, x2, y2))
+	defer roi.Close()
+	mask := gocv.NewMat()
+	defer mask.Close()
+	if err := gocv.InRangeWithScalar(roi, gocv.NewScalar(0, 135, 185, 0), gocv.NewScalar(110, 230, 255, 0), &mask); err != nil {
+		return false
+	}
+	area := roi.Cols() * roi.Rows()
+	if area == 0 {
+		return false
+	}
+	return float64(gocv.CountNonZero(mask))/float64(area) > 0.35
+}
+
+// filterPopupOpen reports whether the filter panel covers the village. The
+// panel's flat brown background is checked well inside its left edge; with the
+// panel closed that point is grass or path and fails the colour bounds.
+func filterPopupOpen(m gocv.Mat, cal *game.Calibration) bool {
+	if m.Empty() || cal == nil {
+		return false
+	}
+	p := filterPopupPoint(cal, 0.166, 0.390)
+	x1, y1 := p.X-6, p.Y-6
+	x2, y2 := p.X+6, p.Y+6
+	if x1 < 0 {
+		x1 = 0
+	}
+	if y1 < 0 {
+		y1 = 0
+	}
+	if x2 > m.Cols() {
+		x2 = m.Cols()
+	}
+	if y2 > m.Rows() {
+		y2 = m.Rows()
+	}
+	if x2 <= x1 || y2 <= y1 {
+		return false
+	}
+	roi := m.Region(image.Rect(x1, y1, x2, y2))
+	defer roi.Close()
+	mask := gocv.NewMat()
+	defer mask.Close()
+	// Panel brown, live sample BGR(62,92,127).
+	if err := gocv.InRangeWithScalar(roi, gocv.NewScalar(45, 70, 100, 0), gocv.NewScalar(85, 115, 150, 0), &mask); err != nil {
+		return false
+	}
+	return float64(gocv.CountNonZero(mask))/float64(roi.Cols()*roi.Rows()) > 0.5
+}
+
+// ApplyBuildingInGameFilter drives the Build Menu's own filter popup so the
+// rows the bot OCRs are the rows it asked for: Type buttons follow the category
+// toggles, currency filters are cleared (a selected currency ANDs with Type and
+// hid every row in a live run), and Sorting follows the priority where it maps.
+func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
+	if bm.cal == nil || bm.client == nil {
+		return errors.New("uninitialized calibration or adb client")
+	}
+
+	// The popup stays open across menu closes, and tapping the sliders while it
+	// is open closes it. Only tap the icon after confirming it is closed, or
+	// every following tap lands on the menu behind.
+	outside := filterPopupPoint(bm.cal, 0.078, 0.521)
+	icon := filterPopupPoint(bm.cal, 0.626, 0.035)
+	screen, err := bm.client.CaptureToMat()
+	if err != nil || screen.Empty() {
+		return fmt.Errorf("capture build menu: %w", err)
+	}
+	if !filterPopupOpen(screen, bm.cal) {
+		bm.logger.Info().Int("x", icon.X).Int("y", icon.Y).Msg("opening build menu filter popup")
+		if err := bm.client.Tap(icon.X, icon.Y); err != nil {
+			screen.Close()
+			return fmt.Errorf("tap filter button: %w", err)
+		}
+		time.Sleep(900 * time.Millisecond)
+		screen.Close()
+		screen, err = bm.client.CaptureToMat()
+		if err != nil || screen.Empty() {
+			return fmt.Errorf("capture filter popup: %w", err)
+		}
+	}
+	defer screen.Close()
+
+	// Type is single-select live: tapping one button selects it and clears the
+	// rest, so asking for several categories means leaving every Type button
+	// unselected and letting the Go-side category filter do the work. Traps have
+	// no Type button; they are listed under Defense, and the Go filter keeps the
+	// two apart again. New/Permanent are only ever cleared: either would hide
+	// rows the bot asked for.
+	want := ""
+	switch {
+	case bm.cfg.UpgradeArmy && !bm.cfg.UpgradeDefenses && !bm.cfg.UpgradeTraps && !bm.cfg.UpgradeHeroes && !bm.cfg.UpgradeResources:
+		want = "army"
+	case (bm.cfg.UpgradeDefenses || bm.cfg.UpgradeTraps) && !bm.cfg.UpgradeArmy && !bm.cfg.UpgradeHeroes && !bm.cfg.UpgradeResources:
+		want = "defense"
+	case bm.cfg.UpgradeHeroes && !bm.cfg.UpgradeArmy && !bm.cfg.UpgradeDefenses && !bm.cfg.UpgradeTraps && !bm.cfg.UpgradeResources:
+		want = "hero"
+	case bm.cfg.UpgradeResources && !bm.cfg.UpgradeArmy && !bm.cfg.UpgradeDefenses && !bm.cfg.UpgradeTraps && !bm.cfg.UpgradeHeroes:
+		want = "resource"
+	}
+	types := []struct {
+		name   string
+		fx, fy float64
+	}{
+		{"army", 0.253, 0.340},
+		{"defense", 0.420, 0.340},
+		{"hero", 0.588, 0.340},
+		{"resource", 0.253, 0.421},
+		{"new", 0.420, 0.421},
+		{"permanent", 0.588, 0.421},
+	}
+	for _, t := range types {
+		p := filterPopupPoint(bm.cal, t.fx, t.fy)
+		selected := menuButtonSelected(screen, p.X, p.Y)
+		bm.logger.Info().Str("type", t.name).Int("x", p.X).Int("y", p.Y).Bool("selected", selected).Str("want", want).Msg("build menu type button state")
+		if want == "" {
+			// Clear whatever single Type is selected; one tap toggles it off.
+			if selected {
+				bm.logger.Info().Str("type", t.name).Msg("clearing build menu type filter")
+				_ = bm.client.Tap(p.X, p.Y)
+				time.Sleep(400 * time.Millisecond)
+				break
+			}
+			continue
+		}
+		if t.name == want && !selected {
+			bm.logger.Info().Str("type", t.name).Msg("setting build menu type filter")
+			_ = bm.client.Tap(p.X, p.Y)
+			time.Sleep(400 * time.Millisecond)
+		}
+		if t.name == want {
+			break
+		}
+	}
+
+	// Resource: clear every selected currency. Unselected currencies mean "no
+	// constraint"; a selected one ANDs with Type and hides rows paid in the
+	// others (live: Army + Gold showed "Nothing to see here").
+	for _, fx := range []float64{0.231, 0.401, 0.569} {
+		p := filterPopupPoint(bm.cal, fx, 0.206)
+		if !menuButtonSelected(screen, p.X, p.Y) {
+			continue
+		}
+		bm.logger.Info().Int("x", p.X).Int("y", p.Y).Msg("clearing build menu resource filter")
+		_ = bm.client.Tap(p.X, p.Y)
+		time.Sleep(220 * time.Millisecond)
+	}
+
+	// Sorting: only the two priorities that name an order have a button. Any
+	// previous sort is cleared when the strategy does not ask for one.
+	costMax := filterPopupPoint(bm.cal, 0.253, 0.552)
+	costMin := filterPopupPoint(bm.cal, 0.420, 0.552)
+	switch bm.cfg.UpgradeStrategy {
+	case "cheapest_first":
+		if !menuButtonSelected(screen, costMin.X, costMin.Y) {
+			bm.logger.Info().Msg("setting build menu sorting to cost min")
+			_ = bm.client.Tap(costMin.X, costMin.Y)
+			time.Sleep(220 * time.Millisecond)
+		}
+	case "most_expensive_first":
+		if !menuButtonSelected(screen, costMax.X, costMax.Y) {
+			bm.logger.Info().Msg("setting build menu sorting to cost max")
+			_ = bm.client.Tap(costMax.X, costMax.Y)
+			time.Sleep(220 * time.Millisecond)
+		}
+	default:
+		for _, p := range []image.Point{costMax, costMin} {
+			if menuButtonSelected(screen, p.X, p.Y) {
+				bm.logger.Info().Msg("clearing build menu sorting")
+				_ = bm.client.Tap(p.X, p.Y)
+				time.Sleep(220 * time.Millisecond)
+			}
+		}
+	}
+
+	// Dismiss the popup on the village side so no menu row is tapped.
+	_ = bm.client.Tap(outside.X, outside.Y)
+	time.Sleep(700 * time.Millisecond)
+	return nil
 }
 
 func (bm *BuilderManager) ApplyLabInGameFilter(strategy string, k float64) {
@@ -395,7 +630,9 @@ func (bm *BuilderManager) executePetUpgrade(stats BuilderOverviewStats, k float6
 
 	tapPt := image.Pt(int(680*k), int(150*k))
 
-	// Match available pets against PetPriorities list
+	// Match available pets against PetPriorities list. With no match there is
+	// nothing the user asked for: tapping the fallback row would spend dark
+	// elixir on a pet the priority list never selected.
 	matched := false
 	for _, priorityPet := range bm.cfg.PetPriorities {
 		for _, it := range stats.Items {
@@ -409,6 +646,10 @@ func (bm *BuilderManager) executePetUpgrade(stats BuilderOverviewStats, k float6
 		if matched {
 			break
 		}
+	}
+	if !matched {
+		bm.logger.Info().Msg("no available pet matches the priority list; skipping pet upgrade")
+		return
 	}
 
 	bm.logger.Info().Int("x", tapPt.X).Int("y", tapPt.Y).Msg("tapping pet item")
@@ -444,7 +685,11 @@ func (bm *BuilderManager) isCategoryAllowed(cat string) bool {
 	case "traps":
 		return bm.cfg.UpgradeTraps
 	default:
-		return true
+		// Names the toggles do not cover (unrecognised OCR, or a lab category
+		// leaking into the menu) follow the menu only while the user has every
+		// category enabled; once they filter, nothing sneaks past the filters.
+		return bm.cfg.UpgradeHeroes && bm.cfg.UpgradeDefenses && bm.cfg.UpgradeResources &&
+			bm.cfg.UpgradeArmy && bm.cfg.UpgradeTraps
 	}
 }
 
@@ -479,6 +724,27 @@ func (bm *BuilderManager) inspectMenuFrame() BuilderOverviewStats {
 	return stats
 }
 
+// parseTabCounter reads a bottom-tab counter such as "1/6" or "2/5". The
+// slash is the first glyph OCR drops on this font (live frame: "V6" and
+// "V/2"), so the leading V/v is read as a 1 and a two-character token without
+// a slash is read digit-by-digit rather than as one number.
+func parseTabCounter(txt string) (int, int, bool) {
+	clean := strings.NewReplacer(" ", "", "V", "1", "v", "1").Replace(strings.TrimSpace(txt))
+	if strings.Contains(clean, "/") {
+		parts := strings.SplitN(clean, "/", 2)
+		free, errFree := strconv.Atoi(parts[0])
+		total, errTotal := strconv.Atoi(parts[1])
+		if errFree == nil && errTotal == nil {
+			return free, total, true
+		}
+		return 0, 0, false
+	}
+	if len(clean) == 2 && clean[0] >= '0' && clean[0] <= '9' && clean[1] >= '0' && clean[1] <= '9' {
+		return int(clean[0] - '0'), int(clean[1] - '0'), true
+	}
+	return 0, 0, false
+}
+
 func isDurationText(txt string) bool {
 	clean := strings.ToLower(strings.TrimSpace(txt))
 	clean = strings.Trim(clean, "©•:(øOG ")
@@ -505,19 +771,26 @@ func ParseBuilderOverviewOCR(regions []vision.TextRegion) BuilderOverviewStats {
 
 	// First pass: locate bottom tab counters and header Y ("Suggested", "Filtered", "Assigned")
 	suggestedY := 110 // default threshold
+	builderX := 0
 	for _, r := range regions {
 		txt := strings.ToLower(r.Text)
 		if strings.Contains(txt, "suggested") || strings.Contains(txt, "filtered") ||
 			(strings.Contains(txt, "assigned") && !strings.Contains(txt, "un")) {
 			suggestedY = r.Y
 		}
-		// Match builder pattern e.g. "1/5", "2/5", "0/5" near bottom tabs
-		if r.Y >= 680 {
-			var free, total int
-			if _, err := fmt.Sscanf(r.Text, "%d/%d", &free, &total); err == nil && total >= 2 && total <= 6 {
-				stats.FreeBuilders = free
-				stats.TotalBuilders = total
+		// The builder tab is the leftmost counter on the bottom row. OCR
+		// regularly loses the slash (live: "V6" for "1/6"), and the lab/pet
+		// counters share the row, so only the leftmost valid count is used.
+		if r.Y >= 680 && r.X < 700 {
+			if free, total, ok := parseTabCounter(r.Text); ok && total >= 2 && total <= 6 && free <= total {
+				if builderX == 0 || r.X < builderX {
+					builderX = r.X
+					stats.FreeBuilders = free
+					stats.TotalBuilders = total
+				}
 			}
+		}
+		if r.Y >= 680 {
 			if strings.Contains(r.Text, "0/1") || strings.Contains(r.Text, "0л1") || strings.Contains(r.Text, "oл1") {
 				// Tab counter shows busy
 			} else if strings.Contains(r.Text, "1/1") {
@@ -620,7 +893,14 @@ func classifyItemCategory(txt string) string {
 		return "siege"
 	}
 
-	// 7. Spells
+	// 7. Army Buildings (before spells: "Dark Spell Factory" is a building)
+	if strings.Contains(norm, "barracks") || strings.Contains(norm, "camp") ||
+		strings.Contains(norm, "spellfactory") || strings.Contains(norm, "workshop") ||
+		strings.Contains(norm, "pethouse") || strings.Contains(norm, "blacksmith") {
+		return "army"
+	}
+
+	// 8. Spells
 	if strings.Contains(txt, "spell") || strings.Contains(txt, "lightning") ||
 		strings.Contains(txt, "heal") || strings.Contains(txt, "jump") ||
 		strings.Contains(txt, "freeze") || strings.Contains(txt, "clone") ||
@@ -631,13 +911,6 @@ func classifyItemCategory(txt string) string {
 		(!strings.Contains(txt, "storage") && strings.Contains(txt, "rage")) ||
 		(!strings.Contains(txt, "battle") && strings.Contains(txt, "bat")) {
 		return "spells"
-	}
-
-	// 8. Army Buildings
-	if strings.Contains(norm, "barracks") || strings.Contains(norm, "camp") ||
-		strings.Contains(norm, "spellfactory") || strings.Contains(norm, "workshop") ||
-		strings.Contains(norm, "pethouse") || strings.Contains(norm, "blacksmith") {
-		return "army"
 	}
 
 	// 9. Troops
@@ -679,6 +952,7 @@ func parseResourceCost(txt string) int {
 
 func parseCurrency(cat, txt string) string {
 	txt = strings.ToLower(txt)
+	norm := strings.ReplaceAll(txt, " ", "")
 	if cat == "pets" {
 		return "dark_elixir"
 	}
@@ -712,9 +986,15 @@ func parseCurrency(cat, txt string) string {
 		return "gold"
 	}
 	if cat == "resources" {
-		if strings.Contains(txt, "collector") {
+		// Mines cost elixir, collectors cost gold; storages cost their own
+		// resource. Matching the full name keeps "Gold Mine" out of the gold
+		// spend cap, where it never belonged.
+		if strings.Contains(txt, "collector") || strings.Contains(norm, "goldstorage") {
 			return "gold"
 		}
+		return "elixir"
+	}
+	if cat == "siege" || cat == "army" {
 		return "elixir"
 	}
 	return "gold"

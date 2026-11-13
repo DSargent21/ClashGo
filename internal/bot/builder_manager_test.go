@@ -1,10 +1,13 @@
 package bot
 
 import (
+	"image"
 	"testing"
 
 	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/vision"
+	"gocv.io/x/gocv"
 )
 
 func TestClassifyItemCategory(t *testing.T) {
@@ -84,6 +87,8 @@ func TestClassifyItemCategory(t *testing.T) {
 		{"Army Camp", "army"},
 		{"Pet House", "army"},
 		{"Blacksmith", "army"},
+		{"Spell Factory", "army"},
+		{"DaRk Spell FactoRY", "army"},
 
 		// Traps
 		{"Giant Bomb", "traps"},
@@ -129,6 +134,100 @@ func TestIsDurationText(t *testing.T) {
 	}
 }
 
+func TestMenuButtonSelected(t *testing.T) {
+	mat := gocv.NewMatWithSize(80, 160, gocv.MatTypeCV8UC3)
+	defer mat.Close()
+
+	mat.SetTo(gocv.NewScalar(70, 105, 150, 0)) // brown, unselected
+	if menuButtonSelected(mat, 80, 40) {
+		t.Error("brown button read as selected")
+	}
+
+	mat.SetTo(gocv.NewScalar(60, 180, 230, 0)) // gold, selected
+	if !menuButtonSelected(mat, 80, 40) {
+		t.Error("gold button read as unselected")
+	}
+
+	mat.SetTo(gocv.NewScalar(255, 255, 255, 0)) // white label fill
+	if menuButtonSelected(mat, 80, 40) {
+		t.Error("white fill read as selected")
+	}
+
+	if menuButtonSelected(gocv.NewMat(), 10, 10) {
+		t.Error("empty frame read as selected")
+	}
+}
+
+func TestFilterPopupPoint(t *testing.T) {
+	cal := game.NewCalibration(1024, 768)
+	if got := filterPopupPoint(cal, 0.618, 0.034); got.X != 632 || got.Y != 26 {
+		t.Errorf("filter icon point = %v; want (632,26)", got)
+	}
+	if got := filterPopupPoint(nil, 0.5, 0.5); got != (image.Point{}) {
+		t.Errorf("nil calibration point = %v; want zero", got)
+	}
+}
+
+func TestFilterPopupOpen(t *testing.T) {
+	cal := game.NewCalibration(1024, 768)
+	mat := gocv.NewMatWithSize(768, 1024, gocv.MatTypeCV8UC3)
+	defer mat.Close()
+
+	mat.SetTo(gocv.NewScalar(62, 92, 127, 0)) // panel brown
+	if !filterPopupOpen(mat, cal) {
+		t.Error("panel brown read as closed")
+	}
+
+	mat.SetTo(gocv.NewScalar(5, 102, 58, 0)) // grass
+	if filterPopupOpen(mat, cal) {
+		t.Error("grass read as open")
+	}
+
+	if filterPopupOpen(gocv.NewMat(), cal) || filterPopupOpen(mat, nil) {
+		t.Error("empty frame or nil calibration read as open")
+	}
+}
+
+func TestParseTabCounter(t *testing.T) {
+	cases := []struct {
+		in          string
+		free, total int
+		ok          bool
+	}{
+		{"1/6", 1, 6, true},
+		{"2/5", 2, 5, true},
+		{"V6", 1, 6, true},  // live OCR dropped the slash
+		{"V/2", 1, 2, true}, // live OCR read the 1 as a V
+		{"0/1", 0, 1, true}, // parsed, but the caller rejects a 1-slot counter
+		{"Available", 0, 0, false},
+		{"1d", 0, 0, false},
+	}
+	for _, tc := range cases {
+		free, total, ok := parseTabCounter(tc.in)
+		if ok != tc.ok || free != tc.free || total != tc.total {
+			t.Errorf("parseTabCounter(%q) = %d/%d,%v; want %d/%d,%v", tc.in, free, total, ok, tc.free, tc.total, tc.ok)
+		}
+	}
+}
+
+// TestParseBuilderOverviewOCRReadsDegradedCounter pins the live frame the
+// auto-upgrade path used to read as 0/5, which skipped building upgrades even
+// with a free builder.
+func TestParseBuilderOverviewOCRReadsDegradedCounter(t *testing.T) {
+	regions := []vision.TextRegion{
+		{X: 715, Y: 311, W: 192, H: 18, Text: "Suggested upgrades"},
+		{X: 667, Y: 345, W: 158, H: 24, Text: "BaRbaRiaN King"},
+		{X: 919, Y: 369, W: 70, H: 20, Text: "14 500"},
+		{X: 631, Y: 723, W: 34, H: 18, Text: "V6"},
+		{X: 739, Y: 723, W: 32, H: 18, Text: "V/2"},
+		{X: 953, Y: 723, W: 36, H: 18, Text: "0/1"},
+	}
+	stats := ParseBuilderOverviewOCR(regions)
+	if stats.FreeBuilders != 1 || stats.TotalBuilders != 6 {
+		t.Fatalf("Builders = %d/%d; want 1/6 from the degraded counter", stats.FreeBuilders, stats.TotalBuilders)
+	}
+}
+
 func TestParseCurrency(t *testing.T) {
 	if got := parseCurrency("heroes", "Grand Warden"); got != "elixir" {
 		t.Errorf("Grand Warden currency = %q; want elixir", got)
@@ -159,6 +258,24 @@ func TestParseCurrency(t *testing.T) {
 	}
 	if got := parseCurrency("resources", "Elixir Collector"); got != "gold" {
 		t.Errorf("Elixir Collector currency = %q; want gold", got)
+	}
+	if got := parseCurrency("resources", "Gold Mine"); got != "elixir" {
+		t.Errorf("Gold Mine currency = %q; want elixir", got)
+	}
+	if got := parseCurrency("resources", "Gold Storage"); got != "gold" {
+		t.Errorf("Gold Storage currency = %q; want gold (it is paid in gold)", got)
+	}
+	if got := parseCurrency("resources", "Elixir Storage"); got != "elixir" {
+		t.Errorf("Elixir Storage currency = %q; want elixir", got)
+	}
+	if got := parseCurrency("resources", "Dark Elixir Drill"); got != "elixir" {
+		t.Errorf("Dark Elixir Drill currency = %q; want elixir", got)
+	}
+	if got := parseCurrency("siege", "Wall Wrecker"); got != "elixir" {
+		t.Errorf("Wall Wrecker currency = %q; want elixir", got)
+	}
+	if got := parseCurrency("army", "DaRk Spell FactoRY"); got != "elixir" {
+		t.Errorf("Dark Spell Factory currency = %q; want elixir", got)
 	}
 }
 
@@ -233,6 +350,17 @@ func TestCategoryTogglesAndLimits(t *testing.T) {
 	if bm.isCategoryAllowed("traps") {
 		t.Error("traps should NOT be allowed")
 	}
+	// A category no toggle names must not bypass an active category filter.
+	if bm.isCategoryAllowed("spells") || bm.isCategoryAllowed("") {
+		t.Error("unlisted categories should follow the menu only when every category is enabled")
+	}
+	allOn := &BuilderManager{cfg: config.UpgradeConfig{
+		UpgradeHeroes: true, UpgradeDefenses: true, UpgradeResources: true,
+		UpgradeArmy: true, UpgradeTraps: true,
+	}}
+	if !allOn.isCategoryAllowed("spells") || !allOn.isCategoryAllowed("") {
+		t.Error("with every category enabled, unlisted rows should stay eligible")
+	}
 
 	// Filter eligibility
 	items := []UpgradeItem{
@@ -243,27 +371,84 @@ func TestCategoryTogglesAndLimits(t *testing.T) {
 		{Name: "Gold Mine", Category: "resources", Cost: 800, Currency: "elixir"},          // eligible
 	}
 
-	var eligible []UpgradeItem
-	for _, it := range items {
-		if !bm.isCategoryAllowed(it.Category) {
-			continue
-		}
-		if it.Currency == "gold" && bm.cfg.MaxGoldPerUpgrade > 0 && it.Cost > bm.cfg.MaxGoldPerUpgrade {
-			continue
-		}
-		if it.Currency == "elixir" && bm.cfg.MaxElixirPerUpgrade > 0 && it.Cost > bm.cfg.MaxElixirPerUpgrade {
-			continue
-		}
-		if it.Currency == "dark_elixir" && bm.cfg.MaxDEPerUpgrade > 0 && it.Cost > bm.cfg.MaxDEPerUpgrade {
-			continue
-		}
-		eligible = append(eligible, it)
+	// The same filters the menu applies: Queen is the only survivor (defenses
+	// off, King and Warden over their caps).
+	best, ok := bm.selectBuildingUpgrade(items)
+	if !ok {
+		t.Fatal("selectBuildingUpgrade found no eligible item, want Archer Queen")
+	}
+	if best.Name != "Archer Queen" {
+		t.Errorf("selected %q; want the only eligible item, Archer Queen", best.Name)
 	}
 
-	if len(eligible) != 2 {
-		t.Fatalf("eligible count = %d; want 2", len(eligible))
+	// Everything filtered out must skip, never fall back to a guessed row.
+	if _, ok := bm.selectBuildingUpgrade(items[2:4]); ok {
+		t.Error("selectBuildingUpgrade picked an item with every category/cap filtered out")
 	}
-	if eligible[0].Name != "Archer Queen" || eligible[1].Name != "Gold Mine" {
-		t.Errorf("unexpected eligible items: %+v", eligible)
+}
+
+// TestSelectBuildingUpgradeStrategies covers the upgrade-priority menu for all
+// four options plus the spend caps and the unknown-category fallback.
+func TestSelectBuildingUpgradeStrategies(t *testing.T) {
+	all := config.UpgradeConfig{
+		UpgradeHeroes: true, UpgradeDefenses: true, UpgradeResources: true,
+		UpgradeArmy: true, UpgradeTraps: true,
+	}
+	items := []UpgradeItem{
+		{Name: "Archer Queen", Category: "heroes", Cost: 8000, Currency: "dark_elixir"},
+		{Name: "Cannon", Category: "defenses", Cost: 500, Currency: "gold"},
+		{Name: "Gold Mine", Category: "resources", Cost: 800, Currency: "elixir"},
+	}
+
+	cases := []struct {
+		name     string
+		strategy string
+		goldCap  int
+		want     string
+	}{
+		{"heroes first", "heroes_first", 0, "Archer Queen"},
+		{"cheapest first", "cheapest_first", 0, "Cannon"},
+		{"most expensive first", "most_expensive_first", 0, "Archer Queen"},
+		{"balanced keeps menu order", "balanced", 0, "Archer Queen"},
+		{"unknown strategy keeps menu order", "nonsense", 0, "Archer Queen"},
+		{"gold cap excludes Cannon", "cheapest_first", 400, "Gold Mine"},
+		{"gold cap boundary is inclusive", "cheapest_first", 500, "Cannon"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := all
+			cfg.UpgradeStrategy = tc.strategy
+			cfg.MaxGoldPerUpgrade = tc.goldCap
+			bm := &BuilderManager{cfg: cfg}
+			best, ok := bm.selectBuildingUpgrade(items)
+			if !ok {
+				t.Fatalf("no selection for %q", tc.strategy)
+			}
+			if best.Name != tc.want {
+				t.Errorf("selected %q; want %q", best.Name, tc.want)
+			}
+		})
+	}
+
+	// A category toggled off in the UI removes exactly its rows, and an
+	// unrecognised category cannot sneak past an active category filter.
+	cfg := all
+	cfg.UpgradeDefenses = false
+	cfg.UpgradeHeroes = false
+	cfg.UpgradeResources = false
+	bm := &BuilderManager{cfg: cfg}
+	misc := []UpgradeItem{
+		{Name: "Cannon", Category: "defenses", Cost: 500, Currency: "gold"},
+		{Name: "Builder Hut", Category: "other", Cost: 100, Currency: "gems"},
+	}
+	if _, ok := bm.selectBuildingUpgrade(misc); ok {
+		t.Error("an unlisted category slipped past an active category filter")
+	}
+
+	// With every category enabled it follows the menu suggestions again.
+	bmAll := &BuilderManager{cfg: all}
+	best, ok := bmAll.selectBuildingUpgrade(misc[1:])
+	if !ok || best.Name != "Builder Hut" {
+		t.Errorf("selected %+v, %v; want the 'other' row Builder Hut with all categories on", best.Name, ok)
 	}
 }
