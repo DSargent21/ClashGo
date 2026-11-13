@@ -15,6 +15,8 @@ import {
   SetStorageConfig,
   SetScheduleConfig,
   SetAutoUpgradeConfig,
+  SaveUpgradeSetup,
+  SaveLaunchSettings,
   SetStrategyArmySlot,
   SetStrategyAutoEnd,
   StartBot,
@@ -31,8 +33,10 @@ import {
   InstallAndRestart,
   SkipCurrentVersion,
   ClearSkippedVersion,
+  GetLaunchOptions,
+  ChooseArmy,
 } from '../wailsjs/go/main/App';
-import { bot } from '../wailsjs/go/models';
+import { bot, main } from '../wailsjs/go/models';
 import {
   TabType,
   UpdateStatus,
@@ -45,6 +49,7 @@ import * as accountsApi from './accountsApi';
 import * as armyApi from './armyApi';
 import type { ArmyPlan } from './armyApi';
 import UpdateBanner from './components/UpdateBanner';
+import LaunchSetup, { type LaunchTuning, type LaunchUpgrades } from './components/LaunchSetup';
 import Icon from './components/ui/Icon';
 import { formatClock } from './utils';
 
@@ -117,6 +122,22 @@ const TAB_LABELS: Record<TabType, string> = {
   analytics: 'Analytics',
   config: 'Config',
   settings: 'Settings',
+};
+
+// The launch screen is a first-run affair: it appears until a choice has been
+// made (or manual setup was picked), then never again.
+const getInitialLaunchOpen = (): boolean => {
+  // ?setup=1 replays the wizard without touching the saved "seen it" flag.
+  try {
+    if (new URLSearchParams(window.location.search).get('setup') === '1') return true;
+  } catch {
+    // Ignore malformed URLs and fall back to the stored flag.
+  }
+  try {
+    return localStorage.getItem('launchSetupDone') !== '1';
+  } catch {
+    return false;
+  }
 };
 
 const getInitialTab = (): TabType => {
@@ -208,6 +229,11 @@ function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
   const [appVersion, setAppVersion] = useState('');
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+
+  // Launch quick-setup state.
+  const [launchOpen, setLaunchOpen] = useState(getInitialLaunchOpen);
+  const [launchOptions, setLaunchOptions] = useState<main.LaunchOptions | null>(null);
+  const [launchBusy, setLaunchBusy] = useState(false);
 
   // Multi-account switcher state. Kept at App level because the sidebar,
   // header and Accounts page all read the same active account.
@@ -748,6 +774,81 @@ function App() {
     logs,
   }), [stats, sessionHistory, logs]);
 
+  const finishLaunch = useCallback(() => {
+    try {
+      localStorage.setItem('launchSetupDone', '1');
+    } catch {
+      // No storage: the screen simply shows again next launch.
+    }
+    setLaunchOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!launchOpen || launchOptions) return;
+    let cancelled = false;
+    GetLaunchOptions()
+      .then((options) => {
+        if (!cancelled) setLaunchOptions(options);
+      })
+      .catch((err) => {
+        // Without the binding there is no real choice to render; fall through
+        // to the normal UI instead of trapping the user behind a spinner.
+        console.warn('GetLaunchOptions failed:', err);
+        if (!cancelled) finishLaunch();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [launchOpen, launchOptions, finishLaunch]);
+
+  const handleChooseArmy = useCallback(async (file: string, armySlot: number, upgrades: LaunchUpgrades, tuning: LaunchTuning) => {
+    setLaunchBusy(true);
+    try {
+      await ChooseArmy(file, tuning.adaptive, armySlot);
+      await SaveUpgradeSetup(
+        upgrades.enabled,
+        upgrades.mode,
+        upgrades.heroes,
+        upgrades.army,
+        upgrades.defenses,
+        upgrades.resources,
+        upgrades.traps,
+        upgrades.wallBuilder,
+      );
+      await SaveLaunchSettings(tuning.minGold, tuning.minElixir, tuning.minDark, tuning.dryRun);
+      setGoldThreshold(tuning.minGold);
+      setElixirThreshold(tuning.minElixir);
+      setDeThreshold(tuning.minDark);
+      setDryRun(tuning.dryRun);
+      setAutoBuilders(upgrades.enabled);
+      setUpgradeStrategy(upgrades.mode);
+      setUpgradeHeroes(upgrades.heroes);
+      setUpgradeArmy(upgrades.army);
+      setUpgradeDefenses(upgrades.defenses);
+      setUpgradeResources(upgrades.resources);
+      setUpgradeTraps(upgrades.traps);
+      setUpgradeWalls(upgrades.wallBuilder);
+      setReserveBuilders(upgrades.wallBuilder ? 1 : 0);
+      // Mirror what was written into config.json so the Config form and the
+      // Army page agree with the choice immediately.
+      const conf = await GetConfig();
+      setSelectedStrategy(conf.attack.strategy_file);
+      setSearchEnabled(conf.search.enabled);
+      await refreshArmyPlans().catch(() => undefined);
+      finishLaunch();
+      setTab('dashboard');
+    } catch (err) {
+      console.error('ChooseArmy failed:', err);
+    } finally {
+      setLaunchBusy(false);
+    }
+  }, [finishLaunch, refreshArmyPlans]);
+
+  const handleManualSetup = useCallback(() => {
+    finishLaunch();
+    setTab('config');
+  }, [finishLaunch]);
+
   const configProps = useMemo(() => {
     // Prefer the effective values reported by Go so the config page agrees
     // with the recipe and auto-end the bot actually arms.
@@ -979,6 +1080,15 @@ function App() {
           )}
         </div>
       </main>
+
+      {launchOpen ? (
+        <LaunchSetup
+          options={launchOptions}
+          busy={launchBusy}
+          onChoose={(file, slot, upgrades, tuning) => void handleChooseArmy(file, slot, upgrades, tuning)}
+          onManual={handleManualSetup}
+        />
+      ) : null}
     </div>
   );
 }

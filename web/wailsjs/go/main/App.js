@@ -10,6 +10,10 @@ export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
 
+export function ChooseArmy(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ChooseArmy'](arg1, arg2, arg3);
+}
+
 export function ClearSkippedVersion() {
   return window['go']['main']['App']['ClearSkippedVersion']();
 }
@@ -44,6 +48,10 @@ export function GetAttackHistory() {
 
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
+}
+
+export function GetLaunchOptions() {
+  return window['go']['main']['App']['GetLaunchOptions']();
 }
 
 export function GetLogs() {
@@ -84,6 +92,14 @@ export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
 
 export function SaveFullConfig(arg1) {
   return window['go']['main']['App']['SaveFullConfig'](arg1);
+}
+
+export function SaveLaunchSettings(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SaveLaunchSettings'](arg1, arg2, arg3, arg4);
+}
+
+export function SaveUpgradeSetup(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+  return window['go']['main']['App']['SaveUpgradeSetup'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 }
 
 export function SetAutoUpgradeConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19, arg20) {

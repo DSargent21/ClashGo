@@ -13,7 +13,7 @@
 
 .res-card {
   position: relative;
-  padding: 17px 19px 8px;
+  padding: 17px 19px;
   overflow: hidden;
   --res-hue: var(--gold);
   transition: border-color .18s var(--ease), transform .2s var(--ease), box-shadow .2s var(--ease);
@@ -67,12 +67,8 @@
 }
 .res-meta { margin-top: 3px; font-size: 11.5px; color: var(--text-3); }
 .spark { display: block; width: 100%; height: 38px; margin-top: 8px; }
-/* Full-bleed the loot sparkline inside the card's horizontal padding. */
-.res-card .spark {
-  width: calc(100% + 38px);
-  margin-left: -19px;
-  margin-right: -19px;
-}
+/* The sparkline sits inside the card's horizontal padding like the rest of the
+   content; full-bleeding it made an empty series read as an edge-to-edge rule. */
 /* No entrance animation: the webview freezes CSS animations while its window
    is not painting, which left the sparkline drawn only part-way across the
    card (and its fill at opacity 0). The line is always full width now. */
@@ -1180,4 +1176,378 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   .set-ctl .field,
   .set-ctl select.field { width: 100%; }
   .subnav { position: static; }
+}
+
+
+/* ===== Launch quick setup =====
+   First screen anyone sees, so it carries the type scale: 26px title, 26px
+   loot numbers, one solid accent (the selected card). Everything else is
+   border and tint, which keeps the comparison readable at a glance. */
+.launch-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(6, 6, 8, .74);
+}
+.launch-panel {
+  width: min(780px, 100%);
+  max-height: calc(100vh - 56px);
+  height: min(780px, calc(100vh - 56px));
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 15px;
+  padding: 26px 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(227, 179, 65, .055), transparent 160px),
+    var(--surface);
+  box-shadow: var(--shadow-pop);
+}
+.launch-body {
+  overflow-y: auto;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding-right: 4px;
+  animation: launch-step-in .18s var(--ease);
+}
+.launch-body::-webkit-scrollbar { width: 8px; }
+.launch-body::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--pill); }
+@keyframes launch-step-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.launch-steps {
+  display: flex;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--overlay);
+}
+.launch-step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background .14s var(--ease), color .14s var(--ease), box-shadow .14s var(--ease);
+}
+.launch-step:hover { color: var(--text-2); background: var(--raised); }
+.launch-step:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
+.launch-step.active { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.launch-step-num {
+  flex: none;
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--panel, var(--overlay));
+  color: var(--text-3);
+  font: 600 10px var(--mono);
+}
+.launch-step.active .launch-step-num { background: var(--accent-soft); color: var(--accent); }
+.launch-step.done .launch-step-num { background: var(--accent); color: #14120b; }
+.launch-step-name { font-size: 11.5px; font-weight: 600; letter-spacing: .01em; }
+
+.launch-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.launch-foot-left { display: flex; align-items: center; gap: 8px; }
+.launch-foot .btn.ghost { height: 34px; border-radius: 10px; font-size: 12px; }
+.launch-next {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: auto;
+  min-width: 132px;
+  max-width: 62%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.launch-loot-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.launch-loot { display: grid; gap: 5px; min-width: 0; }
+.launch-loot span {
+  color: var(--text-faint);
+  font: 600 9px var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.launch-loot input { width: 100%; }
+
+.launch-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background:
+    radial-gradient(120% 160% at 100% 0%, rgba(227, 179, 65, .05), transparent 60%),
+    var(--overlay);
+}
+.launch-summary > .ls-kicker { grid-column: 1 / -1; }
+.launch-summary-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; }
+.launch-summary-row span { color: var(--text-faint); font: 600 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.launch-summary-row b { color: var(--text); font-weight: 600; text-align: right; }
+
+.launch-head { display: grid; gap: 8px; }
+.launch-kicker {
+  font: 600 10px var(--mono);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.launch-head h1 {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.12;
+  letter-spacing: -.025em;
+}
+.launch-head p {
+  max-width: 62ch;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.launch-loading { padding: 30px 2px; color: var(--text-3); font-size: 13px; }
+
+.launch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.launch-card {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  gap: 9px;
+  padding: 16px;
+  min-height: 196px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--raised);
+  transition: border-color .14s var(--ease), background-color .14s var(--ease), box-shadow .14s var(--ease);
+}
+.launch-card:hover { border-color: var(--border-strong); background: var(--overlay); }
+.launch-card:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.launch-card.active {
+  border-color: var(--accent);
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--accent), 0 10px 26px rgba(0, 0, 0, .32);
+}
+
+.launch-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.launch-name { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+/* Outline badge, not solid: the solid accent belongs to the selected card. */
+.launch-badge {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid rgba(227, 179, 65, .55);
+  border-radius: var(--pill);
+  color: var(--accent);
+  font: 600 9px var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.launch-rate { display: flex; align-items: baseline; gap: 6px; }
+.launch-rate b { font-size: 26px; font-weight: 600; letter-spacing: -.03em; line-height: 1; }
+.launch-rate-unit {
+  color: var(--text-faint);
+  font: 500 10px var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.launch-rate-note { color: var(--text-faint); font: 400 10px var(--mono); }
+
+.launch-pitch { color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+.launch-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.launch-check { margin-left: auto; display: inline-flex; min-width: 12px; color: var(--accent); }
+/* Setup instructions under the picked army card: the army to build, what it
+   costs in space, and the saved recipe it has to live in. Kept to four compact
+   lines so the whole launch screen still fits one screen. */
+.launch-setup {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background:
+    radial-gradient(120% 160% at 100% 0%, rgba(255, 255, 255, .055), transparent 58%),
+    var(--overlay);
+}
+.ls-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ls-kicker {
+  padding: 2px 7px;
+  border-radius: var(--pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 600 9px var(--mono);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.ls-headline { font-size: 12px; font-weight: 600; letter-spacing: -.01em; }
+.ls-caps { margin-left: auto; color: var(--text-faint); font-size: 10px; white-space: nowrap; }
+
+.ls-lines { display: grid; gap: 6px; }
+.ls-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ls-label {
+  flex: 0 0 84px;
+  color: var(--text-faint);
+  font: 600 9px var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ls-units { display: flex; flex-wrap: wrap; gap: 4px 14px; min-width: 0; }
+.ls-unit { display: inline-flex; align-items: baseline; gap: 6px; color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.ls-unit b { color: var(--text); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.ls-cost {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel, var(--overlay));
+  color: var(--text-faint);
+  font-size: 9px;
+  font-style: normal;
+  letter-spacing: .03em;
+}
+.ls-usage { display: flex; align-items: center; gap: 7px; margin-left: auto; }
+.ls-meter { width: 74px; height: 3px; border-radius: var(--pill); background: var(--border); overflow: hidden; }
+.ls-meter i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.ls-usage-text { color: var(--text-3); font-size: 10px; font-variant-numeric: tabular-nums; }
+/* Authored counts that cannot fit the army the game will hold. */
+.ls-line.over .ls-label,
+.ls-line.over .ls-usage-text { color: var(--red); }
+.ls-line.over .ls-meter i { background: var(--red); }
+.ls-line.over .ls-cost { background: var(--red-soft); color: var(--red); }
+.ls-usage-warn {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--red-soft);
+  color: var(--red);
+  font: 600 9.5px var(--mono);
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+
+.ls-slots { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 7px; border-top: 1px solid var(--border); }
+.ls-slots-chips { display: flex; gap: 5px; }
+.slot-chip {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel, var(--overlay));
+  color: var(--text-2);
+  font: 600 11.5px var(--mono);
+  cursor: pointer;
+  transition: border-color .14s ease, background .14s ease, color .14s ease, transform .14s ease;
+}
+.slot-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.slot-chip:active { transform: scale(.95); }
+.slot-chip:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.slot-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.ls-slots-hint { margin-left: auto; color: var(--text-faint); font-size: 10.5px; }
+
+/* Auto-upgrade page under the army picker: plan first, then categories and
+   the wall-builder reservation. Compact rows so the modal stays one screen. */
+.launch-upgrades .ls-top .switch { margin-left: auto; }
+.ls-upgrade-body { display: grid; gap: 9px; }
+.ls-upgrade-body.is-disabled { opacity: .45; pointer-events: none; }
+.ls-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.ls-mode {
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel, var(--overlay));
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .14s ease, background .14s ease;
+}
+.ls-mode:hover { border-color: var(--border-strong); }
+.ls-mode:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.ls-mode.active { border-color: var(--accent); background: var(--accent-soft); }
+.ls-mode b { font-size: 12px; font-weight: 600; }
+.ls-mode-badge {
+  padding: 1px 6px;
+  border-radius: var(--pill);
+  background: var(--accent);
+  color: #14120b;
+  font: 600 8.5px var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.ls-mode-copy { color: var(--text-3); font-size: 10.5px; line-height: 1.4; }
+.ls-cats { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ls-cats-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+.ls-cats-chips .slot-chip { width: auto; padding: 0 9px; letter-spacing: .01em; }
+.ls-wall {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.ls-wall b { display: block; font-size: 11.5px; font-weight: 600; }
+.ls-wall span { display: block; margin-top: 2px; color: var(--text-faint); font-size: 10.5px; line-height: 1.35; }
+
+.launch-adaptive {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.launch-adaptive-label { display: grid; gap: 4px; }
+.launch-adaptive-label b { font-size: 12.5px; font-weight: 600; }
+.launch-adaptive-label span { max-width: 54ch; color: var(--text-3); font-size: 11.5px; line-height: 1.45; }
+
+.launch-note { color: var(--text-faint); font-size: 10.5px; line-height: 1.45; }
+
+.launch-actions { display: grid; gap: 8px; }
+.launch-cta {
+  height: 40px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+.launch-actions .btn.ghost { height: 34px; border-radius: 10px; font-size: 12px; }
+
+@media (max-width: 760px) {
+  .launch-scrim { padding: 16px; }
+  .launch-panel { padding: 20px; gap: 14px; height: calc(100vh - 32px); }
+  .launch-grid { grid-template-columns: 1fr; }
+  .launch-step-name { display: none; }
+  .launch-step { justify-content: center; }
+  .launch-loot-grid { grid-template-columns: 1fr; }
+  .launch-card { min-height: 0; }
+  .launch-head h1 { font-size: 23px; }
 }

@@ -7,6 +7,20 @@ end_at_percent: 50
 # The Valkyrie loadout lives in the 4th saved-army recipe ("Imported Army 4"); arm it before
 # the battle instead of the default first recipe.
 army_slot: 4
+
+# What to put in the saved recipe before starting: the launch screen renders
+# this verbatim, and the counts match the phases below (44 Valkyries fill 352
+# camp space at 8 each, 11 Earthquakes fill the 11 spell slots).
+loadout:
+  army_camp: 352
+  spell_capacity: 11
+  siege_capacity: 1
+  troops:
+    - { name: "Valkyrie", count: 44, slots: 8 }
+  spells:
+    - { name: "Earthquake Spell", count: 11, slots: 1 }
+  siege:
+    - { name: "Stone Slammer", count: 1 }
 phases:
   - name: "Valkyrie Spam"
     units: [{ name: "Valkyrie", amount: "All", fallback_slot: 2 }]

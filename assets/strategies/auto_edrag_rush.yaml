@@ -7,6 +7,24 @@ description: "Professional Balloon + EDrag attack with Double Diamond precision.
 target_edge: "Random"
 stall_timer_seconds: 35
 auto_deploy_eventTroops: true
+
+# What to put in the saved recipe before starting (rendered by the launch
+# screen). Counts mirror the phase units below: 10 E-Drags then 10 Balloons,
+# 5 Rage + 1 Ice (the 11 spell slots), one siege machine.
+loadout:
+  army_camp: 352
+  spell_capacity: 11
+  siege_capacity: 1
+  troops:
+    # 10 x 30 + 10 x 5 = 350 of the 352 army camp (live army screen).
+    - { name: "Electro Dragon", count: 10, slots: 30 }
+    - { name: "Balloon", count: 10, slots: 5 }
+  spells:
+    # Rage takes 2 of the 11 spell slots, Ice takes 1: 5 x 2 + 1 x 1 = 11.
+    - { name: "Rage Spell", count: 5, slots: 2 }
+    - { name: "Ice Spell", count: 1, slots: 1 }
+  siege:
+    - { name: "Stone Slammer", count: 1 }
 phases:
   - name: "Balloons"
     units: [{ name: "Balloon", amount: "All" }]
@@ -47,7 +65,7 @@ phases:
       # decision it cannot make and the card was abandoned after one cast. If
       # the armed recipe changes, update these two numbers.
       - { name: "Rage Spell", amount: "5" }
-      - { name: "Ice Spell", amount: "11" }
+      - { name: "Ice Spell", amount: "1" }
     pattern: "Line" # Formula drives coords (auto_edrag_rush_formula.json → "ice spell")
     offset: 30 # Fallback only — used if formula is missing the unit
     retry: 3

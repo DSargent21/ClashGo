@@ -739,11 +739,14 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                       value={upgradeStrategy}
                       onChange={(event) => setUpgradeStrategy(event.target.value)}
                     >
+                      <option value="strategic_rush">Strategic rush (recommended)</option>
+                      <option value="max">Max everything</option>
                       <option value="heroes_first">Heroes first</option>
                       <option value="cheapest_first">Cheapest first</option>
                       <option value="most_expensive_first">Most expensive first</option>
                       <option value="balanced">Balanced / in-game suggestions</option>
                     </select>
+                    <p className="hint">Strategic rush: heroes → army capacity → resources → defenses. Max: biggest upgrade first.</p>
                   </div>
                   <div className="f-field">
                     <label className="label" htmlFor="reserve-builders">Reserve builders for walls</label>

@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/Ducky705/ClashGO/internal/config"
 )
 
 func TestGetArmyPlansReadsAuthoredStrategies(t *testing.T) {
@@ -65,6 +67,62 @@ func TestArmyControlsFlowThroughToPlans(t *testing.T) {
 	}
 	if valk.ArmySlot != 2 || valk.EndAtPercent != 0 {
 		t.Fatalf("plan overrides = slot %d end %d, want 2/0", valk.ArmySlot, valk.EndAtPercent)
+	}
+}
+
+// TestSavedArmySlotSelectsAllFourRecipes pins the slot selector for every slot
+// the game holds: the Army page (SetStrategyArmySlot) and the launch screen
+// (ChooseArmy) must both accept 1-4, the plan the UI renders must read the
+// value back, and picking one strategy's slot must not move another's.
+func TestSavedArmySlotSelectsAllFourRecipes(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	slotOf := func(file string) int {
+		for _, plan := range a.GetArmyPlans() {
+			if plan.File == file {
+				return plan.ArmySlot
+			}
+		}
+		t.Fatalf("%s missing from plans", file)
+		return 0
+	}
+
+	for slot := 1; slot <= maxArmySlots; slot++ {
+		if err := a.SetStrategyArmySlot("strategies/valk_spam.yaml", slot); err != nil {
+			t.Fatalf("SetStrategyArmySlot(%d): %v", slot, err)
+		}
+		if got := config.LoadOrDefault("config.json").Attack.StrategySlots["valk_spam.yaml"]; got != slot {
+			t.Fatalf("SetStrategyArmySlot(%d) stored %d", slot, got)
+		}
+		if got := slotOf("valk_spam.yaml"); got != slot {
+			t.Fatalf("army plan slot = %d after selecting %d", got, slot)
+		}
+		if got := slotOf("auto_edrag_rush.yaml"); got != 1 {
+			t.Fatalf("selecting valk slot %d moved edrag to %d, want its own 1", slot, got)
+		}
+	}
+
+	for slot := 1; slot <= maxArmySlots; slot++ {
+		if err := a.ChooseArmy("strategies/valk_spam.yaml", false, slot); err != nil {
+			t.Fatalf("ChooseArmy(%d): %v", slot, err)
+		}
+		found := false
+		for _, option := range a.GetLaunchOptions().Options {
+			if option.Key != "valk" {
+				continue
+			}
+			found = true
+			if option.ArmySlot != slot {
+				t.Fatalf("launch option slot = %d after choosing %d", option.ArmySlot, slot)
+			}
+		}
+		if !found {
+			t.Fatal("valk missing from launch options")
+		}
+		if got := slotOf("valk_spam.yaml"); got != slot {
+			t.Fatalf("army plan slot = %d after launch choose %d", got, slot)
+		}
 	}
 }
 

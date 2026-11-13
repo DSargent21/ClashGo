@@ -157,6 +157,51 @@ export namespace adb {
 
 }
 
+export namespace autotune {
+	
+	export class Advice {
+	    key: string;
+	    label: string;
+	    current: number;
+	    suggested: number;
+	    per_hour_now: number;
+	    per_hour_new: number;
+	    changed: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Advice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.current = source["current"];
+	        this.suggested = source["suggested"];
+	        this.per_hour_now = source["per_hour_now"];
+	        this.per_hour_new = source["per_hour_new"];
+	        this.changed = source["changed"];
+	    }
+	}
+	export class Thresholds {
+	    Gold: number;
+	    Elixir: number;
+	    DE: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Thresholds(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Gold = source["Gold"];
+	        this.Elixir = source["Elixir"];
+	        this.DE = source["DE"];
+	    }
+	}
+
+}
+
 export namespace bot {
 	
 	export class AttackReport {
@@ -522,6 +567,7 @@ export namespace config {
 	    min_loot_elixir: number;
 	    min_loot_de: number;
 	    max_search_skips: number;
+	    auto_loot: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SearchConfig(source);
@@ -542,6 +588,7 @@ export namespace config {
 	        this.min_loot_elixir = source["min_loot_elixir"];
 	        this.min_loot_de = source["min_loot_de"];
 	        this.max_search_skips = source["max_search_skips"];
+	        this.auto_loot = source["auto_loot"];
 	    }
 	}
 	export class TrainingConfig {
@@ -874,6 +921,50 @@ export namespace main {
 	}
 	
 	
+	export class AutotuneStatus {
+	    enabled: boolean;
+	    samples: number;
+	    recorded: number;
+	    ready: boolean;
+	    reason: string;
+	    current: autotune.Thresholds;
+	    suggested: autotune.Thresholds;
+	    advice: autotune.Advice[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AutotuneStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.samples = source["samples"];
+	        this.recorded = source["recorded"];
+	        this.ready = source["ready"];
+	        this.reason = source["reason"];
+	        this.current = this.convertValues(source["current"], autotune.Thresholds);
+	        this.suggested = this.convertValues(source["suggested"], autotune.Thresholds);
+	        this.advice = this.convertValues(source["advice"], autotune.Advice);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class BotStatus {
 	    running: boolean;
 	    message: string;
@@ -887,6 +978,162 @@ export namespace main {
 	        this.running = source["running"];
 	        this.message = source["message"];
 	    }
+	}
+	export class LaunchLoadoutUnit {
+	    name: string;
+	    count: number;
+	    slots: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchLoadoutUnit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.count = source["count"];
+	        this.slots = source["slots"];
+	    }
+	}
+	export class LaunchLoadout {
+	    army_camp: number;
+	    spell_capacity: number;
+	    siege_capacity: number;
+	    troops: LaunchLoadoutUnit[];
+	    spells: LaunchLoadoutUnit[];
+	    siege: LaunchLoadoutUnit[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchLoadout(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.army_camp = source["army_camp"];
+	        this.spell_capacity = source["spell_capacity"];
+	        this.siege_capacity = source["siege_capacity"];
+	        this.troops = this.convertValues(source["troops"], LaunchLoadoutUnit);
+	        this.spells = this.convertValues(source["spells"], LaunchLoadoutUnit);
+	        this.siege = this.convertValues(source["siege"], LaunchLoadoutUnit);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LaunchArmyOption {
+	    file: string;
+	    key: string;
+	    name: string;
+	    pitch: string;
+	    loot_per_hour: number;
+	    measured: boolean;
+	    raids: number;
+	    recommended: boolean;
+	    army_slot: number;
+	    end_at_percent: number;
+	    loadout: LaunchLoadout;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchArmyOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.file = source["file"];
+	        this.key = source["key"];
+	        this.name = source["name"];
+	        this.pitch = source["pitch"];
+	        this.loot_per_hour = source["loot_per_hour"];
+	        this.measured = source["measured"];
+	        this.raids = source["raids"];
+	        this.recommended = source["recommended"];
+	        this.army_slot = source["army_slot"];
+	        this.end_at_percent = source["end_at_percent"];
+	        this.loadout = this.convertValues(source["loadout"], LaunchLoadout);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	export class LaunchOptions {
+	    options: LaunchArmyOption[];
+	    adaptive_loot: boolean;
+	    adaptive_ready: boolean;
+	    samples: number;
+	    min_samples: number;
+	    max_army_slots: number;
+	    min_gold: number;
+	    min_elixir: number;
+	    min_dark: number;
+	    dry_run: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.options = this.convertValues(source["options"], LaunchArmyOption);
+	        this.adaptive_loot = source["adaptive_loot"];
+	        this.adaptive_ready = source["adaptive_ready"];
+	        this.samples = source["samples"];
+	        this.min_samples = source["min_samples"];
+	        this.max_army_slots = source["max_army_slots"];
+	        this.min_gold = source["min_gold"];
+	        this.min_elixir = source["min_elixir"];
+	        this.min_dark = source["min_dark"];
+	        this.dry_run = source["dry_run"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class SwitchResult {
 	    account: AccountView;

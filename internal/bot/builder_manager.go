@@ -6,6 +6,7 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -132,7 +133,8 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 		}
 	}
 
-	// Capture frame to inspect tab counters and suggested items
+	// One frame is enough for the tab counters. The list itself scrolls, so the
+	// extra pages are only read after the builder check says an upgrade can run.
 	stats := bm.inspectMenuFrame()
 
 	// 1. Check Builders tab if auto builders enabled
@@ -149,7 +151,11 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 				Int("reserve", bm.cfg.ReserveBuilders).
 				Msg("no free builders or builders at/below reserve limit; skipping building upgrades")
 		} else {
-			bm.executeBuildingUpgrade(stats, k)
+			first := bm.resetBuilderListTop()
+			pages := bm.scanBuilderPages(first)
+			if len(pages) > 0 {
+				bm.executeBuildingUpgrade(pages, k)
+			}
 		}
 	}
 
@@ -212,6 +218,23 @@ func (bm *BuilderManager) selectBuildingUpgrade(items []UpgradeItem) (UpgradeIte
 
 	best := eligible[0]
 	switch bm.cfg.UpgradeStrategy {
+	case "strategic_rush":
+		// Guidance: offense before defense, new capability before existing
+		// levels. The menu has no "new building" flag, so the rank follows
+		// the guide's per-TH order as closely as the OCR row allows.
+		bestRank := strategicRushRank(best)
+		for _, it := range eligible[1:] {
+			if rank := strategicRushRank(it); rank < bestRank {
+				best, bestRank = it, rank
+			}
+		}
+	case "max":
+		// "Max everything": no category is skipped, biggest timer/cost first.
+		for _, it := range eligible {
+			if it.Cost > best.Cost {
+				best = it
+			}
+		}
 	case "heroes_first":
 		for _, it := range eligible {
 			if it.Category == "heroes" {
@@ -235,14 +258,217 @@ func (bm *BuilderManager) selectBuildingUpgrade(items []UpgradeItem) (UpgradeIte
 	return best, true
 }
 
-func (bm *BuilderManager) executeBuildingUpgrade(stats BuilderOverviewStats, k float64) {
+// normalizeItemName folds OCR noise so hero and building names match even when
+// Vision drops a space, changes case, or adds punctuation ("DaRk Spell FactoRY"
+// and "ARCHER QUeEN" both normalise cleanly). Non-ASCII combining marks from
+// Turkish glyphs are dropped with the other separators.
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+func normalizeItemName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// strategicRushRank implements the builder order from the Strategic Rush guide
+// (docs/STRATEGIC_RUSH.md): the hero closest to 8-day upgrades first (Archer
+// Queen before the rest), then army capacity and equipment buildings, then
+// resources and town-hall barriers, and defenses only after everything else.
+// Lower wins; equal ranks keep the in-game suggestion order.
+func strategicRushRank(it UpgradeItem) int {
+	name := normalizeItemName(it.Name)
+	switch it.Category {
+	case "heroes":
+		for i, hero := range []string{"archerqueen", "grandwarden", "royalchampion", "minionprince", "barbarianking", "dragonduke"} {
+			if strings.Contains(name, hero) {
+				return i
+			}
+		}
+		return 6
+	case "army":
+		for i, building := range []string{"armycamp", "clancastle", "blacksmith", "herohall", "laboratory", "barracks", "spellfactory", "pethouse", "workshop"} {
+			if strings.Contains(name, building) {
+				return 10 + i
+			}
+		}
+		return 19
+	case "resources":
+		return 20
+	case "defenses":
+		return 30
+	case "traps":
+		return 40
+	default:
+		return 50
+	}
+}
+
+// maxBuilderPages caps the list scan. The menu shows about five rows per page,
+// so four pages covers the whole list without OCR-ing forever on a stuck swipe.
+const maxBuilderPages = 14
+
+// scrollBuilderList moves the upgrade list inside the menu panel. The x is well
+// inside the row text, away from the scrollbar and the panel edge, and the y
+// range stays below the header and above the tab bar.
+func (bm *BuilderManager) scrollBuilderList(up bool) {
+	if bm.cal == nil || bm.client == nil {
+		return
+	}
+	x := int(float64(bm.cal.PhysicalW) * 0.78)
+	y1 := int(float64(bm.cal.PhysicalH) * 0.30)
+	y2 := int(float64(bm.cal.PhysicalH) * 0.72)
+	if up {
+		// Finger travels up, so the list content moves up and later rows show.
+		y1, y2 = y2, y1
+	}
+	if err := bm.client.Swipe(x, y1, x, y2, 450); err != nil {
+		bm.logger.Warn().Err(err).Msg("builder list scroll swipe failed")
+	}
+	time.Sleep(600 * time.Millisecond)
+}
+
+// builderPageSignature fingerprints the visible rows regardless of order, so
+// a bounce at the top or bottom (same page again) can be detected without
+// relying on exact OCR text.
+func builderPageSignature(stats BuilderOverviewStats) string {
+	names := make([]string, 0, len(stats.Items))
+	for _, it := range stats.Items {
+		names = append(names, normalizeItemName(it.Name))
+	}
+	sort.Strings(names)
+	return strings.Join(names, "|")
+}
+
+// resetBuilderListTop scrolls to the first page and returns it. The menu can
+// reopen at the scroll position it was closed on, and scanning from the middle
+// would miss the rows above it. A page that repeats after a swipe means the list
+// bounced at the top, so this stops instead of swiping a fixed number of times.
+func (bm *BuilderManager) resetBuilderListTop() BuilderOverviewStats {
+	var prev string
+	var last BuilderOverviewStats
+	for i := 0; i < maxBuilderPages; i++ {
+		bm.scrollBuilderList(false)
+		last = bm.inspectMenuFrame()
+		sig := builderPageSignature(last)
+		if i > 0 && sig == prev {
+			break
+		}
+		prev = sig
+	}
+	return last
+}
+
+// scanBuilderPages OCRs the visible list, scrolls down, and repeats until the
+// rows stop changing. Each page's regions are only valid for that page, so the
+// caller keeps the page index and re-finds the chosen row after scrolling back.
+func (bm *BuilderManager) scanBuilderPages(first BuilderOverviewStats) []BuilderOverviewStats {
+	seen := make(map[string]bool)
+	pages := make([]BuilderOverviewStats, 0, maxBuilderPages)
+	for i := 0; i < maxBuilderPages; i++ {
+		stats := first
+		if i > 0 {
+			stats = bm.inspectMenuFrame()
+		}
+		newRows := 0
+		for _, it := range stats.Items {
+			name := normalizeItemName(it.Name)
+			if name != "" && !seen[name] {
+				seen[name] = true
+				newRows++
+			}
+		}
+		if i > 0 && newRows == 0 {
+			break
+		}
+		pages = append(pages, stats)
+		if len(stats.Items) == 0 || i == maxBuilderPages-1 {
+			break
+		}
+		bm.logger.Debug().Int("page", i+1).Int("rows", len(stats.Items)).Msg("scrolling builder upgrade list")
+		bm.scrollBuilderList(true)
+	}
+	return pages
+}
+
+// findItemOnCurrentPage OCRs the currently visible list and returns the row with
+// the same normalised name. It never taps; the caller uses the fresh region.
+func (bm *BuilderManager) findItemOnCurrentPage(target UpgradeItem) (UpgradeItem, bool) {
+	want := normalizeItemName(target.Name)
+	stats := bm.inspectMenuFrame()
+	best := UpgradeItem{}
+	bestDist := 1 << 30
+	for _, it := range stats.Items {
+		if normalizeItemName(it.Name) != want || it.Region.W <= 0 || it.Region.H <= 0 {
+			continue
+		}
+		// Duplicate row names exist ("Gold Mine x 3" at several levels). The
+		// row nearest the original position is the one that was selected.
+		dist := absInt(it.Region.Y-target.Region.Y) + absInt(it.Region.X-target.Region.X)/4
+		if dist < bestDist {
+			best, bestDist = it, dist
+		}
+	}
+	return best, bestDist < 1<<30
+}
+
+func (bm *BuilderManager) executeBuildingUpgrade(pages []BuilderOverviewStats, k float64) {
 	bm.logger.Info().Str("strategy", bm.cfg.UpgradeStrategy).Msg("selecting best building upgrade")
 
-	best, ok := bm.selectBuildingUpgrade(stats.Items)
+	items := make([]UpgradeItem, 0)
+	for _, page := range pages {
+		items = append(items, page.Items...)
+	}
+	best, ok := bm.selectBuildingUpgrade(items)
 	if !ok {
 		bm.logger.Info().Msg("no eligible building upgrades found matching filters; skipping building upgrade")
 		return
 	}
+
+	// Remember which page held the winner, then swipe back page-by-page from the
+	// bottom and OCR once for a fresh tap region. If the list moved differently
+	// than expected, fall back to walking from the top instead of tapping a
+	// stale coordinate.
+	page := 0
+	for pi, p := range pages {
+		for _, it := range p.Items {
+			if normalizeItemName(it.Name) == normalizeItemName(best.Name) &&
+				it.Region.X == best.Region.X && it.Region.Y == best.Region.Y {
+				page = pi
+			}
+		}
+	}
+	// The scan stopped on the last page, so walk back the exact number of
+	// page-steps to the winner instead of re-reading every page from the top.
+	for i := 0; i < len(pages)-1-page; i++ {
+		bm.scrollBuilderList(false)
+	}
+	found, ok := bm.findItemOnCurrentPage(best)
+	if !ok {
+		bm.resetBuilderListTop()
+		for i := 0; i < len(pages)+1 && !ok; i++ {
+			found, ok = bm.findItemOnCurrentPage(best)
+			if !ok {
+				bm.scrollBuilderList(true)
+			}
+		}
+	}
+	if !ok {
+		bm.logger.Warn().Str("item", best.Name).Msg("selected row is no longer visible after scrolling; skipping instead of tapping a stale region")
+		return
+	}
+	bm.confirmBuildingUpgrade(found, k)
+}
+
+func (bm *BuilderManager) confirmBuildingUpgrade(best UpgradeItem, k float64) {
 	if best.Region.W <= 0 || best.Region.H <= 0 {
 		bm.logger.Warn().Str("item", best.Name).Msg("parsed upgrade item has no tap region; skipping instead of tapping")
 		return

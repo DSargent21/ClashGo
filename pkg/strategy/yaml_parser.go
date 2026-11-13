@@ -33,6 +33,31 @@ type Phase struct {
 	VerifyBeforeNext bool   `yaml:"verify_before_next"` // Wait for slot empty before next phase
 }
 
+// LoadoutUnit is one line of "what to train" — a troop, spell or siege name
+// with the count the recipe must hold. It is display/config data for the launch
+// screen; the bot still deploys from Phases, not from here.
+type LoadoutUnit struct {
+	Name  string `yaml:"name"`
+	Count int    `yaml:"count"`
+	// Slots is how much space one of these takes: camp space for a troop,
+	// housing slots for a spell (Rage is 2) or for a siege machine. 0 means
+	// "not stated", and the launch screen then only shows the count.
+	Slots int `yaml:"slots"`
+}
+
+// Loadout is the army a player has to assemble in-game before this strategy can
+// run, in the terms the army editor uses: camp space, spell space, siege space
+// and the units that fill them. Optional: a strategy without a loadout still
+// runs, the launch screen just cannot instruct the player.
+type Loadout struct {
+	ArmyCamp      int           `yaml:"army_camp"`
+	SpellCapacity int           `yaml:"spell_capacity"`
+	SiegeCapacity int           `yaml:"siege_capacity"`
+	Troops        []LoadoutUnit `yaml:"troops"`
+	Spells        []LoadoutUnit `yaml:"spells"`
+	Siege         []LoadoutUnit `yaml:"siege"`
+}
+
 type DynamicStrategy struct {
 	Name                  string  `yaml:"name"`
 	Description           string  `yaml:"description"`
@@ -56,6 +81,9 @@ type DynamicStrategy struct {
 	// phases expect — e.g. valk_spam.yaml targets the 4th saved recipe.
 	// 0 means the same as 1 (first recipe).
 	ArmySlot int `yaml:"army_slot"`
+
+	// Loadout is what the player has to put in that recipe. Optional.
+	Loadout *Loadout `yaml:"loadout,omitempty"`
 }
 
 // SelectedArmySlot returns the 1-based army recipe to arm, clamping

@@ -1011,6 +1011,66 @@ func (a *App) SetAutoUpgradeConfig(
 	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
+// SaveUpgradeSetup applies the launch screen's auto-upgrade page: whether
+// builders run, the plan (strategic rush or max), which categories may be
+// upgraded, and whether one builder is reserved for wall dumping.
+func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, resources, traps, wallBuilder bool) error {
+	switch mode {
+	case "strategic_rush", "max", "heroes_first", "cheapest_first", "most_expensive_first", "balanced":
+	default:
+		return fmt.Errorf("unknown upgrade mode %q", mode)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cfg := config.LoadOrDefault("config.json")
+	cfg.Upgrade.AutoBuilders = auto
+	cfg.Upgrade.UpgradeStrategy = mode
+	cfg.Upgrade.UpgradeHeroes = heroes
+	cfg.Upgrade.UpgradeArmy = army
+	cfg.Upgrade.UpgradeDefenses = defenses
+	cfg.Upgrade.UpgradeResources = resources
+	cfg.Upgrade.UpgradeTraps = traps
+	if wallBuilder {
+		cfg.Upgrade.UpgradeWalls = true
+		cfg.Upgrade.ReserveBuilders = 1
+		if cfg.Upgrade.WallResource == "" {
+			cfg.Upgrade.WallResource = "both"
+		}
+	} else {
+		cfg.Upgrade.UpgradeWalls = false
+		cfg.Upgrade.ReserveBuilders = 0
+	}
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
+	}
+	return writeConfigFile(cfg)
+}
+
+// SaveLaunchSettings applies the setup wizard's loot step: search floors and
+// the dry-run safety switch. Separate from SaveConfig so it cannot overwrite
+// the army or wall choices made in the earlier steps.
+func (a *App) SaveLaunchSettings(minGold, minElixir, minDark int, dryRun bool) error {
+	if minGold < 0 || minElixir < 0 || minDark < 0 {
+		return fmt.Errorf("loot floors must be >= 0")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cfg := config.LoadOrDefault("config.json")
+	cfg.Search.MinLootGold = minGold
+	cfg.Search.MinLootElixir = minElixir
+	cfg.Search.MinLootDarkElixir = minDark
+	cfg.Upgrade.DryRun = dryRun
+
+	if a.bot != nil {
+		a.bot.UpdateConfig(cfg)
+	}
+	return writeConfigFile(cfg)
+}
+
 // SetStrategyArmySlot configures the saved army recipe slot (1..4) for a strategy.
 func (a *App) SetStrategyArmySlot(strategyName string, slot int) error {
 	a.mu.Lock()

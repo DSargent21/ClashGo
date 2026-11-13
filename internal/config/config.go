@@ -175,18 +175,18 @@ type AttackConfig struct {
 	// stops it. The GUI has one Start button and one Stop button, so unlimited is
 	// what those two imply — the cap is opt-in, and only a positive value ever
 	// ends a session without the user asking.
-	MaxAttackPerSession int      `json:"max_attack_per_session"`
-	DropDelay           Duration `json:"drop_delay"`
-	SpellDelay          Duration `json:"spell_delay"`
-	EndBattleDelay      Duration `json:"end_battle_delay"`
-	UseQueen            bool     `json:"use_queen"`
-	UseWarden           bool     `json:"use_warden"`
-	UseClanCastle       bool     `json:"use_clan_castle"`
-	QueenChargeAtPct    int      `json:"queen_charge_at_pct"`
-	WardenUseAtPct      int      `json:"warden_use_at_pct"`
-	ReserveDEPercent    int      `json:"reserve_de_percent"`
-	StallTimerSeconds   int            `json:"stall_timer_seconds"`
-	StrategySlots       map[string]int `json:"strategy_slots,omitempty"`
+	MaxAttackPerSession int             `json:"max_attack_per_session"`
+	DropDelay           Duration        `json:"drop_delay"`
+	SpellDelay          Duration        `json:"spell_delay"`
+	EndBattleDelay      Duration        `json:"end_battle_delay"`
+	UseQueen            bool            `json:"use_queen"`
+	UseWarden           bool            `json:"use_warden"`
+	UseClanCastle       bool            `json:"use_clan_castle"`
+	QueenChargeAtPct    int             `json:"queen_charge_at_pct"`
+	WardenUseAtPct      int             `json:"warden_use_at_pct"`
+	ReserveDEPercent    int             `json:"reserve_de_percent"`
+	StallTimerSeconds   int             `json:"stall_timer_seconds"`
+	StrategySlots       map[string]int  `json:"strategy_slots,omitempty"`
 	StrategyAutoEnd     map[string]bool `json:"strategy_auto_end,omitempty"`
 	// MinSecondsBetweenAttacks is the minimum pause between the end of one
 	// battle (Return Home) and the start of the next attack sequence.
@@ -211,6 +211,11 @@ type SearchConfig struct {
 	MinLootElixir        int  `json:"min_loot_elixir"`
 	MinLootDarkElixir    int  `json:"min_loot_de"`
 	MaxSearchSkips       int  `json:"max_search_skips"`
+	// AutoLoot lets internal/autotune set the three minimums above from the
+	// loot the bot reads on every searched base, trading search time against
+	// raid time to maximise loot per hour. The manual values stay the starting
+	// point and the fallback until enough bases have been read.
+	AutoLoot bool `json:"auto_loot"`
 }
 
 type DebugConfig struct {
@@ -269,7 +274,7 @@ type UpgradeConfig struct {
 	WallMinElixirReserve int      `json:"wall_min_elixir_reserve"`
 	AutoBuilders         bool     `json:"auto_builders"`
 	ReserveBuilders      int      `json:"reserve_builders"`
-	UpgradeStrategy      string   `json:"upgrade_strategy"` // "heroes_first", "cheapest_first", "most_expensive_first", "balanced"
+	UpgradeStrategy      string   `json:"upgrade_strategy"` // "strategic_rush", "max", "heroes_first", "cheapest_first", "most_expensive_first", "balanced"
 	UpgradeDefenses      bool     `json:"upgrade_defenses"`
 	UpgradeResources     bool     `json:"upgrade_resources"`
 	UpgradeArmy          bool     `json:"upgrade_army"`

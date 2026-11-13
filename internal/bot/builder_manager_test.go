@@ -389,6 +389,66 @@ func TestCategoryTogglesAndLimits(t *testing.T) {
 
 // TestSelectBuildingUpgradeStrategies covers the upgrade-priority menu for all
 // four options plus the spend caps and the unknown-category fallback.
+func TestStrategicRushOrder(t *testing.T) {
+	all := config.UpgradeConfig{
+		UpgradeHeroes: true, UpgradeDefenses: true, UpgradeResources: true,
+		UpgradeArmy: true, UpgradeTraps: true, UpgradeStrategy: "strategic_rush",
+	}
+	items := []UpgradeItem{
+		{Name: "Wizard Tower", Category: "defenses", Cost: 9000, Currency: "gold"},
+		{Name: "Gold Mine", Category: "resources", Cost: 500, Currency: "elixir"},
+		{Name: "Army Camp", Category: "army", Cost: 900, Currency: "elixir"},
+		{Name: "Grand Warden", Category: "heroes", Cost: 7000, Currency: "elixir"},
+		{Name: "Archer Queen", Category: "heroes", Cost: 8000, Currency: "dark_elixir"},
+	}
+	bm := &BuilderManager{cfg: all}
+	best, ok := bm.selectBuildingUpgrade(items)
+	if !ok || best.Name != "Archer Queen" {
+		t.Fatalf("rush picked %q, %v; want Archer Queen first", best.Name, ok)
+	}
+
+	// OCR splits and punctuation do not change the ranking: no space, mixed
+	// case, and a stray glyph still resolve to the same hero/building.
+	ocrItems := []UpgradeItem{
+		{Name: "DaRk ElixİR DRill x 3", Category: "resources", Cost: 1},
+		{Name: "ARCHERQUeEN", Category: "heroes", Cost: 2},
+	}
+	best, ok = bm.selectBuildingUpgrade(ocrItems)
+	if !ok || best.Name != "ARCHERQUeEN" {
+		t.Fatalf("rush picked %q, %v; want spaced-out Archer Queen", best.Name, ok)
+	}
+	if got := normalizeItemName("DaRk ElixİR DRill x 3"); got != "darkelixirdrillx3" {
+		t.Fatalf("normalizeItemName = %q", got)
+	}
+
+	// Without heroes the army-capacity building outranks resources and defense.
+	all.UpgradeHeroes = false
+	bm = &BuilderManager{cfg: all}
+	best, ok = bm.selectBuildingUpgrade(items)
+	if !ok || best.Name != "Army Camp" {
+		t.Fatalf("rush picked %q, %v; want Army Camp after heroes", best.Name, ok)
+	}
+
+	// Defenses are last, never skipped when they are the only thing left.
+	all.UpgradeArmy, all.UpgradeResources = false, false
+	bm = &BuilderManager{cfg: all}
+	best, ok = bm.selectBuildingUpgrade(items)
+	if !ok || best.Name != "Wizard Tower" {
+		t.Fatalf("rush picked %q, %v; want Wizard Tower last", best.Name, ok)
+	}
+
+	// Max ignores the rush order and takes the biggest upgrade available.
+	maxCfg := config.UpgradeConfig{
+		UpgradeHeroes: true, UpgradeDefenses: true, UpgradeResources: true,
+		UpgradeArmy: true, UpgradeTraps: true, UpgradeStrategy: "max",
+	}
+	bm = &BuilderManager{cfg: maxCfg}
+	best, ok = bm.selectBuildingUpgrade(items)
+	if !ok || best.Name != "Wizard Tower" {
+		t.Fatalf("max picked %q, %v; want most expensive Wizard Tower", best.Name, ok)
+	}
+}
+
 func TestSelectBuildingUpgradeStrategies(t *testing.T) {
 	all := config.UpgradeConfig{
 		UpgradeHeroes: true, UpgradeDefenses: true, UpgradeResources: true,
