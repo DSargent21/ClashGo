@@ -38,6 +38,20 @@ func NewBuilderManager(client *adb.Client, cal *game.Calibration, cfg config.Upg
 	}
 }
 
+// tap sends one human-shaped tap. Every upgrade action goes through here so the
+// automation cannot drift back to fixed-point taps: prior to this, the whole
+// builder menu was driven by `client.Tap` at authored coordinates with
+// `time.Sleep` between them, which made the village — the screen a human stares
+// at most — the most robotic surface in the app.
+func (bm *BuilderManager) tap(x, y int) error {
+	return bm.client.TapRandomized(x, y)
+}
+
+// wait sleeps for a UI settle interval with the client's configured jitter.
+func (bm *BuilderManager) wait(d time.Duration) {
+	bm.client.JitteredSleep(d)
+}
+
 // OpenMenu opens the Builder Overview modal from the main village.
 func (bm *BuilderManager) OpenMenu() error {
 	if bm.cal == nil || bm.client == nil {
@@ -51,10 +65,10 @@ func (bm *BuilderManager) OpenMenu() error {
 		by = int(float64(bm.cal.PhysicalH) * 0.788)
 	}
 	bm.logger.Debug().Int("x", bx).Int("y", by).Msg("opening builder overview menu")
-	if err := bm.client.Tap(bx, by); err != nil {
+	if err := bm.tap(bx, by); err != nil {
 		return fmt.Errorf("tap builder menu icon: %w", err)
 	}
-	time.Sleep(1200 * time.Millisecond)
+	bm.wait(1200 * time.Millisecond)
 	return nil
 }
 
@@ -69,10 +83,10 @@ func (bm *BuilderManager) CloseMenu() error {
 		closeX, closeY = 975, 36
 	}
 	bm.logger.Debug().Int("x", closeX).Int("y", closeY).Msg("closing builder overview menu via X button")
-	if err := bm.client.Tap(closeX, closeY); err != nil {
+	if err := bm.tap(closeX, closeY); err != nil {
 		return fmt.Errorf("dismiss builder menu: %w", err)
 	}
-	time.Sleep(800 * time.Millisecond)
+	bm.wait(800 * time.Millisecond)
 	return nil
 }
 
@@ -87,7 +101,7 @@ func (bm *BuilderManager) CloseModalDialog() error {
 		closeX, closeY = 937, 137
 	}
 	bm.logger.Debug().Int("x", closeX).Int("y", closeY).Msg("closing confirmation modal dialog via X button")
-	return bm.client.Tap(closeX, closeY)
+	return bm.tap(closeX, closeY)
 }
 
 // BuilderOverviewStats holds parsed status of the builder menu tabs.
@@ -163,8 +177,8 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 	if bm.cfg.AutoLab {
 		labTabPt := image.Pt(int(650*k), int(638*k))
 		bm.logger.Info().Msg("switching to laboratory upgrades tab")
-		_ = bm.client.Tap(labTabPt.X, labTabPt.Y)
-		time.Sleep(1000 * time.Millisecond)
+		bm.tap(labTabPt.X, labTabPt.Y)
+		bm.wait(1000 * time.Millisecond)
 
 		labStats := bm.inspectMenuFrame()
 		if !labStats.LabFree {
@@ -178,8 +192,8 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 	if bm.cfg.AutoPets {
 		petsTabPt := image.Pt(int(840*k), int(638*k))
 		bm.logger.Info().Msg("switching to hero pets tab")
-		_ = bm.client.Tap(petsTabPt.X, petsTabPt.Y)
-		time.Sleep(1000 * time.Millisecond)
+		bm.tap(petsTabPt.X, petsTabPt.Y)
+		bm.wait(1000 * time.Millisecond)
 
 		petStats := bm.inspectMenuFrame()
 		if !petStats.PetsFree {
@@ -222,9 +236,9 @@ func (bm *BuilderManager) selectBuildingUpgrade(items []UpgradeItem) (UpgradeIte
 		// Guidance: offense before defense, new capability before existing
 		// levels. The menu has no "new building" flag, so the rank follows
 		// the guide's per-TH order as closely as the OCR row allows.
-		bestRank := strategicRushRank(best)
+		bestRank := strategicRushRank(best, bm.cfg.HeroPriorities)
 		for _, it := range eligible[1:] {
-			if rank := strategicRushRank(it); rank < bestRank {
+			if rank := strategicRushRank(it, bm.cfg.HeroPriorities); rank < bestRank {
 				best, bestRank = it, rank
 			}
 		}
@@ -284,16 +298,26 @@ func normalizeItemName(s string) string {
 // Queen before the rest), then army capacity and equipment buildings, then
 // resources and town-hall barriers, and defenses only after everything else.
 // Lower wins; equal ranks keep the in-game suggestion order.
-func strategicRushRank(it UpgradeItem) int {
+// heroRank returns the position of a hero row in the configured priority
+// queue. An empty queue falls back to the researched default; a hero the queue
+// does not name sorts after every named one (rank == len(queue)).
+func heroRank(name string, priorities []string) int {
+	if len(priorities) == 0 {
+		priorities = config.DefaultHeroPriorities()
+	}
+	for i, hero := range priorities {
+		if strings.Contains(name, normalizeItemName(hero)) {
+			return i
+		}
+	}
+	return len(priorities)
+}
+
+func strategicRushRank(it UpgradeItem, heroPriorities []string) int {
 	name := normalizeItemName(it.Name)
 	switch it.Category {
 	case "heroes":
-		for i, hero := range []string{"archerqueen", "grandwarden", "royalchampion", "minionprince", "barbarianking", "dragonduke"} {
-			if strings.Contains(name, hero) {
-				return i
-			}
-		}
-		return 6
+		return heroRank(name, heroPriorities)
 	case "army":
 		for i, building := range []string{"armycamp", "clancastle", "blacksmith", "herohall", "laboratory", "barracks", "spellfactory", "pethouse", "workshop"} {
 			if strings.Contains(name, building) {
@@ -330,10 +354,10 @@ func (bm *BuilderManager) scrollBuilderList(up bool) {
 		// Finger travels up, so the list content moves up and later rows show.
 		y1, y2 = y2, y1
 	}
-	if err := bm.client.Swipe(x, y1, x, y2, 450); err != nil {
+	if err := bm.client.SwipeHuman(x, y1, x, y2, 450); err != nil {
 		bm.logger.Warn().Err(err).Msg("builder list scroll swipe failed")
 	}
-	time.Sleep(600 * time.Millisecond)
+	bm.wait(600 * time.Millisecond)
 }
 
 // builderPageSignature fingerprints the visible rows regardless of order, so
@@ -477,13 +501,13 @@ func (bm *BuilderManager) confirmBuildingUpgrade(best UpgradeItem, k float64) {
 	selectedName := best.Name
 
 	bm.logger.Info().Str("item", selectedName).Int("x", tapPt.X).Int("y", tapPt.Y).Msg("tapping upgrade item")
-	_ = bm.client.Tap(tapPt.X, tapPt.Y)
-	time.Sleep(1400 * time.Millisecond)
+	bm.tap(tapPt.X, tapPt.Y)
+	bm.wait(1400 * time.Millisecond)
 
 	if bm.cfg.DryRun {
 		bm.logger.Info().Str("item", selectedName).Msg("dry run: upgrade modal inspected; dismissing safely without confirming")
 		_ = bm.CloseModalDialog()
-		time.Sleep(500 * time.Millisecond)
+		bm.wait(500 * time.Millisecond)
 		_ = bm.OpenMenu()
 		return
 	}
@@ -500,21 +524,21 @@ func (bm *BuilderManager) confirmBuildingUpgrade(best UpgradeItem, k float64) {
 		if drawn {
 			cx, cy := confirmRect.Center()
 			bm.logger.Info().Int("x", cx).Int("y", cy).Msg("confirming building upgrade")
-			_ = bm.client.Tap(cx, cy)
-			time.Sleep(1000 * time.Millisecond)
+			bm.tap(cx, cy)
+			bm.wait(1000 * time.Millisecond)
 		} else {
 			bm.logger.Warn().Msg("confirmation dialog not drawn; skipping tap to prevent mis-click")
 		}
 	} else {
 		confirmPt := image.Pt(int(656*k), int(560*k))
 		bm.logger.Info().Int("x", confirmPt.X).Int("y", confirmPt.Y).Msg("confirming building upgrade (fallback)")
-		_ = bm.client.Tap(confirmPt.X, confirmPt.Y)
-		time.Sleep(1000 * time.Millisecond)
+		bm.tap(confirmPt.X, confirmPt.Y)
+		bm.wait(1000 * time.Millisecond)
 	}
 
 	// In case gems dialog or insufficient resources popup opened, safely close modal
 	_ = bm.CloseModalDialog()
-	time.Sleep(500 * time.Millisecond)
+	bm.wait(500 * time.Millisecond)
 
 	// Re-open overview menu
 	_ = bm.OpenMenu()
@@ -626,11 +650,11 @@ func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
 	}
 	if !filterPopupOpen(screen, bm.cal) {
 		bm.logger.Info().Int("x", icon.X).Int("y", icon.Y).Msg("opening build menu filter popup")
-		if err := bm.client.Tap(icon.X, icon.Y); err != nil {
+		if err := bm.tap(icon.X, icon.Y); err != nil {
 			screen.Close()
 			return fmt.Errorf("tap filter button: %w", err)
 		}
-		time.Sleep(900 * time.Millisecond)
+		bm.wait(900 * time.Millisecond)
 		screen.Close()
 		screen, err = bm.client.CaptureToMat()
 		if err != nil || screen.Empty() {
@@ -675,16 +699,16 @@ func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
 			// Clear whatever single Type is selected; one tap toggles it off.
 			if selected {
 				bm.logger.Info().Str("type", t.name).Msg("clearing build menu type filter")
-				_ = bm.client.Tap(p.X, p.Y)
-				time.Sleep(400 * time.Millisecond)
+				bm.tap(p.X, p.Y)
+				bm.wait(400 * time.Millisecond)
 				break
 			}
 			continue
 		}
 		if t.name == want && !selected {
 			bm.logger.Info().Str("type", t.name).Msg("setting build menu type filter")
-			_ = bm.client.Tap(p.X, p.Y)
-			time.Sleep(400 * time.Millisecond)
+			bm.tap(p.X, p.Y)
+			bm.wait(400 * time.Millisecond)
 		}
 		if t.name == want {
 			break
@@ -700,8 +724,8 @@ func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
 			continue
 		}
 		bm.logger.Info().Int("x", p.X).Int("y", p.Y).Msg("clearing build menu resource filter")
-		_ = bm.client.Tap(p.X, p.Y)
-		time.Sleep(220 * time.Millisecond)
+		bm.tap(p.X, p.Y)
+		bm.wait(220 * time.Millisecond)
 	}
 
 	// Sorting: only the two priorities that name an order have a button. Any
@@ -712,56 +736,56 @@ func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
 	case "cheapest_first":
 		if !menuButtonSelected(screen, costMin.X, costMin.Y) {
 			bm.logger.Info().Msg("setting build menu sorting to cost min")
-			_ = bm.client.Tap(costMin.X, costMin.Y)
-			time.Sleep(220 * time.Millisecond)
+			bm.tap(costMin.X, costMin.Y)
+			bm.wait(220 * time.Millisecond)
 		}
 	case "most_expensive_first":
 		if !menuButtonSelected(screen, costMax.X, costMax.Y) {
 			bm.logger.Info().Msg("setting build menu sorting to cost max")
-			_ = bm.client.Tap(costMax.X, costMax.Y)
-			time.Sleep(220 * time.Millisecond)
+			bm.tap(costMax.X, costMax.Y)
+			bm.wait(220 * time.Millisecond)
 		}
 	default:
 		for _, p := range []image.Point{costMax, costMin} {
 			if menuButtonSelected(screen, p.X, p.Y) {
 				bm.logger.Info().Msg("clearing build menu sorting")
-				_ = bm.client.Tap(p.X, p.Y)
-				time.Sleep(220 * time.Millisecond)
+				bm.tap(p.X, p.Y)
+				bm.wait(220 * time.Millisecond)
 			}
 		}
 	}
 
 	// Dismiss the popup on the village side so no menu row is tapped.
-	_ = bm.client.Tap(outside.X, outside.Y)
-	time.Sleep(700 * time.Millisecond)
+	bm.tap(outside.X, outside.Y)
+	bm.wait(700 * time.Millisecond)
 	return nil
 }
 
 func (bm *BuilderManager) ApplyLabInGameFilter(strategy string, k float64) {
 	filterPt := image.Pt(int(554*k), int(32*k))
 	bm.logger.Info().Str("strategy", strategy).Msg("applying in-game filter for lab research")
-	_ = bm.client.Tap(filterPt.X, filterPt.Y)
-	time.Sleep(500 * time.Millisecond)
+	bm.tap(filterPt.X, filterPt.Y)
+	bm.wait(500 * time.Millisecond)
 
 	switch strategy {
 	case "spells_first":
 		// Tap Spells filter button ~(416, 265)
-		_ = bm.client.Tap(int(367*k), int(234*k))
+		bm.tap(int(367*k), int(234*k))
 	case "troops_first":
 		// Tap Troops filter button ~(255, 265)
-		_ = bm.client.Tap(int(225*k), int(234*k))
+		bm.tap(int(225*k), int(234*k))
 	case "siege_first":
 		// Tap Siege filter button ~(579, 265)
-		_ = bm.client.Tap(int(511*k), int(234*k))
+		bm.tap(int(511*k), int(234*k))
 	case "cheapest_first":
 		// Tap Cost Min sorting button ~(416, 425)
-		_ = bm.client.Tap(int(367*k), int(375*k))
+		bm.tap(int(367*k), int(375*k))
 	}
-	time.Sleep(400 * time.Millisecond)
+	bm.wait(400 * time.Millisecond)
 
 	// Dismiss filter popup by tapping backdrop ~(100, 300)
-	_ = bm.client.Tap(int(100*k), int(300*k))
-	time.Sleep(500 * time.Millisecond)
+	bm.tap(int(100*k), int(300*k))
+	bm.wait(500 * time.Millisecond)
 }
 
 func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float64) {
@@ -828,23 +852,23 @@ func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float6
 	}
 
 	bm.logger.Info().Str("item", selectedName).Int("x", tapPt.X).Int("y", tapPt.Y).Msg("tapping research item")
-	_ = bm.client.Tap(tapPt.X, tapPt.Y)
-	time.Sleep(1400 * time.Millisecond)
+	bm.tap(tapPt.X, tapPt.Y)
+	bm.wait(1400 * time.Millisecond)
 
 	if bm.cfg.DryRun {
 		bm.logger.Info().Str("item", selectedName).Msg("dry run: lab research modal inspected; dismissing safely without confirming")
 		_ = bm.CloseModalDialog()
-		time.Sleep(500 * time.Millisecond)
+		bm.wait(500 * time.Millisecond)
 		return
 	}
 
 	confirmPt := image.Pt(int(656*k), int(560*k))
 	bm.logger.Info().Int("x", confirmPt.X).Int("y", confirmPt.Y).Msg("confirming lab research")
-	_ = bm.client.Tap(confirmPt.X, confirmPt.Y)
-	time.Sleep(1000 * time.Millisecond)
+	bm.tap(confirmPt.X, confirmPt.Y)
+	bm.wait(1000 * time.Millisecond)
 
 	_ = bm.CloseModalDialog()
-	time.Sleep(500 * time.Millisecond)
+	bm.wait(500 * time.Millisecond)
 
 	if bm.cfg.AutoPets {
 		_ = bm.OpenMenu()
@@ -879,23 +903,23 @@ func (bm *BuilderManager) executePetUpgrade(stats BuilderOverviewStats, k float6
 	}
 
 	bm.logger.Info().Int("x", tapPt.X).Int("y", tapPt.Y).Msg("tapping pet item")
-	_ = bm.client.Tap(tapPt.X, tapPt.Y)
-	time.Sleep(1400 * time.Millisecond)
+	bm.tap(tapPt.X, tapPt.Y)
+	bm.wait(1400 * time.Millisecond)
 
 	if bm.cfg.DryRun {
 		bm.logger.Info().Msg("dry run: pet upgrade modal inspected; dismissing safely without confirming")
 		_ = bm.CloseModalDialog()
-		time.Sleep(500 * time.Millisecond)
+		bm.wait(500 * time.Millisecond)
 		return
 	}
 
 	confirmPt := image.Pt(int(656*k), int(560*k))
 	bm.logger.Info().Int("x", confirmPt.X).Int("y", confirmPt.Y).Msg("confirming pet upgrade")
-	_ = bm.client.Tap(confirmPt.X, confirmPt.Y)
-	time.Sleep(1000 * time.Millisecond)
+	bm.tap(confirmPt.X, confirmPt.Y)
+	bm.wait(1000 * time.Millisecond)
 
 	_ = bm.CloseModalDialog()
-	time.Sleep(500 * time.Millisecond)
+	bm.wait(500 * time.Millisecond)
 }
 
 func (bm *BuilderManager) isCategoryAllowed(cat string) bool {
@@ -910,6 +934,10 @@ func (bm *BuilderManager) isCategoryAllowed(cat string) bool {
 		return bm.cfg.UpgradeArmy
 	case "traps":
 		return bm.cfg.UpgradeTraps
+	case "townhall":
+		// Never inferred: a Town Hall upgrade changes the match pool and hides
+		// loot for days, so it needs its own explicit switch.
+		return bm.cfg.AllowTownHall
 	default:
 		// Names the toggles do not cover (unrecognised OCR, or a lab category
 		// leaking into the menu) follow the menu only while the user has every
@@ -1067,6 +1095,12 @@ func ParseBuilderOverviewOCR(regions []vision.TextRegion) BuilderOverviewStats {
 func classifyItemCategory(txt string) string {
 	txt = strings.ToLower(txt)
 	norm := strings.ReplaceAll(txt, " ", "")
+
+	// Town Hall first: it is the one irreversible upgrade, and the category is
+	// what keeps it out of every generic "upgrade everything" pass.
+	if strings.Contains(norm, "townhall") || strings.Contains(txt, "town hall") {
+		return "townhall"
+	}
 
 	// 1. Traps first: must beat heroes (seeking air mine != king), troops (giant bomb != giant), resources (air mine != mine)
 	if strings.Contains(norm, "bomb") || strings.Contains(norm, "spring") ||

@@ -84,8 +84,12 @@ available for the Config tab and older config files.
   comes before King for the EDrag/air plan, and Duke last because his level
   pool is small and hero upgrades are manual anyway.
 
-The bot only chooses the next building row; it does not start hero upgrades
-itself (heroes are not rows in the builder overview).
+Hero rows are eligible on the same screen: the build menu's own Hero type filter
+lists them, so `upgrade_heroes` + `strategic_rush` will pick a hero row when one
+is offered. The order comes from `upgrade.hero_priorities` (empty = the 2026
+queue above; a custom queue is never reordered). The bot still does not open a
+hero pedestal directly — if the game offers no hero row, no hero upgrade
+happens that cycle.
 
 ## Laboratory and pets
 
@@ -177,7 +181,10 @@ Turning the toggle off sets `upgrade_walls: false` and `reserve_builders: 0`.
   `upgrade.reserve_builders`, `upgrade.pet_priorities`, and the `upgrade_*`
   category booleans.
 
-The bot never upgrades the Town Hall, places buildings, or spends magic items.
+The bot never upgrades the Town Hall unless `upgrade.allow_town_hall_upgrade` is
+explicitly on — it is classified as its own `townhall` category and excluded from
+every generic pass, because it changes the match pool and hides loot for days. It
+also never places new buildings or spends magic items.
 
 ## Priority research
 

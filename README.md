@@ -19,6 +19,7 @@ High-performance, lightweight Clash of Clans automation engine written in Go and
 - **Interactive Visual Calibration**: Launch browser-based interactive tools (`make roi-picker`, `make pick-coords`) to drag boxes, crop templates, and calibrate HUD coordinates live on emulator frames.
 - **1-Click In-App Updater**: Automated GitHub Releases integration. Detects new versions, verifies SHA-256 signatures, applies detached hot-swaps, and relaunches with zero manual re-installation.
 - **Headless CLI (`bot_cli`) & Desktop GUI (Wails)**: Run the full bot engine headlessly inside `tmux` for 24/7 background farming (~25–40 MB RSS), or launch the modern React/Wails UI for visual analytics and live control.
+- **Unattended by default**: safe pacing is on for new installs (an 18 h active window, 55–95 min sessions, game-stopped breaks, 8 attacks/h and 50/day), the army queues itself when the camps are empty, full storages dump into walls and park instead of stalling the loop, and `make daemon-install` installs a LaunchAgent that survives reboots and keeps the Mac awake. The dashboard names the exact reason whenever the bot is deliberately idle.
 - **Guided First-Run Setup**: Pick an army, an upgrade plan, and loot floors in a three-step wizard. Auto EDrag Rush is recommended by default from its higher estimated loot per hour, adaptive loot takes over the search floors once it has enough samples, and pet upgrades start from the 2026 Phoenix → Spirit Fox → Sneezy queue.
 
 ---
@@ -68,6 +69,16 @@ make build-cli
 ```
 
 See [`docs/CLI.md`](docs/CLI.md) for full flag documentation (`-perf`, `-once`, `-deploy-only`, `-devices`, `-strategies`).
+
+### 3. Run it 24/7 (optional)
+
+```bash
+make daemon-install     # LaunchAgent + caffeinate, survives reboot/sleep
+make daemon-status
+make daemon-uninstall
+```
+
+The agent runs `tools/run_bot_keepalive.sh` (respawns on any exit, notifies after three consecutive crashes). Pacing lives in Config → Schedule; `session_state.json` keeps the hourly/daily counters across restarts.
 
 ---
 

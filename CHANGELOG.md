@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Unattended 24/7 loop** (`internal/bot/runtime_state.go`, `idle.go`, `training.go`, `personal_break.go`):
+  - Training queue: an empty Start Attack panel now queues the configured saved recipe (EDIT ARMY → recipe card → sheet action, all located on the live frame and failing closed) instead of idling 60 s at a time forever. `training.enabled` + `training.train_dead_troops` gate it; `training.sleep_after_train` is honoured.
+  - One halt verdict for the UI, the watchdog and the attack path: `scheduler`, `storage_full`, `army_empty`, `session_cap`. `BotStats.halted_reason` (plus `schedule_state`, `attacks_today`, `max_attacks_per_day`, `next_change_at`) is rendered on the dashboard.
+  - Village maintenance (upgrades, collection, camera drift, training) now runs *before* the attack decision; it used to sit behind a branch that returns on every village frame, so a halted village did nothing at all. The storage gate is re-read from the frame the loop already holds every 30 s (hysteresis at `resume_threshold_percent`) instead of capturing per attempt.
+  - Scheduler breaks are a hard pause: no capture, no taps, no recovery restarts. Break hooks clear the zoom-out latch so the relaunched game is not deployed into the wrong geometry.
+  - Personal Break dialog: OCR'd on unclassified frames (12 s floor) and converted into a 15-minute scheduler break via `TriggerPersonalBreak` (previously dead code).
+  - Hourly/daily attack counters persist to `session_state.json` (atomic write) and are restored at boot, and the daily cap resets at local midnight rather than 24 h after process start.
+- **Safe pacing defaults** (`internal/config/config.go`): new installs start with the scheduler enabled (07:00–01:00, 75±20 min sessions, 20±7 min game-stopped breaks, 8 attacks/h, 50/day) instead of unlimited 24 h farming.
+- **Daemon install** (`tools/install_daemon.sh`, `make daemon-install|daemon-uninstall|daemon-status`): per-user LaunchAgent running the keepalive wrapper under `caffeinate -dimsu`; `--dry-run` prints the plist for `plutil -lint`. The keepalive wrapper now raises a desktop notification after three consecutive crashes.
+- **Hero priority queue** (`upgrade.hero_priorities`) drives `strategic_rush` hero ranking; empty keeps the researched 2026 order.
+- **Battle HUD veto** (`internal/game/battle_hud.go`): the red SURRENDER pill now decides the state whenever the probe rules disagree. On a live 1024x768 raid the classifier returned `ChestReward` (three vault-room probes hit tree canopy and dirt) while `StateBattle` only scored 3/12 and `MainVillage` matched 2/12, so the chest dismisser blind-tapped the battlefield and the attack sequence never deployed; the raid sat at 0 % with a full army until the timer expired. Modals stay exempt so `Connection lost`, `Update available` and offer dialogs are still dismissed. Regression: `testdata/live/battle_live_1024x768.png` plus synthetic pill/village/dimmed cases.
+- **`attack.attack_when_full` is wired**: it was written to every config and read by nothing. It is now the documented escape hatch from the storage halt, for profiles that keep raiding and waste the overflow instead of waiting for loot to be spent.
+
+### Changed
+- **Human-shaped upgrade and collection input**: every Build Menu tap now goes through `TapRandomized` with jittered settle waits (26 taps, 29 sleeps) and list scrolling uses `SwipeHuman`; the collector sweep randomizes order, offsets, dwell and skips a point 20 % of the time. These were the two most robotic surfaces in the app.
+- **Town Hall safety**: `townhall` is its own category and is excluded from every upgrade pass unless `upgrade.allow_town_hall_upgrade` is set.
+
+### Fixed
+- **Chest dismissal backs off after a failure** (`internal/bot/bot.go`): the dismisser loops for ~25 s before giving up and was immediately re-armed by the next frame, so a chest that would not close produced a continuous tap storm. It now waits 30 s, leaving the stuck-watchdog room to escalate.
+- **Silent storage and army deadlocks are now announced**: a storage halt with no spender enabled (`storage.dump_to_walls_before_halt` + `upgrade.upgrade_walls`, `upgrade.auto_builders`, `upgrade.auto_lab`, `upgrade.auto_pets` all off) and an empty army with the training loop off both log exactly which keys to change, instead of idling forever with a cheerful message. The old storage warning also claimed "walls/upgrades keep running" even when nothing was enabled.
+- **Keepalive wrapper: one alert per crash episode, growing backoff** (`tools/run_bot_keepalive.sh`): it re-notified on every 10 s respawn once three failures had accumulated (a notification storm from a dead emulator) and kept a flat 10 s retry in a crash loop. The alert now fires once per episode and the delay doubles to a 120 s cap; a clean exit resets both.
+- **Attack counters were persisted one attack late** (`internal/bot/bot.go`): `persistSchedulerCounters` ran with the battle report, *before* `scheduler.RecordAttack`, so `session_state.json` always trailed reality and a process killed instead of stopped cleanly lost the last attack from the daily cap.
+- **Break hooks no longer run under the scheduler mutex** (`internal/bot/scheduler.go`): they stop the game over ADB, which held the scheduler and gate locks for a device round trip and could stall the UI's stats poll.
+- **`GetStats` no longer asks the scheduler anything** (`internal/bot/runtime_state.go`): it reads the cached verdict, so a stats poll can neither plan a break nor block on ADB.
+
+### Removed
+- Dead search knobs `min_trophies`, `max_trophies`, `min_town_hall`, `max_town_hall`, `skip_big_base`, `skip_max_th`, `attack_if_trophies_gt`, their two CLI flags, and `upgrade.lab_priorities` — nothing read them, so the UI/CLI advertised filtering the bot never performed.
+
+### Added
 - **Guided First-Run Setup** (`web/src/components/LaunchSetup.tsx`, `app_launch.go`):
   - Three-step wizard (army → builders → settings) with a calm two-pane layout, neutral active navigation, flat sections, and a single gold accent.
   - Builders step covers lab research order and pet automation alongside building categories and wall reserve; lab and pets follow the engine switch.

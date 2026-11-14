@@ -525,10 +525,11 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                   <div className="acct-main">
                     <div className="acct-name">
                       <h3>{account.name}</h3>
-                      <span className={`status-pill ${meta.tone}`.trim()}>
-                        <i />{meta.label}
-                      </span>
-                      {account.active ? <span className="tag gold">Active</span> : null}
+                      {meta.label !== 'Running' ? (
+                        <span className={`status-pill ${meta.tone}`.trim()}>
+                          <i />{meta.label}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="acct-meta">
                       {account.player_tag ? <span className="mono">{account.player_tag}</span> : null}

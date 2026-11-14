@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,6 +77,7 @@ type Bot struct {
 	zoomedOut    atomic.Bool
 
 	chestDismissInFlight    atomic.Bool
+	chestRetryAt            atomic.Int64 // unix nanos; backoff after a failed chest dismissal
 	splashDismissInFlight   atomic.Bool
 	connLostDismissInFlight atomic.Bool
 	unknownHealInFlight     atomic.Bool
@@ -153,6 +155,25 @@ type Bot struct {
 	storageHalted    atomic.Bool
 	lastUpgradeCheck time.Time
 	lastCollectTime  time.Time
+	// storageNoSpenderWarned latches the one-shot "full storages, nothing to
+	// spend them on" warning so a full village does not log it every 30 s.
+	storageNoSpenderWarned atomic.Bool
+
+	// Runtime gates (runtime_state.go): the cached scheduler verdict the
+	// capture loop and the attack sequence both read, the persisted-counter
+	// failure latch, and the storage-gate bookkeeping (idle.go).
+	gate             gateState
+	persistFailed    atomic.Bool
+	lastStorageCheck time.Time
+	wallsDumping     atomic.Bool
+
+	// Training queue (training.go): the throttle stamp and the in-flight guard.
+	trainingLast     time.Time
+	trainingInFlight atomic.Bool
+
+	// personalBreakLast throttles the OCR probe for the Personal Break dialog
+	// (personal_break.go).
+	personalBreakLast time.Time
 
 	OnStatsUpdate func()
 }
@@ -463,13 +484,21 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 			func() {
 				b.logger.Info().Str("pkg", pkgName).Msg("scheduler break active; force-stopping game for offline simulation")
 				_ = b.client.StopApp(pkgName)
+				// The relaunched game comes up at its default zoom. Leaving this
+				// true makes the bot believe the village is still zoomed out and
+				// deploy every later attack into the wrong geometry.
+				b.zoomedOut.Store(false)
 			},
 			func() {
 				b.logger.Info().Str("pkg", pkgName).Msg("scheduler break complete; relaunching game")
 				_ = b.client.StartApp(pkgName)
+				b.zoomedOut.Store(false)
 			},
 		)
 	}
+	// Rate-limit counters survive a restart: a keepalive respawn must not reset
+	// the daily cap that keeps the account inside a human attack budget.
+	b.restoreSchedulerCounters()
 	b.builderManager = NewBuilderManager(client, cal, cfg.Upgrade, b.logger)
 
 	// Resolve the strategy's declared army slot once at boot so the
@@ -572,6 +601,7 @@ func (b *Bot) Start() error {
 
 func (b *Bot) Stop() {
 	b.cancel()
+	b.persistSchedulerCounters()
 	b.client.Close()
 	globalAsyncWriter.Close()
 	vision.CloseTemplateCache()
@@ -643,6 +673,20 @@ func (b *Bot) captureLoop() {
 		defer timer.Stop()
 
 		for {
+			// A scheduler break is a hard pause: no capture, no taps, no
+			// restarts. Screencap is guest work, and an account that keeps
+			// capturing while "offline" is not offline. The verdict is cached
+			// (runtime_state.go), so this costs a mutex read per tick.
+			if allowed, _ := b.scheduleAllowed(); !allowed {
+				b.lastCapture = time.Now()
+				select {
+				case <-b.ctx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+				continue
+			}
+
 			interval := getCaptureInterval()
 			nextCapture := lastCapture.Add(interval)
 			sleepTime := time.Until(nextCapture)
@@ -806,6 +850,13 @@ func (b *Bot) clearSplashDismissEpisode() {
 // one place doing nothing for too long, we cycle the game to recover from
 // hangs / dialogs / out-of-game screens without requiring user intervention.
 func (b *Bot) checkStuck(gc *game.GameContext) {
+	// A paused scheduler owns the account: the game is expected to be stopped,
+	// so every recovery rung below would fight the break (the old behaviour:
+	// StopApp during a break, then the 35 s watchdog relaunched the game and
+	// the next break hook stopped it again, all night).
+	if allowed, _ := b.scheduleAllowed(); !allowed {
+		return
+	}
 
 	if gc.ReadHealth().ConsecutiveFails >= 10 {
 		b.logger.Error().
@@ -829,6 +880,14 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 	}
 
 	state, _, _ := gc.ReadState()
+
+	// A deliberately idle village is not a stuck bot. Without this, a full
+	// storage (or an empty army) looks exactly like a hang: the attack branch
+	// declines, lastAction stays stale, and the watchdog restarted the game
+	// every 35 s on a village that was perfectly healthy.
+	if b.intentionalIdle(isVillageState(state)) {
+		return
+	}
 
 	// Post-boot splash states (ТАР! collect splash, castle logo, news)
 	// legitimately sit static for 1-3 minutes while the game connects — the
@@ -1070,6 +1129,12 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 
 	gc.UpdateScreen(screen, captureMs)
 
+	// Hard pause before anything can tap: splash dismissal, self-heal, Back
+	// presses and maintenance all live below this point.
+	if allowed, _ := b.scheduleAllowed(); !allowed {
+		return
+	}
+
 	if !b.zoomedOut.Load() {
 
 		pinX, pinY := b.cal.Hud(60, 695)
@@ -1139,15 +1204,23 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			b.logger.Debug().Msg("chest detected but dismissal disabled by config; deferring to stuck-watchdog")
 			return
 		}
+		// Back off after a failed dismissal. The dismisser itself loops for ~25 s
+		// before giving up, and without this every following frame re-armed it, so
+		// a chest that would not close produced a continuous tap storm instead of
+		// the watchdog's restart ladder.
+		if until := b.chestRetryAt.Load(); until != 0 && time.Now().UnixNano() < until {
+			return
+		}
 		if b.chestDismissInFlight.CompareAndSwap(false, true) {
 			b.logger.Info().Msg("chest reward screen detected; dispatching dismiss goroutine")
 			go func() {
 				defer b.chestDismissInFlight.Store(false)
 				start := time.Now()
 				if err := b.navigator.DismissChestReward(); err != nil {
+					b.chestRetryAt.Store(time.Now().Add(30 * time.Second).UnixNano())
 					b.logger.Warn().Err(err).
 						Dur("elapsed", time.Since(start)).
-						Msg("chest dismiss failed; will retry on next detection if still on screen")
+						Msg("chest dismiss failed; backing off 30s so the watchdog can escalate")
 				} else {
 					b.logger.Info().
 						Dur("elapsed", time.Since(start)).
@@ -1306,6 +1379,12 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	// Self-heal first: rate-limited Back + backdrop tap clears most modals
 	// without a cold restart; the watchdog still owns the final escalation.
 	if state == game.StateUnknown {
+		// Personal Break is text on an unclassified screen. Detect it before
+		// the self-heal taps: Back and a backdrop tap do nothing to it, and the
+		// watchdog would restart the game onto the same dialog.
+		if b.personalBreakDetected(screen) {
+			return
+		}
 		if b.unknownHealInFlight.CompareAndSwap(false, true) && time.Since(b.unknownHealLast) > 4*time.Second {
 			attempt := int(b.unknownHealAttempts.Add(1))
 			b.unknownHealLast = time.Now()
@@ -1382,62 +1461,25 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		b.hudHealMisses.Store(0)
 	}
 
+	// Between-battle maintenance runs BEFORE the attack decision. It used to
+	// sit below this branch, which returns on every village frame, so a
+	// halted-but-healthy village never upgraded, collected, or trained.
+	if b.maintainVillage(gc, screen) {
+		// Training is standing in the attack panel on this frame; a sequence
+		// started now would tap through its EDIT ARMY button.
+		return
+	}
+
 	if b.zoomedOut.Load() && (gc.State == game.StateMainVillage || gc.State == game.StateUnknown || gc.State == game.StateObstacleDialog) && b.findAttackButton(screen, 0.45) {
+		if b.storageHalted.Load() {
+			// The storage gate is closed: the maintenance pass above already
+			// dumped what it could into walls and will re-read the fill in 30 s.
+			return
+		}
 		b.logger.Info().Msg("attack button detected, starting sequence")
 		b.lastSequenceStart = time.Now()
 		go b.executeAttackSequence(gc)
 		return
-	}
-
-	// Idle humanization: while confirmed on the main village with no
-	// attack button in sight (army still training / waiting), drift the
-	// camera the way a waiting player would. Throttled so the wander
-	// never overlaps an attack sequence, and deliberately NOT
-	// recordActivity — a genuinely stuck bot must still trip the
-	// stuck-watchdog and cycle the game.
-	//
-	// Dispatched in a goroutine (mirroring the chest-dismiss pattern)
-	// so the ~3s sendevent gesture can't freeze the capture loop's UI
-	// frame stream; the seqRunning re-check keeps it from colliding
-	// with a freshly-started attack sequence. The pan swipes the map
-	// center, never the fixed HUD chrome, so a mid-pan capture still
-	// sees the attack button.
-	if gc.State == game.StateMainVillage && time.Since(b.lastIdlePan) > 18*time.Second {
-		b.lastIdlePan = time.Now()
-		b.logger.Debug().Msg("idle in village, wandering camera")
-		go func() {
-			if b.seqRunning.Load() {
-				return
-			}
-			b.navigator.IdlePan()
-		}()
-	}
-
-	// Periodic idle upgrade check: every 10 minutes when confirmed in main village,
-	// check if a free builder, lab, or pet slot opened up while waiting/training.
-	if gc.State == game.StateMainVillage && b.builderManager != nil &&
-		(b.cfg.Upgrade.AutoBuilders || b.cfg.Upgrade.AutoLab || b.cfg.Upgrade.AutoPets) &&
-		time.Since(b.lastUpgradeCheck) > 10*time.Minute {
-		b.lastUpgradeCheck = time.Now()
-		go func() {
-			if b.seqRunning.Load() {
-				return
-			}
-			_ = b.builderManager.PerformAutoUpgrades()
-		}()
-	}
-
-	// Periodic auto-resource collection: every 5 minutes when confirmed in main village,
-	// sweep mines, drills, collectors, and cart so resources flow into storages.
-	if gc.State == game.StateMainVillage && b.cfg.Storage.AutoCollect &&
-		time.Since(b.lastCollectTime) > 5*time.Minute {
-		b.lastCollectTime = time.Now()
-		go func() {
-			if b.seqRunning.Load() {
-				return
-			}
-			b.CollectVillageResources()
-		}()
 	}
 
 	if gc.State == game.StateArmyCamp && time.Since(b.lastNav) > 3*time.Second {
@@ -1841,53 +1883,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		if allowed, reason := b.scheduler.CanAttack(time.Now()); !allowed {
 			b.logger.Info().Str("reason", reason).Msg("scheduler halting attack sequence")
 			return
-		}
-	}
-
-	// Storage full detection gate
-	if b.cfg.Storage.HaltWhenGoldFull || b.cfg.Storage.HaltWhenElixirFull || b.cfg.Storage.HaltWhenDEFull {
-		screen, err := b.client.CaptureToMat()
-		if err == nil && !screen.Empty() {
-			scale := 1.0
-			if b.cal != nil {
-				scale = b.cal.DisplayScale()
-			}
-			fill := game.ReadVillageStorageFillMat(screen, scale)
-			screen.Close()
-
-			thresh := b.cfg.Storage.FullThresholdPercent
-			if b.storageHalted.Load() {
-				thresh = b.cfg.Storage.ResumeThresholdPercent
-			}
-			isFull := fill.IsFull(b.cfg.Storage.HaltWhenGoldFull, b.cfg.Storage.HaltWhenElixirFull, b.cfg.Storage.HaltWhenDEFull, b.cfg.Storage.HaltRule, thresh)
-			if isFull {
-				b.logger.Warn().
-					Float64("gold", fill.GoldFillPercent).
-					Float64("elixir", fill.ElixirFillPercent).
-					Float64("de", fill.DEFillPercent).
-					Msg("storages are full; checking if walls can burn resources")
-
-				if b.cfg.Storage.DumpToWallsBeforeHalt && b.cfg.Upgrade.UpgradeWalls {
-					b.UpgradeWalls(gc)
-					time.Sleep(1 * time.Second)
-					if fresh, ferr := b.client.CaptureToMat(); ferr == nil && !fresh.Empty() {
-						fill = game.ReadVillageStorageFillMat(fresh, scale)
-						fresh.Close()
-						isFull = fill.IsFull(b.cfg.Storage.HaltWhenGoldFull, b.cfg.Storage.HaltWhenElixirFull, b.cfg.Storage.HaltWhenDEFull, b.cfg.Storage.HaltRule, thresh)
-					}
-				}
-
-				if isFull {
-					b.storageHalted.Store(true)
-					b.logger.Warn().
-						Float64("gold", fill.GoldFillPercent).
-						Float64("elixir", fill.ElixirFillPercent).
-						Float64("de", fill.DEFillPercent).
-						Msg("storages remain full; halting attack sequence to avoid wasting loot")
-					return
-				}
-			}
-			b.storageHalted.Store(false)
 		}
 	}
 
@@ -2442,6 +2437,11 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	b.lastAttackEnd = time.Now()
 	if b.scheduler != nil {
 		b.scheduler.RecordAttack(time.Now())
+		// Persist AFTER the counter moves. Persisting with the report (which
+		// runs before this point) wrote a count that lagged one attack, and if
+		// the process was killed rather than stopped cleanly that attack was
+		// lost from the daily cap entirely.
+		b.persistSchedulerCounters()
 	}
 
 	// Leftover post-attack popups are dismissed only when one is actually on the
@@ -2569,9 +2569,15 @@ func (b *Bot) clickSequence() bool {
 		// before the Find a Match search runs, and without the latch the
 		// escalation path saw armyEmpty=false and restarted the game anyway.
 		b.armyEmpty.Store(true)
-		b.logger.Error().Msg("no troops trained: the Start Attack panel says \"Train an army before attacking!\"; idling until troops exist (train in-game, or pick a slot that holds them)")
+		b.logger.Error().Msg("no troops trained: the Start Attack panel says \"Train an army before attacking!\"; queueing the saved recipe (training.go) and idling until troops exist")
 		sleepCtx(b.ctx, emptyArmyIdle)
 		return false
+	}
+	// Positive evidence the army exists: the panel is drawn without its empty
+	// state, which is the only readiness signal this client gives. Clearing the
+	// latch here is what lets the training throttle stop queueing.
+	if b.armyEmpty.Swap(false) {
+		b.logger.Info().Msg("attack panel reports troops available; army-ready latch cleared")
 	}
 
 	// Find a Match. Off the reference geometry the attack menu reflows, so the
@@ -3637,6 +3643,16 @@ func (b *Bot) Stats() BotStats {
 		s.ClassifyThresholdPct = gs.Threshold
 	}
 	s.CaptureCache = b.client.CaptureCache()
+
+	s.ScheduleEnabled = b.cfg.Schedule.Enabled
+	s.HaltedReason = string(b.HaltedReason())
+	if b.scheduler != nil {
+		s.ScheduleState = string(b.scheduler.State())
+		s.AttacksToday, s.MaxAttacksPerDay = b.scheduler.AttacksToday()
+		if next := b.scheduler.NextChange(time.Now()); !next.IsZero() {
+			s.NextChangeAt = next.Format(time.RFC3339)
+		}
+	}
 	return s
 }
 
@@ -3673,16 +3689,35 @@ type BotStats struct {
 	// climbing means the emulator is doing less; hits at zero with the cache
 	// enabled means nothing captures concurrently on this workload.
 	CaptureCache adb.CaptureCacheStats `json:"capture_cache"`
+
+	// Pacing telemetry. A bot that is deliberately idle (scheduler break, full
+	// storages, empty army) used to look identical to a working one in both the
+	// UI and the logs; these fields are the difference, and HaltedReason is the
+	// single answer to "why is it not attacking right now?".
+	ScheduleEnabled  bool   `json:"schedule_enabled"`
+	ScheduleState    string `json:"schedule_state"`
+	HaltedReason     string `json:"halted_reason,omitempty"`
+	AttacksToday     int    `json:"attacks_today"`
+	MaxAttacksPerDay int    `json:"max_attacks_per_day"`
+	NextChangeAt     string `json:"next_change_at,omitempty"`
 }
 
 // CollectVillageResources sweeps the main village collector positions to collect
 // ready Gold Mines, Elixir Collectors, Dark Elixir Drills, and Loot Cart.
+//
+// The sweep used to be a metronome: the same five coordinates, in the same
+// order, at the same 350 ms cadence, every five minutes, forever. That is the
+// strongest behavioural signature in the app after the builder menu. Order,
+// point offsets and dwell are now drawn per pass, one pass in five skips a
+// point entirely, and the closing backdrop tap is jittered like every other
+// input.
 func (b *Bot) CollectVillageResources() {
 	if b.cal == nil || b.client == nil {
 		return
 	}
 	k := b.cal.DisplayScale()
-	// Strategic collector sweep points across village quadrants:
+	// Collector positions across the village quadrants. These are collection
+	// targets only: a miss is a wasted tap, never a wrong action.
 	points := []image.Point{
 		image.Pt(int(320*k), int(300*k)),
 		image.Pt(int(680*k), int(300*k)),
@@ -3690,16 +3725,24 @@ func (b *Bot) CollectVillageResources() {
 		image.Pt(int(650*k), int(480*k)),
 		image.Pt(int(500*k), int(380*k)),
 	}
+	rand.Shuffle(len(points), func(i, j int) { points[i], points[j] = points[j], points[i] })
+
 	b.logger.Info().Msg("sweeping village resource collectors (mines, drills, cart)...")
 	for _, pt := range points {
 		if b.seqRunning.Load() || b.ctx.Err() != nil {
 			return
 		}
-		_ = b.client.Tap(pt.X, pt.Y)
-		time.Sleep(350 * time.Millisecond)
+		if rand.Float64() < 0.2 {
+			// A player does not touch every collector on every pass.
+			continue
+		}
+		_ = b.client.TapRandomized(pt.X, pt.Y)
+		// HumanSleep is gaussian around the base dwell, with a floor, so the
+		// gaps between taps are never the same twice.
+		b.client.HumanSleep(340, 110)
 	}
 	// Safe backdrop tap to dismiss any building info panel that might have opened
-	_ = b.client.Tap(int(88*k), int(265*k))
+	_ = b.client.TapRandomized(int(88*k), int(265*k))
 }
 
 type AttackReport struct {

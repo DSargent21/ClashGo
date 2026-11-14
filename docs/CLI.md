@@ -81,13 +81,11 @@ Combined with running BlueStacks at **860×732 / 160 DPI**, this yields the lowe
 | `-de <amount>` | Minimum dark elixir loot to attack | `2000` |
 | `-attack-if-de` | Attack if Dark Elixir threshold is met regardless of gold/elixir | `false` |
 | `-max-skips <N>` | Maximum search skips before aborting attack and returning home | `60` |
-| `-min-trophies <N>` | Minimum trophy target | `0` |
-| `-max-trophies <N>` | Maximum trophy target | `3000` |
 
 ### Village Management
 | Flag | Description | Default |
 |---|---|---|
-| `-train` | Enable automatic army training | `true` |
+| `-train` | Enable automatic army training (queues the saved recipe when the camps are empty) | `true` |
 | `-full-army` | Require full army before attacking | `true` |
 | `-army <1-4>` | Train specific saved army slot (1–4) | Strategy preset |
 | `-upgrade-walls` | Enable automatic wall upgrading | `false` |

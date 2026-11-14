@@ -16,7 +16,7 @@
     {
       "file": "corpus/village_offer_720p.png",
       "state": "Unknown",
-      "note": "The village with the builder-apprentice offer dialog up. Was corpus/boot_logo_720p.png, expected Logo: recorded believing the dialog's castle-like artwork was the post-boot connecting splash. OCR proves it is the village (Attack!/SHOP HUD under the 'Hey Chief!' offer). Expected Unknown is DELIBERATE and pins the regression this frame exists for: the dialog covers the village's evidence probes, so no rule models it \u2014 what it must never do again is read as Logo at priority 92 and stall the bot in the 5-minute boot grace (it passed 2 of Logo's 3 probes; Logo now needs all three). The dismissal gap (an unmodelled obstruction dialog falls to the 35s stuck-watchdog and a game restart) is the documented safe direction."
+      "note": "The village with the builder-apprentice offer dialog up. Was corpus/boot_logo_720p.png, expected Logo: recorded believing the dialog's castle-like artwork was the post-boot connecting splash. OCR proves it is the village (Attack!/SHOP HUD under the 'Hey Chief!' offer). Expected Unknown is DELIBERATE and pins the regression this frame exists for: the dialog covers the village's evidence probes, so no rule models it — what it must never do again is read as Logo at priority 92 and stall the bot in the 5-minute boot grace (it passed 2 of Logo's 3 probes; Logo now needs all three). The dismissal gap (an unmodelled obstruction dialog falls to the 35s stuck-watchdog and a game restart) is the documented safe direction."
     },
     {
       "file": "corpus/battle_pre_deploy_720p.png",

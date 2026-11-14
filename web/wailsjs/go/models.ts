@@ -462,9 +462,10 @@ export namespace config {
 	    auto_lab: boolean;
 	    lab_strategy: string;
 	    lab_allow_de: boolean;
-	    lab_priorities: string[];
 	    auto_pets: boolean;
 	    pet_priorities: string[];
+	    hero_priorities: string[];
+	    allow_town_hall_upgrade: boolean;
 	    dry_run: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -491,9 +492,10 @@ export namespace config {
 	        this.auto_lab = source["auto_lab"];
 	        this.lab_strategy = source["lab_strategy"];
 	        this.lab_allow_de = source["lab_allow_de"];
-	        this.lab_priorities = source["lab_priorities"];
 	        this.auto_pets = source["auto_pets"];
 	        this.pet_priorities = source["pet_priorities"];
+	        this.hero_priorities = source["hero_priorities"];
+	        this.allow_town_hall_upgrade = source["allow_town_hall_upgrade"];
 	        this.dry_run = source["dry_run"];
 	    }
 	}
@@ -555,14 +557,7 @@ export namespace config {
 	}
 	export class SearchConfig {
 	    enabled: boolean;
-	    min_trophies: number;
-	    max_trophies: number;
-	    min_town_hall: number;
-	    max_town_hall: number;
-	    skip_big_base: boolean;
-	    skip_max_th: boolean;
 	    attack_if_de_gt: number;
-	    attack_if_trophies_gt: number;
 	    min_loot_gold: number;
 	    min_loot_elixir: number;
 	    min_loot_de: number;
@@ -576,14 +571,7 @@ export namespace config {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
-	        this.min_trophies = source["min_trophies"];
-	        this.max_trophies = source["max_trophies"];
-	        this.min_town_hall = source["min_town_hall"];
-	        this.max_town_hall = source["max_town_hall"];
-	        this.skip_big_base = source["skip_big_base"];
-	        this.skip_max_th = source["skip_max_th"];
 	        this.attack_if_de_gt = source["attack_if_de_gt"];
-	        this.attack_if_trophies_gt = source["attack_if_trophies_gt"];
 	        this.min_loot_gold = source["min_loot_gold"];
 	        this.min_loot_elixir = source["min_loot_elixir"];
 	        this.min_loot_de = source["min_loot_de"];
@@ -595,7 +583,6 @@ export namespace config {
 	    enabled: boolean;
 	    full_army_before_attack: boolean;
 	    train_dead_troops: boolean;
-	    min_barracks_level: number;
 	    sleep_after_train: Duration;
 	
 	    static createFrom(source: any = {}) {
@@ -607,7 +594,6 @@ export namespace config {
 	        this.enabled = source["enabled"];
 	        this.full_army_before_attack = source["full_army_before_attack"];
 	        this.train_dead_troops = source["train_dead_troops"];
-	        this.min_barracks_level = source["min_barracks_level"];
 	        this.sleep_after_train = this.convertValues(source["sleep_after_train"], Duration);
 	    }
 	

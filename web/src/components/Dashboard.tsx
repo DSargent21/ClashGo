@@ -408,6 +408,23 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
 
   const recentReports = history.slice(0, 8);
 
+  // Why the bot is not attacking right now. A halted 24/7 run used to look
+  // identical to a working one; this is the one-line answer the dashboard owes
+  // the user, mapped from BotStats.halted_reason.
+  const haltText =
+    stats.halted_reason === 'scheduler'
+      ? { title: 'Scheduled break', detail: 'Pacing paused the account — no taps, no captures, game stopped if configured.' }
+      : stats.halted_reason === 'storage_full'
+        ? { title: 'Storages full', detail: 'Attacks are halted to stop wasting loot. Walls and upgrades keep running; attacks resume below the resume threshold.' }
+        : stats.halted_reason === 'army_empty'
+          ? { title: 'Army empty', detail: 'No troops on the bar. The saved recipe is queued; attacks resume when the camps are ready.' }
+          : stats.halted_reason === 'session_cap'
+            ? { title: 'Session cap reached', detail: 'This session hit max_attack_per_session and is shutting down cleanly.' }
+            : null;
+
+  const attacksToday = stats.attacks_today ?? 0;
+  const dailyCap = stats.max_attacks_per_day ?? 0;
+
   return (
     <div>
       <div className="page-head">
@@ -433,6 +450,18 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           </article>
         ))}
       </div>
+
+      {running && haltText ? (
+        <article className="card" role="status" aria-live="polite">
+          <div className="card-head">
+            <div>
+              <h3>{haltText.title}</h3>
+              <p className="card-sub">{haltText.detail}</p>
+            </div>
+            <span className="status-pill warn"><i />Paused</span>
+          </div>
+        </article>
+      ) : null}
 
       <div className="dash-grid">
         <div className="card history-card">
@@ -541,8 +570,19 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
             <div className="kv-list">
               <div className="kv"><span>Strategy</span><b title={strategy}>{strategyLabel(strategy)}</b></div>
               <div className="kv"><span>Uptime</span><b>{formatUptime(stats.uptime)}</b></div>
-              <div className="kv"><span>Searches</span><b>{exactNumber(stats.search_skips + stats.attacks_completed)}</b></div>
+              <div className="kv"><span>Attacks</span><b>{exactNumber(stats.attacks_completed)}</b></div>
               <div className="kv"><span>Skips</span><b>{exactNumber(stats.search_skips)}</b></div>
+              <div className="kv">
+                <span>Today</span>
+                <b>{dailyCap > 0 ? `${exactNumber(attacksToday)} / ${exactNumber(dailyCap)}` : exactNumber(attacksToday)}</b>
+              </div>
+              <div className="kv">
+                <span>Pacing</span>
+                <b>{stats.schedule_enabled ? (stats.schedule_state || 'Active').toLowerCase() : 'Off (unlimited)'}</b>
+              </div>
+              {stats.next_change_at ? (
+                <div className="kv"><span>Next change</span><b>{relativeTime(stats.next_change_at, 'unknown')}</b></div>
+              ) : null}
             </div>
           </div>
 

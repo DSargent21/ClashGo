@@ -54,15 +54,49 @@ fi
 mkdir -p "$LOG_DIR"
 RUNLOG="$LOG_DIR/bot_run.log"
 
+# notify raises a desktop notification so a dead 24/7 run is noticed the same
+# day instead of on the next manual check. CLASHGO_NO_NOTIFY=1 disables it.
+notify() {
+  [ "${CLASHGO_NO_NOTIFY:-}" = "1" ] && return 0
+  /usr/bin/osascript -e "display notification \"$1\" with title \"ClashGO\"" >/dev/null 2>&1 || true
+}
+
 BACKOFF=10
+MAX_BACKOFF=120
+FAILURES=0
+NOTIFIED=0
 while true; do
   if [ ! -x "$BIN" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: $BIN not found/executable — rebuild it (make build-cli) and re-run" | tee -a "$RUNLOG"
+    notify "bot binary is missing: $BIN"
     exit 1
   fi
   echo "$(date '+%Y-%m-%d %H:%M:%S') starting bot: $BIN" >> "$RUNLOG"
   "$BIN"
   code=$?
-  echo "$(date '+%Y-%m-%d %H:%M:%S') bot exited (code=$code); respawning in ${BACKOFF}s" >> "$RUNLOG"
+  if [ "$code" -eq 0 ]; then
+    # A clean exit (Stop, scheduler shutdown) is not a crash: reset the count,
+    # the delay and the notification latch.
+    FAILURES=0
+    NOTIFIED=0
+    BACKOFF=10
+  else
+    FAILURES=$((FAILURES + 1))
+  fi
+  echo "$(date '+%Y-%m-%d %H:%M:%S') bot exited (code=$code, consecutive failures=$FAILURES); respawning in ${BACKOFF}s" >> "$RUNLOG"
+  # Three crashes in a row is not a blip: it usually means BlueStacks or ADB
+  # needs a human. Say it once per episode — the first version re-notified on
+  # every 10 s respawn, so a dead device produced a notification storm instead
+  # of one actionable alert.
+  if [ "$FAILURES" -ge 3 ] && [ "$NOTIFIED" -eq 0 ]; then
+    NOTIFIED=1
+    notify "bot crashed $FAILURES times in a row; check $RUNLOG"
+  fi
   sleep "$BACKOFF"
+  # Back off while the failures pile up: a crash loop (missing emulator, bad
+  # adb state) should not hammer the device every 10 s for hours.
+  if [ "$FAILURES" -ge 3 ] && [ "$BACKOFF" -lt "$MAX_BACKOFF" ]; then
+    BACKOFF=$((BACKOFF * 2))
+    [ "$BACKOFF" -gt "$MAX_BACKOFF" ] && BACKOFF=$MAX_BACKOFF
+  fi
 done

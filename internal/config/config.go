@@ -158,11 +158,14 @@ type DeviceConfig struct {
 }
 
 type TrainingConfig struct {
-	Enabled              bool     `json:"enabled"`
-	FullArmyBeforeAttack bool     `json:"full_army_before_attack"`
-	TrainDeadTroops      bool     `json:"train_dead_troops"`
-	MinBarracksLevel     int      `json:"min_barracks_level"`
-	SleepAfterTrain      Duration `json:"sleep_after_train"`
+	Enabled              bool `json:"enabled"`
+	FullArmyBeforeAttack bool `json:"full_army_before_attack"`
+	// TrainDeadTroops arms the training loop (internal/bot/training.go): when
+	// the attack panel reports an empty army the bot re-queues the configured
+	// saved recipe instead of idling until a human trains. Without it a 24/7
+	// run stops farming after the army it started with is spent.
+	TrainDeadTroops bool     `json:"train_dead_troops"`
+	SleepAfterTrain Duration `json:"sleep_after_train"`
 }
 
 type AttackConfig struct {
@@ -197,16 +200,14 @@ type AttackConfig struct {
 	MinSecondsBetweenAttacks int `json:"min_seconds_between_attacks"`
 }
 
+// SearchConfig is the base-selection policy. It holds only knobs the search
+// loop reads: trophy and Town-Hall filters used to live here and were never
+// consumed by anything, so a user (or a CLI flag) could change them and see no
+// effect at all. They were removed rather than wired up because the search
+// screen gives the bot no trophy or TH reading to filter on.
 type SearchConfig struct {
 	Enabled              bool `json:"enabled"`
-	MinTrophies          int  `json:"min_trophies"`
-	MaxTrophies          int  `json:"max_trophies"`
-	MinTownHall          int  `json:"min_town_hall"`
-	MaxTownHall          int  `json:"max_town_hall"`
-	SkipBigBase          bool `json:"skip_big_base"`
-	SkipMaxTH            bool `json:"skip_max_th"`
 	AttackIfDarkElixirGT int  `json:"attack_if_de_gt"`
-	AttackIfTrophiesGT   int  `json:"attack_if_trophies_gt"`
 	MinLootGold          int  `json:"min_loot_gold"`
 	MinLootElixir        int  `json:"min_loot_elixir"`
 	MinLootDarkElixir    int  `json:"min_loot_de"`
@@ -286,10 +287,18 @@ type UpgradeConfig struct {
 	AutoLab              bool     `json:"auto_lab"`
 	LabStrategy          string   `json:"lab_strategy"` // "troops_first", "spells_first", "siege_first", "cheapest_first"
 	LabAllowDE           bool     `json:"lab_allow_de"`
-	LabPriorities        []string `json:"lab_priorities"`
 	AutoPets             bool     `json:"auto_pets"`
 	PetPriorities        []string `json:"pet_priorities"`
-	DryRun               bool     `json:"dry_run"`
+	// HeroPriorities orders hero rows inside strategic_rush. Empty means the
+	// researched default below; a custom queue is never reordered.
+	HeroPriorities []string `json:"hero_priorities"`
+	// AllowTownHall lets the builder automation start a Town Hall upgrade. It
+	// is off by default and deliberately explicit: a Town Hall upgrade is the
+	// one irreversible decision in the upgrade screen (it changes the match
+	// pool and hides loot for days), so it is never inferred from a generic
+	// "upgrade everything" toggle.
+	AllowTownHall bool   `json:"allow_town_hall_upgrade"`
+	DryRun        bool   `json:"dry_run"`
 }
 
 // DefaultPetPriorities is the upgrade queue for the current pet roster. It
@@ -302,6 +311,14 @@ func DefaultPetPriorities() []string {
 		"Phoenix", "Spirit Fox", "Sneezy", "Angry Jelly", "Frosty", "Diggy",
 		"Greedy Raven", "Unicorn", "Electro Owl", "L.A.S.S.I", "Mighty Yak", "Poison Lizard",
 	}
+}
+
+// DefaultHeroPriorities is the hero order strategic_rush ranks against, from
+// docs/STRATEGIC_RUSH.md: the hero closest to 8-day upgrades first. Queen and
+// Warden carry the widest set of armies, Champion is the next finisher, Prince
+// comes before King for the air plan, and Duke last.
+func DefaultHeroPriorities() []string {
+	return []string{"Archer Queen", "Grand Warden", "Royal Champion", "Minion Prince", "Barbarian King", "Dragon Duke"}
 }
 
 // IsLegacyPetOrder reports whether a queue is the old five-pet default. The
@@ -370,6 +387,7 @@ func DefaultConfig() *BotConfig {
 		Training: TrainingConfig{
 			Enabled:              true,
 			FullArmyBeforeAttack: true,
+			TrainDeadTroops:      true,
 			SleepAfterTrain:      Duration{5 * time.Second},
 		},
 		Attack: AttackConfig{
@@ -387,11 +405,6 @@ func DefaultConfig() *BotConfig {
 		},
 		Search: SearchConfig{
 			Enabled:              true,
-			MinTrophies:          0,
-			MaxTrophies:          3000,
-			MinTownHall:          7,
-			MaxTownHall:          13,
-			SkipMaxTH:            false,
 			AttackIfDarkElixirGT: 0,
 			MinLootGold:          750000,
 			MinLootElixir:        750000,
@@ -408,17 +421,24 @@ func DefaultConfig() *BotConfig {
 			DumpToWallsBeforeHalt:  true,
 			AutoCollect:            true,
 		},
+		// Safe pacing is the default. A brand-new install used to farm 24 h a
+		// day with no breaks and no rate caps, which is both the loudest
+		// behavioural signature the account can have and the least human
+		// pattern in the app. These defaults are what the roadmap calls the
+		// "24/7 preset": an 18 h waking window, 55-95 min sessions, 13-27 min
+		// breaks that stop the game, and caps a very active player could hit.
+		// Every number stays editable in Config → Schedule.
 		Schedule: ScheduleConfig{
-			Enabled:                false,
-			ActiveHoursStart:       "08:00",
-			ActiveHoursEnd:         "23:00",
-			SessionDurationMinutes: 60,
-			SessionJitterMinutes:   15,
+			Enabled:                true,
+			ActiveHoursStart:       "07:00",
+			ActiveHoursEnd:         "01:00",
+			SessionDurationMinutes: 75,
+			SessionJitterMinutes:   20,
 			BreakDurationMinutes:   20,
-			BreakJitterMinutes:     5,
+			BreakJitterMinutes:     7,
 			ForceStopOnBreak:       true,
-			MaxAttacksPerHour:      6,
-			MaxAttacksPerDay:       40,
+			MaxAttacksPerHour:      8,
+			MaxAttacksPerDay:       50,
 		},
 		Upgrade: UpgradeConfig{
 			UpgradeWalls:         false,
@@ -439,9 +459,10 @@ func DefaultConfig() *BotConfig {
 			AutoLab:              false,
 			LabStrategy:          "cheapest_first",
 			LabAllowDE:           true,
-			LabPriorities:        []string{"Troops", "Spells", "Siege"},
 			AutoPets:             false,
 			PetPriorities:        DefaultPetPriorities(),
+			HeroPriorities:       DefaultHeroPriorities(),
+			AllowTownHall:        false,
 		},
 		Debug: DebugConfig{
 			CaptureDebug:       false,

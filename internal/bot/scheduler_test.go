@@ -65,7 +65,11 @@ func TestScheduler_HourlyCap(t *testing.T) {
 }
 
 func TestScheduler_BreakCycle(t *testing.T) {
-	breakHookCalled := false
+	// The enter-break hook runs on its own goroutine: it stops the game over
+	// ADB, and running that inline would hold the scheduler lock across a
+	// device round trip. The exit hook stays synchronous (it is called from
+	// the same walk that has to plan the next session).
+	breakEntered := make(chan struct{}, 1)
 	exitHookCalled := false
 
 	s := newTestScheduler(config.ScheduleConfig{
@@ -75,7 +79,7 @@ func TestScheduler_BreakCycle(t *testing.T) {
 		BreakDurationMinutes:   20,
 		BreakJitterMinutes:     0,
 	})
-	s.SetBreakHooks(func() { breakHookCalled = true }, func() { exitHookCalled = true })
+	s.SetBreakHooks(func() { breakEntered <- struct{}{} }, func() { exitHookCalled = true })
 
 	now := time.Now()
 	// Before session expiry: allowed
@@ -89,7 +93,9 @@ func TestScheduler_BreakCycle(t *testing.T) {
 	if allowed {
 		t.Errorf("expected break triggered at +61m")
 	}
-	if !breakHookCalled {
+	select {
+	case <-breakEntered:
+	case <-time.After(2 * time.Second):
 		t.Errorf("expected break hook called")
 	}
 	t.Logf("break reason: %s", reason)

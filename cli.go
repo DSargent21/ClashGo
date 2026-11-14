@@ -86,8 +86,6 @@ func main() {
 	minDE := fs.Int("de", cfg.Search.MinLootDarkElixir, "Minimum dark elixir loot threshold to attack")
 	attackIfDE := fs.Int("attack-if-de", cfg.Search.AttackIfDarkElixirGT, "Attack if DE >= amount regardless of gold/elixir (0 = disabled)")
 	maxSkips := fs.Int("max-skips", cfg.Search.MaxSearchSkips, "Max search skips before returning to village (0 = unlimited)")
-	minTrophies := fs.Int("min-trophies", cfg.Search.MinTrophies, "Minimum trophies target")
-	maxTrophies := fs.Int("max-trophies", cfg.Search.MaxTrophies, "Maximum trophies target")
 	maxAttacks := fs.Int("max-attacks", cfg.Attack.MaxAttackPerSession, "Max attacks before clean exit (0 = unlimited)")
 	fs.IntVar(maxAttacks, "n", cfg.Attack.MaxAttackPerSession, "Max attacks before clean exit (shorthand)")
 	once := fs.Bool("once", false, "Run single attack then exit cleanly")
@@ -146,8 +144,6 @@ func main() {
 	cfg.Search.MinLootDarkElixir = *minDE
 	cfg.Search.AttackIfDarkElixirGT = *attackIfDE
 	cfg.Search.MaxSearchSkips = *maxSkips
-	cfg.Search.MinTrophies = *minTrophies
-	cfg.Search.MaxTrophies = *maxTrophies
 	cfg.Attack.MaxAttackPerSession = *maxAttacks
 	cfg.Upgrade.UpgradeWalls = *upgradeWalls
 	cfg.Training.Enabled = *trainArmy
@@ -520,8 +516,6 @@ func printUsage(fs *flag.FlagSet) func() {
 		fmt.Println("  -de <amount>       Minimum dark elixir required to attack")
 		fmt.Println("  -attack-if-de <N>  Attack if DE >= amount regardless of gold/elixir")
 		fmt.Println("  -max-skips N       Max search skips before returning to village (0 = unlimited)")
-		fmt.Println("  -min-trophies N    Minimum trophies target")
-		fmt.Println("  -max-trophies N    Maximum trophies target")
 		fmt.Println()
 
 		fmt.Println("Village Management:")

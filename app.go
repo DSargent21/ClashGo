@@ -273,6 +273,14 @@ func mergeStats(acc, current bot.BotStats) bot.BotStats {
 		AdbHealth:        current.AdbHealth,
 		CPUTimeSec:       current.CPUTimeSec,
 		CPUCores:         current.CPUCores,
+		// Pacing is live state, never a session total: summing it would make
+		// "attacks today" climb into nonsense after a restart.
+		ScheduleEnabled:  current.ScheduleEnabled,
+		ScheduleState:    current.ScheduleState,
+		HaltedReason:     current.HaltedReason,
+		AttacksToday:     current.AttacksToday,
+		MaxAttacksPerDay: current.MaxAttacksPerDay,
+		NextChangeAt:     current.NextChangeAt,
 	}
 }
 

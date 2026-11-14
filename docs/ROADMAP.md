@@ -26,17 +26,24 @@ ClashGO provides a native vision engine that interprets game state and acts thro
 
 ---
 
-## 🎯 Active Priorities (Phase 3 — Auto Army & Training)
+## 🎯 Active Priorities (Phase 3 — Unattended 24/7)
 
-### P0 — Army Training & Readiness Loop
-- [ ] **Army Readiness Gate**: Verify full army composition and spell brew completion on the village screen *before* committing to battle search.
-- [ ] **Automated Training Queue**: Re-queue used army recipes from the quick-train tab after battle return.
-- [ ] **Hero Recovery Wait**: Idle village wait if designated heroes are regenerating health.
+### Shipped — unattended loop closure
+- [x] **Training Queue** (`internal/bot/training.go`): an empty attack panel now queues the saved recipe through controls the bot already proves on the frame (EDIT ARMY, recipe card, sheet action). It runs while the village idles instead of waiting for a human.
+- [x] **Halt model** (`internal/bot/runtime_state.go`): scheduler break, full storages, and empty army are one published verdict (`BotStats.halted_reason`), the watchdog no longer treats a deliberate pause as a hang, and the scheduler stops input and capture entirely during a break.
+- [x] **Durable pacing** (`session_state.json`): hourly/daily attack counters survive restarts, so a keepalive respawn cannot reset the daily cap.
+- [x] **Safe pacing defaults**: new installs start with an 18 h active window, 55–95 min sessions, 13–27 min game-stopped breaks, 8 attacks/h and 50/day.
+- [x] **Personal Break handling**: the dialog is OCR'd on unclassified frames and converted into a scheduler break instead of a restart loop.
+- [x] **LaunchAgent** (`make daemon-install`): LaunchAgent + `caffeinate` wrapper so the farm survives reboot and sleep, with desktop notifications after repeated crashes.
 
 ### P1 — Farming Intelligence & Base Filtering
 - [ ] **Dead-Base / Collector Detection**: Distinguish between full outside collectors and active core storages to maximize loot efficiency.
-- [ ] **Town Hall Level Filtering**: Skip bases exceeding target Town Hall limits during trophy-sensitive farming.
 - [ ] **Early Surrender Rules**: Automatic surrender if battle achieves target resource threshold before timer expiration.
+- [ ] **Hero Recovery Wait**: Idle village wait if designated heroes are regenerating health (the bot currently attacks without them).
+- ~~Town Hall Level Filtering~~ — dropped: the search screen exposes no Town Hall reading to filter on, so the config and CLI knobs that claimed it were removed rather than left inert.
+
+### P2 — Magic items
+- [ ] **Book / hammer spending** on the longest running timer. Not automated yet: it needs calibrated magic-item UI coordinates and a spend ceiling before it can run unattended.
 
 ---
 

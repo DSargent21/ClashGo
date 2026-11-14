@@ -71,9 +71,27 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 		}
 	}
 
+	// The battle HUD outranks every scene verdict below it. Probe lists cannot
+	// tell "dark stone wall" from "dark tree canopy" — on a real battle frame
+	// ChestReward won at priority 98 and MainVillage matched too — while the
+	// SURRENDER pill is unmistakable. Modals are exempt: they must stay
+	// dismissable. See liveBattleHUD.
+	hud := liveBattleHUD(screen)
+
 	if !found {
+		if hud {
+			return StateBattle, battleHUDVetoScore
+		}
 		c.logger.Trace().Msg("no states detected")
 		return StateUnknown, 0
+	}
+
+	if hud && best.State != StateBattle && !stateIsObstruction(best.State) {
+		c.logger.Debug().
+			Str("rule_state", best.State.String()).
+			Int("rule_score", best.Score).
+			Msg("battle HUD on screen; overriding the rule verdict with Battle")
+		return StateBattle, battleHUDVetoScore
 	}
 
 	c.logger.Trace().

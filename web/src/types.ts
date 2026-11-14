@@ -23,6 +23,16 @@ export interface BotStats {
     errors_total: number;
     last_error?: string;
   };
+  // Pacing telemetry (internal/bot/runtime_state.go). halted_reason is the
+  // single answer to "why is it not attacking right now" and is empty when the
+  // bot is free to attack. Optional so a stale stats.json from an older build
+  // still type-checks.
+  schedule_enabled?: boolean;
+  schedule_state?: string;
+  halted_reason?: string;
+  attacks_today?: number;
+  max_attacks_per_day?: number;
+  next_change_at?: string;
 }
 
 export interface AttackReport {

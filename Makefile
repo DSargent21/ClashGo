@@ -137,6 +137,19 @@ build-cli:
 	@mkdir -p $(BUILD_DIR)
 	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
 
+# 24/7 daemon: runs the keepalive wrapper under a LaunchAgent so the farm
+# survives a closed terminal, a logout or a reboot, and caffeinate keeps the
+# Mac awake while it runs. No sudo; everything is per-user.
+.PHONY: daemon-install daemon-uninstall daemon-status
+daemon-install: build-cli
+	@CLASHGO_BIN=$(CURDIR)/$(BUILD_DIR)/$(BINARY_NAME) bash tools/install_daemon.sh
+
+daemon-uninstall:
+	@bash tools/install_daemon.sh --uninstall
+
+daemon-status:
+	@bash tools/install_daemon.sh --status
+
 # one-shot attack: capture screen, design placements per unit, deploy via
 # formula. No game restart, no bot search loop. Single command. Always
 # rebuilds the CLI first so the cached binary used by
