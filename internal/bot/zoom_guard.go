@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog"
+
+	"github.com/Ducky705/ClashGO/internal/game"
 )
 
 // Battle zoom is a precondition, not a nicety.
@@ -31,6 +33,17 @@ type zoomMaxer interface {
 }
 
 var errBattleZoomUnconfirmed = errors.New("battle camera is not at max zoom-out")
+
+// zoomableView reports whether the frame is the village itself rather than a
+// dialog, chat sheet or splash drawn over it. Zoom gestures are only safe on the
+// former: a pinch dispatched through an open dialog drags the dialog, which is
+// the random-dragging a user sees when the bot zooms while a popup is up.
+func zoomableView(state game.GameState) bool {
+	// MainVillage only. ArmyCamp is the army overview panel, and a pinch there
+	// drags the panel; Unknown is not evidence of anything and produced three
+	// separate false positives live (quit dialog, Leagues window, clan chat).
+	return state == game.StateMainVillage
+}
 
 // ensureBattleZoom drives the closed-loop zoom-out until it confirms, and reports
 // an error when it cannot. The returned error wraps the last failure so the log

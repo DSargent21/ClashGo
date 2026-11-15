@@ -77,6 +77,9 @@ var overlayControlProbes = map[GameState][]image.Point{
 	// reference geometry the first candidate reads as bare panel and loses, at
 	// 720p the second does.
 	StateConnectionLost: {image.Pt(303, 451), image.Pt(300, 478)},
+	// RELOAD GAME. The dialog's only control and the only way back into the game
+	// short of a restart; tapping it is the recovery, not a detour.
+	StateInactivity: {image.Pt(169, 423)},
 }
 
 // overlayBackStates are the overlays this path closes with the device's Back key,

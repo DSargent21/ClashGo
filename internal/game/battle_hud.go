@@ -87,7 +87,7 @@ func battleHUDRed(r, g, b uint8) bool {
 // the states that unblock the bot.
 func stateIsObstruction(s GameState) bool {
 	switch s {
-	case StateLoading, StateUpdatePrompt, StateConfirmExit, StateConnectionLost,
+	case StateLoading, StateUpdatePrompt, StateConfirmExit, StateConnectionLost, StateInactivity,
 		StateWelcomeBack, StateGemDialog, StateObstacleDialog, StateOfferPopup,
 		StateNewsSplash, StateLogo, StateChatOpen, StateSettings, StateShieldInfo:
 		return true

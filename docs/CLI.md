@@ -54,6 +54,83 @@ Combined with running BlueStacks at **860×732 / 160 DPI**, this yields the lowe
 
 ---
 
+## 🔔 Webhook Notifications
+
+An unattended farm is invisible unless it reports out. Add a `notify` block to `config.json` and every finished attack, storage halt and scheduler pause/resume is posted to Discord, Telegram or any receiver that accepts a JSON `text` field.
+
+```json
+"notify": {
+  "enabled": true,
+  "format": "discord",
+  "webhook_url": "https://discord.com/api/webhooks/..."
+}
+```
+
+Telegram instead:
+
+```json
+"notify": {
+  "enabled": true,
+  "format": "telegram",
+  "telegram_token": "123456:ABC...",
+  "telegram_chat_id": "987654"
+}
+```
+
+- `format: generic` posts `{"text","kind","at"}` to `webhook_url` (Slack, ntfy, a self-hosted receiver).
+- Delivery is fire-and-forget: a 16-message queue on one worker goroutine, a 10 s request timeout, and one retry on 5xx/429. A webhook that is down never stalls the bot.
+- Attack messages carry stars, loot, bonus, deploy health and the session attack count. A result panel the bot could not read is reported as *unknown* — never as a zero-loot raid.
+- `telegram_token` is a secret: keep `config.json` out of version control. The bot never logs it, and transport errors are scrubbed before they reach the log.
+- Off by default. Nothing is sent until `notify.enabled` is true.
+
+---
+
+## 🎯 Town Hall Loot Floors
+
+`search.use_suggested_floors` (on by default) sizes the three search minimums from the account's Town Hall instead of one static pair: 60k at TH5, 300k at TH9, 900k at TH14 and up. It only acts once the Town Hall is known, so an install that never imports an export keeps its configured numbers, and `search.auto_loot` still overrides both once it has enough measured bases.
+
+Know the Town Hall either way:
+
+```bash
+# One-off: copy the export in game (Profile → Settings → More Settings → Data Export)
+./build/bin/bot_cli -import-village ~/Desktop/village.json
+```
+
+or set `"town_hall_level": 12` under `search`. The import is also where the account's facts (builders, Laboratory, pets, Builder Base) are read from, and it never touches the device.
+
+Floors above what a base can offer (5M gold/elixir, 50k dark elixir) are capped and logged once — a floor nobody can meet otherwise turns into an endless search that looks exactly like a broken one.
+
+---
+
+## 🛠 Builder Base Battles
+
+`builder_base` is off by default. Once enabled, one Builder Base raid runs between home-village raids: drop one troop, let the raid pay out, surrender. Builder Base loot is paid on destruction against a base nobody is defending, so this is the cheapest income the account has.
+
+```json
+"builder_base": {
+  "enabled": true,
+  "mode": "elixir",
+  "every_n_home_attacks": 3,
+  "max_per_day": 20,
+  "surrender_after_seconds": 20
+}
+```
+
+Only `elixir` mode exists. `gold` (a full Builder Base attack) needs deployment templates that do not exist yet, so it is refused at the start of the sequence rather than attempted blind.
+
+Every step proves its screen before the next tap, and a failure names the step (`the versus screen's Battle button was not located`), sends the `halt` webhook when notifications are on, and takes the boat back to the home village instead of restarting the game.
+
+Three anchors cannot be proven from code — the boat to the Builder Base in the home village, the first troop card, and the drop point — so check them on the emulator before trusting a run. All three are authored reference pixels (the 860x732 geometry) and the bot scales them to the live display, so they never depend on the emulator's resolution:
+
+1. In the home village run `make see ARGS="look"`. The report prints the classifier's state (`MainVillage`), any action button it found, and a coordinate-ruled render; convert a pixel back to reference by dividing by the `k` shown in the header. Set `boat_x`/`boat_y`.
+2. Walk to the Builder Base by hand and repeat: the state must read `BuilderBase`. In battle the state must read `Battle`; the troop card and drop point go in `troop_slot_x`/`troop_slot_y` and `deploy_x`/`deploy_y`.
+3. `make see ARGS="rec -label builder_base"` records frames while you walk the flow, so a later failure can be reviewed with `make see ARGS="timeline"` and `make see ARGS="show last"`.
+4. First live run: `"every_n_home_attacks": 1` and `"max_per_day": 1`. Raise both once the log shows one raid completing end to end.
+
+The schedule counts home attacks since the last Builder Base battle, plus a per-local-day cap held in memory (a restart starts the day over, like the scheduler's own counters).
+
+---
+
 ## 📋 Command-Line Options
 
 ### Information & Utility

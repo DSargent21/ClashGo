@@ -100,8 +100,19 @@ func TestEarlyExitStopsOnADecisiveFrame(t *testing.T) {
 		t.Errorf("early exit scored %d rules, the same as full evaluation; the shortcut never fired",
 			len(early))
 	}
-	if len(early) > 3 {
-		t.Errorf("early exit scored %d rules before stopping; a priority-99 match can only need the other 99s", len(early))
+	// The bound is structural, not a magic number: the shortcut can only score
+	// rules at or above the leader's priority tier (everything below it is dead
+	// once the tier is passed). Counting the tier keeps this guard honest as
+	// dialogs are added — a hardcoded 3 broke the moment a second 99-tier rule
+	// appeared.
+	tier := 0
+	for _, r := range c.GetRules() {
+		if r.Priority >= rule.Priority {
+			tier++
+		}
+	}
+	if len(early) > tier {
+		t.Errorf("early exit scored %d rules before stopping; the leader's priority tier holds %d", len(early), tier)
 	}
 
 	// And the shortcut must still produce the state the full pass produces.

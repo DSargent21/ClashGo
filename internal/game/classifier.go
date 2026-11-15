@@ -477,7 +477,12 @@ func (c *Classifier) buildRules() {
 			// co-fire in practice (WelcomeBack needs the red banner +
 			// btn_okay template; the splash has neither), and a splash
 			// winning the tie is the desired outcome.
-			MinPass: 2,
+			// MinPass 3, not 2: the two beige points are just warm parchment, and
+			// the Leagues window is warm parchment — with a 2-of-3 budget it
+			// matched live and the bot tapped the league cards four times looking
+			// for a splash prompt that was never there. The dark corner is the
+			// signal a bright panel cannot fake, so all three must agree.
+			MinPass: 3,
 			Checks: []PixelCheck{
 				// Beige "ТАР!" prompt text (two points inside the glyphs,
 				// sampled at 0 distance on the live splash; the strongest
@@ -893,6 +898,44 @@ func (c *Classifier) buildRules() {
 				{347, 560, 0x8B, 0xD4, 0x3A, 40},
 				// White title glyph band -> 720p live (640,485).
 				{430, 460, 0xFF, 0xFF, 0xFF, 30},
+			},
+		},
+		// StateInactivity is CoC's "Anyone there? / You have been disconnected
+		// due to inactivity" prompt with a single RELOAD GAME button. It used to
+		// match nothing (the ChestReward rule scored it and the bot ran the chest
+		// dismissal, then sat on it until the stuck watchdog), so a long test
+		// session ended with the game idling on this dialog for minutes.
+		//
+		// Probes are measured on a live 1280x720 capture of the dialog
+		// (testdata/live/inactivity_1280x720.png) and expressed in reference space
+		// through the inverse of the centre map at the pinned k=1.325, the same
+		// convention the ConnectionLost 720p block uses. All four are required
+		// (MinPass = len(Checks)): the rule's dismissal control is one of these
+		// probes, so a rule that fires without it can only spin (see the
+		// StateConfirmExit note above).
+		{
+			State: StateInactivity,
+			// 99, the same tier as ConfirmExit: the chest rule scores this frame
+			// 405 and already beat the four-probe bar, so priority (not score) is
+			// what has to put the prompt ahead of it. The two 99s have disjoint
+			// probes, so sharing the tier is safe.
+			Priority: 99,
+			Weight:   60,
+			Desc:     "inactivity disconnect prompt (RELOAD GAME)",
+			Anchor:   AnchorCenter,
+			MinPass:  4,
+			// Tolerances are 40, not the 14-30 the other rules use: the same pixel
+			// reads (240,240,243) through `adb exec-out screencap` and
+			// (221,221,224) through the bot's own capture pipe on the SAME dialog
+			// (measured 2026-11-15), and a 30-wide tolerance made the bot classify
+			// the prompt as Unknown while a screenshot of it classified fine.
+			// Each probe sits inside a thick glyph stroke, verified on both
+			// captures, so the wider bar cannot drift onto the panel.
+			Checks: []PixelCheck{
+				{167, 317, 0xF0, 0xF0, 0xF3, 40}, // live (292,295) "Anyone there?" title stroke
+				{370, 348, 0xF0, 0xF0, 0xF3, 40}, // live (560,336) body text stroke
+				{169, 423, 0xCB, 0xE6, 0xFF, 40}, // live (294,436) RELOAD GAME text stroke
+				{430, 390, 0x1A, 0x1C, 0x1E, 20}, // live (640,392) dimmed dialog panel
 			},
 		},
 		{

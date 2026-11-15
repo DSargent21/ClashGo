@@ -339,6 +339,7 @@ func TestRunHeroFieldRetriesRearmsBeforeEveryRetry(t *testing.T) {
 		func() bool { rearms++; return true },
 		func(image.Point) { fired++ },
 		func() (float64, bool) { return 0.7, true }, // never transitions
+		nil,
 		func() bool { return false },
 		func(int, image.Point, float64, float64, float64, bool) {},
 	)

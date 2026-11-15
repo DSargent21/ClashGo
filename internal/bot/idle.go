@@ -15,6 +15,7 @@
 package bot
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/config"
@@ -197,6 +198,9 @@ func (b *Bot) refreshStorageGate(gc *game.GameContext, screen gocv.Mat) {
 			Float64("de", fill.DEFillPercent).
 			Bool("spender_enabled", true).
 			Msg("storages are full; attacks halt until loot is spent (walls/upgrades keep running)")
+		b.notifyEvent("halt", "Storages full — attacks paused",
+			fmt.Sprintf("Gold %.0f%% · elixir %.0f%% · DE %.0f%%", fill.GoldFillPercent, fill.ElixirFillPercent, fill.DEFillPercent),
+			"Walls, builders, lab and pets are spending it down; attacks resume below the resume threshold.")
 	}
 	b.storageHalted.Store(true)
 

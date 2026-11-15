@@ -27,6 +27,11 @@ const (
 	// would notice as repeated tapping.
 	trainingRetryInterval = 3 * time.Minute
 
+	// emptyArmyRetryInterval is how long an empty army keeps the attack path
+	// away from the Attack button. Re-opening the panel every capture cycle taps
+	// the village for no reason; two minutes still re-checks well inside one
+	// training pass.
+	emptyArmyRetryInterval = 2 * time.Minute
 )
 
 // emptyArmyActionRegion is the window holding the empty attack panel's EDIT
@@ -83,6 +88,12 @@ func (b *Bot) maybeTrainArmy() bool {
 		b.trainArmy()
 	}()
 	return true
+}
+
+// attacksDeferred reports whether an empty army should keep the attack path off
+// the Attack button until skipUntil (unix seconds).
+func attacksDeferred(armyEmpty bool, skipUntil, now int64) bool {
+	return armyEmpty && now < skipUntil
 }
 
 // trainArmy is the queue sequence. It runs off the capture loop so the ~4 s of

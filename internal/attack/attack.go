@@ -1694,21 +1694,64 @@ func (e *Executor) ReturnHome() error {
 	if err := e.client.TapHuman(hx, hy, 5.0); err != nil {
 		return err
 	}
+	if e.waitForVillage() {
+		return nil
+	}
+
+	// The result panel is not always the plain defeat/victory one: a reward
+	// variant (live 2026-11-15: "Ice Cubes" loot card) draws RETURN HOME near
+	// x 58% of the frame instead of the panel centre, so the calibrated point
+	// lands on empty panel and the old code re-tapped it every cycle without
+	// ever leaving. Locate the green button in the live frame and tap it there.
+	for attempt := 0; attempt < 2; attempt++ {
+		screen, err := e.client.CaptureToMat()
+		if err != nil {
+			continue
+		}
+		if screen.Empty() {
+			screen.Close()
+			continue
+		}
+		win := vision.FractionRect(screen.Cols(), screen.Rows(), 0.25, 0.72, 0.85, 0.99)
+		btn, ok := vision.FindActionButton(screen, win, vision.DefaultActionButtonConfig())
+		screen.Close()
+		if !ok {
+			continue
+		}
+		e.logger.Info().
+			Str("button", btn.Describe()).
+			Msg("Return Home located in the live result panel; tapping where it actually is")
+		if err := e.client.TapHuman(btn.Centre().X, btn.Centre().Y, 5.0); err != nil {
+			return err
+		}
+		if e.waitForVillage() {
+			return nil
+		}
+	}
+	return fmt.Errorf("did not return home")
+}
+
+// waitForVillage polls the frame until the main village is classified, which is
+// the only evidence that a Return Home tap actually landed.
+func (e *Executor) waitForVillage() bool {
 	// CoC transition animation back to village takes ~1.5 - 2.5s.
-	// Poll until StateMainVillage appears instead of a single premature check.
 	for attempt := 0; attempt < 8; attempt++ {
 		time.Sleep(500 * time.Millisecond)
 		screen, err := e.client.CaptureToMat()
 		if err != nil {
 			continue
 		}
+		if screen.Empty() {
+			screen.Close()
+			continue
+		}
 		state, _ := e.classify(screen)
 		screen.Close()
 		if state == game.StateMainVillage {
-			return nil
+			return true
 		}
 	}
-	return fmt.Errorf("did not return home")
+	return false
 }
 
 // WaitForBattleEnd is the context-free variant of

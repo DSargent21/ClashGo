@@ -137,6 +137,27 @@ func (c *Calibration) SetDisplayScale(k float64) {
 	c.override.Store(math.Float64bits(k))
 }
 
+// SetDisplayScaleForGeometry pins k only when the geometry being run is the
+// geometry k was measured on. A pin is a measurement, not a setting: 1.1334 is
+// the scale this game renders at 1024x768, and applied to a 1280x720 frame it
+// makes every mapped coordinate land 12% short of its target. The symptom is
+// quiet — the classifier still names a village — while spreads of loot digits
+// are read from the wrong pixels and a pinch that should move the camera barely
+// does. A config with no geometry claim (w or h unset) keeps the old behaviour:
+// the pin is applied.
+//
+// Reports whether the pin was applied; the caller says so when it was not.
+func (c *Calibration) SetDisplayScaleForGeometry(k float64, w, h int) bool {
+	if c == nil || k <= 0 {
+		return false
+	}
+	if w > 0 && h > 0 && (c.PhysicalW != w || c.PhysicalH != h) {
+		return false
+	}
+	c.SetDisplayScale(k)
+	return true
+}
+
 // DisplayScaleOverride reports the pinned display scale, if one was set.
 func (c *Calibration) DisplayScaleOverride() (float64, bool) {
 	if c == nil {

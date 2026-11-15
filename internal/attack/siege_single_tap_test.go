@@ -300,3 +300,33 @@ func TestSiegeDropVerdict(t *testing.T) {
 		}
 	}
 }
+
+// A siege card that looks the same after the placement tap as before it did not
+// deploy, whatever the count badge reads. Live 2026-11-15: the machine's card is
+// an unnamed fallback slot (this client ships no siege template), "no badge"
+// read as "drained", and the run skipped the machine for the rest of the battle.
+func TestSiegeVerdictAfterReads_UnchangedCardIsStillOnCard(t *testing.T) {
+	// OCR said committed (trusted zero count) but the card is as bright as
+	// before: the tap was refused.
+	if got := siegeVerdictAfterReads(siegeCommitted, 0.62, true, 0.61, true); got != siegeStillOnCard {
+		t.Fatalf("verdict = %v, want siegeStillOnCard for an unchanged card", got)
+	}
+}
+
+func TestSiegeVerdictAfterReads_KeepsACommittedCard(t *testing.T) {
+	// The card dimmed: the machine left it.
+	if got := siegeVerdictAfterReads(siegeCommitted, 0.62, true, 0.12, true); got != siegeCommitted {
+		t.Fatalf("verdict = %v, want siegeCommitted for a card that dimmed", got)
+	}
+}
+
+// Without both reads there is nothing to compare, so the count-based verdict
+// stands rather than this check inventing a refusal.
+func TestSiegeVerdictAfterReads_NoEvidenceLeavesTheVerdictAlone(t *testing.T) {
+	if got := siegeVerdictAfterReads(siegeUnknown, 0, false, 0.5, true); got != siegeUnknown {
+		t.Fatalf("verdict = %v, want siegeUnknown unchanged", got)
+	}
+	if got := siegeVerdictAfterReads(siegeCommitted, 0.6, true, 0, false); got != siegeCommitted {
+		t.Fatalf("verdict = %v, want siegeCommitted unchanged", got)
+	}
+}

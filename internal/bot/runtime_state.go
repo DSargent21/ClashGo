@@ -88,10 +88,12 @@ func (b *Bot) scheduleAllowed() (bool, string) {
 				Str("reason", reason).
 				Str("scheduler_state", string(b.scheduler.State())).
 				Msg("scheduler paused the bot; no taps and no restarts until it resumes")
+			b.notifyEvent("halt", "Scheduler paused the bot", reason)
 			b.zoomedOut.Store(false)
 		}
 		if allowed && !b.gate.cached.allowed && !b.gate.cached.evaledAt.IsZero() {
 			b.logger.Info().Msg("scheduler resumed; attacks are authorized again")
+			b.notifyEvent("resume", "Scheduler resumed", "attacks are authorized again")
 		}
 	}
 

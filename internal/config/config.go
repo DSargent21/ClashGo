@@ -19,6 +19,73 @@ type BotConfig struct {
 	Upgrade     UpgradeConfig     `json:"upgrade"`
 	Debug       DebugConfig       `json:"debug"`
 	Performance PerformanceConfig `json:"performance"`
+	Notify      NotifyConfig      `json:"notify"`
+	BuilderBase BuilderBaseConfig `json:"builder_base"`
+}
+
+// NotifyConfig is where an unattended run reports in. Off by default: the bot
+// must never make an outbound request an operator did not ask for.
+//
+// A webhook is the only way a 24/7 farm on a headless Mac is visible away from
+// that Mac — the log file needs someone to open it, and the keepalive wrapper's
+// desktop notification only reaches the same machine.
+type NotifyConfig struct {
+	Enabled bool `json:"enabled"`
+
+	// Format selects the payload shape: "discord" ({"content"}), "telegram"
+	// (Bot API sendMessage) or "generic" ({"text","kind","at"}, which Slack
+	// and most self-hosted receivers accept).
+	Format string `json:"format"`
+
+	// WebhookURL is the endpoint for "discord" and "generic".
+	WebhookURL string `json:"webhook_url"`
+
+	// TelegramToken and TelegramChatID address the chat for "telegram". The
+	// token is a secret: it lives in config.json, is never logged, and is
+	// redacted out of transport errors (see internal/notify).
+	TelegramToken  string `json:"telegram_token"`
+	TelegramChatID string `json:"telegram_chat_id"`
+}
+
+// BuilderBaseConfig is the optional Builder Base battle pass. Off by default: it
+// is a different village, a different troop bar and a different screen flow, so a
+// half-calibrated version of it would fail in the middle of a run.
+type BuilderBaseConfig struct {
+	Enabled bool `json:"enabled"`
+
+	// Mode is the farming style. Only "elixir" is implemented: drop one troop,
+	// surrender, keep whatever the raid paid out. "gold" (a full attack) needs
+	// Builder Base deployment templates that do not exist yet, so it is rejected
+	// at the start of the sequence rather than attempted blind.
+	Mode string `json:"mode"`
+
+	// EveryNHomeAttacks spaces Builder Base battles between home-village raids.
+	// 1 means one after every home attack.
+	EveryNHomeAttacks int `json:"every_n_home_attacks"`
+
+	// MaxPerDay caps them; 0 disables the cap. Counted per local day in memory,
+	// so a restart starts the day over, exactly like the scheduler's own view.
+	MaxPerDay int `json:"max_per_day"`
+
+	// SurrenderAfterSeconds is how long the single troop is left alone before the
+	// battle is ended. Builder Base loot is paid on destruction, so this is a
+	// cheap raid, not a win attempt.
+	SurrenderAfterSeconds int `json:"surrender_after_seconds"`
+
+	// BoatX/Y, TroopSlotX/Y and DeployX/Y are reference-geometry anchors (860x732
+	// — the geometry every other authored anchor uses): the boat to the Builder
+	// Base in the home village, the first troop card, and the drop point. They are
+	// the part of this feature that has to be checked on the live emulator:
+	// `see look` renders a frame with a coordinate ruler, and the bot logs the
+	// scaled points it taps. The boat default was measured on a live 1024x768
+	// frame (bottom-left of the home village, next to the calendar); the troop
+	// card and drop defaults are still authored geometry and must be checked.
+	BoatX      int `json:"boat_x"`
+	BoatY      int `json:"boat_y"`
+	TroopSlotX int `json:"troop_slot_x"`
+	TroopSlotY int `json:"troop_slot_y"`
+	DeployX    int `json:"deploy_x"`
+	DeployY    int `json:"deploy_y"`
 }
 
 // PerformanceConfig tunes work the bot can simply skip. Both settings are
@@ -217,6 +284,18 @@ type SearchConfig struct {
 	// raid time to maximise loot per hour. The manual values stay the starting
 	// point and the fallback until enough bases have been read.
 	AutoLoot bool `json:"auto_loot"`
+
+	// UseSuggestedFloors replaces the three minimums above with the curve for
+	// the account's Town Hall (internal/village), once that level is known from
+	// search.town_hall_level or an imported Data Export. A static 750k is a
+	// routine base at TH15 and a base that does not exist at TH6, where every
+	// Next is a skip. No-op while the Town Hall is unknown, and autotune still
+	// overrides both once it has enough samples.
+	UseSuggestedFloors bool `json:"use_suggested_floors"`
+
+	// TownHallLevel is the account's Town Hall when known by hand. 0 falls back
+	// to the imported village export (bot_cli -import-village <file>).
+	TownHallLevel int `json:"town_hall_level"`
 }
 
 type DebugConfig struct {
@@ -297,8 +376,8 @@ type UpgradeConfig struct {
 	// one irreversible decision in the upgrade screen (it changes the match
 	// pool and hides loot for days), so it is never inferred from a generic
 	// "upgrade everything" toggle.
-	AllowTownHall bool   `json:"allow_town_hall_upgrade"`
-	DryRun        bool   `json:"dry_run"`
+	AllowTownHall bool `json:"allow_town_hall_upgrade"`
+	DryRun        bool `json:"dry_run"`
 }
 
 // DefaultPetPriorities is the upgrade queue for the current pet roster. It
@@ -410,6 +489,10 @@ func DefaultConfig() *BotConfig {
 			MinLootElixir:        750000,
 			MinLootDarkElixir:    2000,
 			MaxSearchSkips:       60,
+			// Safe as a default: it only acts once the Town Hall is known, so an
+			// install that never imports an export keeps exactly these manual
+			// values.
+			UseSuggestedFloors: true,
 		},
 		Storage: StorageConfig{
 			HaltWhenGoldFull:       true,
@@ -483,6 +566,23 @@ func DefaultConfig() *BotConfig {
 			TuneGuestAnimations:     true,
 			CoalesceCaptures:        true,
 			CaptureCacheMs:          DefaultCaptureCacheMs,
+		},
+		Notify: NotifyConfig{
+			Enabled: false,
+			Format:  "discord",
+		},
+		BuilderBase: BuilderBaseConfig{
+			Enabled:               false,
+			Mode:                  "elixir",
+			EveryNHomeAttacks:     3,
+			MaxPerDay:             20,
+			SurrenderAfterSeconds: 20,
+			BoatX:                 185,
+			BoatY:                 550,
+			TroopSlotX:            45,
+			TroopSlotY:            660,
+			DeployX:               430,
+			DeployY:               560,
 		},
 	}
 }

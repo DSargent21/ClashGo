@@ -1106,11 +1106,132 @@ func (vr VillageResources) IsFull(haltGold, haltElixir, haltDE bool, rule string
 	return (haltGold && goldFull) || (haltElixir && elixirFull) || (haltDE && deFull)
 }
 
+// Village HUD storage-bar geometry, in reference px (860x732). Measured on two
+// live 1024x768 frames (k=1.1334): the bars end 40 ref px from the right edge,
+// run 180 ref px left from there, and their centres sit at y 29/68/116 — the row
+// bands measured at y 18-48, 61-94 and 127-151 live. Earlier numbers
+// (39/76/113, then 30/75/127) came from partial or older measurements: the
+// elixir probe sat 8 px low and the DE probe 11 px low, close enough to the
+// neighbour bar to read the wrong resource.
+const (
+	storageBarRightRef = 27
+	storageBarLenRef   = 193
+	storageBarHalfRef  = 12
+)
+
+// storageBarCentersRef is gold, elixir, dark elixir, top to bottom.
+var storageBarCentersRef = [3]int{29, 68, 116}
+
+// hudResourcePixel reports whether a BGR pixel is resource-bar fill chrome:
+// warm gold/yellow or magenta/purple, at the saturation and brightness the HUD
+// paints a FILLED bar.
+//
+// Hue decides, not channel order: the gold fill is saturated yellow whose green
+// channel is nearly as high as its red (live pixel (129,119,45) RGB), so the old
+// "green must be well below the max" test skipped the whole dull left end of the
+// bar and under-read gold by ~10 points on a live frame. The empty-bar wash is
+// the same hue, just dark and desaturated, and the scenery behind the HUD is
+// green — both fail the saturation or the hue window.
+func hudResourcePixel(b, g, r uint8) bool {
+	mx := int(b)
+	if int(g) > mx {
+		mx = int(g)
+	}
+	if int(r) > mx {
+		mx = int(r)
+	}
+	mn := int(b)
+	if int(g) < mn {
+		mn = int(g)
+	}
+	if int(r) < mn {
+		mn = int(r)
+	}
+	if mx < 90 { // wash and shading are dark
+		return false
+	}
+	delta := mx - mn
+	if delta*100/mx < 45 { // wash is desaturated grey
+		return false
+	}
+	var hue int
+	switch mx {
+	case int(r):
+		hue = 60 * (int(g) - int(b)) / delta
+	case int(g):
+		hue = 120 + 60*(int(b)-int(r))/delta
+	default:
+		hue = 240 + 60*(int(r)-int(g))/delta
+	}
+	if hue < 0 {
+		hue += 360
+	}
+	warm := hue >= 15 && hue <= 65
+	magenta := hue >= 265 && hue <= 345
+	return warm || magenta
+}
+
+// readStorageBar measures one bar: the fill grows from the resource icon at the
+// right end leftwards, so the bar's fill is everything right of the leftmost
+// fill-coloured column. Measuring the leftmost fill pixel rather than counting
+// coloured pixels is what makes a full bar read as full: the amount text is
+// white and sits over the fill, and counting colours around those glyphs capped
+// a full bar at ~70%.
+func readStorageBar(screen gocv.Mat, barLeft, barRight int, centerRef int, k float64) (pct float64, found bool) {
+	if barRight <= barLeft {
+		return 0, false
+	}
+	yc := int(float64(centerRef) * k)
+	half := int(storageBarHalfRef * k)
+	if half < 2 {
+		half = 2
+	}
+	y0, y1 := yc-half, yc+half
+	if y0 < 0 {
+		y0 = 0
+	}
+	if y1 >= screen.Rows() {
+		y1 = screen.Rows() - 1
+	}
+	if y0 > y1 {
+		return 0, false
+	}
+
+	// One fill pixel per column is enough: the HUD paints the fill edge with a
+	// hard boundary, and requiring a row majority instead dropped whole bars
+	// (a DE bar the game showed at 100% read 0%) because the fill's top rows are
+	// shaded darker there. The single-pixel rule's only known cost is at >99%,
+	// where the leading glow reports 99.2% as full — high by 0.8 of a point, on
+	// the side the halt gate wants.
+	leftmost := -1
+	for y := y0; y <= y1; y++ {
+		for x := barLeft; x < barRight; x++ {
+			if hudResourcePixel(screen.GetUCharAt(y, x*3), screen.GetUCharAt(y, x*3+1), screen.GetUCharAt(y, x*3+2)) {
+				if leftmost < 0 || x < leftmost {
+					leftmost = x
+				}
+				break
+			}
+		}
+	}
+	if leftmost < 0 {
+		return 0, false
+	}
+
+	barLen := float64(barRight - barLeft)
+	pct = 100 * float64(barRight-leftmost) / barLen
+	if pct > 100 {
+		pct = 100
+	}
+	return math.Round(pct*10) / 10, true
+}
+
 // ReadVillageStorageFill measures the storage fullness of Gold, Elixir, and Dark Elixir
 // from the main village top-right HUD bars.
 //
-// Fast (sub-millisecond), robust against theme changes, and scales with the display scale.
-// The CoC resource bar fills from right to left toward the resource icon.
+// The fill is measured from the bar's own pixels (see readStorageBar): a bar
+// that is completely filled reads 100%, which is the only reading the storage
+// halt needs — the bar being full IS the storage being full.
 func (lr *LootRecognizer) ReadVillageStorageFill(screen gocv.Mat) VillageResources {
 	if screen.Empty() {
 		return VillageResources{}
@@ -1118,7 +1239,8 @@ func (lr *LootRecognizer) ReadVillageStorageFill(screen gocv.Mat) VillageResourc
 	return ReadVillageStorageFillMat(screen, lr.scale)
 }
 
-// ReadVillageStorageFillMat measures the storage fullness directly on a Mat given a display scale.
+// ReadVillageStorageFillMat measures the storage fullness directly on a Mat
+// given a display scale.
 func ReadVillageStorageFillMat(screen gocv.Mat, scale float64) VillageResources {
 	if screen.Empty() {
 		return VillageResources{}
@@ -1128,109 +1250,25 @@ func ReadVillageStorageFillMat(screen gocv.Mat, scale float64) VillageResources 
 	}
 
 	w := screen.Cols()
-	h := screen.Rows()
 
-	// In reference geometry (860x732), the bar right edge sits ~25px from screen right edge,
-	// and bar width is ~200px. Scaled to live resolution:
-	barRight := w - int(25*scale)
-	barWidth := int(200 * scale)
-	if barWidth <= 0 || barRight <= barWidth {
-		return VillageResources{}
-	}
-	barLeft := barRight - barWidth
+	// Round, not truncate: a 1 px slip in the 100% end of an ~219 px bar is half
+	// a percent, and the halt threshold is a percentage point away.
+	barRight := w - int(math.Round(storageBarRightRef*scale))
+	barLeft := barRight - int(math.Round(storageBarLenRef*scale))
 	if barLeft < 0 {
 		barLeft = 0
 	}
-
-	// Reference vertical positions of the resource bar centers:
-	// Gold: ~39, Elixir: ~76, Dark Elixir: ~113
-	goldY := int(39 * scale)
-	elixirY := int(76 * scale)
-	deY := int(113 * scale)
-
-	sampleBand := int(3 * scale)
-	if sampleBand < 1 {
-		sampleBand = 1
+	if barRight <= barLeft || barRight > w {
+		return VillageResources{}
 	}
 
-	// 1. Measure Gold
-	goldFilled := 0
-	if goldY-sampleBand >= 0 && goldY+sampleBand < h {
-		for x := barLeft; x < barRight; x++ {
-			hasColor := false
-			for y := goldY - sampleBand; y <= goldY+sampleBand; y++ {
-				b := screen.GetUCharAt(y, x*3)
-				g := screen.GetUCharAt(y, x*3+1)
-				r := screen.GetUCharAt(y, x*3+2)
-				// Gold yellow: low Blue (< 130), high Green (> 130), high Red (> 160)
-				if b < 130 && g > 130 && r > 160 {
-					hasColor = true
-					break
-				}
-			}
-			if hasColor {
-				goldFilled++
-			}
-		}
-	}
-
-	// 2. Measure Elixir
-	elixirFilled := 0
-	if elixirY-sampleBand >= 0 && elixirY+sampleBand < h {
-		for x := barLeft; x < barRight; x++ {
-			hasColor := false
-			for y := elixirY - sampleBand; y <= elixirY+sampleBand; y++ {
-				b := screen.GetUCharAt(y, x*3)
-				g := screen.GetUCharAt(y, x*3+1)
-				r := screen.GetUCharAt(y, x*3+2)
-				// Elixir magenta/pink: high Blue (> 130), low Green (< 130), high Red (> 130)
-				if b > 130 && g < 130 && r > 130 {
-					hasColor = true
-					break
-				}
-			}
-			if hasColor {
-				elixirFilled++
-			}
-		}
-	}
-
-	// 3. Measure Dark Elixir
-	deFilled := 0
-	if deY-sampleBand >= 0 && deY+sampleBand < h {
-		for x := barLeft; x < barRight; x++ {
-			hasColor := false
-			for y := deY - sampleBand; y <= deY+sampleBand; y++ {
-				b := int(screen.GetUCharAt(y, x*3))
-				g := int(screen.GetUCharAt(y, x*3+1))
-				r := int(screen.GetUCharAt(y, x*3+2))
-				// DE dark purple: high blue/red relative to green, moderate saturation
-				if b > 70 && r > 70 && g < b && g < r {
-					hasColor = true
-					break
-				}
-			}
-			if hasColor {
-				deFilled++
-			}
-		}
-	}
-
-	calcPct := func(filled, total int) float64 {
-		if total <= 0 {
-			return 0
-		}
-		pct := (float64(filled) / float64(total)) * 100.0
-		if pct > 100.0 {
-			pct = 100.0
-		}
-		return math.Round(pct*10) / 10
-	}
+	gold, _ := readStorageBar(screen, barLeft, barRight, storageBarCentersRef[0], scale)
+	elixir, _ := readStorageBar(screen, barLeft, barRight, storageBarCentersRef[1], scale)
+	de, _ := readStorageBar(screen, barLeft, barRight, storageBarCentersRef[2], scale)
 
 	return VillageResources{
-		GoldFillPercent:   calcPct(goldFilled, barWidth),
-		ElixirFillPercent: calcPct(elixirFilled, barWidth),
-		DEFillPercent:     calcPct(deFilled, barWidth),
+		GoldFillPercent:   gold,
+		ElixirFillPercent: elixir,
+		DEFillPercent:     de,
 	}
 }
-

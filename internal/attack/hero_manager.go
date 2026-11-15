@@ -3,6 +3,7 @@ package attack
 import (
 	"fmt"
 	"image"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -333,15 +334,7 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 				Msg("hero drop unconfirmed but there is no new ground to re-aim at; leaving it to the sweep (no stray re-arm)")
 			continue
 		}
-		// Rotate candidate slice so the point that was actually fired is at index 0,
-		// and index 1..len are untested retry points.
-		retryCands := make([]image.Point, 0, len(p.cands))
-		retryCands = append(retryCands, p.cands[p.firstIndex])
-		for idx, pt := range p.cands {
-			if idx != p.firstIndex {
-				retryCands = append(retryCands, pt)
-			}
-		}
+		retryCands := hm.heroRescueGround(p.cands[p.firstIndex], p.cands)
 
 		// A refused drop DESELECTS the card, so every retry is re-armed first
 		// (see maxHeroRearms). A re-arm is not a placement and spends no
@@ -552,6 +545,16 @@ func (hm *HeroManager) retryHeroFieldTaps(
 			hm.executor.client.HumanSleep(300, 40)
 			return hm.captureSlotRatio(slot)
 		},
+		func() bool {
+			// The hero's own card: count badge gone means the game took the drop,
+			// whatever the slot ratio still shows mid-animation. Needs the bar
+			// reader, which the hand-built unit harnesses do not wire.
+			if hm.liveHook == nil && (hm.slotManager == nil || hm.troopCounter == nil) {
+				return false
+			}
+			_, ok, empty := hm.liveCountAndEmpty(slot)
+			return ok && empty
+		},
 		func() bool { return hm.executor.DeployBudgetExhausted() },
 		func(attempt int, pt image.Point, pre, post, delta float64, won bool) {
 			hm.logger.Info().
@@ -579,6 +582,26 @@ func (hm *HeroManager) retryHeroFieldTaps(
 			}
 		},
 	)
+}
+
+// heroRescueGround orders the ground a refused hero walks: the refused point at
+// index 0 (the shape runHeroFieldRetries expects), then outward steps from it,
+// then whatever else the picker authored. A refusal is a region, not a pixel, so
+// the useful next tap is a tile further out — the same walk the outward ladder
+// already encodes for a refused pin.
+func (hm *HeroManager) heroRescueGround(fired image.Point, cands []image.Point) []image.Point {
+	out := make([]image.Point, 0, 1+heroFieldRetries+len(cands))
+	out = append(out, fired)
+	out = append(out, outwardHeroLadder(fired, hm.deployLine.Points, hm.w, hm.h, heroFieldRetries)...)
+	for _, p := range cands {
+		// Authored points that sit behind the HUD or the troop bar are not taps:
+		// the game never sees them and the retry budget burns on nothing.
+		if p.Y < BandTop() || p.Y > UICutoff(hm.h) || p.X < 0 || p.X >= hm.w {
+			continue
+		}
+		out = append(out, p)
+	}
+	return dedupePoints(out)
 }
 
 // containsPoint reports whether p is one of pts. Used by heroDropCandidates to
@@ -1382,7 +1405,42 @@ func siegeDropVerdict(trusted bool, count int, ratioOK bool, ratio float64) sieg
 	}
 }
 
-func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) siegeVerdict {
+// siegeUnchangedBand is how much a siege card's activity ratio may move and
+// still count as "the card look did not change". A deployed machine leaves a
+// dimmed silhouette (ratio <= heroConsumedRatio); a refused tap leaves the card
+// as it was.
+const siegeUnchangedBand = 0.05
+
+// siegeVerdictAfterReads folds the card's own before/after appearance into the
+// verdict.
+//
+// The count badge cannot answer this question here: this client ships no siege
+// template, so the machine's card is an unnamed fallback slot and "no count
+// label" reads exactly like "count drained" — live 2026-11-15 the run logged
+// "reconcile: siege count label gone; slot drained" in every battle while the
+// armed machine stayed on the bar, and the deploy path marked it placed and
+// skipped it for the rest of the attack. A card that looks the same after the
+// placement tap as before it did not deploy.
+func siegeVerdictAfterReads(v siegeVerdict, preRatio float64, preOK bool, postRatio float64, postOK bool) siegeVerdict {
+	if !preOK || !postOK {
+		return v
+	}
+	if postRatio >= preRatio-siegeUnchangedBand {
+		return siegeStillOnCard
+	}
+	return v
+}
+
+// siegeCardRatio takes the one settled read of the card used as the "before"
+// half of a placement check.
+func (hm *HeroManager) siegeCardRatio(slot *TrackedSlot) (float64, bool) {
+	if slot == nil {
+		return 0, false
+	}
+	return hm.executor.CaptureSettledSlotRatio(hm.w, slot)
+}
+
+func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot, preRatio float64, preOK bool) siegeVerdict {
 	// One settled look, not two. A spent siege card keeps a dimmed silhouette
 	// and the next queued icon can sit on the same slot, so the old pre/post
 	// delta pair proved no more than a single settled read plus the count label
@@ -1393,8 +1451,26 @@ func (hm *HeroManager) confirmSiegeDrop(unit strategy.Unit, slot *TrackedSlot) s
 	time.Sleep(250 * time.Millisecond)
 	ratio, ratioOK := hm.executor.CaptureSettledSlotRatio(hm.w, slot)
 	count, trusted, _ := hm.liveCountAndEmpty(slot)
-	verdict := siegeDropVerdict(trusted, count, ratioOK, ratio)
+	verdict := siegeVerdictAfterReads(siegeDropVerdict(trusted, count, ratioOK, ratio), preRatio, preOK, ratio, ratioOK)
+	// Armed beats every inference: the card is still SELECTED for placement, so
+	// the machine is still on it and the tap was refused.
+	if armed, ok := hm.executor.SlotArmed(slot); ok && armed {
+		verdict = siegeStillOnCard
+		hm.logger.Warn().Str("unit", unit.Name).
+			Msg("siege card is still ARMED after the placement tap: the game refused that ground and the machine never left the card")
+	}
+	if verdict == siegeStillOnCard && ratioOK && preOK && ratio >= preRatio-siegeUnchangedBand {
+		hm.logger.Warn().Str("unit", unit.Name).
+			Float64("pre_ratio", preRatio).
+			Float64("post_ratio", ratio).
+			Msg("siege card looks unchanged after the placement tap: nothing deployed, whatever the count badge says")
+	}
 	switch {
+	// The verdict comes first on purpose: the count cases below describe what the
+	// badge said, and the badge said "drained" in every battle of 2026-11-15
+	// while the armed machine stayed on the bar. Logging the badge as an outcome
+	// is what hid the failure.
+	case verdict == siegeStillOnCard:
 	case trusted && count == 0:
 		hm.logger.Info().Str("unit", unit.Name).Msg("reconcile: siege count label gone; slot drained")
 	case ratioOK && ratio <= heroConsumedRatio:
@@ -1443,24 +1519,104 @@ func (hm *HeroManager) siegeFallbackPoint() (image.Point, bool) {
 // deployed regardless, and the sweep refuses siege slots by design, so a
 // refused tap meant the machine never entered the battle at all — the user's
 // "sometimes forgets the siege machine".
+// siegeRefusedGrounds orders the ground a proven siege refusal may be re-aimed
+// at: the deploy-line midpoint first (troops were accepted there seconds ago),
+// then points stepped OUTWARD from the refused spot, away from the battlefield
+// centre. A refusal is a region, not a pixel: live 2026-11-15 the retry point
+// sat 12 px from the refused pin, inside the same red pocket, and was refused
+// too. Stepping outward walks out of that pocket toward ground the game accepts.
+func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
+	out := make([]image.Point, 0, 6)
+	// The deploy line's ENDS first: troops were dropped and accepted there
+	// seconds ago. Its midpoint is the wrong end of that order — the middle of a
+	// line across a base is inside the base, which is exactly the ground the game
+	// refuses (live 2026-11-15: the retry point sat 12 px from the refused pin,
+	// inside the same red pocket, and was refused too).
+	if len(hm.deployLine.Points) >= 2 {
+		p1, p2 := hm.deployLine.Points[0], hm.deployLine.Points[len(hm.deployLine.Points)-1]
+		out = append(out, p1, p2,
+			image.Pt((3*p1.X+p2.X)/4, (3*p1.Y+p2.Y)/4),
+			image.Pt((p1.X+3*p2.X)/4, (p1.Y+3*p2.Y)/4))
+	}
+	// Then walk outward from the refused spot, away from the battlefield centre:
+	// a refusal is a region, and the pin can sit inside it.
+	cx, cy := float64(hm.w)/2, float64(hm.h)/2
+	dx, dy := float64(refused.X)-cx, float64(refused.Y)-cy
+	if d := math.Hypot(dx, dy); d >= 1 {
+		ux, uy := dx/d, dy/d
+		for _, step := range []float64{60, 120} {
+			p := image.Pt(refused.X+int(ux*step), refused.Y+int(uy*step))
+			if p.X < 8 || p.Y < 8 || p.X >= hm.w-8 || p.Y >= int(float64(hm.h)*0.85) {
+				continue
+			}
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// retryRefusedSiege re-aims a PROVEN siege refusal, then stops. The caller passes
+// the verdict from the first tap: only siegeStillOnCard means nothing was
+// placed, so the one-tap contract (slot.SiegePlaced, set by PlaceSiege) has to
+// be released before each attempt.
+//
+// Without this the machine was silently retired: DeploySiege marked the slot
+// deployed regardless, and the sweep refuses siege slots by design, so a refused
+// tap meant the machine never entered the battle at all — the user's "not
+// placing siege machine". Each attempt is verified the same way as the first
+// (armed card = refused), and the loop stops on the first accepted ground, so a
+// second tap can never land on a machine that did deploy.
 func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, verdict siegeVerdict) bool {
 	if verdict != siegeStillOnCard {
 		return false
 	}
-	alt, ok := hm.siegeFallbackPoint()
+	refused, ok := hm.executor.SiegeGround()
 	if !ok {
-		hm.logger.Warn().Str("unit", unit.Name).Msg("siege refused its ground and no fallback line exists; the machine stays on the card")
+		hm.logger.Warn().Str("unit", unit.Name).Msg("siege refused its ground and no refused point was recorded; the machine stays on the card")
 		return false
 	}
-	hm.logger.Warn().
-		Str("unit", unit.Name).
-		Interface("retry_at", alt).
-		Msg("siege: retrying the refused placement once on the deploy line (the card still holds the machine, so nothing was placed)")
-	if slot != nil {
-		slot.SiegePlaced = false
+	grounds := hm.siegeRefusedGrounds(refused)
+	// Three taps is the ceiling: live 2026-11-15 every attempt on ground that had
+	// just accepted troops was answered by the game with its red "Select a
+	// different unit" banner and the card stayed armed, so more taps only churn.
+	if len(grounds) > 3 {
+		grounds = grounds[:3]
 	}
-	hm.executor.PlaceSiege(slot, alt, 12.0)
-	hm.confirmSiegeDrop(unit, slot)
+	if len(grounds) == 0 {
+		hm.logger.Warn().Str("unit", unit.Name).Msg("siege refused its ground and no fallback exists; the machine stays on the card")
+		return false
+	}
+	for i, alt := range grounds {
+		// A refused tap can leave the card armed or deselect it; the retry's
+		// field tap only places the machine on a selected card. Re-tapping costs
+		// nothing: nothing was placed on the refused try.
+		if armed, aok := hm.executor.SlotArmed(slot); aok && !armed {
+			hm.executor.TapSlot(slot, heroCardTapJitter)
+			hm.executor.client.HumanSleep(heroArmSettleMs, 30)
+		}
+		if slot != nil {
+			slot.SiegePlaced = false
+		}
+		preRatio, preOK := hm.siegeCardRatio(slot)
+		hm.logger.Warn().
+			Str("unit", unit.Name).
+			Int("attempt", i+1).
+			Interface("retry_at", alt).
+			Msg("siege: retrying a refused placement (the card still holds the machine, so nothing was placed)")
+		hm.executor.PlaceSiege(slot, alt, 12.0)
+		if hm.confirmSiegeDrop(unit, slot, preRatio, preOK) != siegeStillOnCard {
+			return true
+		}
+		// Under CLASHGO_HERO_DEBUG, keep the frame each refused attempt left
+		// behind: whether the card is armed and whether the machine stands on the
+		// ground are the two facts this loop is guessing about.
+		if heroDebugDir() != "" {
+			hm.debugDump(fmt.Sprintf("siege_refused_%d", i+1))
+		}
+		if slot != nil {
+			slot.SiegePlaced = false
+		}
+	}
 	return true
 }
 
@@ -1478,6 +1634,10 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 		hm.slotManager.MarkDeployed("clan castle")
 	}
 
+	// The card read BEFORE the placement tap, so the confirmation has something
+	// to compare against; see siegeVerdictAfterReads.
+	preRatio, preOK := hm.siegeCardRatio(slot)
+
 	// The user pinned a hero point for this side and asked for the siege to land
 	// on the same spot: the machine screens the heroes, so it belongs on their
 	// ground rather than on the strategy's "Center" — the middle of the base,
@@ -1491,15 +1651,18 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 			Interface("tap", tap).
 			Msg("siege placed on the user's pinned hero point (the one and only placement tap)")
 		hm.executor.PlaceSiege(slot, tap, 12.0)
-		verdict := hm.confirmSiegeDrop(unit, slot)
-		hm.retryRefusedSiege(unit, slot, verdict)
+		verdict := hm.confirmSiegeDrop(unit, slot, preRatio, preOK)
+		if !hm.retryRefusedSiege(unit, slot, verdict) && verdict != siegeCommitted {
+			hm.logger.Warn().Str("unit", unit.Name).
+				Msg("siege machine never left its card this battle; the card is still armed, so this attack runs without it")
+		}
 		markDone()
 		return true
 	}
 
 	if entry, ok := hm.formulaEntry(unit.Name); ok {
 		if hm.deploySiegeFromFormula(unit, slot, entry) {
-			verdict := hm.confirmSiegeDrop(unit, slot)
+			verdict := hm.confirmSiegeDrop(unit, slot, preRatio, preOK)
 			hm.retryRefusedSiege(unit, slot, verdict)
 			markDone()
 			return true

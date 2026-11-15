@@ -264,6 +264,12 @@ export namespace bot {
 	    classify_gate_enabled: boolean;
 	    classify_threshold_pct: number;
 	    capture_cache: adb.CaptureCacheStats;
+	    schedule_enabled: boolean;
+	    schedule_state: string;
+	    halted_reason?: string;
+	    attacks_today: number;
+	    max_attacks_per_day: number;
+	    next_change_at?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new BotStats(source);
@@ -290,6 +296,12 @@ export namespace bot {
 	        this.classify_gate_enabled = source["classify_gate_enabled"];
 	        this.classify_threshold_pct = source["classify_threshold_pct"];
 	        this.capture_cache = this.convertValues(source["capture_cache"], adb.CaptureCacheStats);
+	        this.schedule_enabled = source["schedule_enabled"];
+	        this.schedule_state = source["schedule_state"];
+	        this.halted_reason = source["halted_reason"];
+	        this.attacks_today = source["attacks_today"];
+	        this.max_attacks_per_day = source["max_attacks_per_day"];
+	        this.next_change_at = source["next_change_at"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -388,6 +400,58 @@ export namespace config {
 		    }
 		    return a;
 		}
+	}
+	export class BuilderBaseConfig {
+	    enabled: boolean;
+	    mode: string;
+	    every_n_home_attacks: number;
+	    max_per_day: number;
+	    surrender_after_seconds: number;
+	    boat_x: number;
+	    boat_y: number;
+	    troop_slot_x: number;
+	    troop_slot_y: number;
+	    deploy_x: number;
+	    deploy_y: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new BuilderBaseConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.mode = source["mode"];
+	        this.every_n_home_attacks = source["every_n_home_attacks"];
+	        this.max_per_day = source["max_per_day"];
+	        this.surrender_after_seconds = source["surrender_after_seconds"];
+	        this.boat_x = source["boat_x"];
+	        this.boat_y = source["boat_y"];
+	        this.troop_slot_x = source["troop_slot_x"];
+	        this.troop_slot_y = source["troop_slot_y"];
+	        this.deploy_x = source["deploy_x"];
+	        this.deploy_y = source["deploy_y"];
+	    }
+	}
+	export class NotifyConfig {
+	    enabled: boolean;
+	    format: string;
+	    webhook_url: string;
+	    telegram_token: string;
+	    telegram_chat_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new NotifyConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.format = source["format"];
+	        this.webhook_url = source["webhook_url"];
+	        this.telegram_token = source["telegram_token"];
+	        this.telegram_chat_id = source["telegram_chat_id"];
+	    }
 	}
 	export class PerformanceConfig {
 	    perf_mode: boolean;
@@ -563,6 +627,8 @@ export namespace config {
 	    min_loot_de: number;
 	    max_search_skips: number;
 	    auto_loot: boolean;
+	    use_suggested_floors: boolean;
+	    town_hall_level: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SearchConfig(source);
@@ -577,6 +643,8 @@ export namespace config {
 	        this.min_loot_de = source["min_loot_de"];
 	        this.max_search_skips = source["max_search_skips"];
 	        this.auto_loot = source["auto_loot"];
+	        this.use_suggested_floors = source["use_suggested_floors"];
+	        this.town_hall_level = source["town_hall_level"];
 	    }
 	}
 	export class TrainingConfig {
@@ -659,6 +727,8 @@ export namespace config {
 	    upgrade: UpgradeConfig;
 	    debug: DebugConfig;
 	    performance: PerformanceConfig;
+	    notify: NotifyConfig;
+	    builder_base: BuilderBaseConfig;
 	
 	    static createFrom(source: any = {}) {
 	        return new BotConfig(source);
@@ -675,6 +745,8 @@ export namespace config {
 	        this.upgrade = this.convertValues(source["upgrade"], UpgradeConfig);
 	        this.debug = this.convertValues(source["debug"], DebugConfig);
 	        this.performance = this.convertValues(source["performance"], PerformanceConfig);
+	        this.notify = this.convertValues(source["notify"], NotifyConfig);
+	        this.builder_base = this.convertValues(source["builder_base"], BuilderBaseConfig);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -695,6 +767,8 @@ export namespace config {
 		    return a;
 		}
 	}
+	
+	
 	
 	
 	

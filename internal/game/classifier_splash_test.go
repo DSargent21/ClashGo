@@ -41,19 +41,39 @@ func TestClassify_TapToContinueSplash(t *testing.T) {
 	}
 }
 
-// TestClassify_TapToContinueNeedsTwoSignals guards against a single
-// warm pixel elsewhere on the screen tripping the rule: only the text
-// pixel is set, so the state must NOT fire (MinPass=2).
-func TestClassify_TapToContinueNeedsTwoSignals(t *testing.T) {
+// TestClassify_TapToContinueNeedsEverySignal guards against warm pixels
+// elsewhere on the screen tripping the rule: the two parchment points are set
+// but the dark corner is not, so the state must NOT fire. This is the live
+// Leagues-window false positive that made the bot tap league cards.
+func TestClassify_TapToContinueNeedsEverySignal(t *testing.T) {
 	c := newChestClassifier(t)
 
 	m := makeSplashFrame()
-	setRGB(m, 414, 182, 0xE1, 0xCF, 0xBC) // beige text only (one glyph)
+	setRGB(m, 414, 182, 0xE1, 0xCF, 0xBC) // parchment text points…
+	setRGB(m, 450, 185, 0xE2, 0xD0, 0xBC) // …without the dark corner
 	defer m.Close()
 
 	state, _ := c.ClassifyState(m)
 	if state == StateTapToContinue {
-		t.Fatalf("TapToContinue fired with only one signature pixel")
+		t.Fatalf("TapToContinue fired on a bright panel: the dark corner is missing")
+	}
+}
+
+// TestClassify_BrightLeaguesPanelIsNotASplash pins the live false positive:
+// the Leagues window is warm parchment at both text points and bright elsewhere,
+// so it must classify as something other than the tap-to-continue splash.
+func TestClassify_BrightLeaguesPanelIsNotASplash(t *testing.T) {
+	c := newChestClassifier(t)
+
+	m := makeSplashFrame()
+	m.SetTo(gocv.NewScalar(120, 90, 70, 0)) // warm parchment everywhere
+	setRGB(m, 414, 182, 0xE1, 0xCF, 0xBC)
+	setRGB(m, 450, 185, 0xE2, 0xD0, 0xBC)
+	defer m.Close()
+
+	state, _ := c.ClassifyState(m)
+	if state == StateTapToContinue {
+		t.Fatalf("a bright parchment panel must not classify as the boot splash")
 	}
 }
 

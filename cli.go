@@ -21,6 +21,7 @@ import (
 	"github.com/Ducky705/ClashGO/internal/config"
 	"github.com/Ducky705/ClashGO/internal/logger"
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/Ducky705/ClashGO/internal/village"
 	"github.com/rs/zerolog/log"
 )
 
@@ -59,6 +60,7 @@ func main() {
 	fs.BoolVar(&listDevices, "devices", false, "List connected ADB devices and exit")
 	fs.BoolVar(&listStrats, "strategies", false, "List available attack strategies and exit")
 	fs.BoolVar(&listAccounts, "accounts", false, "List configured accounts and exit")
+	importVillage := fs.String("import-village", "", "Import the game's village Data Export JSON and use its Town Hall for loot floors")
 	fs.BoolVar(&quiet, "quiet", false, "Suppress periodic 10s status ticker")
 	fs.BoolVar(&quiet, "q", false, "Suppress periodic 10s status ticker (shorthand)")
 	fs.BoolVar(&debugLog, "debug", os.Getenv("DEBUG") != "", "Enable verbose debug logging")
@@ -127,6 +129,11 @@ func main() {
 
 	if listAccounts {
 		runListAccounts()
+		return
+	}
+
+	if *importVillage != "" {
+		runImportVillage(*importVillage)
 		return
 	}
 
@@ -488,6 +495,27 @@ func formatNumber(n int64) string {
 	return strings.Join(res, ",")
 }
 
+// runImportVillage stores the game's Data Export as this profile's account
+// facts and prints what the bot will use. It never talks to the device.
+func runImportVillage(path string) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: read %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	v, err := village.Save(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintln(os.Stderr, "Copy it in the game from Profile → Settings → More Settings → Data Export.")
+		os.Exit(1)
+	}
+	gold, elixir, dark := village.SuggestedFloors(v.TownHall)
+	fmt.Printf("Village export imported → %s\n", village.Path())
+	fmt.Printf("  Town Hall %d · %d builders · builder base %v · lab %v · %d pets\n",
+		v.TownHall, v.Builders, v.BuilderBase, v.Lab, v.Pets)
+	fmt.Printf("  Suggested search floors: %d gold · %d elixir · %d dark elixir\n", gold, elixir, dark)
+}
+
 func printUsage(fs *flag.FlagSet) func() {
 	return func() {
 		fmt.Printf("ClashGO CLI v%s — High-Performance Headless CoC Automation\n\n", version)
@@ -497,6 +525,7 @@ func printUsage(fs *flag.FlagSet) func() {
 		fmt.Println("  -devices           List connected ADB devices and exit")
 		fmt.Println("  -strategies        List available strategy YAML files and exit")
 		fmt.Println("  -accounts          List configured accounts and exit")
+		fmt.Println("  -import-village <f> Import the game's Data Export JSON; its Town Hall sizes the loot floors")
 		fmt.Println("  -v, -version       Print version and exit")
 		fmt.Println("  -h, --help         Show this help message")
 		fmt.Println()

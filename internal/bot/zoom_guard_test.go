@@ -75,3 +75,26 @@ func TestEnsureBattleZoom_AlwaysAttemptsOnce(t *testing.T) {
 		t.Errorf("attempts = %d, want 1", z.attempts)
 	}
 }
+
+// Every dialog the classifier can name must keep the zoom gestures off the
+// screen: a pinch through an open popup drags the popup instead of the camera.
+func TestZoomableViewRefusesOverlays(t *testing.T) {
+	allowed := []game.GameState{game.StateMainVillage}
+	for _, s := range allowed {
+		if !zoomableView(s) {
+			t.Errorf("%s must allow zoom", s)
+		}
+	}
+	refused := []game.GameState{
+		game.StateConfirmExit, game.StateChatOpen, game.StateGemDialog,
+		game.StateObstacleDialog, game.StateSettings, game.StateOfferPopup,
+		game.StateChestReward, game.StateConnectionLost, game.StateUpdatePrompt,
+		game.StateBattle, game.StateBattleEnd, game.StateLogo, game.StateTapToContinue,
+		game.StateArmyCamp, game.StateUnknown,
+	}
+	for _, s := range refused {
+		if zoomableView(s) {
+			t.Errorf("%s must not trigger a pinch gesture", s)
+		}
+	}
+}

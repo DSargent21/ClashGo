@@ -91,6 +91,11 @@ type Bot struct {
 	// armyEmpty latches the "Train an army before attacking!" panel seen by
 	// pressPanelAction, so the attack cycle idles instead of restarting.
 	armyEmpty atomic.Bool
+	// attackSkipUntil is the unix second before which an empty army stops the
+	// attack path from re-opening the panel. Without it the capture loop starts a
+	// sequence every cycle, and each one taps Attack, opens the panel and leaves
+	// again — indistinguishable from the bot poking the village at random.
+	attackSkipUntil atomic.Int64
 	// strategyArmyMissing latches the deploy refusal that means "this strategy's
 	// core troops are not on the bar". Without it the attack cycle re-enters a
 	// battle, refuses again and returns home roughly every 50s (observed live
@@ -150,14 +155,33 @@ type Bot struct {
 	returnHomeInFlight bool
 	returnHomeLast     time.Time
 
-	scheduler        *Scheduler
-	builderManager   *BuilderManager
+	scheduler      *Scheduler
+	builderManager *BuilderManager
+	// notifier is nil unless notify.enabled is set (see notify.go).
+	notifier         eventSender
 	storageHalted    atomic.Bool
 	lastUpgradeCheck time.Time
 	lastCollectTime  time.Time
 	// storageNoSpenderWarned latches the one-shot "full storages, nothing to
 	// spend them on" warning so a full village does not log it every 30 s.
 	storageNoSpenderWarned atomic.Bool
+	// villageTH is the account's Town Hall from the imported Data Export (0 when
+	// unknown); it sizes the search floors. See village.go / internal/village.
+	villageTH int
+	// builderBaseUnlocked is the export's verdict on the Builder Base (the Builder
+	// Hall is built). True when no export was imported: enabling builder_base is
+	// explicit consent, and only the export can veto it.
+	builderBaseUnlocked bool
+	// Builder Base scheduling: the home-attack count the last battle ran at, the
+	// local day and its count, and a guard so two triggers cannot overlap.
+	bbMu       sync.Mutex
+	bbDay      string
+	bbDayCount int
+	bbAtAttack atomic.Int32
+	bbRunning  atomic.Bool
+	// floorClampWarned latches the one-shot "floor above anything a base can
+	// offer" warning.
+	floorClampWarned atomic.Bool
 
 	// Runtime gates (runtime_state.go): the cached scheduler verdict the
 	// capture loop and the attack sequence both read, the persisted-counter
@@ -271,6 +295,38 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("boot returned invalid screen size %dx%d; cannot calibrate", w, h)
 	}
+
+	// Everything below is measured for device.width x device.height: the pinned
+	// display scale, the templates, the search-screen loot ROIs, the pinned
+	// deploy lines. A BlueStacks instance the user opened by hand can be serving
+	// another geometry, and boot honours that running session instead of
+	// applying the configured size — so the session ran 1024x768 geometry
+	// against a 1280x720 frame (2026-11-15) and read loot as 14,423,886 gold /
+	// 6,384 elixir, skipped every base as too low, and called max zoom-out after
+	// a pinch that barely moved the camera. Nothing failed loudly, which is the
+	// whole problem: it looks like a bot that cannot see.
+	//
+	// `wm size` is the runtime override the project already uses to put a device
+	// on the calibrated geometry (cmd/wmresize). It lasts until the emulator
+	// reboots, so a cold boot needs no cleanup. Density is left alone:
+	// docs/RESOLUTION.md measured the render scale not depending on it.
+	if cw, ch := cfg.Device.Width, cfg.Device.Height; cw > 0 && ch > 0 && (cw != w || ch != h) {
+		log.Warn().
+			Int("live_w", w).Int("live_h", h).
+			Int("config_w", cw).Int("config_h", ch).
+			Msg("emulator geometry differs from device.width/height; applying the configured geometry, because the display scale and every authored coordinate were measured on it")
+		if _, shellErr := client.Shell(fmt.Sprintf("wm size %dx%d", cw, ch)); shellErr != nil {
+			log.Error().Err(shellErr).
+				Msg("could not apply the configured geometry; this run maps calibrated coordinates onto a frame they were not measured on")
+		} else {
+			// The guest recreates its surface a beat after the change.
+			time.Sleep(2 * time.Second)
+			if nw, nh, sizeErr := client.ScreenSize(); sizeErr == nil && nw > 0 && nh > 0 {
+				w, h = nw, nh
+			}
+			log.Info().Int("screen_w", w).Int("screen_h", h).Msg("emulator geometry applied")
+		}
+	}
 	// NewCalibration derives the display scale (K) from the live geometry as
 	// well as the per-axis ratios; at 860x732 every mapping stays the
 	// identity, at other geometries the HUD/world anchors follow the layout
@@ -279,9 +335,16 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	cal.Verified = true
 	// A pinned scale from config wins over the diagonal-ratio derivation
 	// (docs/RESOLUTION.md): the derivation measured 1.9% off on 1280x720, and a
-	// 1-pixel HUD probe notices 2% at the far edge of the frame.
-	if cfg.Device.DisplayScale > 0 {
-		cal.SetDisplayScale(cfg.Device.DisplayScale)
+	// 1-pixel HUD probe notices 2% at the far edge of the frame. It only wins on
+	// the geometry it was measured on — see SetDisplayScaleForGeometry; a pin
+	// that survived a geometry change is the failure this run just had.
+	pinned := cal.SetDisplayScaleForGeometry(cfg.Device.DisplayScale, cfg.Device.Width, cfg.Device.Height)
+	if cfg.Device.DisplayScale > 0 && !pinned {
+		log.Warn().
+			Float64("pin", cfg.Device.DisplayScale).
+			Int("config_w", cfg.Device.Width).Int("config_h", cfg.Device.Height).
+			Int("screen_w", w).Int("screen_h", h).
+			Msg("pinned display_scale was measured on another geometry; using the derived scale for this frame instead. Re-measure with cmd/resprobe at this resolution, or run the bot on device.width x device.height")
 	}
 	// Name the file the calibration settings came from. A pin that lives in a
 	// different tree than the running binary reads is invisible but looks
@@ -292,7 +355,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		Int("screen_w", w).
 		Int("screen_h", h).
 		Float64("display_scale", cal.DisplayScale()).
-		Bool("display_scale_pinned", cfg.Device.DisplayScale > 0).
+		Bool("display_scale_pinned", pinned).
 		Str("config_path", configPath).
 		Msg("calibration built")
 
@@ -330,7 +393,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	// is safe either way — an unrecognised screen is reported as unknown rather
 	// than acted on — but the log is where a stall gets explained.
 	if !cal.IsReferenceGeometry() {
-		if cfg.Device.DisplayScale > 0 {
+		if pinned {
 			log.Warn().
 				Int("screen_w", w).
 				Int("screen_h", h).
@@ -500,6 +563,12 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	// the daily cap that keeps the account inside a human attack budget.
 	b.restoreSchedulerCounters()
 	b.builderManager = NewBuilderManager(client, cal, cfg.Upgrade, b.logger)
+	// Webhook reporting for unattended runs. nil when disabled, which every
+	// call site treats as "say nothing".
+	b.notifier = newEventNotifier(ctx, cfg.Notify, b.logger)
+	// Town Hall for the search floors: config override first, else the imported
+	// village export. 0 leaves the configured floors alone.
+	b.villageTH, b.builderBaseUnlocked = resolveVillageFacts(cfg, b.logger)
 
 	// Resolve the strategy's declared army slot once at boot so the
 	// pre-battle click sequence can arm the right saved recipe.
@@ -1099,6 +1168,11 @@ func (b *Bot) recoverEmulator() {
 	}
 
 	b.logger.Error().Msg("device unreachable after transport + adb-server recovery; relaunching BlueStacks")
+	// The one recovery step a human usually has to finish by hand: say so out
+	// of the machine, not only in a log nobody is reading at 3 am.
+	b.notifyEvent("halt", "Emulator unreachable",
+		"ADB transport and adb-server were reset without a response; relaunching BlueStacks.",
+		"If the farm stays down, the emulator needs a human.")
 	if err := b.client.EnsureBlueStacksMac(b.cfg.Device.Width, b.cfg.Device.Height, b.cfg.Device.DPI); err != nil {
 		b.logger.Error().Err(err).Msg("BlueStacks relaunch failed; will retry on next stuck check")
 	}
@@ -1137,13 +1211,23 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 
 	if !b.zoomedOut.Load() {
 
-		pinX, pinY := b.cal.Hud(60, 695)
-		isVillage := state == game.StateMainVillage ||
-			state == game.StateArmyCamp ||
-			b.isOrange(screen, pinX, pinY) ||
-			b.templateMatch(screen, "btn_attack", 0.45) ||
-			b.templateMatch(screen, "btn_battle_village", 0.45) ||
-			b.templateMatch(screen, "btn_settings", 0.6)
+		// Only zoom on a screen that is actually the village. Two live failures
+		// put pinches on top of panels instead:
+		//   - a dimmed village behind the quit-confirm dialog still satisfied the
+		//     orange Attack-button probe, so pinch gestures landed on the dialog;
+		//   - the Leagues window classified Unknown and its HUD warm pixels were
+		//     read as the Attack button, so the bot pinched the league cards.
+		// A classified village needs no extra evidence; an Unknown frame needs a
+		// real attack/settings button in it. Dialogs are neither, and the overlay
+		// path dismisses them before the clean frame the zoom waits for.
+		// Classified evidence only. Three separate Unknown-frame heuristics were
+		// tried and each pinched a real panel: the quit-confirm dialog (orange
+		// probe), the Leagues window (btn_settings/btn_attack templates), then the
+		// clan chat with its Clan War popup (score>0 plus the button detector). The
+		// classifier names a village reliably (score ~1400); if it does not, the
+		// view is not known to be a village and must not receive gestures. Battle
+		// deploy geometry is protected separately by ensureBattleZoom.
+		isVillage := state == game.StateMainVillage || state == game.StateArmyCamp
 
 		if isVillage {
 			if b.zoomedOut.CompareAndSwap(false, true) {
@@ -1275,6 +1359,27 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 						Msg("boot splash not dismissed from verified evidence; will retry on next detection")
 					return
 				}
+				// A dismissal that fired but changed nothing means the classifier
+				// matched the wrong screen: the Leagues window satisfied every
+				// splash probe live and took four taps into its league cards. Check
+				// the next frame; if the same state is still there, stop aiming taps
+				// at it and press Back, which closes a panel no matter what it is.
+				time.Sleep(900 * time.Millisecond)
+				if screen, capErr := b.client.CaptureToMat(); capErr == nil {
+					stillThere := false
+					if !screen.Empty() {
+						again, _ := b.classifier.ClassifyState(screen)
+						stillThere = again == st
+					}
+					screen.Close()
+					if stillThere {
+						b.splashDismissGaveUp.Store(true)
+						_ = b.client.Back()
+						b.logger.Warn().Str("state", st.String()).
+							Msg("dismiss tap did not advance the screen; pressing Back once and stopping splash taps for this episode instead of tapping blind")
+						return
+					}
+				}
 				// Deliberately NO recordActivity here: the adb tap reports
 				// success even when the splash did not actually dismiss, so
 				// recording activity would keep resetting lastAction and
@@ -1313,6 +1418,33 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 					return
 				}
 				b.logger.Info().Msg("connection-lost TRY AGAIN tapped; waiting for reconnect")
+			}()
+		}
+		return
+	}
+
+	// Inactivity prompt ("Anyone there? / You have been disconnected due to
+	// inactivity", one RELOAD GAME button). The game raises it after a long
+	// stretch with no touch, which is exactly what a wait on a battle result or
+	// a paused test session looks like. Before this handler the frame matched
+	// nothing and the bot idled on it until the stuck watchdog (observed live
+	// three times on 2026-11-15, each time minutes of nothing).
+	//
+	// The tap goes through DismissOverlay so it lands only while the dialog's own
+	// probes still read on the frame about to be tapped. Activity is not recorded:
+	// the tap reports success even if the dialog survives, and the watchdog must
+	// still fire if the reload never happens.
+	if state == game.StateInactivity {
+		if b.connLostDismissInFlight.CompareAndSwap(false, true) {
+			b.logger.Warn().Msg("inactivity prompt detected; tapping RELOAD GAME...")
+			go func() {
+				defer b.connLostDismissInFlight.Store(false)
+				time.Sleep(800 * time.Millisecond)
+				if !game.DismissOverlay(b.client, b.cal, b.classifier, game.StateInactivity, b.templates, b.logger) {
+					b.logger.Warn().Msg("inactivity prompt not dismissed from verified evidence; will retry on next detection")
+					return
+				}
+				b.logger.Info().Msg("RELOAD GAME tapped; waiting for the game to come back")
 			}()
 		}
 		return
@@ -1385,22 +1517,30 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		if b.personalBreakDetected(screen) {
 			return
 		}
+		// An unclassified frame with the Attack button on it is a village the
+		// classifier missed, not a stuck modal. Pressing Back there raises the
+		// game's "Proxy wants to quit the app?" dialog — visible mid-recording in
+		// the 1024×768 clip — so the heal stays out of it and the next frame gets
+		// another classification.
+		if b.findAttackButton(screen, 0.45) {
+			b.recordActivity()
+			return
+		}
 		if b.unknownHealInFlight.CompareAndSwap(false, true) && time.Since(b.unknownHealLast) > 4*time.Second {
 			attempt := int(b.unknownHealAttempts.Add(1))
 			b.unknownHealLast = time.Now()
 			b.logger.Warn().Int("attempt", attempt).Msg("unclassified screen; attempting self-heal (back + backdrop tap)")
 			go func() {
 				defer b.unknownHealInFlight.Store(false)
+				// Back only. The backdrop tap that used to follow it was aimed at
+				// (520,300) ref — "empty village" — and on the live 1280×720 frame
+				// that is village ground: measured 2026-11-15, the tap selected a
+				// wall and opened its upgrade sheet with five 5,000,000-gold
+				// buttons on it. A blind tap on an unclassified screen can spend
+				// resources; a screen that ignores Back goes to the watchdog, which
+				// restarts the game without touching the account.
 				_ = b.client.Back()
-				time.Sleep(300 * time.Millisecond)
-				// Backdrop tap moved off the left edge: (99,300) ref lands on the
-				// LEFT HUD/chat column, so the "clear the modal" tap was itself
-				// opening the clan chat panel, which then hid the Attack button
-				// and put the bot in the no-button loop. Centre-right is empty
-				// village on every layout and clears the same modals.
-				k := b.cal.DisplayScale()
-				_ = b.client.Tap(int(520*k), int(300*k))
-				b.logger.Info().Msg("unknown self-heal input sent; waiting for classifier to re-match")
+				b.logger.Info().Msg("unknown self-heal Back sent; waiting for classifier to re-match")
 			}()
 		}
 		return
@@ -1474,6 +1614,10 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		if b.storageHalted.Load() {
 			// The storage gate is closed: the maintenance pass above already
 			// dumped what it could into walls and will re-read the fill in 30 s.
+			return
+		}
+		if attacksDeferred(b.armyEmpty.Load(), b.attackSkipUntil.Load(), time.Now().Unix()) {
+			b.logger.Debug().Msg("empty army is still training; not re-opening the attack panel")
 			return
 		}
 		b.logger.Info().Msg("attack button detected, starting sequence")
@@ -1824,6 +1968,9 @@ func (b *Bot) recordAttackReport(rep AttackReport) {
 	if histBytes, err := json.MarshalIndent(history, "", "  "); err == nil {
 		_ = AsyncWriteFile(paths.ResolveConfig("attack_history.json"), histBytes, 0644)
 	}
+
+	// Out-of-machine report. Off unless configured; see internal/notify.
+	b.notifyAttackResult(rep)
 
 	if b.OnStatsUpdate != nil {
 		b.OnStatsUpdate()
@@ -2460,6 +2607,12 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 	}
 
+	// One Builder Base raid, if the schedule calls for it. It runs here because the
+	// bot is home, the sequence already holds the run, and the raid ends back in
+	// the home village where the wall and upgrade passes below continue. Off by
+	// default; a configured run that is not due costs one log line.
+	b.maybeRunBuilderBase(b.logger)
+
 	if b.cfg.Upgrade.UpgradeWalls {
 		b.UpgradeWalls(gc)
 	}
@@ -2569,6 +2722,7 @@ func (b *Bot) clickSequence() bool {
 		// before the Find a Match search runs, and without the latch the
 		// escalation path saw armyEmpty=false and restarted the game anyway.
 		b.armyEmpty.Store(true)
+		b.attackSkipUntil.Store(time.Now().Add(emptyArmyRetryInterval).Unix())
 		b.logger.Error().Msg("no troops trained: the Start Attack panel says \"Train an army before attacking!\"; queueing the saved recipe (training.go) and idling until troops exist")
 		sleepCtx(b.ctx, emptyArmyIdle)
 		return false
@@ -2995,6 +3149,7 @@ var villagePinpoints = map[string]Pinpoint{
 	// measured: village bottom-left button, keeps its left and bottom offsets
 	"btn_attack":         {X: 64, Y: 666, Name: "Attack", XA: game.AnchorLow, YA: game.AnchorHigh},
 	"btn_battle_village": {X: 64, Y: 666, Name: "Battle", XA: game.AnchorLow, YA: game.AnchorHigh},
+	"btn_builder_battle": {X: 62, Y: 660, Name: "Battle (Builder Base)", XA: game.AnchorLow, YA: game.AnchorHigh},
 	// measured: attack-menu button, left-anchored, vertically centred
 	"btn_find_match": {X: 158, Y: 494, Name: "Find Match", XA: game.AnchorLow, YA: game.AnchorMid},
 	// not yet measured at a non-reference geometry: the army bar's buttons are
@@ -3784,33 +3939,45 @@ func init() {
 
 // searchThresholds returns the minimum loot the next base must offer.
 //
-// With search.auto_loot enabled and enough history, the minimums come from
-// internal/autotune — the loot-per-hour optimum for the distribution the game
-// is currently serving. Until then, and whenever auto mode is off, the manual
-// config values are used unchanged, so the gate never silently weakens.
+// Three sources, in increasing authority:
+//
+//  1. the manual config values, which stay the floor under everything — this
+//     gate never silently weakens below what the operator asked for;
+//  2. the Town Hall curve in internal/village, when the level is known and
+//     search.use_suggested_floors is on: a static 750k is a routine base at
+//     TH15 and a base that does not exist at TH6, where every Next is a skip;
+//  3. internal/autotune, the loot-per-hour optimum for the distribution the
+//     game is currently serving, once enough bases have been measured.
+//
+// Whatever wins is then capped at what a base can physically offer: a floor
+// above that is a config typo, and its only symptom is an endless search.
 func (b *Bot) searchThresholds() (gold, elixir, de int) {
 	gold, elixir, de = b.cfg.Search.MinLootGold, b.cfg.Search.MinLootElixir, b.cfg.Search.MinLootDarkElixir
-	if !b.cfg.Search.AutoLoot || b.samples == nil {
-		return gold, elixir, de
+
+	if g, e, d, ok := b.suggestedFloors(); ok {
+		gold, elixir, de = g, e, d
 	}
 
-	rec := autotune.Recommend(b.samples.Samples(),
-		autotune.Thresholds{Gold: gold, Elixir: elixir, DE: de},
-		autotune.DefaultOptions())
-	if !rec.Ready {
-		return gold, elixir, de
+	if b.cfg.Search.AutoLoot && b.samples != nil {
+		rec := autotune.Recommend(b.samples.Samples(),
+			autotune.Thresholds{Gold: gold, Elixir: elixir, DE: de},
+			autotune.DefaultOptions())
+		if rec.Ready {
+			if rec.Thresholds != b.autoLootLast {
+				b.logger.Info().
+					Int("gold", rec.Thresholds.Gold).
+					Int("elixir", rec.Thresholds.Elixir).
+					Int("de", rec.Thresholds.DE).
+					Int("samples", rec.Samples).
+					Msg("auto loot: thresholds tuned from searched bases")
+				b.autoLootLast = rec.Thresholds
+			}
+			gold, elixir, de = rec.Thresholds.Gold, rec.Thresholds.Elixir, rec.Thresholds.DE
+		}
 	}
 
-	if rec.Thresholds != b.autoLootLast {
-		b.logger.Info().
-			Int("gold", rec.Thresholds.Gold).
-			Int("elixir", rec.Thresholds.Elixir).
-			Int("de", rec.Thresholds.DE).
-			Int("samples", rec.Samples).
-			Msg("auto loot: thresholds tuned from searched bases")
-		b.autoLootLast = rec.Thresholds
-	}
-	return rec.Thresholds.Gold, rec.Thresholds.Elixir, rec.Thresholds.DE
+	gold, elixir, de = b.clampFloors(gold, elixir, de)
+	return gold, elixir, de
 }
 
 // recordLootSample appends one searched base to the tuning log. Both outcomes

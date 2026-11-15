@@ -1378,6 +1378,7 @@ func (sw *Sweeper) deployHeroSlotOnce(slot *TrackedSlot) bool {
 				sw.executor.HumanSleep(300, 40)
 				return sw.executor.CaptureSettledSlotRatio(sw.w, slot)
 			},
+			nil, // the sweep's own card tap already proves the hero left the card
 			func() bool { return sw.executor.DeployBudgetExhausted() },
 			func(attempt int, pt image.Point, pre, post, delta float64, ok bool) {
 				sw.logger.Info().

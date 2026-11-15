@@ -423,6 +423,36 @@ func TestHudCornersReferenceSnapCoversTheFrame(t *testing.T) {
 	}
 }
 
+// A pin is a measurement of one geometry. Applied to another it is not a
+// rounding error — 1.1334 is the scale at 1024x768, and on a 1280x720 frame it
+// put the search-screen loot rows on the wrong pixels (live 2026-11-15: loot
+// read as 14,423,886 gold, so every base looked too poor to attack).
+func TestSetDisplayScaleForGeometryRefusesAStalePin(t *testing.T) {
+	cal := NewCalibration(1280, 720)
+	derived := cal.DisplayScale()
+	if cal.SetDisplayScaleForGeometry(1.1334, 1024, 768) {
+		t.Fatal("a pin measured at 1024x768 was accepted on a 1280x720 frame")
+	}
+	if cal.DisplayScale() != derived {
+		t.Fatalf("display scale = %v, want the derived %v left in place", cal.DisplayScale(), derived)
+	}
+}
+
+func TestSetDisplayScaleForGeometryAcceptsItsOwnGeometry(t *testing.T) {
+	cal := NewCalibration(1024, 768)
+	if !cal.SetDisplayScaleForGeometry(1.1334, 1024, 768) {
+		t.Fatal("a pin measured at 1024x768 was refused on a 1024x768 frame")
+	}
+	if got, ok := cal.DisplayScaleOverride(); !ok || got != 1.1334 {
+		t.Fatalf("override = %v,%v, want 1.1334,true", got, ok)
+	}
+	// No geometry claim in config keeps the old behaviour: the pin applies.
+	other := NewCalibration(1280, 720)
+	if !other.SetDisplayScaleForGeometry(1.325, 0, 0) {
+		t.Fatal("a pin was refused when config declares no geometry")
+	}
+}
+
 func TestHudCornersReferenceRefusesEmpty(t *testing.T) {
 	cal := NewCalibration(1280, 720)
 	if _, _, ok := cal.HudCornersReferenceSnap(image.Rectangle{}, 1); ok {

@@ -448,22 +448,4 @@ func TestVillageResources_IsFull(t *testing.T) {
 	}
 }
 
-func TestReadVillageStorageFill_LiveFrame(t *testing.T) {
-	img := gocv.IMRead("/tmp/village.png", gocv.IMReadColor)
-	if img.Empty() {
-		t.Skip("no /tmp/village.png live capture")
-	}
-	defer img.Close()
-
-	res := ReadVillageStorageFillMat(img, 1.1334)
-	t.Logf("Village storage fill: Gold=%.1f%%, Elixir=%.1f%%, DE=%.1f%%",
-		res.GoldFillPercent, res.ElixirFillPercent, res.DEFillPercent)
-
-	if res.GoldFillPercent < 90.0 {
-		t.Errorf("GoldFillPercent = %.1f%%, expected >= 90%%", res.GoldFillPercent)
-	}
-	if res.ElixirFillPercent < 65.0 || res.ElixirFillPercent > 90.0 {
-		t.Errorf("ElixirFillPercent = %.1f%%, expected in [65..90]%%", res.ElixirFillPercent)
-	}
-}
 

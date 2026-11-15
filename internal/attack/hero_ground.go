@@ -518,6 +518,7 @@ func runHeroFieldRetries(
 	rearm func() bool,
 	fire func(image.Point),
 	sample func() (float64, bool),
+	cardEmpty func() bool,
 	budgetGone func() bool,
 	report func(attempt int, pt image.Point, pre, post, delta float64, won bool),
 ) bool {
@@ -542,6 +543,13 @@ func runHeroFieldRetries(
 		}
 		delta := prev - post
 		won := heroPlaced(prev, post, true)
+		if !won && cardEmpty != nil && cardEmpty() {
+			// The card's own badge is the game answering directly: a hero still
+			// on its card reads its count, a placed one does not. Trust it over
+			// the activity ratio, which a long drop animation can hold almost
+			// flat — that is what sent a landed hero to another field tap.
+			won = true
+		}
 		report(i, cands[i], prev, post, delta, won)
 		if won {
 			return true

@@ -188,7 +188,7 @@ func (n *Navigator) handleInterruptions(ctx *GameContext) error {
 		}
 
 		switch state {
-		case StateObstacleDialog, StateGemDialog, StateWelcomeBack, StateShieldInfo, StateChatOpen:
+		case StateObstacleDialog, StateGemDialog, StateWelcomeBack, StateShieldInfo, StateChatOpen, StateInactivity:
 			// One evidence-gated path for every overlay (dismiss.go). No input is
 			// fired unless the state is still on the frame AND the control it
 			// moves (a verified probe, a located button, or Back) is where the
