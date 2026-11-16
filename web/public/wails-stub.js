@@ -265,10 +265,87 @@
             },
         ];
 
+        // Mutable stand-in for the persisted BotConfig. The real bindings
+        // read/write config.json; the stub keeps the same shape in memory so
+        // a toggle in browser dev survives the re-read the UI does right after
+        // saving (GetConfig / GetArmyPlans / GetLootAutotune). Without this,
+        // every save looked like it silently reverted.
+        var stubConfig = {
+            search: { min_loot_gold: 400000, min_loot_elixir: 400000, min_loot_de: 2000, enabled: true, auto_loot: false },
+            storage: {
+                halt_when_gold_full: true, halt_when_elixir_full: true, halt_when_de_full: false,
+                halt_rule: 'ANY', full_threshold_percent: 95, resume_threshold_percent: 80,
+                dump_to_walls_before_halt: true, auto_collect: true,
+            },
+            schedule: {
+                enabled: false, active_hours_start: '08:00', active_hours_end: '23:00',
+                session_duration_minutes: 60, session_jitter_minutes: 15,
+                break_duration_minutes: 20, break_jitter_minutes: 5,
+                force_stop_on_break: true, max_attacks_per_hour: 6, max_attacks_per_day: 40,
+            },
+            upgrade: {
+                upgrade_walls: false, wall_resource: 'both',
+                wall_min_gold_reserve: 2000000, wall_min_elixir_reserve: 2000000,
+                auto_builders: false, reserve_builders: 1, upgrade_strategy: 'heroes_first',
+                upgrade_defenses: true, upgrade_resources: true, upgrade_army: true,
+                upgrade_traps: true, upgrade_heroes: true,
+                max_gold_per_upgrade: 0, max_elixir_per_upgrade: 0, max_de_per_upgrade: 0,
+                auto_lab: false, lab_strategy: 'cheapest_first', lab_allow_de: true,
+                auto_pets: false, dry_run: false,
+                pet_priorities: ['Diggy', 'Unicorn', 'Frosty', 'Phoenix', 'Spirit Fox'],
+            },
+            attack: {
+                strategy_file: 'assets/strategies/auto_edrag_rush.yaml',
+                stall_timer_seconds: 30, strategy_slots: {}, strategy_auto_end: {},
+            },
+            device: { adb_port: 5555 },
+        };
+        var stubRotation = { enabled: false, order: 'round_robin', auto_start: false, attacks_per_account: 20 };
+        var strategyBase = function (name) {
+            return String(name || '').split('/').pop();
+        };
+        // The Army page renders what the bot will arm, so it has to reflect the
+        // slot / auto-end overrides the config bindings just stored. Mirrors
+        // effectivePlanEnd in app_army.go.
+        var applyPlanOverrides = function (plans) {
+            var slots = stubConfig.attack.strategy_slots || {};
+            var ends = stubConfig.attack.strategy_auto_end || {};
+            var active = strategyBase(stubConfig.attack.strategy_file);
+            return plans.map(function (plan) {
+                var effective = Object.assign({}, plan);
+                if (slots[plan.file] >= 1 && slots[plan.file] <= 4) effective.army_slot = slots[plan.file];
+                var enabled = plan.end_at_percent > 0 || /valk/.test(plan.file) || /valk/i.test(plan.name);
+                if (Object.prototype.hasOwnProperty.call(ends, plan.file)) enabled = ends[plan.file];
+                effective.end_at_percent = enabled ? (plan.end_at_percent > 0 ? plan.end_at_percent : 50) : 0;
+                effective.active = plan.file === active;
+                return effective;
+            });
+        };
+        var autotuneStatus = function () {
+            return {
+                enabled: stubConfig.search.auto_loot,
+                samples: 0,
+                recorded: 0,
+                ready: false,
+                reason: 'learning: 0 of 40 bases read so far',
+                current: {
+                    Gold: stubConfig.search.min_loot_gold,
+                    Elixir: stubConfig.search.min_loot_elixir,
+                    DE: stubConfig.search.min_loot_de,
+                },
+                suggested: {
+                    Gold: stubConfig.search.min_loot_gold,
+                    Elixir: stubConfig.search.min_loot_elixir,
+                    DE: stubConfig.search.min_loot_de,
+                },
+                advice: [],
+            };
+        };
+
         window.go = {
             main: {
                 App: {
-                    GetArmyPlans: resolve([
+                    GetArmyPlans: function () { return Promise.resolve(applyPlanOverrides([
                         {
                             file: 'auto_edrag_rush.yaml',
                             name: 'Auto EDrag Rush',
@@ -303,13 +380,8 @@
                                 { name: 'Abilities', units: [{ name: 'Barbarian King', amount: 'All' }, { name: 'Archer Queen', amount: 'All' }, { name: 'Grand Warden', amount: 'All' }] },
                             ],
                         },
-                    ]),
-                    GetConfig: resolve({
-                        search: { min_loot_gold: 400000, min_loot_elixir: 400000, min_loot_de: 2000, enabled: true },
-                        upgrade: { upgrade_walls: false },
-                        attack: { strategy_file: 'assets/strategies/auto_edrag_rush.yaml', stall_timer_seconds: 30 },
-                        device: { adb_port: 5555 },
-                    }),
+                    ])); },
+                    GetConfig: function () { return Promise.resolve(stubConfig); },
                     IsRunning: resolve(false),
                     GetStrategies: resolve([
                         'default.csv',
@@ -344,25 +416,157 @@
                         },
                     }),
                     GetAttackHistory: resolve(sampleHistory),
-                    GetAccounts: resolve({
-                        accounts: sampleAccounts,
-                        active_id: 'acc-main',
-                        rotation: { enabled: false, order: 'round_robin', auto_start: false, attacks_per_account: 20 },
-                    }),
-                    SetRotation: resolve(null),
+                    // Read the live array on every call: `resolve(obj)` would
+                    // capture the array reference once, so a delete (which
+                    // replaces the array) never reached the UI.
+                    GetAccounts: function () {
+                        return Promise.resolve({
+                            accounts: sampleAccounts,
+                            active_id: 'acc-main',
+                            rotation: stubRotation,
+                        });
+                    },
+                    SetRotation: function (rotation) {
+                        stubRotation = rotation;
+                        return Promise.resolve(null);
+                    },
                     SwitchAccount: resolve({ account: sampleAccounts[0], started: false, message: 'browser-stub' }),
+                    // Account CRUD mutates the in-memory list so the editor,
+                    // delete and reset-usage buttons all show a real result in
+                    // browser dev. Nothing is persisted; the real store lives in
+                    // internal/accounts.
+                    CreateAccount: function (input) {
+                        var view = Object.assign({}, input, {
+                            id: 'acc-stub-' + (sampleAccounts.length + 1),
+                            created_at: new Date().toISOString(),
+                            last_used_at: '',
+                            usage: { date: new Date().toISOString().slice(0, 10), attacks: 0, switches: 0 },
+                            active: false, running: false, today_attacks: 0, status: 'ready',
+                            stats: { attacks_completed: 0, search_skips: 0, total_gold: 0, total_elixir: 0, total_de: 0, stars_0: 0, stars_1: 0, stars_2: 0, stars_3: 0, uptime: 0, cpu_time_sec: 0, cpu_cores: 0, adb_health: { avg_capture_ms: 0, consecutive_fails: 0, last_error: '' } },
+                        });
+                        sampleAccounts.push(view);
+                        return Promise.resolve(view);
+                    },
+                    UpdateAccount: function (id, input) {
+                        var found = sampleAccounts.find(function (account) { return account.id === id; });
+                        if (!found) return Promise.reject(new Error('account ' + id + ' not found'));
+                        Object.assign(found, input);
+                        return Promise.resolve(found);
+                    },
+                    DeleteAccount: function (id) {
+                        for (var i = sampleAccounts.length - 1; i >= 0; i--) {
+                            if (sampleAccounts[i].id === id) sampleAccounts.splice(i, 1);
+                        }
+                        return Promise.resolve(null);
+                    },
+                    ResetAccountUsage: function (id) {
+                        var found = sampleAccounts.find(function (account) { return account.id === id; });
+                        if (found) {
+                            found.usage = { date: new Date().toISOString().slice(0, 10), attacks: 0, switches: 0 };
+                            found.today_attacks = 0;
+                        }
+                        return Promise.resolve(null);
+                    },
                     GetLogs: resolve([
                         'ClashGO mission control online',
                         'Connected to ADB on port 5555',
                         'Ready — press START BOT to begin',
                     ]),
                     GetLiveScreenshot: resolve(''),
-                    SaveConfig: resolve(null),
-                    SetStorageConfig: resolve(null),
-                    SetScheduleConfig: resolve(null),
-                    SetAutoUpgradeConfig: resolve(null),
-                    SetStrategyArmySlot: resolve(null),
-                    SetStrategyAutoEnd: resolve(null),
+                    SaveConfig: function (minGold, minElixir, minDE, upgradeWalls, strategyFile, searchEnabled, stall) {
+                        stubConfig.search.min_loot_gold = minGold;
+                        stubConfig.search.min_loot_elixir = minElixir;
+                        stubConfig.search.min_loot_de = minDE;
+                        stubConfig.search.enabled = searchEnabled;
+                        stubConfig.upgrade.upgrade_walls = upgradeWalls;
+                        stubConfig.attack.stall_timer_seconds = stall;
+                        if (strategyFile) stubConfig.attack.strategy_file = strategyFile;
+                        return Promise.resolve(null);
+                    },
+                    SetStorageConfig: function (haltGold, haltElixir, haltDE, rule, fullThresh, resumeThresh, dumpToWalls, autoCollect) {
+                        var s = stubConfig.storage;
+                        s.halt_when_gold_full = haltGold;
+                        s.halt_when_elixir_full = haltElixir;
+                        s.halt_when_de_full = haltDE;
+                        if (rule) s.halt_rule = rule;
+                        if (fullThresh > 0) s.full_threshold_percent = fullThresh;
+                        if (resumeThresh > 0) s.resume_threshold_percent = resumeThresh;
+                        s.dump_to_walls_before_halt = dumpToWalls;
+                        s.auto_collect = autoCollect;
+                        return Promise.resolve(null);
+                    },
+                    SetScheduleConfig: function (enabled, startHour, endHour, sessionMins, sessionJitter, breakMins, breakJitter, forceStop, maxPerHour, maxPerDay) {
+                        var s = stubConfig.schedule;
+                        s.enabled = enabled;
+                        if (startHour) s.active_hours_start = startHour;
+                        if (endHour) s.active_hours_end = endHour;
+                        if (sessionMins > 0) s.session_duration_minutes = sessionMins;
+                        s.session_jitter_minutes = sessionJitter;
+                        if (breakMins > 0) s.break_duration_minutes = breakMins;
+                        s.break_jitter_minutes = breakJitter;
+                        s.force_stop_on_break = forceStop;
+                        s.max_attacks_per_hour = maxPerHour;
+                        s.max_attacks_per_day = maxPerDay;
+                        return Promise.resolve(null);
+                    },
+                    SetAutoUpgradeConfig: function (autoBuilders, reserveBuilders, upgradeStrategy, defenses, resources, army, traps, heroes, maxGold, maxElixir, maxDE, autoLab, labStrategy, labAllowDE, autoPets, petPriorities, wallResource, wallMinGold, wallMinElixir, dryRun) {
+                        var u = stubConfig.upgrade;
+                        u.auto_builders = autoBuilders;
+                        u.reserve_builders = reserveBuilders;
+                        if (upgradeStrategy) u.upgrade_strategy = upgradeStrategy;
+                        u.upgrade_defenses = defenses;
+                        u.upgrade_resources = resources;
+                        u.upgrade_army = army;
+                        u.upgrade_traps = traps;
+                        u.upgrade_heroes = heroes;
+                        u.max_gold_per_upgrade = maxGold;
+                        u.max_elixir_per_upgrade = maxElixir;
+                        u.max_de_per_upgrade = maxDE;
+                        u.auto_lab = autoLab;
+                        if (labStrategy) u.lab_strategy = labStrategy;
+                        u.lab_allow_de = labAllowDE;
+                        u.auto_pets = autoPets;
+                        u.pet_priorities = petPriorities || [];
+                        if (wallResource) u.wall_resource = wallResource;
+                        u.wall_min_gold_reserve = wallMinGold;
+                        u.wall_min_elixir_reserve = wallMinElixir;
+                        u.dry_run = dryRun;
+                        return Promise.resolve(null);
+                    },
+                    SaveUpgradeSetup: function (auto, mode, heroes, army, defenses, resources, traps, wallBuilder, autoLab, labStrategy, autoPets) {
+                        var u = stubConfig.upgrade;
+                        u.auto_builders = auto;
+                        if (mode) u.upgrade_strategy = mode;
+                        u.upgrade_heroes = heroes;
+                        u.upgrade_army = army;
+                        u.upgrade_defenses = defenses;
+                        u.upgrade_resources = resources;
+                        u.upgrade_traps = traps;
+                        u.auto_lab = auto && autoLab;
+                        if (labStrategy) u.lab_strategy = labStrategy;
+                        u.auto_pets = auto && autoPets;
+                        u.upgrade_walls = Boolean(wallBuilder);
+                        u.reserve_builders = wallBuilder ? 1 : 0;
+                        return Promise.resolve(null);
+                    },
+                    SaveLaunchSettings: function (minGold, minElixir, minDark) {
+                        stubConfig.search.min_loot_gold = minGold;
+                        stubConfig.search.min_loot_elixir = minElixir;
+                        stubConfig.search.min_loot_de = minDark;
+                        return Promise.resolve(null);
+                    },
+                    SaveFullConfig: function (cfg) {
+                        if (cfg) stubConfig = cfg;
+                        return Promise.resolve(null);
+                    },
+                    SetStrategyArmySlot: function (strategyName, slot) {
+                        stubConfig.attack.strategy_slots[strategyBase(strategyName)] = slot < 1 || slot > 4 ? 1 : slot;
+                        return Promise.resolve(null);
+                    },
+                    SetStrategyAutoEnd: function (strategyName, enabled) {
+                        stubConfig.attack.strategy_auto_end[strategyBase(strategyName)] = enabled;
+                        return Promise.resolve(null);
+                    },
                     GetLaunchOptions: resolve({
                         options: [
                             {
@@ -412,27 +616,24 @@
                                 },
                             },
                         ],
-                        adaptive_loot: false,
+                        adaptive_loot: stubConfig.search.auto_loot,
                         adaptive_ready: false,
+                        min_gold: stubConfig.search.min_loot_gold,
+                        min_elixir: stubConfig.search.min_loot_elixir,
+                        min_dark: stubConfig.search.min_loot_de,
                         samples: 0,
                         min_samples: 40,
                         max_army_slots: 4,
                         pet_priorities: ['Phoenix', 'Spirit Fox', 'Sneezy', 'Angry Jelly', 'Frosty', 'Diggy', 'Greedy Raven', 'Unicorn', 'Electro Owl', 'L.A.S.S.I', 'Mighty Yak', 'Poison Lizard'],
                     }),
                     ChooseArmy: resolve(null),
-                    GetLootAutotune: resolve({
-                        enabled: false,
-                        samples: 0,
-                        recorded: 0,
-                        ready: false,
-                        reason: 'learning: 0 of 40 bases read so far',
-                        current: { Gold: 400000, Elixir: 400000, DE: 2000 },
-                        suggested: { Gold: 400000, Elixir: 400000, DE: 2000 },
-                        advice: [],
-                    }),
-                    ApplyLootAutotune: resolve(null),
-                    SetAutoLoot: resolve(null),
-                    ResetLootAutotune: resolve(null),
+                    GetLootAutotune: function () { return Promise.resolve(autotuneStatus()); },
+                    ApplyLootAutotune: function () { return Promise.resolve(autotuneStatus()); },
+                    SetAutoLoot: function (enabled) {
+                        stubConfig.search.auto_loot = enabled;
+                        return Promise.resolve(null);
+                    },
+                    ResetLootAutotune: function () { return Promise.resolve(autotuneStatus()); },
                     TestDeviceMenu: resolve(null),
                     StartBot: resolve({ running: false, message: 'browser-stub' }),
                     StopBot: resolve({ running: false, message: 'browser-stub' }),

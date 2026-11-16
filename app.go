@@ -998,9 +998,15 @@ func (a *App) SetAutoUpgradeConfig(
 	}
 	cfg.Upgrade.LabAllowDE = labAllowDE
 	cfg.Upgrade.AutoPets = autoPets
-	if len(petPriorities) > 0 {
-		cfg.Upgrade.PetPriorities = petPriorities
+	// Always replace the queue, including with an empty one. The old
+	// len>0 guard made "remove every pet" a no-op: the UI emptied the
+	// list, Save reported success, and the next GetConfig handed the old
+	// queue straight back. An empty queue with AutoPets on upgrades
+	// nothing, which is what the user asked for.
+	if petPriorities == nil {
+		petPriorities = []string{}
 	}
+	cfg.Upgrade.PetPriorities = petPriorities
 	if wallResource != "" {
 		cfg.Upgrade.WallResource = wallResource
 	}

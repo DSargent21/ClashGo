@@ -350,8 +350,14 @@ type ScheduleConfig struct {
 type UpgradeConfig struct {
 	UpgradeWalls         bool     `json:"upgrade_walls"`
 	WallResource         string   `json:"wall_resource"` // "gold", "elixir", "both"
-	WallMinGoldReserve   int      `json:"wall_min_gold_reserve"`
-	WallMinElixirReserve int      `json:"wall_min_elixir_reserve"`
+	// Reservations are persisted for config/binding compatibility but the
+	// wall loop does not enforce them: it is blind-tap (assets + cost colour)
+	// and never reads the player's absolute gold/elixir, so there is nothing
+	// reliable to compare a reserve against. They are not exposed in the UI
+	// until a HUD loot reader exists. ponytail: ceiling = no absolute loot
+	// read; upgrade path = enforce in WallUpgradeHooks once one exists.
+	WallMinGoldReserve   int `json:"wall_min_gold_reserve"`
+	WallMinElixirReserve int `json:"wall_min_elixir_reserve"`
 	AutoBuilders         bool     `json:"auto_builders"`
 	ReserveBuilders      int      `json:"reserve_builders"`
 	UpgradeStrategy      string   `json:"upgrade_strategy"` // "strategic_rush", "max", "heroes_first", "cheapest_first", "most_expensive_first", "balanced"

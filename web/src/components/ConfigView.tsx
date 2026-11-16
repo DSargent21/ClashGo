@@ -637,7 +637,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
 
               {(upgradeWalls || dumpToWallsBeforeHalt) ? (
                 <div className="form-section">
-                  <div className="form-section-title"><Icon name="layers" size={13} />Wall dumping reserves</div>
+                  <div className="form-section-title"><Icon name="layers" size={13} />Wall spending</div>
                   <div className="threshold-grid">
                     <div>
                       <label className="label" htmlFor="wall-resource">Wall resource</label>
@@ -651,26 +651,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                         <option value="gold">Gold only</option>
                         <option value="elixir">Elixir only</option>
                       </select>
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="wall-gold">Min gold reserve</label>
-                      <input
-                        id="wall-gold"
-                        type="number"
-                        className="field mono"
-                        value={wallMinGoldReserve}
-                        onChange={(event) => setWallMinGoldReserve(parseInt(event.target.value, 10) || 0)}
-                      />
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="wall-elixir">Min elixir reserve</label>
-                      <input
-                        id="wall-elixir"
-                        type="number"
-                        className="field mono"
-                        value={wallMinElixirReserve}
-                        onChange={(event) => setWallMinElixirReserve(parseInt(event.target.value, 10) || 0)}
-                      />
                     </div>
                   </div>
                 </div>

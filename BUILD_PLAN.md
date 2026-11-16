@@ -91,7 +91,29 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     back to safe defaults with a logged warning.
   - Verify: `go test ./internal/bot -run 'Session|Pacing'`
 
-- [ ] **T.3 Config validation contract**
+- [x] **T.3 UI control contract + live browser sweep**
+  - Why: a control whose binding is renamed, whose value is dropped on save,
+    or whose config field nothing consumes is a dead button in the packaged
+    app, and `tsc` cannot see any of it.
+  - Touch: `app_ui_bindings_test.go`, `web/public/wails-stub.js`,
+    `web/src/components/ConfigView.tsx`, `app.go` (pet queue).
+  - Fixed: removing every pet in Config > Lab & pets now persists an empty
+    queue (the `len>0` guard resurrected the old one); the two wall-reserve
+    number inputs were removed because the blind-tap wall loop cannot read
+    absolute loot and never honoured them; the browser IPC stub was missing
+    `SaveUpgradeSetup`/`SaveLaunchSettings`/account CRUD and answered every
+    save from static data, so Start in the wizard threw and toggles looked
+    like they reverted.
+  - Acceptance: every UI-imported binding exists on `*App` and in the
+    generated `App.d.ts`; config saves survive the full four-binding save
+    order; pet queue round-trips empty; every switch/segmented control in the
+    browser dev build flips and re-reads its stored value.
+  - Verified: `go test -run TestUI_ .` PASS; `npx tsc --noEmit` PASS;
+    `./tools/verify.sh` -> see `PROGRESS.md`; browser sweep on
+    `http://127.0.0.1:5199` (wizard, Config 5 tabs, Settings, Army, Accounts,
+    Analytics, Dashboard) with no console errors.
+
+- [ ] **T.4 Config validation contract**
   - Why: bad YAML must fail loudly, not silently disable farming.
   - Touch: `internal/config`.
   - Acceptance: table of invalid values (negative caps, unknown sort modes,

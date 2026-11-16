@@ -209,3 +209,42 @@ Format:
   fresh battle.
 - Verified: `go test ./internal/attack ./internal/attacklog` PASS;
   `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+
+### 2026-11-16 — T.3: UI control contract + live browser sweep
+- Changed: `app_ui_bindings_test.go` (new), `app.go` (pet queue save),
+  `internal/config/config.go` (reserve-field comment), `web/public/wails-stub.js`,
+  `web/src/components/ConfigView.tsx`, `BUILD_PLAN.md`.
+- Fixed:
+  - Config > Lab & pets: removing every pet saved "successfully" and the old
+    queue came back on the next read (`len(petPriorities) > 0` guard). The
+    queue is now replaced unconditionally, empty included.
+  - Config > Storage & walls: "Min gold reserve" / "Min elixir reserve" were
+    written to config.json but nothing in `internal/bot` read them — the wall
+    loop is blind-tap and has no absolute-loot read to compare against. The
+    inputs are gone rather than pretending; the persisted fields stay for
+    compatibility (see config comment).
+  - Browser IPC stub: missing `SaveUpgradeSetup`/`SaveLaunchSettings`/account
+    CRUD made the setup wizard's Start throw, and static `GetConfig` /
+    `GetArmyPlans` / `GetLootAutotune` replies made saved toggles look like
+    they reverted. Stub is now stateful and mirrors the Go semantics for slot,
+    auto-end and auto-loot; account CRUD mutates in place so delete works.
+- Added tests: `TestUI_PetQueueCanBeCleared`, `TestUI_ConfigFormSaveOrder`
+  (the four-binding Save path), `TestUI_DeviceTestTools` (unknown action +
+  stop-the-bot guard, no device), `TestUI_LaunchWizardBindings`,
+  `TestUI_BindingsExistForUITests` (every UI import exists on `*App` and in
+  `App.d.ts`), `TestUI_ReserveFieldsAreNotRendered`.
+- Live browser sweep (vite dev + stub, `127.0.0.1:5199`): setup wizard all
+  three steps and every switch/chip; Config all five tabs, every switch,
+  category chips, halt tiles, slot buttons, auto-end, auto-loot, pet
+  remove/add, Save -> saved; Settings all appearance switches, default page,
+  export diagnostics, three device-test buttons, reset-stats two-click arm,
+  reset-preferences reload; Army slot + "Use this army"; Accounts add/edit/
+  delete/reset-usage/rotation/switch; Analytics series toggles; Dashboard log
+  chips, filter, auto-scroll, sidebar collapse, start button. No console
+  errors after the stub fix.
+- Not verified here: real Wails IPC (browser runs the stub), and a live raid
+  (spends army; `make smoke-live*` stays opt-in). Binding contracts for those
+  paths are covered offline.
+- Verified: `go test -run TestUI_ .` PASS; `npx tsc --noEmit` PASS;
+  `./tools/verify.sh` -> VERIFY PASSED (full).
+- Next: F.1 dead-base detection.
