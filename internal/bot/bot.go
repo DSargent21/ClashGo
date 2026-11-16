@@ -693,7 +693,11 @@ func (b *Bot) Stop() {
 // the synchronous "stop what you're doing" signal, and `Stop()` for
 // the heavier teardown that App.StopBot detaches into a goroutine.
 func (b *Bot) Cancel() {
-	b.cancel()
+	// A wiring bot (NewHeadlessBot) has no runtime context; Stop must still be
+	// able to signal it without dereferencing a nil cancel func.
+	if b.cancel != nil {
+		b.cancel()
+	}
 }
 
 // Done returns a channel that closes when the bot's runtime context
@@ -3781,9 +3785,16 @@ func (b *Bot) Stats() BotStats {
 		Stars2:           b.stars2.Load(),
 		Stars3:           b.stars3.Load(),
 		Uptime:           b.uptime(),
-		AdbHealth:        b.client.Health(),
 		CPUTimeSec:       CPUTime().Seconds(),
-		CPUCores:         b.cpuSampler.Usage(),
+	}
+	if b.cpuSampler != nil {
+		s.CPUCores = b.cpuSampler.Usage()
+	}
+	// A wiring bot (NewHeadlessBot) has no device; every other field above is
+	// local state, so stats stay readable instead of dereferencing a nil client.
+	if b.client != nil {
+		s.AdbHealth = b.client.Health()
+		s.CaptureCache = b.client.CaptureCache()
 	}
 	// The gate's numbers are how a user confirms the optimisation is working on
 	// their machine: classify_reused climbing while last_frame_change_pct sits
@@ -3797,8 +3808,6 @@ func (b *Bot) Stats() BotStats {
 		s.ClassifyGateEnabled = gs.Enabled
 		s.ClassifyThresholdPct = gs.Threshold
 	}
-	s.CaptureCache = b.client.CaptureCache()
-
 	s.ScheduleEnabled = b.cfg.Schedule.Enabled
 	s.HaltedReason = string(b.HaltedReason())
 	if b.scheduler != nil {

@@ -113,7 +113,29 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     `http://127.0.0.1:5199` (wizard, Config 5 tabs, Settings, Army, Accounts,
     Analytics, Dashboard) with no console errors.
 
-- [ ] **T.4 Config validation contract**
+- [x] **T.4 UI control -> engine effect proof**
+  - Why: T.3 proved the bindings exist and the stub round-trips, not that a
+    click changes what the bot does. The packaged app talks to Go over Wails
+    IPC, so every control needs a consequence asserted where the loop reads it.
+  - Touch: `app_ui_engine_test.go` (new), `internal/bot/live_config.go` (new),
+    `app.go` (boot/start/stop seams, reserve args gone), `internal/bot/bot.go`
+    (nil-client/nil-cancel guards for headless stats), `web/` (reserve state
+    and 20-arg binding removed).
+  - Fixed: the two wall-reserve arguments were still passed by the UI and
+    written by the binding although nothing read them; the whole plumbing is
+    gone now and `config.json` values survive untouched. `Bot.Stats` panicked
+    for a bot without a device, which also broke `GetAccounts` in any
+    device-less context.
+  - Acceptance: save/search, storage-halt predicate, schedule gate, builder /
+    lab / pet queue, army slot + auto-end, auto-loot apply/reset, account
+    CRUD/switch/reset and start/stop each assert a real consequence (live
+    `b.cfg`, scheduler gate decision, builder-manager filters, config.json the
+    engine reloads); a static guard fails if any binding writes a
+    `cfg.Section.Field` that no engine package reads.
+  - Verified: `go test -run 'TestUI_|TestEngine_' .` PASS;
+    `npx tsc --noEmit` PASS; `./tools/verify.sh` -> VERIFY PASSED (full).
+
+- [ ] **T.5 Config validation contract**
   - Why: bad YAML must fail loudly, not silently disable farming.
   - Touch: `internal/config`.
   - Acceptance: table of invalid values (negative caps, unknown sort modes,

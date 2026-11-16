@@ -33,7 +33,7 @@ func TestUI_PetQueueCanBeCleared(t *testing.T) {
 			0, 0, 0,
 			true, "cheapest_first", true,
 			true, pets,
-			"both", 0, 0,
+			"both",
 			false,
 		); err != nil {
 			t.Fatalf("SetAutoUpgradeConfig(%v): %v", pets, err)
@@ -82,7 +82,7 @@ func TestUI_ConfigFormSaveOrder(t *testing.T) {
 		6000000, 7000000, 90000,
 		true, "spells_first", false,
 		true, []string{"Sneezy", "Frosty"},
-		"elixir", 0, 0,
+		"elixir",
 		true,
 	); err != nil {
 		t.Fatalf("SetAutoUpgradeConfig: %v", err)

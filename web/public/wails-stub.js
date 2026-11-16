@@ -509,7 +509,7 @@
                         s.max_attacks_per_day = maxPerDay;
                         return Promise.resolve(null);
                     },
-                    SetAutoUpgradeConfig: function (autoBuilders, reserveBuilders, upgradeStrategy, defenses, resources, army, traps, heroes, maxGold, maxElixir, maxDE, autoLab, labStrategy, labAllowDE, autoPets, petPriorities, wallResource, wallMinGold, wallMinElixir, dryRun) {
+                    SetAutoUpgradeConfig: function (autoBuilders, reserveBuilders, upgradeStrategy, defenses, resources, army, traps, heroes, maxGold, maxElixir, maxDE, autoLab, labStrategy, labAllowDE, autoPets, petPriorities, wallResource, dryRun) {
                         var u = stubConfig.upgrade;
                         u.auto_builders = autoBuilders;
                         u.reserve_builders = reserveBuilders;
@@ -528,8 +528,6 @@
                         u.auto_pets = autoPets;
                         u.pet_priorities = petPriorities || [];
                         if (wallResource) u.wall_resource = wallResource;
-                        u.wall_min_gold_reserve = wallMinGold;
-                        u.wall_min_elixir_reserve = wallMinElixir;
                         u.dry_run = dryRun;
                         return Promise.resolve(null);
                     },

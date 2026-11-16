@@ -324,8 +324,6 @@ function App() {
   const [autoPets, setAutoPets] = useState(false);
   const [petPriorities, setPetPriorities] = useState<string[]>(["Diggy", "Unicorn", "Frosty", "Phoenix", "Spirit Fox"]);
   const [wallResource, setWallResource] = useState("both");
-  const [wallMinGoldReserve, setWallMinGoldReserve] = useState(2000000);
-  const [wallMinElixirReserve, setWallMinElixirReserve] = useState(2000000);
   const [autoCollect, setAutoCollect] = useState(true);
   const [dryRun, setDryRun] = useState(false);
 
@@ -404,8 +402,6 @@ function App() {
             setPetPriorities(conf.upgrade.pet_priorities);
           }
           setWallResource(conf.upgrade.wall_resource || "both");
-          setWallMinGoldReserve(conf.upgrade.wall_min_gold_reserve ?? 2000000);
-          setWallMinElixirReserve(conf.upgrade.wall_min_elixir_reserve ?? 2000000);
           setDryRun(conf.upgrade.dry_run ?? false);
         }
         setIsRunning(running);
@@ -662,8 +658,6 @@ function App() {
       autoPets,
       petPriorities,
       wallResource,
-      wallMinGoldReserve,
-      wallMinElixirReserve,
       dryRun,
     );
     try {
@@ -1021,8 +1015,6 @@ function App() {
       autoPets, setAutoPets,
       petPriorities, setPetPriorities,
       wallResource, setWallResource,
-      wallMinGoldReserve, setWallMinGoldReserve,
-      wallMinElixirReserve, setWallMinElixirReserve,
       dryRun, setDryRun,
       onSave: async () => {
         await saveSettings();
@@ -1037,7 +1029,7 @@ function App() {
     autoBuilders, reserveBuilders, upgradeStrategy, upgradeDefenses, upgradeResources, upgradeArmy, upgradeTraps, upgradeHeroes,
     maxGoldPerUpgrade, maxElixirPerUpgrade, maxDEPerUpgrade,
     autoLab, labStrategy, labAllowDE, autoPets, petPriorities,
-    wallResource, wallMinGoldReserve, wallMinElixirReserve,
+    wallResource,
     dryRun,
   ]);
 

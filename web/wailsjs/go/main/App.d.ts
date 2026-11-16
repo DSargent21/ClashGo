@@ -64,7 +64,7 @@ export function SaveUpgradeSetup(arg1:boolean,arg2:string,arg3:boolean,arg4:bool
 
 export function SetAutoLoot(arg1:boolean):Promise<void>;
 
-export function SetAutoUpgradeConfig(arg1:boolean,arg2:number,arg3:string,arg4:boolean,arg5:boolean,arg6:boolean,arg7:boolean,arg8:boolean,arg9:number,arg10:number,arg11:number,arg12:boolean,arg13:string,arg14:boolean,arg15:boolean,arg16:Array<string>,arg17:string,arg18:number,arg19:number,arg20:boolean):Promise<void>;
+export function SetAutoUpgradeConfig(arg1:boolean,arg2:number,arg3:string,arg4:boolean,arg5:boolean,arg6:boolean,arg7:boolean,arg8:boolean,arg9:number,arg10:number,arg11:number,arg12:boolean,arg13:string,arg14:boolean,arg15:boolean,arg16:Array<string>,arg17:string,arg18:boolean):Promise<void>;
 
 export function SetRotation(arg1:accounts.Rotation):Promise<void>;
 

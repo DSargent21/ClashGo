@@ -94,10 +94,6 @@ interface ConfigViewProps {
   setPetPriorities: (v: string[]) => void;
   wallResource: string;
   setWallResource: (v: string) => void;
-  wallMinGoldReserve: number;
-  setWallMinGoldReserve: (v: number) => void;
-  wallMinElixirReserve: number;
-  setWallMinElixirReserve: (v: number) => void;
   dryRun: boolean;
   setDryRun: (v: boolean) => void;
   onSave: () => Promise<void>;
@@ -173,8 +169,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   autoPets, setAutoPets,
   petPriorities, setPetPriorities,
   wallResource, setWallResource,
-  wallMinGoldReserve, setWallMinGoldReserve,
-  wallMinElixirReserve, setWallMinElixirReserve,
   dryRun, setDryRun,
   onSave,
 }) => {

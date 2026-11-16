@@ -277,7 +277,7 @@ func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
 		6000000, 5000000, 80000,
 		true, "troops_first", true,
 		true, pets,
-		"gold", 1000000, 1500000,
+		"gold",
 		false,
 	)
 	if err != nil {
@@ -316,7 +316,7 @@ func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
 		freshCfg.Upgrade.MaxGoldPerUpgrade != 6000000 || freshCfg.Upgrade.MaxElixirPerUpgrade != 5000000 || freshCfg.Upgrade.MaxDEPerUpgrade != 80000 ||
 		!freshCfg.Upgrade.AutoLab || freshCfg.Upgrade.LabStrategy != "troops_first" || !freshCfg.Upgrade.LabAllowDE ||
 		!freshCfg.Upgrade.AutoPets || len(freshCfg.Upgrade.PetPriorities) != 3 ||
-		freshCfg.Upgrade.WallResource != "gold" || freshCfg.Upgrade.WallMinGoldReserve != 1000000 || freshCfg.Upgrade.WallMinElixirReserve != 1500000 {
+		freshCfg.Upgrade.WallResource != "gold" {
 		t.Errorf("SetAutoUpgradeConfig values mismatch: %+v", freshCfg.Upgrade)
 	}
 	if freshCfg.Attack.StrategySlots["barcher"] != 3 {

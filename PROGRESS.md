@@ -248,3 +248,41 @@ Format:
 - Verified: `go test -run TestUI_ .` PASS; `npx tsc --noEmit` PASS;
   `./tools/verify.sh` -> VERIFY PASSED (full).
 - Next: F.1 dead-base detection.
+
+### 2026-11-16 — T.4: UI control -> engine effect proof
+- Changed: `app_ui_engine_test.go` (new), `internal/bot/live_config.go` (new),
+  `app.go` (boot/start/stop seams; reserve args removed from
+  `SetAutoUpgradeConfig`), `internal/bot/bot.go` (nil guards in `Stats` and
+  `Cancel`), `app_test.go`, `app_ui_bindings_test.go`,
+  `web/public/wails-stub.js`, `web/src/App.tsx`,
+  `web/src/components/ConfigView.tsx`, `web/wailsjs/go/main/App.{d.ts,js}`,
+  `BUILD_PLAN.md`.
+- Fixed:
+  - Wall-reserve numbers were still threaded UI -> binding -> config despite
+    nothing reading them. Removed from the UI, the binding signature and the
+    stub; the persisted fields stay so old `config.json` files load and keep
+    their values (asserted).
+  - `Bot.Stats` dereferenced `client`/`cpuSampler`, so `GetAccounts` (which
+    reads stats) panicked for a bot without a device. Both are nil-guarded;
+    `Cancel` tolerates a nil runtime context the same way.
+- Added: `LiveConfig()` (b.cfg, resolved army slot, scheduler copy,
+  builder-manager copy) and `NewHeadlessBot` (real Bot + real scheduler +
+  real builder manager, no ADB). `TestEngine_*` drives the genuine `*App`
+  bindings against a temp config dir and asserts: search floors / strategy /
+  stall reach `b.cfg`; storage halt fields change `VillageResources.IsFull`;
+  saved schedule changes `Scheduler.CanAttack` (window + hourly cap);
+  builder/lab/pet filters and queue order/clear reach the builder manager;
+  army slot + auto-end reach live config and the plan list; auto-loot apply
+  installs the shown suggestion and reset keeps it; account create/update/
+  rename-on-disk/switch/reset-usage; StartBot hands the form thresholds to the
+  started bot, duplicate start refused, StopBot tears down. Static guard
+  `TestEngine_EveryUIWrittenFieldHasEngineReader` fails when a binding writes
+  a field no engine package reads (the reserve class of defect).
+- Not verified: real Wails IPC window (macOS Wails is WKWebView-only; no
+  display automation), live ADB/game session and Settings device buttons that
+  restart ADB/BlueStacks (device-mutating), and a real raid (spends army).
+  Start/stop proves the App lifecycle with the device-bound boot seamed out.
+- Verified: `go test -run 'TestUI_|TestEngine_' .` PASS; `npx tsc --noEmit`
+  PASS; `node --check web/public/wails-stub.js`; `./tools/verify.sh` ->
+  VERIFY PASSED (full).
+- Next: T.5 config validation contract.

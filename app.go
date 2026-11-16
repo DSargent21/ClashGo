@@ -21,6 +21,17 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// Boot/start/teardown seams. Production uses the real bot lifecycle; the
+// wiring tests replace them to exercise StartBot and StopBot end to end
+// without an emulator or a game session (which would spend a real army).
+// Keeping the indirection here, not inside bot, means the engine package has
+// no test mode of its own.
+var (
+	newBotInstance   = bot.NewBotWithContext
+	startBotInstance = func(b *bot.Bot) error { return b.Start() }
+	stopBotInstance  = func(b *bot.Bot) { b.Stop() }
+)
+
 // App struct
 type App struct {
 	ctx       context.Context
@@ -397,7 +408,7 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 	a.mu.Unlock()
 
 	go func(bootCtx context.Context) {
-		b, err := bot.NewBotWithContext(bootCtx, cfg)
+		b, err := newBotInstance(bootCtx, cfg)
 		if err != nil {
 			if bootCtx.Err() != nil {
 				// The user clicked Stop while BlueStacks was booting.
@@ -475,7 +486,7 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 		// lock) the moment a Stop lands, and reading a.bot without the
 		// lock here would panic with a nil deref exactly in the race
 		// this fix is supposed to make reliable.
-		if err := b.Start(); err != nil {
+		if err := startBotInstance(b); err != nil {
 			if bootCtx.Err() != nil {
 				// Stop landed between the assignment and Start() — with
 				// the fail-fast client, b.Start() fails on the closed
@@ -617,7 +628,7 @@ func (a *App) StopBot() BotStatus {
 				log.Error().Interface("panic", r).Msg("recovered panic during async bot stop")
 			}
 		}()
-		bot.Stop()
+		stopBotInstance(bot)
 		a.saveStats()
 		// Re-seed attack-history cache after teardown. If the user
 		// manually edited attack_history.json while the bot was
@@ -972,7 +983,7 @@ func (a *App) SetAutoUpgradeConfig(
 	maxGold, maxElixir, maxDE int,
 	autoLab bool, labStrategy string, labAllowDE bool,
 	autoPets bool, petPriorities []string,
-	wallResource string, wallMinGold, wallMinElixir int,
+	wallResource string,
 	dryRun bool,
 ) error {
 	a.mu.Lock()
@@ -1010,8 +1021,10 @@ func (a *App) SetAutoUpgradeConfig(
 	if wallResource != "" {
 		cfg.Upgrade.WallResource = wallResource
 	}
-	cfg.Upgrade.WallMinGoldReserve = wallMinGold
-	cfg.Upgrade.WallMinElixirReserve = wallMinElixir
+	// WallMinGoldReserve / WallMinElixirReserve are deliberately not written:
+	// the wall loop is blind-tap and reads no absolute loot, so a reserve has
+	// nothing to compare against and the UI no longer offers one. Existing
+	// config.json values are kept as-is so old profiles stay readable.
 	cfg.Upgrade.DryRun = dryRun
 
 	if a.bot != nil {
