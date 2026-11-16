@@ -56,13 +56,6 @@ func (b *Bot) personalBreakDetected(screen gocv.Mat) bool {
 	}
 	b.personalBreakLast = time.Now()
 
-	if !b.cfg.Schedule.Enabled {
-		// The break state lives in the scheduler; with pacing off there is
-		// nothing to pause. Say so once per dialog rather than every window.
-		b.logger.Warn().Msg("a Personal Break dialog may be on screen, but schedule.enabled is false so the bot cannot pause for it — enable the 24/7 pacing schedule")
-		return false
-	}
-
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("clashgo_break_%d.png", time.Now().UnixNano()))
 	if !gocv.IMWrite(path, screen) {
 		return false
@@ -99,6 +92,17 @@ func (b *Bot) personalBreakDetected(screen gocv.Mat) bool {
 	}
 	if !corroborated {
 		b.logger.Debug().Str("phrase", phrase).Msg("personal-break phrase seen without a dialog action button; ignoring (chat/news copy)")
+		return false
+	}
+
+	// Only warn once the dialog is actually identified. The old check sat
+	// before the OCR, so every unclassified frame — a loading screen, a
+	// transition, the BlueStacks launcher — logged "a Personal Break dialog
+	// may be on screen" every 12 s for the whole stall (live 2026-11-16).
+	if !b.cfg.Schedule.Enabled {
+		// The break state lives in the scheduler; with pacing off there is
+		// nothing to pause.
+		b.logger.Warn().Str("phrase", phrase).Msg("Personal Break dialog detected, but schedule.enabled is false so the bot cannot pause for it — enable the pacing schedule or close the dialog by hand")
 		return false
 	}
 

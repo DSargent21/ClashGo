@@ -861,11 +861,14 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 
 			if len(deployedHeroSlots) > 0 {
 				e.logger.Info().Int("count", len(deployedHeroSlots)).Msg("bulk activating hero abilities...")
-				time.Sleep(80 * time.Millisecond)
+				// Abilities are decisions, not spam: one hero at a time, with a
+				// human beat between icons. 80 ms apart was four abilities inside
+				// a third of a second, which no thumb produces.
+				e.client.HumanSleep(260, 70)
 				for _, pt := range deployedHeroSlots {
 					e.logger.Info().Int("x", pt.X).Int("y", pt.Y).Msg("tapping hero icon for ability (bulk)")
-					e.client.TapFast(pt.X, pt.Y, 2.0)
-					time.Sleep(80 * time.Millisecond)
+					e.client.TapFast(pt.X, pt.Y, 3.0)
+					e.client.HumanSleep(260, 70)
 				}
 			}
 		}

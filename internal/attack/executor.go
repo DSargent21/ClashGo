@@ -802,16 +802,19 @@ func (t *TapExecutor) WaitForSettle(duration time.Duration) {
 }
 
 // sleepBetweenBatches waits between tap batches.
-// Tightened for speed: 60±20ms is the empirical floor below which CoC
-// stacks consecutive tap triples as a single deploy gesture. The 10%
-// "long pause" branch preserves a touch of variability for the anti-cheat
-// heuristic but stays under 100ms.
+//
+// The old 60±20 ms gap put a three-tap batch (itself ~55 ms apart) on a
+// ~24 taps/s cadence — one finger cannot do that, and the whole deploy window
+// ran on the same beat every raid. 110±35 ms keeps each batch a distinct
+// gesture while bringing the burst to a fast-human ~10 taps/s, and the 12%
+// longer branch removes the remaining regularity. Total cost is under two
+// seconds across a full army, well inside DeployGoal.
 func (t *TapExecutor) sleepBetweenBatches() {
-	sleepBase := 60
-	sleepDev := 20
-	if rand.Float64() < 0.10 {
-		sleepBase = 90
-		sleepDev = 25
+	sleepBase := 110
+	sleepDev := 35
+	if rand.Float64() < 0.12 {
+		sleepBase = 170
+		sleepDev = 45
 	}
 	t.client.HumanSleep(sleepBase, sleepDev)
 }

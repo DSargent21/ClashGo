@@ -2,7 +2,6 @@ package bot
 
 import (
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -65,12 +64,10 @@ func (s *Scheduler) planNextSession(now time.Time) {
 		s.state = SchedulerActive
 		return
 	}
-	jitterMin := s.cfg.SessionJitterMinutes
-	delta := 0
-	if jitterMin > 0 {
-		delta = rand.Intn(2*jitterMin+1) - jitterMin
-	}
-	sessionMins := durMin + delta
+	// humanizedMinutes draws the per-session variation and, about one session
+	// in six, a short check-in instead of a full farming block. A player's
+	// session lengths are not uniformly distributed around one mean.
+	sessionMins := humanizedMinutes(durMin, s.cfg.SessionJitterMinutes)
 	if sessionMins < 10 {
 		sessionMins = 10
 	}
@@ -83,12 +80,10 @@ func (s *Scheduler) planNextBreak(now time.Time) {
 	if durMin <= 0 {
 		durMin = 20
 	}
-	jitterMin := s.cfg.BreakJitterMinutes
-	delta := 0
-	if jitterMin > 0 {
-		delta = rand.Intn(2*jitterMin+1) - jitterMin
-	}
-	breakMins := durMin + delta
+	// Same distribution for breaks, plus the occasional multi-hour absence
+	// (humanizedBreakMinutes). Every break being 13-27 minutes for weeks is
+	// its own pattern.
+	breakMins := humanizedBreakMinutes(durMin, s.cfg.BreakJitterMinutes)
 	if breakMins < 5 {
 		breakMins = 5
 	}

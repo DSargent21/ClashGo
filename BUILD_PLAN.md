@@ -31,6 +31,27 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
   - Files: `.agents/skills/testing/SKILL.md`
   - Acceptance: agent can name how each subsystem is tested without a device.
 
+- [x] **H.3 Humanization audit + pacing pass**
+  - Why: the bot's behavioural signature is timing, and several intervals were
+    constants (18 s idle pan, 30 s inter-raid gap), uniform (session length),
+    or superhuman (24 deploy taps/s).
+  - Files: `internal/bot/{humanize,idle,bot,scheduler}.go`,
+    `internal/adb/client.go`, `internal/game/navigator.go`,
+    `internal/attack/{executor,sweep,attack}.go`, `internal/config/config.go`,
+    `docs/HUMANIZATION.md`.
+  - Fixed: deploy and hero-ability cadence slowed to fast-human with variance;
+    inter-raid gap ±22% plus a long tail; idle pan drawn 22 s-5 min; one session
+    in six short and one break in ten long; navigation taps use the human path;
+    tap jitter default 5 px with a load-time floor of 4 px.
+  - Acceptance: `./tools/verify.sh` green; helpers covered offline by
+    `internal/bot/humanize_test.go` (bounds, non-constant draws, deterministic
+    jitter-0 behaviour); one live raid fired through the real App bindings with
+    `CLASHGO_TAP_TRACE`, and the new cadence measured from that trace.
+  - Not a ban guarantee: see `docs/HUMANIZATION.md`.
+  - Live gap: the emulator lost its connection at 64% destruction, so the
+    result panel and Return Home were not exercised; the army was spent.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 1 — Reliable farming (active)

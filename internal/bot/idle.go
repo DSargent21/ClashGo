@@ -36,7 +36,6 @@ const (
 	// machine sweeping the village every few seconds.
 	villageUpgradeInterval = 10 * time.Minute
 	villageCollectInterval = 5 * time.Minute
-	villagePanInterval     = 18 * time.Second
 )
 
 // maintainVillage is the between-battle pass. It returns true when it dispatched
@@ -92,8 +91,13 @@ func (b *Bot) maintainVillage(gc *game.GameContext, screen gocv.Mat) (trainingDi
 
 	// Idle humanization: a waiting player drifts the camera. Deliberately not
 	// recordActivity — a genuinely stuck bot must still trip the watchdog.
-	if time.Since(b.lastIdlePan) > villagePanInterval {
-		b.lastIdlePan = time.Now()
+	// The wait is drawn per pan (idlePanDelay), not compared against a fixed
+	// interval every frame: a metronome pan is itself a machine signature.
+	if b.idlePanNext.IsZero() {
+		b.idlePanNext = time.Now().Add(idlePanDelay())
+	}
+	if !time.Now().Before(b.idlePanNext) {
+		b.idlePanNext = time.Now().Add(idlePanDelay())
 		go func() {
 			if b.seqRunning.Load() {
 				return

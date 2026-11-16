@@ -168,6 +168,11 @@ const (
 	// pause (resultSettleAnimatingPause, 400 ms), and
 	// TestCaptureCacheCannotBridgeSettleAttempts fails if this ever exceeds it.
 	DefaultCaptureCacheMs = 120.0
+
+	// DefaultMaxJitterPixels is the Gaussian spread, in reference pixels, of a
+	// tap. A finger covers ~10 mm, and a deliberate tap on a 1024x768 frame
+	// scatters over several pixels; 2 px was indistinguishable from a script.
+	DefaultMaxJitterPixels = 5.0
 )
 
 // CaptureCacheTTL is the effective capture-sharing window: it is zero (disabled)
@@ -348,16 +353,16 @@ type ScheduleConfig struct {
 }
 
 type UpgradeConfig struct {
-	UpgradeWalls         bool     `json:"upgrade_walls"`
-	WallResource         string   `json:"wall_resource"` // "gold", "elixir", "both"
+	UpgradeWalls bool   `json:"upgrade_walls"`
+	WallResource string `json:"wall_resource"` // "gold", "elixir", "both"
 	// Reservations are persisted for config/binding compatibility but the
 	// wall loop does not enforce them: it is blind-tap (assets + cost colour)
 	// and never reads the player's absolute gold/elixir, so there is nothing
 	// reliable to compare a reserve against. They are not exposed in the UI
 	// until a HUD loot reader exists. ponytail: ceiling = no absolute loot
 	// read; upgrade path = enforce in WallUpgradeHooks once one exists.
-	WallMinGoldReserve   int `json:"wall_min_gold_reserve"`
-	WallMinElixirReserve int `json:"wall_min_elixir_reserve"`
+	WallMinGoldReserve   int      `json:"wall_min_gold_reserve"`
+	WallMinElixirReserve int      `json:"wall_min_elixir_reserve"`
 	AutoBuilders         bool     `json:"auto_builders"`
 	ReserveBuilders      int      `json:"reserve_builders"`
 	UpgradeStrategy      string   `json:"upgrade_strategy"` // "strategic_rush", "max", "heroes_first", "cheapest_first", "most_expensive_first", "balanced"
@@ -562,7 +567,7 @@ func DefaultConfig() *BotConfig {
 			ShellPipeSyncFlush: true,
 			JitterTaps:         true,
 			JitterDelays:       true,
-			MaxJitterPixels:    2.0,
+			MaxJitterPixels:    DefaultMaxJitterPixels,
 			JitterFraction:     0.15,
 		},
 		Performance: PerformanceConfig{
@@ -607,6 +612,14 @@ func Load(path string) (*BotConfig, error) {
 
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	// Humanization floor for configs written by older builds. 2 px of Gaussian
+	// spread meant every tap of a session landed within ~6 px of the same pixel
+	// on every button. The value is a debug knob, not a game rule, and zero
+	// still means "no jitter" for anyone who deliberately set that.
+	if cfg.Debug.JitterTaps && cfg.Debug.MaxJitterPixels > 0 && cfg.Debug.MaxJitterPixels < 4 {
+		cfg.Debug.MaxJitterPixels = 4
 	}
 
 	return &cfg, nil

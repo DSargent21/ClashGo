@@ -6,13 +6,19 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`).
+- Last task: **H.3 humanization audit** (docs/HUMANIZATION.md).
+- Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`), or the
+  boot-splash classifier blocker above.
 - Last green commit: see `git log -1`.
 - Verify gate: `./tools/verify.sh` (full) / `./tools/verify.sh --fast`.
 
 ## Blockers
 
-- None.
+- Boot-splash variant gap (found live 2026-11-16): after a mid-battle network
+  drop the game returned to a loading screen with a "Tap!" prompt whose
+  background is the loading-table scene. The classifier reports `Unknown`, so
+  the splash dismissal never fires and the bot restart-loops on it. Pre-existing
+  and unrelated to the humanization pass; needs a classifier rule/template.
 
 ## Session log
 
@@ -421,6 +427,47 @@ Format:
   Builders has exactly 1 wall switch/resource, Storage has 0.
 - Not verified: real Wails IPC window (stub only, as scoped).
 - Next: F.1 dead-base detection.
+
+### 2026-11-16 — H.3: humanization audit + pacing pass
+- Changed: `internal/bot/{humanize,humanize_test,idle,bot,scheduler,personal_break}.go`,
+  `internal/adb/client.go`, `internal/game/navigator.go`,
+  `internal/attack/{executor,sweep,attack}.go`, `internal/config/config.go`,
+  `docs/HUMANIZATION.md`, `BUILD_PLAN.md`.
+- Audit: documented every timing surface in `docs/HUMANIZATION.md`, with the
+  honest limit stated up front — no client-side change prevents a ban; these
+  changes only remove behavioural timing signatures.
+- Fixed:
+  - Deploy cadence was ~24 taps/s: `TapTriple` 55±12 ms and batch gap 60±20 ms.
+    Now 85±25 ms intra-batch, 110±35 ms between, 12% longer branch; hero
+    abilities 260±70 ms; sweep 95±30 ms. Live trace measured 45-118 ms
+    intra-batch and 91-149 ms between batches.
+  - Inter-raid gap was exactly `min_seconds_between_attacks` (30 s) every raid.
+    Now ±22% with a 30-150 s tail on ~1 raid in 10.
+  - Idle pan was exactly every 18 s. Now 22-57 s, with ~1 in 8 waits at 2-5 min.
+  - Session/break length was uniform. Now ~1 session in 6 is a short check-in
+    and ~1 break in 10 is 1-3 h longer; jitter 0 still returns the configured
+    value exactly (scheduler tests unchanged and passing).
+  - Graph-navigation taps were `Client.Tap` (0 ms press, 2 px spread). Now
+    `TapRandomized` (reaction pause + hold chance); transition waits ±20%.
+    Tap jitter default 2 -> 5 px, with a `Load` floor of 4 px for older configs;
+    explicit `jitter_taps:false` / `max_jitter_pixels:0` untouched.
+  - `personal_break.go` warned "a Personal Break dialog may be on screen" on
+    every unclassified frame every 12 s because the `schedule.enabled` check ran
+    before the OCR. It now warns only after the phrase and an action button are
+    both read from the frame (found on the live run).
+- Verified: `go test ./internal/bot -run 'Humanized|IdlePan|Scheduler'` PASS;
+  `./tools/verify.sh` -> VERIFY PASSED (full), twice (before and after the
+  `personal_break` fix).
+- Live: `make smoke-live` with `CLASHGO_TAP_TRACE=tmp/live_humanize_taps.ndjson`
+  (`tmp/live_humanize.log`). One raid fired: 11 Balloons + 11 Electro Dragons,
+  5 rage casts, both heroes; it reached 64% destruction when the emulator
+  dropped its network connection (`connection lost during battle`). The result
+  panel and Return Home were NOT exercised; the army was spent, so no second
+  attempt. Deploy cadence above is measured from that trace, not inferred.
+- Environment left in: MainVillage (recovered by hand after the loading-screen
+  restart loop).
+- Commit: this commit
+- Next: F.1 dead-base detection; or the boot-splash classifier gap above.
 
 ### 2026-11-16 — T.8: UI control inventory, duplicate sweep, size matrix
 - Changed: `web/src/components/{Dashboard,ConfigView}.tsx`,

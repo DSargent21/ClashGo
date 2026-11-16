@@ -128,7 +128,7 @@ func (n *Navigator) Navigate(ctx *GameContext, target GameState) bool {
 			return false
 		}
 
-		time.Sleep(edge.Duration)
+		humanPause(edge.Duration)
 
 		screen, err := n.client.CaptureToMat()
 		if err != nil {
@@ -150,7 +150,11 @@ func (n *Navigator) Navigate(ctx *GameContext, target GameState) bool {
 func (n *Navigator) executeStep(edge *StateTransition) bool {
 	switch edge.Action {
 	case ActionTap:
-		return n.client.Tap(edge.X, edge.Y) == nil
+		// Decision taps go through the human path: a reaction pause before
+		// committing, and a real press duration part of the time. The plain
+		// Tap path is a 0 ms down/up at 2 px of spread — the same input a
+		// script produces, on every menu button of every navigation.
+		return n.client.TapRandomized(edge.X, edge.Y) == nil
 	case ActionBack:
 		return n.client.Back() == nil
 	case ActionSwipe:
@@ -166,6 +170,21 @@ func (n *Navigator) executeStep(edge *StateTransition) bool {
 	default:
 		return false
 	}
+}
+
+// humanPause waits around d (±20%) instead of exactly d. Screen-transition
+// waits were identical to the millisecond on every navigation, which is a
+// timing signature even though nothing server-side sees it.
+func humanPause(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	spread := int64(d / 5)
+	if spread <= 0 {
+		time.Sleep(d)
+		return
+	}
+	time.Sleep(d - time.Duration(spread) + time.Duration(rand.Int63n(2*spread+1)))
 }
 
 // handleInterruptions runs the modal-dismiss ladder. Returns an error

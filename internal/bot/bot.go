@@ -125,7 +125,9 @@ type Bot struct {
 	lastSequenceStart    time.Time
 	lastNav              time.Time
 	lastCapture          time.Time
-	lastIdlePan          time.Time
+	// idlePanNext is when the next idle camera pan is allowed. A time, not a
+	// fixed interval: see idlePanDelay.
+	idlePanNext time.Time
 	// lastAttackEnd is stamped when a battle fully returns home; the
 	// inter-attack cooldown (cfg.Attack.MinSecondsBetweenAttacks) is
 	// measured from it. Written by the attack goroutine only.
@@ -532,7 +534,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		startedAt:         startedWall,
 		lastAction:        time.Now(),
 		lastSequenceStart: time.Now(),
-		lastIdlePan:       time.Now(),
+		idlePanNext:       time.Now().Add(idlePanDelay()),
 		stuckTimeout:      35 * time.Second,
 		cpuSampler:        newCPUSampler(),
 		dukePicksFile:     dukePicksFile,
@@ -2014,7 +2016,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// minutes). min_seconds_between_attacks is the human-real pause;
 	// waiting inside the sequence goroutine (seqRunning is already held)
 	// keeps the capture loop from starting a second sequence meanwhile.
-	gap := time.Duration(b.cfg.Attack.MinSecondsBetweenAttacks) * time.Second
+	// The configured minimum is the floor of a distribution, not a metronome.
+	// Every raid of a 50-raid day starting on the same 30 s beat is a play
+	// pattern no human produces; humanizedAttackGap adds ±22% and a long tail.
+	gap := humanizedAttackGap(time.Duration(b.cfg.Attack.MinSecondsBetweenAttacks) * time.Second)
 	if gap > 0 && !b.lastAttackEnd.IsZero() {
 		if wait := gap - time.Since(b.lastAttackEnd); wait > 0 {
 			b.logger.Info().

@@ -1022,12 +1022,13 @@ func (sw *Sweeper) fireTapsBatched(slot *TrackedSlot, p1, p2 image.Point, count 
 		// Fast path still needs a human cadence — 50ms between batches is
 		// robotic and detectable. Slow it to ~160-210ms with variance so
 		// bonus-troop dumps read as rapid human spamming, not a machine.
-		// The non-fast path keeps its tighter 50ms floor (the reconcile
-		// screencap already paces it naturally).
+		// Both paths stay below a robot's cadence. The reconcile screencap
+		// paces the non-fast path on top of this, but 50±15 ms was still a
+		// metronome: 95±30 ms reads as fast human spam, not a machine.
 		if humanPace {
 			sw.executor.HumanSleep(160, 50)
 		} else {
-			sw.executor.HumanSleep(50, 15)
+			sw.executor.HumanSleep(95, 30)
 		}
 
 		// Smart mid-batch bail. Only exit early when BOTH conditions

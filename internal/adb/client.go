@@ -168,7 +168,7 @@ func NewClient(opts ...Option) *Client {
 		log:             nopLogger{},
 		jitterTaps:      true,
 		jitterDelays:    true,
-		maxJitterPixels: 2.0,
+		maxJitterPixels: 5.0,
 		jitterFraction:  0.15,
 		frames:          newCaptureCache(0),
 	}
@@ -603,7 +603,7 @@ func (c *Client) TapFastAsync(x, y int, stdDev float64) error {
 	return err
 }
 
-// TapDual performs two taps sequentially with a 50ms inter-tap settle so
+// TapDual performs two taps sequentially with an ~85ms inter-tap settle so
 // Clash's UI properly registers each as a separate gesture. When the
 // persistent shell pipe is alive each tap round-trips in ~1-5ms instead of
 // ~200ms; falls back to legacy transport.Exec per tap if the pipe is broken.
@@ -636,13 +636,13 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 	if err1 != nil {
 		return err1
 	}
-	c.HumanSleep(55, 12)
+	c.HumanSleep(85, 25)
 	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_dual_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	return err2
 }
 
-// TapTriple performs three taps sequentially with 50ms inter-tap settles
+// TapTriple performs three taps sequentially with ~85ms inter-tap settles
 // so Clash's UI properly registers each as a separate deploy gesture. When
 // the persistent shell pipe is alive each tap round-trips in ~1-5ms
 // instead of ~200ms; falls back to legacy transport.Exec per tap if the
@@ -675,13 +675,13 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	if err1 != nil {
 		return err1
 	}
-	c.HumanSleep(55, 12)
+	c.HumanSleep(85, 25)
 	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	if err2 != nil {
 		return err2
 	}
-	c.HumanSleep(55, 12)
+	c.HumanSleep(85, 25)
 	err3 := c.routeTap("input tap", x3+ox3, y3+oy3, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_3", X: x3, Y: y3, ActualX: x3 + ox3, ActualY: y3 + oy3, StdDev: stdDev3, Error: errStr(err3)})
 	return err3
