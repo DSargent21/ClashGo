@@ -28,10 +28,11 @@ import (
 // counts the taps a batched pass asked for — 11 taps arrive as 3+3+3+2, i.e. four
 // batch calls — without a device.
 type tapProbe struct {
-	mu      sync.Mutex
-	field   []image.Point
-	card    []image.Point
-	batches int
+	mu       sync.Mutex
+	field    []image.Point
+	card     []image.Point
+	batches  int
+	tapUnits int
 }
 
 func (p *tapProbe) record(ev adb.TapEvent) {
@@ -44,6 +45,18 @@ func (p *tapProbe) record(ev adb.TapEvent) {
 	// Field taps are fired at stdDev >= 8; card taps at 2-4.
 	if ev.StdDev > 4 {
 		p.field = append(p.field, image.Pt(ev.X, ev.Y))
+		// Individual taps, independent of whether the client batched them into
+		// one event (jitter off) or emitted one event per tap (jitter on).
+		// This harness runs with jitter off, so the client reports ONE event per
+		// batched call: a triple carries three taps, a dual two, a fast one.
+		switch ev.Type {
+		case "tap_fast":
+			p.tapUnits++
+		case "tap_dual", "tap_dual_1":
+			p.tapUnits += 2
+		case "tap_triple", "tap_triple_1":
+			p.tapUnits += 3
+		}
 		return
 	}
 	p.card = append(p.card, image.Pt(ev.X, ev.Y))
@@ -59,6 +72,13 @@ func (p *tapProbe) cards() []image.Point {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]image.Point(nil), p.card...)
+}
+
+// taps is the number of individual taps fired, not the number of batched calls.
+func (p *tapProbe) taps() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.tapUnits
 }
 
 func (p *tapProbe) all() int {

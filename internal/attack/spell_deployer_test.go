@@ -315,7 +315,11 @@ func TestDeployLineSpell_RageSpecial_3OnA_2OnB(t *testing.T) {
 		t.Fatalf("got %d taps, want 5", len(taps))
 	}
 	for i, pt := range taps {
-		if d := dist(pt, want[i]); d > 12 {
+		// The deployer intentionally jitters line taps by up to 10 px per axis
+		// (addJitter), so the furthest legal tap is 14.1 px from its slot. The
+		// old 12 px bound sat inside that jitter envelope and failed whenever
+		// the random draw went diagonal.
+		if d := dist(pt, want[i]); d > 15 {
 			t.Errorf("tap %d at %v is %.1fpx from its slot in the 3-on-A/2-on-B layout (%v)", i, pt, d, want[i])
 		}
 	}
@@ -360,7 +364,11 @@ func TestDeployLineSpell_RageSpecial_PlacesCastsOnLineEndsAndCentre(t *testing.T
 		castGuard(lineB.P1), castGuard(lineB.P2),
 	}
 	for i, pt := range taps {
-		if d := dist(pt, want[i]); d > 12 {
+		// The deployer intentionally jitters line taps by up to 10 px per axis
+		// (addJitter), so the furthest legal tap is 14.1 px from its slot. The
+		// old 12 px bound sat inside that jitter envelope and failed whenever
+		// the random draw went diagonal.
+		if d := dist(pt, want[i]); d > 15 {
 			t.Errorf("tap %d at %v is %.1fpx from where the end/centre/end layout puts it (%v); jitter is ≤ 8 px per axis", i, pt, d, want[i])
 		}
 	}

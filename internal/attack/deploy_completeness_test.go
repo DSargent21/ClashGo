@@ -115,6 +115,56 @@ func TestForgetSiegeGround_ReleasesStaleTileAndCount(t *testing.T) {
 	}
 }
 
+// A refused siege must retry the ground it has NOT tried. The outward walk used
+// to be appended behind four deploy-line points and then dropped by the
+// three-tap ceiling, so every retry re-aimed at the same refused pocket. Live
+// 2026-11-16 BottomLeft: the pin (262,483) and all three line points were
+// refused, while heroes landed ~30 px outward from the pin.
+func TestSiegeRefusedGrounds_LeadsOutward(t *testing.T) {
+	line := DeployLine{Points: []image.Point{{X: 144, Y: 394}, {X: 359, Y: 558}}}
+	hm := NewHeroManager(nil, &SlotManager{}, PrecisionConfig{}, "BottomLeft", 1024, 768,
+		nil, nil, line, zerolog.Nop())
+
+	pin := image.Pt(262, 483)
+	cands := hm.siegeRefusedGrounds(pin)
+	if len(cands) < 3 {
+		t.Fatalf("candidates = %d, want at least the three outward steps", len(cands))
+	}
+	center := image.Pt(512, 384)
+	if dist(cands[0], center) <= dist(pin, center) {
+		t.Fatalf("first retry %v is not further from the base than the refused pin %v", cands[0], pin)
+	}
+	for i, p := range cands[:3] {
+		if p == line.Points[0] || p == line.Points[1] {
+			t.Fatalf("retry %d is the refused deploy-line point %v, not new ground", i+1, p)
+		}
+		if p.Y >= int(float64(hm.h)*0.85) || p.X < 8 || p.Y < 8 {
+			t.Fatalf("retry %v is outside the deployable band", p)
+		}
+	}
+}
+
+// A refused machine must be failed honestly: not marked deployed, and its slot
+// released so nothing treats it as a live machine.
+func TestMarkSiegeFailed_SlotIsFailedNotDeployed(t *testing.T) {
+	slot := &TrackedSlot{TroopSlot: TroopSlot{Category: "Siege"}, UnitName: "stone slammer", SiegePlaced: true, State: SlotDeployed}
+	sm := &SlotManager{
+		slots:     []*TrackedSlot{slot},
+		unitIndex: map[string]*TrackedSlot{"stone slammer": slot},
+		logger:    zerolog.Nop(),
+	}
+	hm := NewHeroManager(nil, sm, PrecisionConfig{}, "BottomLeft", 1024, 768, nil, nil, DeployLine{}, zerolog.Nop())
+
+	hm.markSiegeFailed(strategy.Unit{Name: "Stone Slammer"}, slot)
+
+	if slot.State != SlotFailed {
+		t.Fatalf("slot state = %v, want failed", slot.State)
+	}
+	if slot.SiegePlaced {
+		t.Fatal("a failed machine must not stay on the one-placement contract")
+	}
+}
+
 // A refused siege retry is the SAME machine. Counting it as a placement made a
 // normal one-machine battle report "siege_placements: 3", which is treated as
 // evidence of a double placement.

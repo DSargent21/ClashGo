@@ -1552,31 +1552,47 @@ func (hm *HeroManager) siegeFallbackPoint() (image.Point, bool) {
 // sat 12 px from the refused pin, inside the same red pocket, and was refused
 // too. Stepping outward walks out of that pocket toward ground the game accepts.
 func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
-	out := make([]image.Point, 0, 6)
-	// The deploy line's ENDS first: troops were dropped and accepted there
-	// seconds ago. Its midpoint is the wrong end of that order — the middle of a
-	// line across a base is inside the base, which is exactly the ground the game
-	// refuses (live 2026-11-15: the retry point sat 12 px from the refused pin,
-	// inside the same red pocket, and was refused too).
-	if len(hm.deployLine.Points) >= 2 {
-		p1, p2 := hm.deployLine.Points[0], hm.deployLine.Points[len(hm.deployLine.Points)-1]
-		out = append(out, p1, p2,
-			image.Pt((3*p1.X+p2.X)/4, (3*p1.Y+p2.Y)/4),
-			image.Pt((p1.X+3*p2.X)/4, (p1.Y+3*p2.Y)/4))
+	out := make([]image.Point, 0, 7)
+	add := func(p image.Point) {
+		if p.X < 8 || p.Y < 8 || p.X >= hm.w-8 || p.Y >= int(float64(hm.h)*0.85) {
+			return
+		}
+		for _, q := range out {
+			if math.Hypot(float64(p.X-q.X), float64(p.Y-q.Y)) < 18 {
+				return
+			}
+		}
+		out = append(out, p)
 	}
-	// Then walk outward from the refused spot, away from the battlefield centre:
-	// a refusal is a region, and the pin can sit inside it.
+
+	// OUTWARD FIRST. A refusal is a region, not a pixel: the pin is a hero
+	// entry point and can sit just inside the red line while the ground a step
+	// further out is accepted. Live 2026-11-16 (BottomLeft pin (262,483)) both
+	// heroes were refused on the pin and landed ~30 px outward, and all three
+	// siege retries at the deploy line's nominal points were refused too; those
+	// points are where troops were tapped, but troops fire with jitter that can
+	// fall outside the line while the exact point does not.
+	//
+	// This walk used to be appended AFTER four deploy-line points and then cut
+	// off by the three-tap ceiling, so it was never tried at all — the only
+	// grounds the game had just refused, three times.
 	cx, cy := float64(hm.w)/2, float64(hm.h)/2
 	dx, dy := float64(refused.X)-cx, float64(refused.Y)-cy
 	if d := math.Hypot(dx, dy); d >= 1 {
 		ux, uy := dx/d, dy/d
-		for _, step := range []float64{60, 120} {
-			p := image.Pt(refused.X+int(ux*step), refused.Y+int(uy*step))
-			if p.X < 8 || p.Y < 8 || p.X >= hm.w-8 || p.Y >= int(float64(hm.h)*0.85) {
-				continue
-			}
-			out = append(out, p)
+		for _, step := range []float64{45, 95, 160} {
+			add(image.Pt(refused.X+int(ux*step), refused.Y+int(uy*step)))
 		}
+	}
+
+	// The troop pass's own line, as a fallback: its ends are the closest thing
+	// to proven ground when the outward walk is blocked by the frame edge.
+	if len(hm.deployLine.Points) >= 2 {
+		p1, p2 := hm.deployLine.Points[0], hm.deployLine.Points[len(hm.deployLine.Points)-1]
+		add(p1)
+		add(p2)
+		add(image.Pt((3*p1.X+p2.X)/4, (3*p1.Y+p2.Y)/4))
+		add(image.Pt((p1.X+3*p2.X)/4, (p1.Y+3*p2.Y)/4))
 	}
 	return out
 }
@@ -1602,9 +1618,9 @@ func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, 
 		return false
 	}
 	grounds := hm.siegeRefusedGrounds(refused)
-	// Three taps is the ceiling: live 2026-11-15 every attempt on ground that had
-	// just accepted troops was answered by the game with its red "Select a
-	// different unit" banner and the card stayed armed, so more taps only churn.
+	// Three taps is the ceiling; the list now leads with the outward walk (see
+	// siegeRefusedGrounds), so the ceiling can no longer drop the only grounds
+	// that leave the refused pocket.
 	if len(grounds) > 3 {
 		grounds = grounds[:3]
 	}

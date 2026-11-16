@@ -69,3 +69,33 @@ Format:
   retried forever or counted as placed; the ground-acceptance cause is open.
 - Commit: this commit
 - Next: F.1 dead-base detection; siege ground acceptance on TopRight.
+
+### 2026-11-16 — attack-polish: siege ground fix + composition coverage
+- Changed: `internal/attack/{hero_manager,deploy_completeness_test,siege_single_tap_test,spell_deployer_test}.go`,
+  new `internal/attack/deploy_composition_test.go`.
+- Siege root cause: the refusal is regional. The pin is a hero entry point and
+  can sit inside the deployment line's red band, and `siegeRefusedGrounds`
+  appended the outward walk AFTER four deploy-line points and then truncated the
+  list to three — so the only untried ground was always cut off, and every retry
+  re-aimed inside the pocket. The walk now leads (45/95/160 px away from the
+  battlefield centre), with the troop line only as fallback. Live run 9 landed
+  the Stone Slammer on its first tap at BottomLeft, `siege_placements=1`,
+  `siege_retries=0`.
+- Composition: table-driven `DeployTroops` tests cover a 4-unit small camp, a
+  12-unit single-type card, 10-unit full mixed cards, and a partial live badge
+  (3 of 10) — taps follow the measured count (+1 single-digit pad only), the
+  card must drain before the slot is marked deployed. A refused-ground case
+  proves the slot stays `SlotAttempted` and the verifier line parses as FAILED.
+- Test flake fixed: two spell line tests used a 12 px tolerance inside the
+  deployer's own 10 px/axis jitter envelope (max 14.1 px); widened to 15 px.
+- Verified: `go test ./internal/attack ./internal/attacklog` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Live: `logs/live_polish_run9.log` — 3 stars, all troops left their cards
+  (sweep found none), siege first-tap, heroes each one re-arm then sweep
+  placement; `last_attack_report.json` `undeployed_slots=0`.
+  `cmd/attack_report` honestly keeps Balloon/Electro Dragon/Royal Champion as
+  UNVERIFIED (card animation / trusting-tap sweep), not FAILED.
+- Open: hero-phase first tap still refuses on siege-adjacent ground and the
+  ability is skipped when the rescue also fails; sweep recovers the placement.
+- Next: verifier positive-confirmation line so UNVERIFIED cards can close as
+  deployed without over-claiming; hero ability when the rescue is refused.
