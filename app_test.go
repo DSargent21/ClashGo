@@ -252,7 +252,7 @@ func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
 	}
 
 	// 2. SaveConfig
-	err := a.SaveConfig(350000, 350000, 1500, true, "barcher", true, 25)
+	err := a.SaveConfig(350000, 350000, 1500, true, "valk_spam.yaml", true, 25)
 	if err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}
@@ -285,11 +285,11 @@ func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
 	}
 
 	// 6. Strategy army slot & auto end
-	err = a.SetStrategyArmySlot("barcher", 3)
+	err = a.SetStrategyArmySlot("valk_spam.yaml", 3)
 	if err != nil {
 		t.Fatalf("SetStrategyArmySlot failed: %v", err)
 	}
-	err = a.SetStrategyAutoEnd("barcher", true)
+	err = a.SetStrategyAutoEnd("valk_spam.yaml", true)
 	if err != nil {
 		t.Fatalf("SetStrategyAutoEnd failed: %v", err)
 	}
@@ -319,10 +319,10 @@ func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
 		freshCfg.Upgrade.WallResource != "gold" {
 		t.Errorf("SetAutoUpgradeConfig values mismatch: %+v", freshCfg.Upgrade)
 	}
-	if freshCfg.Attack.StrategySlots["barcher"] != 3 {
-		t.Errorf("StrategySlots mismatch: %d, want 3", freshCfg.Attack.StrategySlots["barcher"])
+	if freshCfg.Attack.StrategySlots["valk_spam.yaml"] != 3 {
+		t.Errorf("StrategySlots mismatch: %d, want 3", freshCfg.Attack.StrategySlots["valk_spam.yaml"])
 	}
-	if !freshCfg.Attack.StrategyAutoEnd["barcher"] {
+	if !freshCfg.Attack.StrategyAutoEnd["valk_spam.yaml"] {
 		t.Errorf("StrategyAutoEnd mismatch: want true")
 	}
 
@@ -343,4 +343,3 @@ func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
 		t.Errorf("ClearSkippedVersion: %v", err)
 	}
 }
-

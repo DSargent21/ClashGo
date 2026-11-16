@@ -135,12 +135,36 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
   - Verified: `go test -run 'TestUI_|TestEngine_' .` PASS;
     `npx tsc --noEmit` PASS; `./tools/verify.sh` -> VERIFY PASSED (full).
 
-- [ ] **T.5 Config validation contract**
-  - Why: bad YAML must fail loudly, not silently disable farming.
-  - Touch: `internal/config`.
-  - Acceptance: table of invalid values (negative caps, unknown sort modes,
-    inverted schedules) rejected with named errors; defaults pass.
-  - Verify: `go test ./internal/config`
+- [x] **T.5 Config validation + enforced UI binding coverage**
+  - Why: bad form values used to be silently kept, clamped, or written where
+    the bot would never read them; and a newly added binding could ship with
+    no test proving it does anything.
+  - Touch: `internal/config/validate.go` (new), `app_config_validation_test.go`
+    (new), `app_ui_contract_test.go` (new), `app.go` (validation in every save
+    binding + army-slot/strategy guards), `app_test_tools.go` (device seam),
+    `app_test.go` (real strategy fixture).
+  - Fixed: out-of-range army slot was clamped to 1 while reporting success;
+    per-strategy overrides accepted names that are not on disk; empty/bad
+    schedule hours, zero/oversized thresholds, empty enums and unknown pets
+    were ignored or persisted; negative loot floors and zero stall timers were
+    accepted by SaveConfig; SaveFullConfig wrote arbitrary configs.
+  - Acceptance: invalid, empty, out-of-range and contradictory values are
+    rejected with a named error while config.json bytes and live `b.cfg`,
+    scheduler and builder-manager copies stay unchanged; valid values still
+    save; every binding exposed in `App.d.ts` or forwarded by the browser stub
+    is mapped to a test that calls it and observes engine/config state, so a
+    no-op test or a call-and-ignore-error test is rejected; the Settings device
+    buttons run through a device seam with the persisted device/filter config
+    and write nothing; updater buttons are proven to refuse without GitHub.
+  - Verified: `go test -run 'TestValidation_|TestUI_|TestEngine_' .` PASS;
+    coverage guard proven to fail by temporarily adding an uncovered binding
+    to `App.d.ts` (failed with the expected message) then restored, and by
+    mutating `TestEngine_SearchAndAttackControls` first to a no-op and then to
+    a call-and-no-error body (both failed, both restored); fresh invalid cases
+    (launch slot 5/-1, wizard save with a duplicated pet, single-digit hour)
+    rejected with byte-identical config and live state;
+    `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js` PASS;
+    `./tools/verify.sh` -> VERIFY PASSED (full).
 
 ---
 

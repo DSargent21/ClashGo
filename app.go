@@ -379,6 +379,9 @@ func (a *App) StartBot(gold, elixir, dark int, upgradeWalls bool, searchEnabled 
 	cfg.Search.MinLootDarkElixir = dark
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
 	cfg.Search.Enabled = searchEnabled
+	if err := config.ValidateSearch(cfg.Search); err != nil {
+		return BotStatus{Running: false, Message: "Invalid search settings: " + err.Error()}
+	}
 	return a.startBotWithConfig(cfg)
 }
 
@@ -877,7 +880,16 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	cfg.Search.Enabled = searchEnabled
 	cfg.Attack.StallTimerSeconds = stall
 	if strategyFile != "" {
+		if !strategyFileExists(strategyFile) {
+			return fmt.Errorf("strategy file %q is not on disk", strategyFile)
+		}
 		cfg.Attack.StrategyFile = strategyFile
+	}
+	if err := config.ValidateSearch(cfg.Search); err != nil {
+		return err
+	}
+	if err := config.ValidateAttack(cfg.Attack); err != nil {
+		return err
 	}
 
 	// Update running bot in real-time if it exists
@@ -894,6 +906,10 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 
 // SaveFullConfig saves the complete BotConfig structure to config.json.
 func (a *App) SaveFullConfig(cfg config.BotConfig) error {
+	if err := config.Validate(&cfg); err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -917,17 +933,14 @@ func (a *App) SetStorageConfig(haltGold, haltElixir, haltDE bool, rule string, f
 	cfg.Storage.HaltWhenGoldFull = haltGold
 	cfg.Storage.HaltWhenElixirFull = haltElixir
 	cfg.Storage.HaltWhenDEFull = haltDE
-	if rule != "" {
-		cfg.Storage.HaltRule = rule
-	}
-	if fullThresh > 0 {
-		cfg.Storage.FullThresholdPercent = fullThresh
-	}
-	if resumeThresh > 0 {
-		cfg.Storage.ResumeThresholdPercent = resumeThresh
-	}
+	cfg.Storage.HaltRule = rule
+	cfg.Storage.FullThresholdPercent = fullThresh
+	cfg.Storage.ResumeThresholdPercent = resumeThresh
 	cfg.Storage.DumpToWallsBeforeHalt = dumpToWalls
 	cfg.Storage.AutoCollect = autoCollect
+	if err := config.ValidateStorage(cfg.Storage); err != nil {
+		return err
+	}
 
 	if a.bot != nil {
 		a.bot.UpdateConfig(cfg)
@@ -947,23 +960,18 @@ func (a *App) SetScheduleConfig(enabled bool, startHour, endHour string, session
 
 	cfg := config.LoadOrDefault("config.json")
 	cfg.Schedule.Enabled = enabled
-	if startHour != "" {
-		cfg.Schedule.ActiveHoursStart = startHour
-	}
-	if endHour != "" {
-		cfg.Schedule.ActiveHoursEnd = endHour
-	}
-	if sessionMins > 0 {
-		cfg.Schedule.SessionDurationMinutes = sessionMins
-	}
+	cfg.Schedule.ActiveHoursStart = startHour
+	cfg.Schedule.ActiveHoursEnd = endHour
+	cfg.Schedule.SessionDurationMinutes = sessionMins
 	cfg.Schedule.SessionJitterMinutes = sessionJitter
-	if breakMins > 0 {
-		cfg.Schedule.BreakDurationMinutes = breakMins
-	}
+	cfg.Schedule.BreakDurationMinutes = breakMins
 	cfg.Schedule.BreakJitterMinutes = breakJitter
 	cfg.Schedule.ForceStopOnBreak = forceStop
 	cfg.Schedule.MaxAttacksPerHour = maxPerHour
 	cfg.Schedule.MaxAttacksPerDay = maxPerDay
+	if err := config.ValidateSchedule(cfg.Schedule); err != nil {
+		return err
+	}
 
 	if a.bot != nil {
 		a.bot.UpdateConfig(cfg)
@@ -992,9 +1000,7 @@ func (a *App) SetAutoUpgradeConfig(
 	cfg := config.LoadOrDefault("config.json")
 	cfg.Upgrade.AutoBuilders = autoBuilders
 	cfg.Upgrade.ReserveBuilders = reserveBuilders
-	if upgradeStrategy != "" {
-		cfg.Upgrade.UpgradeStrategy = upgradeStrategy
-	}
+	cfg.Upgrade.UpgradeStrategy = upgradeStrategy
 	cfg.Upgrade.UpgradeDefenses = defenses
 	cfg.Upgrade.UpgradeResources = resources
 	cfg.Upgrade.UpgradeArmy = army
@@ -1004,9 +1010,7 @@ func (a *App) SetAutoUpgradeConfig(
 	cfg.Upgrade.MaxElixirPerUpgrade = maxElixir
 	cfg.Upgrade.MaxDEPerUpgrade = maxDE
 	cfg.Upgrade.AutoLab = autoLab
-	if labStrategy != "" {
-		cfg.Upgrade.LabStrategy = labStrategy
-	}
+	cfg.Upgrade.LabStrategy = labStrategy
 	cfg.Upgrade.LabAllowDE = labAllowDE
 	cfg.Upgrade.AutoPets = autoPets
 	// Always replace the queue, including with an empty one. The old
@@ -1018,14 +1022,15 @@ func (a *App) SetAutoUpgradeConfig(
 		petPriorities = []string{}
 	}
 	cfg.Upgrade.PetPriorities = petPriorities
-	if wallResource != "" {
-		cfg.Upgrade.WallResource = wallResource
-	}
+	cfg.Upgrade.WallResource = wallResource
 	// WallMinGoldReserve / WallMinElixirReserve are deliberately not written:
 	// the wall loop is blind-tap and reads no absolute loot, so a reserve has
 	// nothing to compare against and the UI no longer offers one. Existing
 	// config.json values are kept as-is so old profiles stay readable.
 	cfg.Upgrade.DryRun = dryRun
+	if err := config.ValidateUpgrade(cfg.Upgrade); err != nil {
+		return err
+	}
 
 	if a.bot != nil {
 		a.bot.UpdateConfig(cfg)
@@ -1048,7 +1053,7 @@ func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, r
 		return fmt.Errorf("unknown upgrade mode %q", mode)
 	}
 	switch labStrategy {
-	case "", "cheapest_first", "troops_first", "spells_first", "siege_first":
+	case "cheapest_first", "troops_first", "spells_first", "siege_first":
 	default:
 		return fmt.Errorf("unknown lab strategy %q", labStrategy)
 	}
@@ -1082,6 +1087,12 @@ func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, r
 		cfg.Upgrade.UpgradeWalls = false
 		cfg.Upgrade.ReserveBuilders = 0
 	}
+	// The wizard does not edit the pet list directly, but it does persist it:
+	// refusing an unknown/duplicate queue here stops a hand-edited config from
+	// being re-saved as if the wizard had validated it.
+	if err := config.ValidatePetQueue(cfg.Upgrade.PetPriorities); err != nil {
+		return err
+	}
 
 	if a.bot != nil {
 		a.bot.UpdateConfig(cfg)
@@ -1093,8 +1104,8 @@ func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, r
 // Separate from SaveConfig so it cannot overwrite the army or wall choices
 // made in the earlier steps.
 func (a *App) SaveLaunchSettings(minGold, minElixir, minDark int) error {
-	if minGold < 0 || minElixir < 0 || minDark < 0 {
-		return fmt.Errorf("loot floors must be >= 0")
+	if err := config.ValidateLootFloors(minGold, minElixir, minDark); err != nil {
+		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1112,18 +1123,21 @@ func (a *App) SaveLaunchSettings(minGold, minElixir, minDark int) error {
 
 // SetStrategyArmySlot configures the saved army recipe slot (1..4) for a strategy.
 func (a *App) SetStrategyArmySlot(strategyName string, slot int) error {
+	if slot < 1 || slot > config.MaxArmySlot {
+		return fmt.Errorf("army slot must be between 1 and %d, got %d", config.MaxArmySlot, slot)
+	}
+	base, err := strategyBaseName(strategyName)
+	if err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	if slot < 1 || slot > 4 {
-		slot = 1
-	}
 
 	cfg := config.LoadOrDefault("config.json")
 	if cfg.Attack.StrategySlots == nil {
 		cfg.Attack.StrategySlots = make(map[string]int)
 	}
-	base := filepath.Base(filepath.ToSlash(strategyName))
 	cfg.Attack.StrategySlots[base] = slot
 
 	if a.bot != nil {
@@ -1139,6 +1153,11 @@ func (a *App) SetStrategyArmySlot(strategyName string, slot int) error {
 
 // SetStrategyAutoEnd configures whether auto-end at 50% damage is enabled for a strategy.
 func (a *App) SetStrategyAutoEnd(strategyName string, enabled bool) error {
+	base, err := strategyBaseName(strategyName)
+	if err != nil {
+		return err
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -1146,7 +1165,6 @@ func (a *App) SetStrategyAutoEnd(strategyName string, enabled bool) error {
 	if cfg.Attack.StrategyAutoEnd == nil {
 		cfg.Attack.StrategyAutoEnd = make(map[string]bool)
 	}
-	base := filepath.Base(filepath.ToSlash(strategyName))
 	cfg.Attack.StrategyAutoEnd[base] = enabled
 
 	if a.bot != nil {
@@ -1158,6 +1176,31 @@ func (a *App) SetStrategyAutoEnd(strategyName string, enabled bool) error {
 		return err
 	}
 	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+}
+
+// strategyFileExists reports whether a strategy reference names a YAML file
+// the bot can load, accepting either a path or a bare strategies/ basename.
+func strategyFileExists(name string) bool {
+	if _, err := os.Stat(name); err == nil {
+		return true
+	}
+	_, err := os.Stat(paths.Resolve(filepath.Join("strategies", filepath.Base(filepath.ToSlash(name)))))
+	return err == nil
+}
+
+// strategyBaseName validates a strategy reference for a per-strategy override
+// and returns the basename used as the config map key. An unknown name used to
+// be written into the map, so the override pointed at a file the bot would
+// never load.
+func strategyBaseName(name string) (string, error) {
+	base := filepath.Base(filepath.ToSlash(name))
+	if filepath.Ext(base) != ".yaml" {
+		return "", fmt.Errorf("strategy %q must be a .yaml file", name)
+	}
+	if !strategyFileExists(name) {
+		return "", fmt.Errorf("strategy %q is not on disk", base)
+	}
+	return base, nil
 }
 
 // GetStrategies lists available strategy files

@@ -286,3 +286,63 @@ Format:
   PASS; `node --check web/public/wails-stub.js`; `./tools/verify.sh` ->
   VERIFY PASSED (full).
 - Next: T.5 config validation contract.
+
+### 2026-11-16 — T.5: config validation + enforced binding coverage
+- Changed: `internal/config/validate.go` (new), `app_config_validation_test.go`
+  (new), `app_ui_contract_test.go` (new), `app.go` (validation in SaveConfig,
+  SaveFullConfig, SetStorageConfig, SetScheduleConfig, SetAutoUpgradeConfig,
+  SaveLaunchSettings, SaveUpgradeSetup, SetStrategyArmySlot/AutoEnd, StartBot;
+  strategy-reference helpers), `app_test_tools.go` (device seam
+  `runDeviceTestMenu`), `app_test.go` (real strategy fixture instead of the
+  fake "barcher").
+- Fixed (all found by the new validation tests, none worked around):
+  - `SetStrategyArmySlot` silently clamped slot 0/5+ to 1 and returned success.
+    Now rejects anything outside 1-4 and writes nothing.
+  - `SetStrategyArmySlot`/`SetStrategyAutoEnd` accepted any name, creating
+    overrides for strategies the bot never loads. Now require a real
+    `strategies/*.yaml`.
+  - `SetScheduleConfig` treated empty hours and zero durations/caps as "keep
+    the old value" while reporting success; invalid `HH:MM` was never parsed.
+    Now parses both clocks and rejects empty, malformed, zero, out-of-range and
+    per-day-below-per-hour combinations.
+  - `SetStorageConfig` ignored `fullThresh <= 0` and accepted any halt rule or
+    a resume point at/above the full threshold. Now rejects all of them.
+  - `SetAutoUpgradeConfig` accepted empty/unknown strategies, unknown or
+    duplicate pets, negative caps and >5 reserved builders. Now rejects.
+  - `SaveConfig` accepted negative/oversized floors, stall outside 10-600 and
+    a strategy path that does not exist.
+  - `SaveFullConfig` wrote any struct; now validates search/attack/storage/
+    schedule/upgrade sections first.
+  - `StartBot` refused to boot with invalid floors instead of starting a
+    session that cannot search.
+- Added coverage contract: `TestUI_EveryFrontendBindingHasStateTest` parses
+  `web/wailsjs/go/main/App.d.ts` plus the `window.go.main.App` table in the
+  dev stub, and requires every binding to map to a test that calls it AND
+  reads engine/config state (LiveConfig, GetConfig, diskConfig, ...). Proven
+  three ways: appending `TotallyUncoveredBinding` to App.d.ts failed; mutating
+  `TestEngine_SearchAndAttackControls` into a no-op body failed ("never calls
+  SaveConfig"); mutating it into a body that only calls SaveConfig and checks
+  for an error failed ("only calls the binding"). All mutations restored.
+- Fresh invalid-input cases outside the original table: `ChooseArmy` slot 5
+  and -1, `SaveUpgradeSetup` re-saving a hand-edited duplicate pet queue, and
+  a single-digit hour. The last two exposed missing guarantees: the wizard did
+  not validate the pet queue it persists (now `ValidatePetQueue` before write),
+  and `time.Parse` accepted "7:00" (now HH:MM is required).
+- Added device-seam test: `TestUI_DeviceTestMenuRoutesActions` runs open /
+  filters / close through the real App with `runDeviceTestMenu` replaced,
+  asserts the persisted host/port/display scale/upgrade strategy reach the
+  menu runner, and that config.json is byte-identical after.
+- Added updater guard test: all update buttons refuse visibly with no update /
+  no updater, and status stays readable.
+- Added getter contract: GetConfig/GetStats/GetLogs/GetAttackHistory/
+  GetStrategies/GetLaunchOptions/GetLootAutotune/GetAppVersion/IsRunning and
+  ResetStats reflect live engine state.
+- Not verified: real Wails IPC window (macOS WKWebView-only, no display
+  automation); live ADB menu taps (device seam proves routing/config only);
+  GitHub update download/install (external network + app relaunch), refused
+  paths covered; real raid (spends army).
+- Verified: `go test -run 'TestValidation_|TestUI_|TestEngine_' .` PASS;
+  root package + internal/config PASS; coverage guard failure demonstrated;
+  `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js` PASS;
+  `./tools/verify.sh` -> VERIFY PASSED (full).
+- Next: T.2 pacing persistence round-trip (remaining unchecked plan task).

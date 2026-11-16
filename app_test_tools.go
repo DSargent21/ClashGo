@@ -11,24 +11,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// TestDeviceMenu drives the in-game Build Overview from the Settings page so
-// the menu can be inspected without starting the bot. It only taps navigation
-// (builder icon, filter icon/buttons, close); it never confirms an upgrade.
-func (a *App) TestDeviceMenu(action string) error {
-	switch action {
-	case "open", "close", "filters":
-	default:
-		return fmt.Errorf("unknown test menu action %q", action)
-	}
-
-	a.mu.Lock()
-	busy := a.bot != nil || a.cancel != nil
-	a.mu.Unlock()
-	if busy {
-		return fmt.Errorf("stop the bot before using test tools")
-	}
-
-	cfg := config.LoadOrDefault("config.json")
+// runDeviceTestMenu is the device-bound half of TestDeviceMenu: it opens the
+// in-game Build Overview, optionally applies the filter, and closes it. It only
+// taps navigation (builder icon, filter icon/buttons, close); it never confirms
+// an upgrade. The wiring tests replace it so the Settings control can be
+// exercised without ADB while still asserting the action and the config
+// (device, display scale, upgrade filters) the menu would have used.
+var runDeviceTestMenu = func(cfg *config.BotConfig, action string) error {
 	client := adb.NewClient(
 		adb.WithHost(cfg.Device.ADBHost),
 		adb.WithPort(cfg.Device.ADBPort),
@@ -63,4 +52,23 @@ func (a *App) TestDeviceMenu(action string) error {
 		time.Sleep(1200 * time.Millisecond)
 		return bm.ApplyBuildingInGameFilter()
 	}
+}
+
+// TestDeviceMenu is the Settings > Testing button handler. Validation and the
+// running-bot guard live here, before any device is touched.
+func (a *App) TestDeviceMenu(action string) error {
+	switch action {
+	case "open", "close", "filters":
+	default:
+		return fmt.Errorf("unknown test menu action %q", action)
+	}
+
+	a.mu.Lock()
+	busy := a.bot != nil || a.cancel != nil
+	a.mu.Unlock()
+	if busy {
+		return fmt.Errorf("stop the bot before using test tools")
+	}
+
+	return runDeviceTestMenu(config.LoadOrDefault("config.json"), action)
 }
