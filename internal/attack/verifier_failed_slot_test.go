@@ -1,8 +1,11 @@
 package attack
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
 
@@ -40,6 +43,52 @@ func TestCheckRemainingSlots_CountsVisiblyNonEmptyFailedSlot(t *testing.T) {
 	remaining := v.checkRemainingSlots(nonEmpty)
 	if len(remaining) != 1 || remaining[0] != slot {
 		t.Fatalf("failed slot showing content must count as undeployed; got %d remaining", len(remaining))
+	}
+}
+
+// An empty card after the pass is a POSITIVE observation: the unit is off the
+// bar. Before this, the verifier set IsEmpty and moved on without a log or a
+// state change, so a troop handed to the sweep stayed UNVERIFIED in the report
+// even though the sweep found no troop cards left (live run 9, 3 stars).
+func TestCheckRemainingSlots_EmptyCardConfirmsDeployment(t *testing.T) {
+	slot := &TrackedSlot{TroopSlot: TroopSlot{X: 153, Y: 682, Category: "Troop"}, UnitName: "balloon", State: SlotAttempted}
+	sm := newTestSlotManager([]*TrackedSlot{slot})
+	var buf bytes.Buffer
+	v := NewVerifier(nil, sm, PrecisionConfig{}, "BottomRight", 860, 732, DefaultVerifyConfig(), nil, zerolog.New(&buf))
+
+	empty := solidMat(900, 720, 0, 0, 0)
+	defer empty.Close()
+
+	if remaining := v.checkRemainingSlots(empty); len(remaining) != 0 {
+		t.Fatalf("empty card counted as undeployed: %d remaining", len(remaining))
+	}
+	if slot.State != SlotDeployed {
+		t.Fatalf("slot state = %v, want deployed after the empty card was observed", slot.State)
+	}
+	if !strings.Contains(buf.String(), "verifier: slot visibly empty; deployment confirmed") {
+		t.Fatalf("no positive confirmation line; log=%q", buf.String())
+	}
+}
+
+// A unit nobody observed must be named in the final accounting with the
+// missing evidence, never promoted and never silently dropped.
+func TestLogUnaccountedSlots_NamesUnobservedUnit(t *testing.T) {
+	slot := &TrackedSlot{TroopSlot: TroopSlot{X: 411, Y: 682, Category: "Hero"}, UnitName: "royal champion", State: SlotAttempted}
+	sm := newTestSlotManager([]*TrackedSlot{slot})
+	var buf bytes.Buffer
+	v := NewVerifier(nil, sm, PrecisionConfig{}, "BottomRight", 860, 732, DefaultVerifyConfig(), nil, zerolog.New(&buf))
+
+	v.logUnaccountedSlots(nil)
+
+	if slot.State == SlotDeployed {
+		t.Fatal("an unobserved slot must not be promoted to deployed")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "verifier: positive confirmation impossible") || !strings.Contains(out, "royal champion") {
+		t.Fatalf("final accounting did not name the unobserved unit; log=%q", out)
+	}
+	if strings.Contains(out, "unit still on the bar") {
+		t.Fatalf("unobserved unit must not be reported as a proven failure; log=%q", out)
 	}
 }
 

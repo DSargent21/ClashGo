@@ -330,6 +330,29 @@ func parse(r io.Reader, path string) (*Report, error) {
 				u.Reason = "still on the bar after the verifier's retries; this unit was not placed"
 			}
 
+		// Positive confirmation from the verifier: the card's region was empty
+		// on a settled post-deploy frame. This is the evidence that lets a unit
+		// handed to the sweep close as deployed instead of UNVERIFIED.
+		case strings.Contains(line, "verifier: slot visibly empty; deployment confirmed"):
+			if n := unitOf(line); n != "" {
+				u := get(n, line)
+				if u.Verdict != Failed {
+					u.Verdict = ConfirmedDeploy
+					u.Reason = "verifier observed the card empty on a settled post-deploy frame"
+				}
+			}
+
+		// No positive observation exists. Name the missing evidence instead of
+		// letting the unit vanish into a clean-looking report.
+		case strings.Contains(line, "verifier: positive confirmation impossible"):
+			if n := unitOf(line); n != "" {
+				u := get(n, line)
+				if u.Verdict != Failed && u.Verdict != ConfirmedDeploy {
+					u.Verdict = Unverified
+					u.Reason = "no settled post-deploy frame showed the card empty or drained; placement unobserved"
+				}
+			}
+
 		case strings.Contains(line, "hero deployed (single card tap"), strings.Contains(line, "hero deployed (slot-selected"):
 			if n := unitOf(line); n != "" {
 				u := get(n, line)

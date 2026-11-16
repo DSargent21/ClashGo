@@ -141,8 +141,24 @@ func (v *Verifier) VerifyAll() int {
 	// what attack_report reads to name the unit instead of calling the deploy a
 	// success. Logged only after the final check, so a unit the last retry
 	// recovered is not accused.
+	v.logUnaccountedSlots(lastRemaining)
+
+	return remainingCount
+}
+
+// logUnaccountedSlots emits exactly one final line per unit neither proven
+// deployed nor proven failed. A slot the verifier still saw is FAILED; a slot
+// in the ambiguous card region (above empty, below the ability band) is
+// UNKNOWN with the missing evidence named. Silence here is what let run 9's
+// report call a placed troop unverified and a truly unreadable card disappear.
+func (v *Verifier) logUnaccountedSlots(lastRemaining []*TrackedSlot) {
+	reported := make(map[*TrackedSlot]bool, len(lastRemaining))
 	for _, slot := range lastRemaining {
-		if slot == nil || slot.State == SlotDeployed {
+		if slot == nil {
+			continue
+		}
+		reported[slot] = true
+		if slot.State == SlotDeployed {
 			continue
 		}
 		v.logger.Warn().
@@ -152,7 +168,16 @@ func (v *Verifier) VerifyAll() int {
 			Msg("verifier: unit still on the bar at battle end")
 	}
 
-	return remainingCount
+	for _, slot := range v.slotManager.GetAllSlots() {
+		if slot == nil || reported[slot] || slot.State == SlotDeployed || slot.State == SlotFailed {
+			continue
+		}
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Str("category", slot.Category).
+			Msg("verifier: positive confirmation impossible; no settled post-deploy frame showed the card empty or drained")
+	}
 }
 
 // checkRemainingSlots identifies slots that still have content.
@@ -188,6 +213,23 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 
 		if ratio < v.config.EmptyThreshold {
 			slot.IsEmpty = true
+			// POSITIVE CONFIRMATION. The card's region is empty on a settled
+			// post-deploy frame: the unit is off the bar. Until this line
+			// existed, a troop handed to the sweep after an unreadable badge was
+			// silently closed here (IsEmpty=true, no log, no state change), so
+			// attack_report had no evidence and called it UNVERIFIED even though
+			// the sweep found zero troop cards left (live run 9, 3 stars).
+			// Logging and marking it deployed is not an over-claim: the evidence
+			// is the same empty-card observation the verifier already trusts to
+			// count it as gone.
+			if slot.UnitName != "" {
+				v.logger.Info().
+					Int("x", slot.X).
+					Float64("ratio", ratio).
+					Str("unit", slot.UnitName).
+					Msg("verifier: slot visibly empty; deployment confirmed")
+			}
+			v.slotManager.MarkSlotDeployed(slot)
 			continue
 		}
 

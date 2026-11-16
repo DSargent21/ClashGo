@@ -99,3 +99,24 @@ Format:
   ability is skipped when the rescue also fails; sweep recovers the placement.
 - Next: verifier positive-confirmation line so UNVERIFIED cards can close as
   deployed without over-claiming; hero ability when the rescue is refused.
+
+### 2026-11-16 — attack-polish: positive confirmation closes the report
+- Changed: `internal/attack/verifier.go`,
+  `internal/attack/verifier_failed_slot_test.go`, `internal/attacklog/attacklog.go`,
+  `internal/attacklog/attacklog_test.go`.
+- Defect: run 9's sweep proved zero troop cards left and the battle was 3 stars,
+  but `checkRemainingSlots` closed an empty card with `IsEmpty=true` and no log
+  or state change, so the report kept Balloon/ED/RC as UNVERIFIED.
+- Fix: an empty card on a settled post-deploy frame now logs
+  `verifier: slot visibly empty; deployment confirmed`, marks that slot deployed,
+  and the parser maps the line to `deployed`. A slot nobody observed gets
+  `verifier: positive confirmation impossible; no settled post-deploy frame
+  showed the card empty or drained` and stays UNVERIFIED with that evidence
+  named. A unit still on the bar is unchanged: FAILED, run flagged.
+- Verified: `go test ./internal/attack ./internal/attacklog` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Live run 10 (`logs/live_polish_run10.log`): 1 star, `undeployed_slots=0`,
+  per-unit report `deployed=7 not in bar=4`, zero UNVERIFIED; both heroes one
+  re-arm + one confirmed retry, both abilities; siege first tap,
+  `siege_placements=1`, `siege_retries=0`; verifier confirmed ED and Balloon.
+- Next: F.1 dead-base detection.

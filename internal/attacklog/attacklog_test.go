@@ -52,6 +52,65 @@ func TestParseVerifierRemainingUnit(t *testing.T) {
 	}
 }
 
+// A positive post-deploy observation closes the handoff: the sweep left the
+// card empty, the verifier saw the empty card, and the unit is deployed. Run 9
+// logged the handoff and the 3-star battle result but no confirmation line, so
+// an actually-placed troop was reported UNVERIFIED.
+func TestParseVerifierEmptyCardConfirmsHandoff(t *testing.T) {
+	log := strings.Join([]string{
+		`20:32:36 | WRN | reconcile: count label still unreadable after a measured main pass; handing the slot to the sweep instead of claiming it deployed component=hero_manager fired_total=11 reads=2 unit=Balloon`,
+		`20:32:52 | INF | verifier: slot visibly empty; deployment confirmed component=verifier ratio=0.031 unit=Balloon x=153`,
+	}, "\n")
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := unit(t, rep, "Balloon")
+	if u.Verdict != ConfirmedDeploy {
+		t.Fatalf("verdict = %v, want deployed after the verifier observed the empty card", u.Verdict)
+	}
+	if rep.Problem() {
+		t.Fatal("a positively confirmed deployment must not flag the run")
+	}
+}
+
+// No observation exists: the report must say so and keep the unit unknown, not
+// promote it and not call it failed.
+func TestParseVerifierUnobservedStaysUnknownWithEvidence(t *testing.T) {
+	log := `20:32:52 | WRN | verifier: positive confirmation impossible; no settled post-deploy frame showed the card empty or drained component=verifier category=Hero unit="Royal Champion" x=411`
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := unit(t, rep, "Royal Champion")
+	if u.Verdict != Unverified {
+		t.Fatalf("verdict = %v, want UNVERIFIED when nothing observed the card", u.Verdict)
+	}
+	if !strings.Contains(u.Reason, "no settled post-deploy frame") {
+		t.Fatalf("reason = %q, must name the missing evidence", u.Reason)
+	}
+	// The run is still flagged (it is not a clean deploy), but the verdict must
+	// stay UNKNOWN: nothing observed this card, so FAILED would over-claim.
+	if !rep.Problem() {
+		t.Fatal("an unobserved unit must still keep the run out of the clean-deploy column")
+	}
+}
+
+// A proven shortfall still fails the run.
+func TestParseVerifierRemainingFlagsRunFailed(t *testing.T) {
+	log := `20:32:36 | WRN | verifier: unit still on the bar at battle end component=verifier category=Troop unit=Balloon x=153`
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if u := unit(t, rep, "Balloon"); u.Verdict != Failed {
+		t.Fatalf("verdict = %v, want FAILED", u.Verdict)
+	}
+	if !rep.Problem() {
+		t.Fatal("a unit proven still on the bar must flag the run failed")
+	}
+}
+
 // The troop pass handing an unreadable card to the sweep is not a completion
 // claim: the run must keep it out of the clean-deploy column.
 func TestParseReconcileHandoffIsUnverified(t *testing.T) {
