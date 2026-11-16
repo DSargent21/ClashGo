@@ -80,11 +80,12 @@ const maxHeroGroundCandidates = 4
 // may add. These are not card taps: the hero card budget (place + ability)
 // is never touched by them.
 //
-// Three, not two, because escaping a no-deploy pocket takes a real walk — see
-// heroOutwardTiles: live 2026-09-27 the pocket at the King's y was still there
-// 38 px out, and the ground only became deployable ~100 px further out (or ~12 s
-// later, once the pocket had receded).
-const heroFieldRetries = 3
+// One, not three. Live 2026-11-16: three alternate-ground taps per hero were
+// fired and every one did nothing (delta ~0.00); the sweep then placed both
+// heroes on a single tap. The extra walk was pure card re-tapping — the exact
+// user-reported defect — so the phase gets ONE rescue and the sweep, which
+// re-checks from a fresh frame, owns the rest.
+const heroFieldRetries = 1
 
 // heroOutwardTiles is how far, in village tiles, an unconfirmed drop walks
 // toward the nearest screen edge on each retry. The steps are deliberately

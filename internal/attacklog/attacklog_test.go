@@ -34,6 +34,38 @@ const runLog = `15:52:05 | INF | random edge selected component=attack_executor 
 15:52:22 | INF | evidence capture: saved last_attack_overview.png + last_attack_taps.png component=attack_executor remaining=0 taps_outside_band=2
 `
 
+// A card the verifier still sees at the end of the battle is an incomplete
+// deploy, not an unverified guess: the run must name it as FAILED instead of
+// letting the aggregate "remaining=1" read as a clean deploy.
+func TestParseVerifierRemainingUnit(t *testing.T) {
+	log := strings.Join([]string{
+		`20:32:34 | INF | detected troop counts component=attack_executor counts={"153":8}`,
+		`20:32:36 | WRN | verifier: unit still on the bar at battle end component=verifier category=Troop unit=Balloon x=153`,
+	}, "\n")
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := unit(t, rep, "Balloon")
+	if u.Verdict != Failed {
+		t.Fatalf("verdict = %v, want FAILED for a unit the verifier saw at battle end", u.Verdict)
+	}
+}
+
+// The troop pass handing an unreadable card to the sweep is not a completion
+// claim: the run must keep it out of the clean-deploy column.
+func TestParseReconcileHandoffIsUnverified(t *testing.T) {
+	log := `20:32:36 | WRN | reconcile: count label still unreadable after a measured main pass; handing the slot to the sweep instead of claiming it deployed component=hero_manager fired_total=9 reads=2 unit=Balloon`
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := unit(t, rep, "Balloon")
+	if u.Verdict != Unverified {
+		t.Fatalf("verdict = %v, want UNVERIFIED for an unreadable measured card handed to the sweep", u.Verdict)
+	}
+}
+
 func parseFixture(t *testing.T) *Report {
 	t.Helper()
 	rep, err := parse(strings.NewReader(runLog), "fixture.log")

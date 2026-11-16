@@ -4,6 +4,7 @@ import (
 	"image"
 	"time"
 
+	"github.com/Ducky705/ClashGO/pkg/formula"
 	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
@@ -38,7 +39,26 @@ type Verifier struct {
 	config       VerifyConfig
 	troopCounter *TroopCounter
 	zone         RedZone
+
+	// formula and deployLine are the ground this battle actually deployed on.
+	// The verifier's retries used to re-derive the corner edge from pCfg, which
+	// is not the line the troops used whenever the strategy carries a formula or
+	// the operator pinned a side — so a retry was fired at ground the battle
+	// never used (live 2026-11-15: formula/pin ground, corner-edge retries).
+	formula      *formula.Formula
+	deployLine   DeployLine
+	pinnedGround bool
 	logger       zerolog.Logger
+}
+
+// SetGround wires the battle's deploy ground (strategy formula + the resolved
+// deploy line) so a retry re-aims at the same ground the deploy phase used.
+// pinnedGround makes the operator's pin outrank the formula, matching
+// HeroManager.SetPinnedGround and Sweeper.SetPinnedGround.
+func (v *Verifier) SetGround(f *formula.Formula, line DeployLine, pinned bool) {
+	v.formula = f
+	v.deployLine = line
+	v.pinnedGround = pinned
 }
 
 // NewVerifier creates a new verifier. troopCounter may be nil; when
@@ -75,6 +95,7 @@ func (v *Verifier) VerifyAll() int {
 
 	v.logger.Info().Msg("verifying deployment success")
 	remainingCount := 0
+	var lastRemaining []*TrackedSlot
 
 	for attempt := 1; attempt <= v.config.MaxRetryAttempts; attempt++ {
 
@@ -98,6 +119,7 @@ func (v *Verifier) VerifyAll() int {
 		remainingSlots := v.checkRemainingSlots(screen)
 		screen.Close()
 
+		lastRemaining = remainingSlots
 		remainingCount = len(remainingSlots)
 		if remainingCount == 0 {
 			v.logger.Info().Msg("all units successfully deployed")
@@ -112,6 +134,22 @@ func (v *Verifier) VerifyAll() int {
 		for _, slot := range remainingSlots {
 			v.retryDeploy(slot)
 		}
+	}
+
+	// One line per unit the run could not get off the bar. The aggregate
+	// "remaining=1" is easy to miss and says nothing about WHICH card; this is
+	// what attack_report reads to name the unit instead of calling the deploy a
+	// success. Logged only after the final check, so a unit the last retry
+	// recovered is not accused.
+	for _, slot := range lastRemaining {
+		if slot == nil || slot.State == SlotDeployed {
+			continue
+		}
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Str("category", slot.Category).
+			Msg("verifier: unit still on the bar at battle end")
 	}
 
 	return remainingCount
@@ -241,14 +279,12 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 		return
 	}
 
-	edge, ok := v.pCfg.Edges[v.targetEdge]
+	p1, p2, ok := v.retryLine(slot)
 	if !ok {
-		v.logger.Warn().Str("unit", slot.UnitName).Msg("retry: no edge configured; marking failed")
+		v.logger.Warn().Str("unit", slot.UnitName).Msg("retry: no deploy ground configured; marking failed")
 		v.slotManager.MarkFailed(slot.UnitName)
 		return
 	}
-	scaled := ScaleEdge(edge, v.pCfg.Width, v.pCfg.Height, v.w, v.h)
-	p1, p2 := scaled.P1, scaled.P2
 
 	for batch := 0; batch < retryBatches; batch++ {
 		live, trusted, empty := v.verifierLiveCount(slot)
@@ -340,10 +376,10 @@ func (v *Verifier) isHeroShapedRetry(slot *TrackedSlot) bool {
 // then delta-verify (pre captured BEFORE the selection tap so the
 // highlight does not poison the baseline).
 func (v *Verifier) retryHeroSlot(slot *TrackedSlot) {
-	if len(deployLinePoints(v)) == 0 {
-		// No deploy line available (no red zone, no pin): the drop below
-		// still fires at the screen centre so the hero gets an attempt,
-		// but it cannot be delta-verified meaningfully against a line.
+	if len(v.deployLine.Points) < 2 && v.formula == nil {
+		// No deploy line and no formula (no red zone, no pin): the drop below
+		// still fires at the screen centre so the hero gets an attempt, but it
+		// cannot be delta-verified meaningfully against a line.
 		v.logger.Warn().
 			Int("x", slot.X).
 			Str("unit", slot.UnitName).
@@ -363,7 +399,7 @@ func (v *Verifier) retryHeroSlot(slot *TrackedSlot) {
 
 	preRatio, capturedPre := v.executor.CaptureSettledSlotRatio(v.w, slot)
 
-	pt := heroRetryPoint(v)
+	pt := v.heroRetryGround(slot)
 	if !v.executor.TapSlot(slot, 4) {
 		v.logger.Warn().
 			Int("x", slot.X).
@@ -422,27 +458,55 @@ func (v *Verifier) SetRedZone(z RedZone) {
 	v.zone = z
 }
 
-// heroRetryPoint picks the ground the verifier's hero retry drops on: the
-// zone-filtered deploy line (the same contract as the sweeper's hero retry),
-// falling back to the screen centre when no line is available.
-func heroRetryPoint(v *Verifier) image.Point {
-	if cands := heroGroundCandidates(deployLinePoints(v), v.h, v.zone); len(cands) > 0 {
+// retryLine resolves the ground a troop/spell retry fires on, with the same
+// precedence the deploy path used: the operator's pin, then the strategy
+// formula's per-unit ground, then the battle's deploy line, and only last the
+// corner edge. Returns ok=false when nothing is configured.
+func (v *Verifier) retryLine(slot *TrackedSlot) (image.Point, image.Point, bool) {
+	if v.pinnedGround && len(v.deployLine.Points) >= 2 {
+		return v.deployLine.Points[0], v.deployLine.Points[len(v.deployLine.Points)-1], true
+	}
+	if v.formula != nil && slot != nil {
+		if entry, ok := v.formula.LookUp(slot.UnitName); ok {
+			switch {
+			case entry.IsPoint() && entry.P != nil:
+				pt := entry.P.Image()
+				return pt, pt, true
+			case entry.IsLine() && entry.P1 != nil && entry.P2 != nil:
+				return entry.P1.Image(), entry.P2.Image(), true
+			case entry.IsLines() && len(entry.Lines) > 0:
+				return entry.Lines[0].P1.Image(), entry.Lines[0].P2.Image(), true
+			}
+		}
+	}
+	if len(v.deployLine.Points) >= 2 {
+		return v.deployLine.Points[0], v.deployLine.Points[len(v.deployLine.Points)-1], true
+	}
+	edge, ok := v.pCfg.Edges[v.targetEdge]
+	if !ok {
+		return image.Point{}, image.Point{}, false
+	}
+	scaled := ScaleEdge(edge, v.pCfg.Width, v.pCfg.Height, v.w, v.h)
+	return scaled.P1, scaled.P2, true
+}
+
+// heroRetryGround picks the ground the verifier's hero retry drops on, using the
+// same authored-then-line order as HeroManager.heroDropCandidates and the
+// sweeper: the strategy formula's per-unit point first, then the zone-filtered
+// battle line. The old version only knew the corner edge, so a retry after a
+// formula/pinned deploy was aimed at ground the battle never used.
+func (v *Verifier) heroRetryGround(slot *TrackedSlot) image.Point {
+	var cands []image.Point
+	if v.formula != nil && slot != nil {
+		if entry, ok := v.formula.LookUp(slot.UnitName); ok {
+			cands = append(cands, heroFormulaCandidates(entry, v.h)...)
+		}
+	}
+	cands = append(cands, heroGroundCandidates(v.deployLine.Points, v.h, v.zone)...)
+	if len(cands) > 0 {
 		return cands[0]
 	}
 	return image.Pt(v.w/2, v.h/2)
-}
-
-// deployLinePoints resolves the battle's deploy line for the verifier.
-// The verifier does not carry a DeployLine; the sweeper's line lives on
-// the sweeper. Instead the verifier reconstructs the same ground from the
-// pCfg edge (the same ScaleEdge source retryDeploy already uses).
-func deployLinePoints(v *Verifier) []image.Point {
-	edge, ok := v.pCfg.Edges[v.targetEdge]
-	if !ok {
-		return nil
-	}
-	scaled := ScaleEdge(edge, v.pCfg.Width, v.pCfg.Height, v.w, v.h)
-	return []image.Point{scaled.P1, scaled.P2}
 }
 
 // verifierLiveCount is a thin shim to the shared captureSlotLiveCount

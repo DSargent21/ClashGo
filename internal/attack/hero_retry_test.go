@@ -293,8 +293,9 @@ func TestRearmDoesNotStealTheAbility(t *testing.T) {
 	slot := heroSlotNamed("dragon duke", 550)
 	hm, tl := newHeroTapHarness(t, DeployLine{Points: line}, []*TrackedSlot{slot})
 	hm.SetRedZone(rectZone(400, 100, 1010, 650))
-	// The drop is refused (0.74 -> 0.74), the retry lands (0.74 -> 0.11).
-	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.11)
+	// The drop is refused (0.74 through all three confirm beats), the retry
+	// lands (0.74 -> 0.11).
+	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.74, 0.11)
 
 	d := HeroDeployment{Unit: strategy.Unit{Name: "Dragon Duke"}, Slot: slot}
 	pre := gocv.NewMat()
@@ -362,10 +363,10 @@ func TestConfirmHeroWave_EarlyExitWhenAllPlaced(t *testing.T) {
 }
 
 // TestConfirmHeroWave_DebugEnvAddsLateBeat pins the diagnostic seam: without
-// CLASHGO_HERO_DEBUG the confirmation wave keeps its normal two beats
-// (production timing untouched); with it, a third, late beat reads every
-// pending card so a live run can show when a refused drop registers on its own
-// versus never (batch-drop diagnosis, 2026-10-02).
+// CLASHGO_HERO_DEBUG the confirmation wave keeps its normal three beats
+// (production timing untouched); with it, a fourth beat reads every pending
+// card so a live run can show when a refused drop registers on its own versus
+// never (batch-drop diagnosis, 2026-10-02).
 func TestConfirmHeroWave_DebugEnvAddsLateBeat(t *testing.T) {
 	countReads := func(t *testing.T, dbg string) int {
 		t.Helper()
@@ -385,10 +386,10 @@ func TestConfirmHeroWave_DebugEnvAddsLateBeat(t *testing.T) {
 		return reads
 	}
 
-	if got := countReads(t, ""); got != 2 {
-		t.Errorf("confirm reads without CLASHGO_HERO_DEBUG = %d, want 2 (production beat count)", got)
+	if got := countReads(t, ""); got != 3 {
+		t.Errorf("confirm reads without CLASHGO_HERO_DEBUG = %d, want 3 (production beat count)", got)
 	}
-	if got := countReads(t, t.TempDir()); got != 3 {
-		t.Errorf("confirm reads with CLASHGO_HERO_DEBUG = %d, want 3 (the late diagnostic beat)", got)
+	if got := countReads(t, t.TempDir()); got != 4 {
+		t.Errorf("confirm reads with CLASHGO_HERO_DEBUG = %d, want 4 (the late diagnostic beat)", got)
 	}
 }

@@ -299,6 +299,37 @@ func parse(r io.Reader, path string) (*Report, error) {
 				u.Reason = "reconcile exhausted; handed to the sweep without confirming the card left"
 			}
 
+		// The troop pass could not read the card's badge after firing a measured
+		// count. It now hands the slot to the sweep instead of claiming it
+		// deployed; either way the completion is not established, so the run must
+		// not read as a full deploy.
+		case strings.Contains(line, "handing the slot to the sweep instead of claiming it deployed"):
+			if n := unitOf(line); n != "" {
+				u := get(n, line)
+				u.Verdict = Unverified
+				u.Reason = "troop reconcile could not read the card after the measured pass; the sweep owns the confirmation"
+			}
+
+		// Historical logs: this path used to mark an unreadable, saturated
+		// Amount:\"All\" card deployed so the sweep would skip it. That is the
+		// exact shape of "it did not place all the troops" with no error, so a
+		// log carrying it must never be summarised as a clean deploy.
+		case strings.Contains(line, "saturated 'All' line pass fired"):
+			if n := unitOf(line); n != "" {
+				u := get(n, line)
+				u.Verdict = Unverified
+				u.Reason = "marked deployed after an unreadable saturated line pass; no confirmation the card left"
+			}
+
+		// The verifier's final per-unit line: after every retry, this card still
+		// showed content. This is a proof of an incomplete deploy, not a guess.
+		case strings.Contains(line, "verifier: unit still on the bar at battle end"):
+			if n := unitOf(line); n != "" {
+				u := get(n, line)
+				u.Verdict = Failed
+				u.Reason = "still on the bar after the verifier's retries; this unit was not placed"
+			}
+
 		case strings.Contains(line, "hero deployed (single card tap"), strings.Contains(line, "hero deployed (slot-selected"):
 			if n := unitOf(line); n != "" {
 				u := get(n, line)

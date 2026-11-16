@@ -219,10 +219,14 @@ func (hm *HeroManager) SetPinnedGround(v bool) { hm.pinnedGround = v }
 const heroBatchGapMs = 60
 
 // heroConfirmSettleMs / heroConfirmFollowMs are the two fixed beats of a
-// confirmation wave (see confirmHeroWave). Two deterministic reads beat the old
+// confirmation wave (see confirmHeroWave). Deterministic reads beat the old
 // settle-poll, which could lock onto a stable PRE-transition frame and report a
 // drop that had actually landed — live 2026-10-01 the Dragon Duke measured
 // "not placed" at every read, then showed consumed before the sweep's first tap.
+// The third, late read exists for exactly that card: live 2026-11-16 both heroes
+// were placed on the wave's first tap yet still read ~0.75 at 700 ms, so the
+// wave re-armed them and fired at spent cards; six seconds later the same cards
+// read ~0.22. 2.5 s clears the drop animation, and a confirmed wave exits early.
 const (
 	heroConfirmSettleMs = 300
 	heroConfirmFollowMs = 400
@@ -296,7 +300,7 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 				Msg("hero card tap budget exhausted before placement; skipping hero")
 			continue
 		}
-		hm.executor.client.HumanSleep(heroArmSettleMs, 30)
+		hm.executor.client.HumanSleep(heroFirstArmMs, 30)
 		hm.debugDump(fmt.Sprintf("wave%d_pre", i))
 		// Spread the heroes over the candidate ground and widen the drop jitter
 		// per hero: five heroes on one tile is both bot-like and the first thing
@@ -327,6 +331,15 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 		if p.placed || !p.fired || p.reads == 0 {
 			continue // placed, dropped-but-unverifiable, or never dropped
 		}
+		if hm.executor.DeployBudgetExhausted() {
+			// A re-arm is a card tap. With no window left for its field tap, the
+			// only cheap move is to let the sweep's fresh frame decide.
+			hm.logger.Warn().
+				Str("unit", p.d.Unit.Name).
+				Int("slot_x", p.d.Slot.X).
+				Msg("deploy window spent before the hero could be rescued; leaving it to the sweep (no re-arm)")
+			continue
+		}
 		if len(p.cands) <= 1 {
 			hm.logger.Warn().
 				Str("unit", p.d.Unit.Name).
@@ -340,6 +353,10 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 		// (see maxHeroRearms). A re-arm is not a placement and spends no
 		// placement budget — the hero keeps its one placement and its one ability.
 		rearm := func() bool {
+			// A refused drop deselects the card. An "armed" reading is not a
+			// substitute for the re-tap: live 2026-11-16 the card read armed after
+			// a refusal and three field taps on new ground did nothing until the
+			// sweep re-selected it. Always re-arm.
 			if !hm.executor.RearmSlot(p.d.Slot) {
 				return false
 			}
@@ -389,9 +406,11 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 // sleep plus a capture of the deploy window (2026-10-05).
 func (hm *HeroManager) confirmHeroWave(batch []*heroBatchEntry) {
 	dbg := heroDebugDir()
-	beats := 2
+	// Three beats in production: the late one is the card's settle read (see
+	// heroConfirmLateMs). Debug adds one more frame dump after it.
+	beats := 3
 	if dbg != "" {
-		beats = 3
+		beats = 4
 		_ = os.MkdirAll(dbg, 0o755)
 	}
 	for beat := 0; beat < beats; beat++ {
@@ -400,12 +419,16 @@ func (hm *HeroManager) confirmHeroWave(batch []*heroBatchEntry) {
 			hm.executor.client.HumanSleep(heroConfirmSettleMs, 30)
 		case 1:
 			hm.executor.client.HumanSleep(heroConfirmFollowMs, 40)
-		default:
+		case 2:
 			hm.executor.client.HumanSleep(heroConfirmLateMs, 50)
+		default:
+			hm.executor.client.HumanSleep(heroConfirmSettleMs, 40)
 		}
-		if hm.executor.DeployBudgetExhausted() {
-			return
-		}
+		// Deliberately NOT gated on DeployBudgetExhausted: this is a read, not a
+		// tap, and abandoning it on the budget is what made a deployed hero look
+		// refused (live 2026-11-16: the window was already over, so the wave read
+		// once during the drop animation, re-armed the spent card and left it to
+		// the sweep). A wrong verdict costs a card tap; a read costs 300 ms.
 		frame, err := hm.executor.CaptureFresh()
 		haveFrame := err == nil && !frame.Empty()
 		for _, p := range batch {
@@ -1132,7 +1155,14 @@ func (hm *HeroManager) DeployTroops(
 		tapCount = entry.Count
 		tapCountMeasured = true
 	}
-	if strings.EqualFold(unit.Amount, "All") && p1 != p2 {
+	if strings.EqualFold(unit.Amount, "All") && p1 != p2 && !tapCountMeasured {
+		// The floor exists for a pass with NO measurement: spreading an unknown
+		// number of units along the whole line is safer than firing the blind
+		// batch in one spot. When the card was measured, the measurement is the
+		// card's contents and the floor is a fabrication: live 2026-11-15 an
+		// 8-Balloon card was measured at 8 and the Amount:"All" floor turned it
+		// into 22 taps, costing ~14 dead taps per troop card and pushing the
+		// deploy window to 20 s of a 7 s goal.
 		minTaps := 22
 		if strings.Contains(unitName, "dragon") {
 			minTaps = 16
@@ -1248,20 +1278,16 @@ func (hm *HeroManager) DeployTroops(
 		if !trusted && tapCountMeasured {
 			unreadableReads++
 			if unreadableReads >= maxUnreadableReconcileReads {
-				if strings.EqualFold(unit.Amount, "All") && tapCount >= 16 && p1 != p2 {
-					hm.logger.Info().
-						Str("unit", unit.Name).
-						Int("reads", unreadableReads).
-						Int("fired_total", tapCount).
-						Msg("reconcile: saturated 'All' line pass fired; marking slot deployed so sweeper does not circle back")
-					hm.slotManager.MarkDeployed(unitName)
-					return true
-				}
+				// Hand the decision to the sweep, which re-checks on a FRESH frame.
+				// This used to mark a saturated Amount:"All" pass deployed so the
+				// sweep would not circle back; that is exactly how troops are left
+				// on the bar with nothing in the log saying so. A card nobody could
+				// read is not a card anybody proved empty.
 				hm.logger.Warn().
 					Str("unit", unit.Name).
 					Int("reads", unreadableReads).
 					Int("fired_total", tapCount).
-					Msg("reconcile: count label still unreadable and the main pass already fired the measured count; stopping without blind top-up taps (the sweep re-checks on a fresh frame)")
+					Msg("reconcile: count label still unreadable after a measured main pass; handing the slot to the sweep instead of claiming it deployed")
 				hm.slotManager.RecordAttempt(unitName, false)
 				return false
 			}
@@ -1568,7 +1594,7 @@ func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
 // second tap can never land on a machine that did deploy.
 func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, verdict siegeVerdict) bool {
 	if verdict != siegeStillOnCard {
-		return false
+		return verdict == siegeCommitted
 	}
 	refused, ok := hm.executor.SiegeGround()
 	if !ok {
@@ -1603,7 +1629,7 @@ func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, 
 			Int("attempt", i+1).
 			Interface("retry_at", alt).
 			Msg("siege: retrying a refused placement (the card still holds the machine, so nothing was placed)")
-		hm.executor.PlaceSiege(slot, alt, 12.0)
+		hm.executor.RetrySiege(slot, alt, 12.0)
 		if hm.confirmSiegeDrop(unit, slot, preRatio, preOK) != siegeStillOnCard {
 			return true
 		}
@@ -1617,7 +1643,27 @@ func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, 
 			slot.SiegePlaced = false
 		}
 	}
-	return true
+	// Every retry was refused too: nothing was placed.
+	return false
+}
+
+// markSiegeFailed records a machine the game proved it never accepted. The slot
+// must not be marked deployed: that claimed success retired the machine for the
+// whole battle (the sweep skips siege slots by design) and hid the failure from
+// the verifier. The clan-castle alias is failed with it — the two share the
+// fallback slot.
+func (hm *HeroManager) markSiegeFailed(unit strategy.Unit, slot *TrackedSlot) {
+	if slot != nil {
+		slot.SiegePlaced = false
+		slot.State = SlotFailed
+		if hm.slotManager != nil && slot.UnitName != "" {
+			hm.slotManager.MarkFailed(slot.UnitName)
+		}
+	}
+	if hm.slotManager != nil {
+		hm.slotManager.MarkFailed(unit.Name)
+		hm.slotManager.MarkFailed("clan castle")
+	}
 }
 
 func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
@@ -1652,9 +1698,16 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 			Msg("siege placed on the user's pinned hero point (the one and only placement tap)")
 		hm.executor.PlaceSiege(slot, tap, 12.0)
 		verdict := hm.confirmSiegeDrop(unit, slot, preRatio, preOK)
-		if !hm.retryRefusedSiege(unit, slot, verdict) && verdict != siegeCommitted {
+		committed := verdict == siegeCommitted
+		if !committed {
+			committed = hm.retryRefusedSiege(unit, slot, verdict)
+		}
+		if !committed {
 			hm.logger.Warn().Str("unit", unit.Name).
 				Msg("siege machine never left its card this battle; the card is still armed, so this attack runs without it")
+			hm.executor.ForgetSiegeGround()
+			hm.markSiegeFailed(unit, slot)
+			return false
 		}
 		markDone()
 		return true
@@ -1663,9 +1716,15 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 	if entry, ok := hm.formulaEntry(unit.Name); ok {
 		if hm.deploySiegeFromFormula(unit, slot, entry) {
 			verdict := hm.confirmSiegeDrop(unit, slot, preRatio, preOK)
-			hm.retryRefusedSiege(unit, slot, verdict)
-			markDone()
-			return true
+			if hm.retryRefusedSiege(unit, slot, verdict) {
+				markDone()
+				return true
+			}
+			hm.logger.Warn().Str("unit", unit.Name).
+				Msg("siege machine never left its card this battle; the card is still armed, so this attack runs without it")
+			hm.executor.ForgetSiegeGround()
+			hm.markSiegeFailed(unit, slot)
+			return false
 		}
 	}
 

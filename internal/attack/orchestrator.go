@@ -1049,6 +1049,7 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 		// placement taps had to be moved off the machine to keep it alive. A
 		// placement count above 1 means a path found a way around PlaceSiege.
 		Int("siege_placements", tapExec.SiegePlacements()).
+		Int("siege_retries", tapExec.SiegeRetries()).
 		Int("siege_clearance_nudges", tapExec.SiegeNudges()).
 		Msg("deploy window: troops + siege + heroes + spells")
 	if placementsMs > goalMs {
@@ -1104,6 +1105,10 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// 11. Verify
 	verifier := NewVerifier(tapExec, slotMgr, pCfg, targetEdge, w, h, DefaultVerifyConfig(), troopCounter, e.logger)
 	verifier.SetRedZone(redZone)
+	// Retries must fire on the ground this battle deployed on, not on a
+	// re-derived corner edge: a formula/pin battle retried on the corner is a
+	// retry at ground the game may never have accepted.
+	verifier.SetGround(formulaPtr, deployLine, userPinnedForTarget)
 	remainingCount := verifier.VerifyAll()
 
 	// 12. Evidence capture: save a post-deploy annotated screenshot so every	// real attack can be reviewed afterwards (did spells land on the formula

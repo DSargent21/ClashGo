@@ -69,6 +69,13 @@ type TapExecutor struct {
 	// second placement can never hide in a 40 MB log.
 	siegePlacements int
 
+	// siegeRetries counts field taps re-aimed after the game PROVED it refused
+	// the first one (the card still held the machine). They are the same
+	// machine, not extra placements: the first version counted them as
+	// placements and a normal one-machine battle reported "siege_placements: 3",
+	// which is exactly the line that exists to catch a machine placed twice.
+	siegeRetries int
+
 	// deployDeadline is when this battle's deploy budget runs out. Zero
 	// when no deploy is in progress (or the budget was never started).
 	// Set by StartDeployBudget on the attack goroutine; read by the same
@@ -117,7 +124,7 @@ func (t *TapExecutor) StartDeployBudget() {
 	t.deployDeadline = time.Now().Add(DeployBudget)
 	// The siege ledger is per-battle: last battle's machine is not on this
 	// field, and a stale point would quietly bend this battle's hero drops.
-	t.siegeGround, t.siegeGroundSet, t.siegeNudges, t.siegePlacements = image.Point{}, false, 0, 0
+	t.siegeGround, t.siegeGroundSet, t.siegeNudges, t.siegePlacements, t.siegeRetries = image.Point{}, false, 0, 0, 0
 	// Fresh battle, fresh transport verdict and selection state.
 	t.inputMu.Lock()
 	t.inputErr, t.lastNonHeroSlot = nil, nil
@@ -259,7 +266,17 @@ const (
 	// hero phase already touched). 400ms covers the first-selection arm; the
 	// wave costs 250ms per hero more than before and drops the rescue path
 	// entirely when it works.
-	heroArmSettleMs  = 400
+	// heroArmSettleMs is the pause between a RE-ARM tap and the field tap that
+	// spends it. A re-arm follows a proven refusal, so the card has already been
+	// selected once this battle.
+	heroArmSettleMs = 400
+
+	// heroFirstArmMs is the first selection's pause. Live 2026-11-15/16, three
+	// attacks: the wave's first field tap at 400-650 ms was refused every time,
+	// while the sweep's 150 ms select-then-tap landed every time on the same
+	// cards and ground. A long pause was the wrong direction — the selection is
+	// armed well inside 200 ms, and the extra wait only spent the deploy window.
+	heroFirstArmMs   = 200
 	heroDropSettleMs = 300
 )
 
@@ -386,6 +403,19 @@ func (t *TapExecutor) TapSlot(slot *TrackedSlot, jitterPx int) bool {
 //
 // Returns true when the placement tap was fired.
 func (t *TapExecutor) PlaceSiege(slot *TrackedSlot, pt image.Point, stdDev float64) bool {
+	return t.placeSiege(slot, pt, stdDev, true)
+}
+
+// RetrySiege re-aims a placement the game PROVED it refused (see
+// hero_manager.retryRefusedSiege). It fires the same one-tap contract but is
+// counted as a retry, not as a second machine: the placement summary's
+// "siege_placements" line is the check for a double placement, and counting a
+// retry there made a normal battle report three machines.
+func (t *TapExecutor) RetrySiege(slot *TrackedSlot, pt image.Point, stdDev float64) bool {
+	return t.placeSiege(slot, pt, stdDev, false)
+}
+
+func (t *TapExecutor) placeSiege(slot *TrackedSlot, pt image.Point, stdDev float64, fresh bool) bool {
 	if slot != nil && slot.SiegePlaced {
 		t.logger.Warn().
 			Str("unit", slot.UnitName).
@@ -398,7 +428,11 @@ func (t *TapExecutor) PlaceSiege(slot *TrackedSlot, pt image.Point, stdDev float
 	// Record the machine's tile before anything else can tap the field, so every
 	// later placement path has the point it must stay clear of.
 	t.siegeGround, t.siegeGroundSet = pt, true
-	t.siegePlacements++
+	if fresh {
+		t.siegePlacements++
+	} else {
+		t.siegeRetries++
+	}
 	if slot != nil {
 		slot.SiegePlaced = true
 	}
@@ -410,8 +444,25 @@ func (t *TapExecutor) SiegeGround() (image.Point, bool) {
 	return t.siegeGround, t.siegeGroundSet
 }
 
+// ForgetSiegeGround releases the tile recorded for a machine the game PROVED it
+// never accepted (the card still held it after every retry). Keeping the tile
+// made every later hero drop step around an empty spot: live 2026-11-16 the
+// failed Stone Slammer's stale ground nudged both hero taps off their chosen
+// points. The placement count is corrected too, so the summary does not claim a
+// machine that never entered the battle.
+func (t *TapExecutor) ForgetSiegeGround() {
+	t.siegeGround = image.Point{}
+	t.siegeGroundSet = false
+	if t.siegePlacements > 0 {
+		t.siegePlacements--
+	}
+}
+
 // SiegeNudges reports how many placement taps were moved off the machine's tile.
 func (t *TapExecutor) SiegeNudges() int { return t.siegeNudges }
+
+// SiegeRetries reports how many proved refusals were re-aimed this battle.
+func (t *TapExecutor) SiegeRetries() int { return t.siegeRetries }
 
 // SiegePlacements reports how many siege machines were placed this battle. Any
 // value above 1 is a bug the run must be able to see.

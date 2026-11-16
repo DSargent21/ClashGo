@@ -123,9 +123,9 @@ func TestHeroDeploy_FieldRetryOnNewGroundKeepsCardBudget(t *testing.T) {
 	slot := heroSlotNamed("archer queen", 287)
 	hm, tl := newHeroTapHarness(t, DeployLine{Points: line}, []*TrackedSlot{slot})
 	hm.SetRedZone(rectZone(400, 100, 1010, 650))
-	// pre 0.74, first drop unconfirmed (delta 0), then the field retry lands
-	// (0.74 -> 0.11).
-	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.11)
+	// pre 0.74, first drop unconfirmed through all three confirm beats
+	// (delta 0), then the field retry lands (0.74 -> 0.11).
+	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.74, 0.11)
 
 	d := HeroDeployment{Unit: strategy.Unit{Name: "Archer Queen"}, Slot: slot}
 	pre := gocv.NewMat()
