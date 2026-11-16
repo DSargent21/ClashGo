@@ -633,7 +633,9 @@
                     },
                     ResetLootAutotune: function () { return Promise.resolve(autotuneStatus()); },
                     TestDeviceMenu: resolve(null),
-                    StartBot: resolve({ running: false, message: 'browser-stub' }),
+                    // Match the real binding contract: start returns with the
+                    // bot already marked running so Stop becomes reachable.
+                    StartBot: resolve({ running: true, message: 'browser-stub' }),
                     StopBot: resolve({ running: false, message: 'browser-stub' }),
                     GetUpdateStatus: resolve({
                         // Empty `latest_version` + `state: 'idle'` so the
