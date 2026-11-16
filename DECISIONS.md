@@ -61,6 +61,18 @@ No new Go module for something the standard library or an installed package
 already does. Consequence: agent proposals that add a dependency need a stated
 reason and a decision entry here.
 
+## D-9 One control, one home
+Status: accepted
+
+Every setting is rendered in exactly one place. Per-plan choices (active
+strategy, recipe slot, auto-end) live on Army; engine-wide thresholds,
+builders/lab/pets, schedule and storage live on Config; walls live with
+Builders next to the reserved-builder count. Reason: duplicated controls drift
+out of sync (Auto end read 50% on Config while the plan carried another
+percent) and make a setting look optional twice. Consequence: a new control
+joins an existing owner instead of being copied onto a second page; cross-links
+may summarise, but not edit. See `docs/UI.md` → Control ownership.
+
 ## D-8 Deliberate pauses are not hangs
 Status: accepted
 

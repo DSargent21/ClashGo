@@ -2,12 +2,16 @@ import React from 'react';
 import type { ArmyPlan } from '../armyApi';
 import Icon from './ui/Icon';
 import UnitIcon from './ui/UnitIcon';
+import { SwitchRow } from './ui/Switch';
 
 interface ArmyViewProps {
   plans: ArmyPlan[];
   loading: boolean;
   error: string | null;
+  armySlot: number;
+  autoEnd: boolean;
   onSetSlot: (slot: number) => void;
+  onSetAutoEnd: (enabled: boolean) => void;
   onActivate: (file: string) => Promise<void>;
 }
 
@@ -15,9 +19,12 @@ const ArmyPlanCard: React.FC<{
   plan: ArmyPlan;
   active: boolean;
   busy: boolean;
+  armySlot: number;
+  autoEnd: boolean;
   onSetSlot: (slot: number) => void;
+  onSetAutoEnd: (enabled: boolean) => void;
   onActivate: (file: string) => void;
-}> = ({ plan, active, busy, onSetSlot, onActivate }) => (
+}> = ({ plan, active, busy, armySlot, autoEnd, onSetSlot, onSetAutoEnd, onActivate }) => (
   <article className={`card army-plan ${active ? 'active' : ''}`.trim()}>
     <div className="army-plan-head">
       <span className="army-emblem"><UnitIcon name={plan.emblem} size={21} /></span>
@@ -31,9 +38,9 @@ const ArmyPlanCard: React.FC<{
     <p className="army-plan-summary" title={plan.description}>{plan.description}</p>
 
     <div className="army-plan-facts">
-      <div><span>Recipe slot</span><b>Slot {plan.army_slot}</b></div>
+      <div><span>Recipe slot</span><b>Slot {armySlot}</b></div>
       <div><span>Target edge</span><b>{plan.target_edge || '—'}</b></div>
-      <div><span>Auto end</span><b>{plan.end_at_percent > 0 ? `${plan.end_at_percent}%` : 'Off'}</b></div>
+      <div><span>Auto end</span><b>{autoEnd ? (plan.end_at_percent > 0 ? `${plan.end_at_percent}%` : 'On') : 'Off'}</b></div>
     </div>
 
     <div className="army-phases">
@@ -69,14 +76,20 @@ const ArmyPlanCard: React.FC<{
               key={candidate}
               type="button"
               onClick={() => onSetSlot(candidate)}
-              className={`slot-btn ${plan.army_slot === candidate ? 'active' : ''}`.trim()}
-              aria-pressed={plan.army_slot === candidate}
+              className={`slot-btn ${armySlot === candidate ? 'active' : ''}`.trim()}
+              aria-pressed={armySlot === candidate}
             >
-              {plan.army_slot === candidate ? <Icon name="check" size={12} /> : <Icon name="layers" size={12} />}
+              {armySlot === candidate ? <Icon name="check" size={12} /> : <Icon name="layers" size={12} />}
               Slot {candidate}
             </button>
           ))}
         </div>
+        <SwitchRow
+          checked={autoEnd}
+          onChange={onSetAutoEnd}
+          label="Auto-end battle"
+          description="Surrender once the plan's win condition is secured, saving time and troops."
+        />
         <p className="hint">Stored in config.json and armed before this strategy starts.</p>
       </div>
     ) : (
@@ -99,7 +112,10 @@ const ArmyView: React.FC<ArmyViewProps> = React.memo(({
   plans,
   loading,
   error,
+  armySlot,
+  autoEnd,
   onSetSlot,
+  onSetAutoEnd,
   onActivate,
 }) => {
   const [activating, setActivating] = React.useState<string | null>(null);
@@ -123,7 +139,7 @@ const ArmyView: React.FC<ArmyViewProps> = React.memo(({
           <p>Live deployment plans from assets/strategies, with the slots the bot will actually arm.</p>
         </div>
         <div className="page-side">
-          <span className="tag">Config-backed</span>
+          <span className="tag">Active plan drives Config</span>
         </div>
       </div>
 
@@ -154,7 +170,10 @@ const ArmyView: React.FC<ArmyViewProps> = React.memo(({
               plan={plan}
               active={plan.active}
               busy={activating === plan.file}
+              armySlot={armySlot}
+              autoEnd={autoEnd}
               onSetSlot={onSetSlot}
+              onSetAutoEnd={onSetAutoEnd}
               onActivate={(file) => void activate(file)}
             />
           ))}

@@ -346,3 +346,37 @@ Format:
   `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js` PASS;
   `./tools/verify.sh` -> VERIFY PASSED (full).
 - Next: T.2 pacing persistence round-trip (remaining unchecked plan task).
+
+### 2026-11-16 — T.6: UI audit, control ownership, dead-end forms
+- Changed: `web/src/{App.tsx,utils.ts}`, `web/src/components/{ConfigView,
+  ArmyView,SettingsView,Sidebar,Dashboard}.tsx`, `web/src/styles/views.css`,
+  `internal/config/validate.go`, `app_config_validation_test.go`,
+  `docs/{UI,DESIGN,STRATEGIC_RUSH}.md`, `DECISIONS.md` (D-9), `BUILD_PLAN.md`.
+- Fixed:
+  - Plan-level controls had two homes. Config > Attack & loot carried a second
+    recipe slot, an auto-end switch labelled "at 50%" while the plan carried
+    its own percent, and a strategy select that duplicated Army's "Use this
+    army". Config now owns engine-wide settings only; Army owns strategy,
+    slot and auto-end.
+  - Walls were split across Storage & walls (switch + resource) and Builders
+    (reserved builder). All three now sit in one Builders block; the Storage
+    tab is purely halt/hysteresis/auto-collect.
+  - Config's Save hardcoded resume=80, session jitter=15 and break jitter=5,
+    silently overwriting stored values; lowering the full threshold below 80
+    made Save impossible to satisfy. The resume point is now a validated input
+    and the jitters are read from config and preserved.
+  - The stall input offered 0 ("disables") while `ValidateAttack` rejected it;
+    1–9 also passed the form and failed on save. Validation now accepts 0 or
+    10–600 and the form flags 1–9 before submit.
+  - Settings reported ADB "Optimal" before any capture and "Healthy" for a
+    0 ms placeholder, while Dashboard said "Awaiting". Both surfaces use one
+    `adbHealthDisplay` helper; Settings hides latency until a capture exists.
+  - Settings > Testing contained "Open setup wizard" (configuration, not a
+    device test); moved to Behavior. The one-item Fleet nav group was merged
+    into Overview.
+- Verified: `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js`
+  PASS; `./tools/verify.sh --fast` -> VERIFY PASSED (fast);
+  `./tools/verify.sh` -> VERIFY PASSED (full).
+- Not verified: visual click-through of the moved controls (no browser drive
+  this session); real Wails IPC window.
+- Next: F.1 dead-base detection.

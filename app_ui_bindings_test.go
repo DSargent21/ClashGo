@@ -296,3 +296,38 @@ func TestUI_ReserveFieldsAreNotRendered(t *testing.T) {
 		t.Fatal("wall reserve defaults disappeared from the config contract")
 	}
 }
+
+// TestUI_PlanAndWallControlsHaveOneHome enforces D-9. Plan-level controls
+// belong to Army (the page that lists plans); a second copy on Config drifts
+// from the actual plan and mislabels it (the removed switch claimed 50% while
+// the plan carried its own percent).
+func TestUI_PlanAndWallControlsHaveOneHome(t *testing.T) {
+	read := func(name string) string {
+		raw, err := os.ReadFile(filepath.Join("web", "src", "components", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(raw)
+	}
+	configView := read("ConfigView.tsx")
+	armyView := read("ArmyView.tsx")
+
+	for _, needle := range []string{"Auto-end battle", "Attack strategy", "onSetArmySlot", "onSetAutoEnd"} {
+		if strings.Contains(configView, needle) {
+			t.Errorf("ConfigView renders %q; per-plan controls belong to ArmyView", needle)
+		}
+	}
+	for _, needle := range []string{"armySlot", "onSetAutoEnd", "Auto-end battle"} {
+		if !strings.Contains(armyView, needle) {
+			t.Errorf("ArmyView lost %q; the active plan must expose it", needle)
+		}
+	}
+	if strings.Count(configView, "ariaLabel=\"Auto upgrade walls\"") != 1 {
+		t.Error("ConfigView must render exactly one Auto upgrade walls switch")
+	}
+	for _, needle := range []string{"wall-resource", "resumeThreshold"} {
+		if !strings.Contains(configView, needle) {
+			t.Errorf("ConfigView lost the %q control", needle)
+		}
+	}
+}

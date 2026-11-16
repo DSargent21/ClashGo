@@ -104,8 +104,9 @@ which once left the sparkline drawn only part-way across its card.
   grouped nav, and one Start/Stop control. Starts as an 84px rail
   below 1150px on first run; the top-bar toggle or Cmd/Ctrl+B collapses and
   expands it at any width. The preference persists.
-- Sticky 56px top bar: breadcrumb, ADB status pill, updater chip, theme toggle,
-  live clock. Interactive children need `no-drag`.
+- Sticky 56px top bar: sidebar toggle, breadcrumb, updater chip, live clock.
+  ADB health lives on Dashboard/Settings; the theme switch lives in Settings.
+  Interactive children need `no-drag`.
 - `.content` is the only scroll container. Top bar stays outside it.
 
 Wails rules: any new draggable region gets `draggable`; buttons inside it get
@@ -130,7 +131,23 @@ together.
   the loudest value; the recommendation is plain accent text.
 - Adaptive loot owns the floors: while it is on, the three floor inputs are
   disabled and dimmed. Turning it off restores manual editing.
-- Dry run is a Config → Upgrades control, not part of setup.
+- Dry run is a Config → Builders control, not part of setup.
+
+## Control ownership
+
+One setting has one home. Duplicated controls drift out of sync and read as
+optional when they are not.
+
+- **Army** owns per-plan choices: which strategy is active, its recipe slot,
+  and its auto-end switch. Config carries no plan controls.
+- **Config** owns engine-wide settings across five tabs: Search & loot,
+  Builders, Lab & pets, Schedule, Storage. Wall upgrading and the wall
+  resource live with Builders, next to the reserved-builder count; Storage
+  owns halt/hysteresis and auto-collect only.
+- **Settings** owns machine-local UI preferences, diagnostics, updates, and
+  the device test tools.
+- Start/Stop appears in the sidebar and, contextually, on the active account
+  card. Ticket-style row actions stay inside their own view.
 
 ## Component recipes
 

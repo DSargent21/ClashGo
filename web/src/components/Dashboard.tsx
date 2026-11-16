@@ -8,6 +8,7 @@ import {
   exactNumber,
   relativeTime,
   strategyLabel,
+  adbHealthDisplay,
 } from '../utils';
 import Icon from './ui/Icon';
 import Drawer from './ui/Drawer';
@@ -393,14 +394,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
     },
   ];
 
-  const adbState =
-    stats.attacks_completed + stats.search_skips > 0
-      ? stats.adb_health.consecutive_fails === 0
-        ? { label: 'Connected', tone: 'green' }
-        : stats.adb_health.consecutive_fails < 5
-          ? { label: 'Degraded', tone: 'warn' }
-          : { label: 'Disconnected', tone: 'error' }
-      : { label: 'Awaiting', tone: 'warn' };
+  const adbState = adbHealthDisplay(stats.adb_health);
 
   const latency = Number.isFinite(stats.adb_health.avg_capture_ms)
     ? `${stats.adb_health.avg_capture_ms.toFixed(1)} ms`
@@ -693,7 +687,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           className="console"
         >
           {parsedLogs.length === 0 ? (
-            <div className="muted" style={{ padding: '6px 2px' }}>Initializing connection…</div>
+            <div className="muted" style={{ padding: '6px 2px' }}>Waiting for the first log line…</div>
           ) : filteredLogs.length === 0 ? (
             <div className="muted" style={{ padding: '6px 2px' }}>No lines match the current filter.</div>
           ) : (

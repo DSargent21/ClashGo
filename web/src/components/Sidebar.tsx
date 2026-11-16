@@ -22,9 +22,6 @@ const OVERVIEW: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: 'dashboard' },
   { id: 'army', label: 'Army', icon: 'swords' },
   { id: 'analytics', label: 'Analytics', icon: 'chart' },
-];
-
-const FLEET: NavItem[] = [
   { id: 'accounts', label: 'Accounts', icon: 'users' },
 ];
 
@@ -76,8 +73,6 @@ const Sidebar: React.FC<SidebarProps> = React.memo(({
       <nav className="side-nav" aria-label="Primary">
         <div className="nav-group">Overview</div>
         {renderNav(OVERVIEW)}
-        <div className="nav-group">Fleet</div>
-        {renderNav(FLEET)}
         <div className="nav-group">Configure</div>
         {renderNav(CONFIGURE)}
       </nav>

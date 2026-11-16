@@ -173,7 +173,7 @@ Turning the toggle off sets `upgrade_walls: false` and `reserve_builders: 0`.
 - Setup: army picker → **Auto upgrades** page (enable, plan, types, wall
   builder, lab order, pet order) → **Settings** page (adaptive loot and manual
   loot floors).
-- Config → Upgrades: same plan and categories, plus spend caps, lab, pets, and
+- Config → Builders: same plan and categories, plus spend caps, walls, lab, pets, and
   dry run. Dry run is never changed by the setup wizard.
 - Adaptive loot owns the floors while it is on; the setup inputs are read-only
   until it is turned off.

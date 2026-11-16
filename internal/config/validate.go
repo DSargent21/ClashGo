@@ -70,8 +70,11 @@ func ValidateSearch(s SearchConfig) error {
 
 // ValidateAttack checks the deployment fields the config form writes.
 func ValidateAttack(a AttackConfig) error {
-	if a.StallTimerSeconds < 10 || a.StallTimerSeconds > MaxStallSeconds {
-		return fmt.Errorf("stall timer must be between 10 and %d seconds, got %d", MaxStallSeconds, a.StallTimerSeconds)
+	// 0 disables the stall timer: the engine resolves it that way and the form
+	// offers it as "0 disables". Values 1-9 would abort a battle almost
+	// immediately, so they stay rejected.
+	if a.StallTimerSeconds != 0 && (a.StallTimerSeconds < 10 || a.StallTimerSeconds > MaxStallSeconds) {
+		return fmt.Errorf("stall timer must be 0 (disabled) or between 10 and %d seconds, got %d", MaxStallSeconds, a.StallTimerSeconds)
 	}
 	if a.MinSecondsBetweenAttacks < 0 || a.MinSecondsBetweenAttacks > 3600 {
 		return fmt.Errorf("minimum seconds between attacks must be between 0 and 3600, got %d", a.MinSecondsBetweenAttacks)

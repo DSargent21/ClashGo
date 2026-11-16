@@ -1,7 +1,6 @@
 import React from 'react';
-import { SaveConfig } from '../../wailsjs/go/main/App';
 import { main } from '../../wailsjs/go/models';
-import { compactNumber, exactNumber, strategyLabel } from '../utils';
+import { compactNumber, exactNumber } from '../utils';
 import Icon, { IconName } from './ui/Icon';
 import { Switch, SwitchRow } from './ui/Switch';
 
@@ -12,9 +11,6 @@ interface ConfigViewProps {
   setElixirThreshold: (v: number) => void;
   deThreshold: number;
   setDeThreshold: (v: number) => void;
-  selectedStrategy: string;
-  setSelectedStrategy: (v: string) => void;
-  strategies: string[];
   searchEnabled: boolean;
   setSearchEnabled: (v: boolean) => void;
   upgradeWalls: boolean;
@@ -26,10 +22,6 @@ interface ConfigViewProps {
   onToggleAutoLoot: (enabled: boolean) => void;
   onApplyAutoLoot: () => void;
   onResetAutoLoot: () => void;
-  armySlot: number;
-  onSetArmySlot: (slot: number) => void;
-  autoEnd: boolean;
-  onSetAutoEnd: (v: boolean) => void;
   haltGold: boolean;
   setHaltGold: (v: boolean) => void;
   haltElixir: boolean;
@@ -40,6 +32,8 @@ interface ConfigViewProps {
   setHaltRule: (rule: string) => void;
   storageThreshold: number;
   setStorageThreshold: (v: number) => void;
+  resumeThreshold: number;
+  setResumeThreshold: (v: number) => void;
   dumpToWallsBeforeHalt: boolean;
   setDumpToWallsBeforeHalt: (v: boolean) => void;
   autoCollect: boolean;
@@ -129,19 +123,16 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   goldThreshold, setGoldThreshold,
   elixirThreshold, setElixirThreshold,
   deThreshold, setDeThreshold,
-  selectedStrategy, setSelectedStrategy,
-  strategies,
   searchEnabled, setSearchEnabled,
   upgradeWalls, setUpgradeWalls,
   stallTimer, setStallTimer,
   autoLoot, autoLootBusy, onToggleAutoLoot, onApplyAutoLoot, onResetAutoLoot,
-  armySlot, onSetArmySlot,
-  autoEnd, onSetAutoEnd,
   haltGold, setHaltGold,
   haltElixir, setHaltElixir,
   haltDE, setHaltDE,
   haltRule, setHaltRule,
   storageThreshold, setStorageThreshold,
+  resumeThreshold, setResumeThreshold,
   dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt,
   autoCollect, setAutoCollect,
   scheduleEnabled, setScheduleEnabled,
@@ -255,30 +246,19 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
     { label: 'Min dark elixir', value: deThreshold, setter: setDeThreshold, icon: 'drop', tone: 'de' },
   ];
 
-  const stallInvalid = invalid(stallTimer, STALL_MAX);
+  // The engine accepts 0 (disabled) or 10–600; 1–9 would abort instantly.
+  const stallInvalid = !Number.isFinite(stallTimer) || stallTimer < 0 || stallTimer > STALL_MAX
+    || (stallTimer > 0 && stallTimer < 10);
   const anyInvalid = stallInvalid || thresholdItems.some((item) => invalid(item.value, THRESHOLD_MAX));
   const disabled = saveStatus === 'saving' || anyInvalid;
 
   const tabs: { id: ConfigSubTab; label: string }[] = [
-    { id: 'attack', label: 'Attack & loot' },
+    { id: 'attack', label: 'Search & loot' },
     { id: 'upgrades', label: 'Builders' },
     { id: 'lab_pets', label: 'Lab & pets' },
     { id: 'schedule', label: 'Schedule' },
-    { id: 'storage', label: 'Storage & walls' },
+    { id: 'storage', label: 'Storage' },
   ];
-
-  const handleStrategyChange = (value: string) => {
-    setSelectedStrategy(value);
-    SaveConfig(
-      goldThreshold,
-      elixirThreshold,
-      deThreshold,
-      upgradeWalls,
-      value,
-      searchEnabled,
-      stallTimer,
-    ).catch((err) => console.error('Failed to auto-save strategy:', err));
-  };
 
   return (
     <div className="config-page">
@@ -433,31 +413,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
 
                 <div className="set-row">
                   <div className="set-label">
-                    <b>Attack strategy</b>
-                    <span>Saved immediately when changed.</span>
-                  </div>
-                  <div className="set-ctl">
-                    <select
-                      className="field select"
-                      value={selectedStrategy}
-                      onChange={(event) => handleStrategyChange(event.target.value)}
-                      aria-label="Attack strategy"
-                    >
-                      {strategies.length === 0 ? <option value="">No strategies found</option> : null}
-                      {selectedStrategy && !strategies.includes(selectedStrategy) ? (
-                        <option value={selectedStrategy}>{strategyLabel(selectedStrategy)}</option>
-                      ) : null}
-                      {strategies.map((strategy) => (
-                        <option key={strategy} value={strategy}>{strategyLabel(strategy)}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="set-row">
-                  <div className="set-label">
                     <b>Stall timer</b>
-                    <span>Abort a stalled battle after this many seconds (0 disables).</span>
+                    <span>Abort a stalled battle after 10–600 seconds (0 disables).</span>
                   </div>
                   <div className="set-ctl">
                     <input
@@ -473,7 +430,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     />
                   </div>
                 </div>
-                {stallInvalid ? <p className="hint error" role="alert">Max {STALL_MAX}s</p> : null}
+                {stallInvalid ? <p className="hint error" role="alert">Use 0 or 10–{STALL_MAX}s</p> : null}
 
                 <div className="set-row">
                   <div className="set-label">
@@ -485,46 +442,13 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   </div>
                 </div>
               </Section>
-
-              <Section title="Deployment" sub="Battle end behavior and the in-game army recipe slot">
-                <div className="set-row">
-                  <div className="set-label">
-                    <b>Auto end at 50% damage</b>
-                    <span>Surrender once one star is secured to save time and troops.</span>
-                  </div>
-                  <div className="set-ctl">
-                    <Switch checked={autoEnd} onChange={onSetAutoEnd} ariaLabel="Auto end battle at 50 percent" />
-                  </div>
-                </div>
-
-                <div style={{ paddingTop: 4 }}>
-                  <span className="label">Army recipe slot</span>
-                  <div className="slot-grid">
-                    {[1, 2, 3, 4].map((slot) => (
-                      <button
-                        key={slot}
-                        type="button"
-                        onClick={() => onSetArmySlot(slot)}
-                        className={`slot-btn ${armySlot === slot ? 'active' : ''}`.trim()}
-                        aria-pressed={armySlot === slot}
-                      >
-                        {armySlot === slot ? <Icon name="check" size={12} /> : <Icon name="layers" size={12} />}
-                        Slot {slot}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="hint" style={{ marginTop: 8 }}>
-                    The saved army recipe ClashGO taps in the train menu (e.g. Slot 4 for Valk Spam).
-                  </p>
-                </div>
-              </Section>
             </>
           ) : null}
 
           {activeTab === 'storage' ? (
             <Section
               title="Storage protection"
-              sub="Halt attacks before loot overflows, and dump surplus into walls"
+              sub="Halt attacks before loot overflows; wall dumping is configured under Builders"
             >
               <div className="halt-grid">
                 {[
@@ -596,7 +520,11 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     max={100}
                     className="field mono"
                     value={storageThreshold}
-                    onChange={(event) => setStorageThreshold(Math.max(50, Math.min(100, parseInt(event.target.value, 10) || 95)))}
+                    onChange={(event) => {
+                      const next = Math.max(50, Math.min(100, parseInt(event.target.value, 10) || 95));
+                      setStorageThreshold(next);
+                      if (resumeThreshold >= next) setResumeThreshold(Math.max(0, next - 1));
+                    }}
                     aria-label="Full storage threshold percent"
                   />
                 </div>
@@ -604,17 +532,21 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
 
               <div className="set-row">
                 <div className="set-label">
-                  <b>Auto upgrade walls</b>
-                  <span>Spend excess gold and elixir on walls before storage halts.</span>
+                  <b>Resume threshold</b>
+                  <span>Resume attacks once fill drops below this percentage. Must stay under the full threshold.</span>
                 </div>
                 <div className="set-ctl">
-                  <Switch
-                    checked={upgradeWalls}
-                    onChange={(next) => {
-                      setUpgradeWalls(next);
-                      setDumpToWallsBeforeHalt(next);
+                  <input
+                    type="number"
+                    min={0}
+                    max={Math.max(0, storageThreshold - 1)}
+                    className="field mono"
+                    value={resumeThreshold}
+                    onChange={(event) => {
+                      const next = parseInt(event.target.value, 10) || 0;
+                      setResumeThreshold(Math.max(0, Math.min(storageThreshold - 1, next)));
                     }}
-                    ariaLabel="Auto upgrade walls"
+                    aria-label="Resume attacks threshold percent"
                   />
                 </div>
               </div>
@@ -629,26 +561,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 </div>
               </div>
 
-              {(upgradeWalls || dumpToWallsBeforeHalt) ? (
-                <div className="form-section">
-                  <div className="form-section-title"><Icon name="layers" size={13} />Wall spending</div>
-                  <div className="threshold-grid">
-                    <div>
-                      <label className="label" htmlFor="wall-resource">Wall resource</label>
-                      <select
-                        id="wall-resource"
-                        className="field select"
-                        value={wallResource}
-                        onChange={(event) => setWallResource(event.target.value)}
-                      >
-                        <option value="both">Gold &amp; elixir</option>
-                        <option value="gold">Gold only</option>
-                        <option value="elixir">Elixir only</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
             </Section>
           ) : null}
 
@@ -777,7 +689,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           {activeTab === 'upgrades' ? (
             <Section
               title="Village builders & upgrades"
-              sub="Builder assignment, hero priority, and spend limits"
+              sub="Builder assignment, hero priority, spend limits, and walls"
               action={(
                 <Switch
                   checked={autoBuilders}
@@ -889,6 +801,48 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     <Switch checked={dryRun} onChange={setDryRun} ariaLabel="Dry run" />
                   </div>
                 </div>
+              </div>
+
+              <div className="form-section">
+                <div className="form-section-title"><Icon name="layers" size={13} />Walls</div>
+                <div className="set-row" style={{ paddingTop: 0 }}>
+                  <div className="set-label">
+                    <b>Auto upgrade walls</b>
+                    <span>Spend excess gold and elixir on walls, including before a storage halt.</span>
+                  </div>
+                  <div className="set-ctl">
+                    <Switch
+                      checked={upgradeWalls}
+                      onChange={(next) => {
+                        setUpgradeWalls(next);
+                        setDumpToWallsBeforeHalt(next);
+                      }}
+                      ariaLabel="Auto upgrade walls"
+                    />
+                  </div>
+                </div>
+                <div className="set-row" style={{ borderBottom: 0 }}>
+                  <div className="set-label">
+                    <label className="label" htmlFor="wall-resource">Wall resource</label>
+                    <span>Which loot the wall loop spends.</span>
+                  </div>
+                  <div className="set-ctl">
+                    <select
+                      id="wall-resource"
+                      className="field select"
+                      value={wallResource}
+                      onChange={(event) => setWallResource(event.target.value)}
+                      disabled={!upgradeWalls && !dumpToWallsBeforeHalt}
+                    >
+                      <option value="both">Gold &amp; elixir</option>
+                      <option value="gold">Gold only</option>
+                      <option value="elixir">Elixir only</option>
+                    </select>
+                  </div>
+                </div>
+                <p className="hint">
+                  Reserve builders for walls above; the wall loop uses them instead of starting another building.
+                </p>
               </div>
             </Section>
           ) : null}

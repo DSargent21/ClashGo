@@ -66,13 +66,21 @@ func TestValidation_SearchFormRejectsBadValues(t *testing.T) {
 	}{
 		{"negative gold floor", func() error { return a.SaveConfig(-1, 0, 0, false, "", true, 30) }},
 		{"floor above UI ceiling", func() error { return a.SaveConfig(50_000_000, 0, 0, false, "", true, 30) }},
-		{"stall timer zero", func() error { return a.SaveConfig(0, 0, 0, false, "", true, 0) }},
+		{"stall timer below the useful floor", func() error { return a.SaveConfig(0, 0, 0, false, "", true, 5) }},
 		{"stall timer above UI ceiling", func() error { return a.SaveConfig(0, 0, 0, false, "", true, 601) }},
 		{"strategy that is not on disk", func() error { return a.SaveConfig(0, 0, 0, false, "no_such_army.yaml", true, 30) }},
 	}
 	for _, c := range cases {
 		before := snapshotValidation(t, a)
 		assertRejectedWithoutSideEffects(t, a, c.label, c.call(), before)
+	}
+
+	// 0 is the form's "disabled" value and the engine honours it.
+	if err := a.SaveConfig(0, 0, 0, false, "", true, 0); err != nil {
+		t.Fatalf("stall timer 0 (disabled) rejected: %v", err)
+	}
+	if got := a.bot.LiveConfig().Config.Attack.StallTimerSeconds; got != 0 {
+		t.Fatalf("stall timer 0 did not reach the engine: %d", got)
 	}
 
 	// The same form with valid values still lands in disk and live config.
@@ -226,7 +234,7 @@ func TestValidation_FullConfigAndWizardRejectBadValues(t *testing.T) {
 		{"full config with slot nine", bad(func(c *config.BotConfig) {
 			c.Attack.StrategySlots = map[string]int{"valk_spam.yaml": 9}
 		})},
-		{"full config with zero stall", bad(func(c *config.BotConfig) { c.Attack.StallTimerSeconds = 0 })},
+		{"full config with a stall timer under the useful floor", bad(func(c *config.BotConfig) { c.Attack.StallTimerSeconds = 5 })},
 		{"full config with negative floor", bad(func(c *config.BotConfig) { c.Search.MinLootGold = -1 })},
 		{"full config with empty halt rule", bad(func(c *config.BotConfig) { c.Storage.HaltRule = "" })},
 		{"wizard loot above ceiling", func() error { return a.SaveLaunchSettings(20_000_000, 0, 0) }},

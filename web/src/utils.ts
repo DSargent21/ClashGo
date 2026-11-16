@@ -1,3 +1,19 @@
+import type { BotStats } from './types';
+
+/**
+ * One ADB health verdict for every surface that shows it. Dashboard and
+ * Settings used to derive their own labels, so an untouched install read
+ * "Awaiting" on one page and "Optimal" on the other.
+ */
+export const adbHealthDisplay = (
+  health: BotStats['adb_health'],
+): { label: string; tone: 'green' | 'warn' | 'error' } => {
+  if (health.consecutive_fails >= 5) return { label: 'Disconnected', tone: 'error' };
+  if (health.consecutive_fails > 0) return { label: 'Degraded', tone: 'warn' };
+  if (health.captures_total > 0) return { label: 'Connected', tone: 'green' };
+  return { label: 'Awaiting', tone: 'warn' };
+};
+
 /** Compact, human-readable number for dense UI (1.2M, 48K, 912). */
 export const compactNumber = (value: number): string => {
   if (!Number.isFinite(value) || value === 0) return '0';

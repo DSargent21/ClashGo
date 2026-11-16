@@ -1,6 +1,7 @@
 import React from 'react';
 import { TestDeviceMenu } from '../../wailsjs/go/main/App';
 import { BotStats, TabType, UpdateStatus } from '../types';
+import { adbHealthDisplay } from '../utils';
 import Icon from './ui/Icon';
 import { SwitchRow } from './ui/Switch';
 
@@ -175,10 +176,10 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
     exportTimerRef.current = window.setTimeout(() => setExported(false), 2200);
   };
 
-  const connectionOk = stats.adb_health.consecutive_fails === 0;
-  const latency = Number.isFinite(stats.adb_health.avg_capture_ms)
+  const connection = adbHealthDisplay(stats.adb_health);
+  const latency = stats.adb_health.captures_total > 0 && Number.isFinite(stats.adb_health.avg_capture_ms)
     ? `${stats.adb_health.avg_capture_ms.toFixed(1)} ms`
-    : '0 ms';
+    : '—';
   const cpuUsage = Number.isFinite(stats.cpu_cores)
     ? `${(stats.cpu_cores * (navigator.hardwareConcurrency || 1) * 100).toFixed(1)}%`
     : '0%';
@@ -267,6 +268,23 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
               label="Confirm before stopping"
               description="Ask before stopping a running bot from any page."
             />
+            <div className="setting-row">
+              <div className="setting-label">
+                <b>Setup wizard</b>
+                <span>Replay the guided army, builder, and loot setup</span>
+              </div>
+              <div className="setting-value">
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={onOpenSetupWizard}
+                  disabled={isBotRunning}
+                >
+                  <Icon name="sliders" size={12} />
+                  Open wizard
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -281,8 +299,8 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
             <div className="setting-row">
               <div className="setting-label"><b>Connection</b><span>ADB bridge state</span></div>
               <div className="setting-value">
-                <span className={`status-pill ${connectionOk ? 'green' : 'error'}`}>
-                  <i />{connectionOk ? 'Optimal' : 'Interrupted'}
+                <span className={`status-pill ${connection.tone}`}>
+                  <i />{connection.label}
                 </span>
               </div>
             </div>
@@ -294,9 +312,11 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
               <div className="setting-label"><b>Capture latency</b><span>Rolling average per frame</span></div>
               <div className="setting-value">
                 <b>{latency}</b>
-                <span className="status-pill" style={{ marginTop: 4, display: 'inline-flex' }}>
-                  <i />{stats.adb_health.avg_capture_ms < 200 ? 'Healthy' : 'Slow'}
-                </span>
+                {stats.adb_health.captures_total > 0 ? (
+                  <span className="status-pill" style={{ marginTop: 4, display: 'inline-flex' }}>
+                    <i />{stats.adb_health.avg_capture_ms < 200 ? 'Healthy' : 'Slow'}
+                  </span>
+                ) : null}
               </div>
             </div>
             <div className="setting-row">
@@ -398,15 +418,6 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
               Sit in the main village first. These only tap navigation — no upgrade is confirmed or bought.
             </p>
             <div className="settings-actions">
-              <button
-                type="button"
-                className="btn sm"
-                onClick={onOpenSetupWizard}
-                disabled={isBotRunning}
-              >
-                <Icon name="sliders" size={12} />
-                Open setup wizard
-              </button>
               <button
                 type="button"
                 className="btn sm"

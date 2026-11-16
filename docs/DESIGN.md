@@ -92,7 +92,7 @@ without visiting Config.
   custom queues are preserved.
 - **Settings**: adaptive loot and manual search floors. Adaptive locks the
   floor inputs because autotune owns them; dry run remains in Config →
-  Upgrades and is never changed by setup.
+  Builders and is never changed by setup.
 
 ---
 

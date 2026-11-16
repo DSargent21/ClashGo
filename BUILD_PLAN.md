@@ -146,7 +146,7 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
   - Fixed: out-of-range army slot was clamped to 1 while reporting success;
     per-strategy overrides accepted names that are not on disk; empty/bad
     schedule hours, zero/oversized thresholds, empty enums and unknown pets
-    were ignored or persisted; negative loot floors and zero stall timers were
+    were ignored or persisted; negative loot floors and tiny stall timers were
     accepted by SaveConfig; SaveFullConfig wrote arbitrary configs.
   - Acceptance: invalid, empty, out-of-range and contradictory values are
     rejected with a named error while config.json bytes and live `b.cfg`,
@@ -165,6 +165,24 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     rejected with byte-identical config and live state;
     `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js` PASS;
     `./tools/verify.sh` -> VERIFY PASSED (full).
+
+- [x] **T.6 UI audit: control ownership and dead-end forms**
+  - Why: the same plan settings appeared on Config and Army, wall configuration
+    was split across two tabs, and two controls could not be saved at all.
+  - Fixed: Army is the only home for active strategy, recipe slot and auto-end;
+    walls (switch + resource + reserved builder) live together under Builders
+    and disappear from Storage; Storage gained the resume threshold that used
+    to be silently hardcoded to 80 on save; session/break jitter are preserved
+    on save instead of being reset to 15/5; stall timer 0 now matches the form's
+    "0 disables" hint and the engine contract; Settings derives ADB health from
+    the same helper as Dashboard (no more "Optimal" before the first capture);
+    the setup wizard moved out of Settings → Testing; the one-item Fleet nav
+    group was merged into Overview.
+  - Acceptance: every plan-level control is rendered exactly once; a Save from
+    any Config tab preserves unrelated stored values; stall 0 reaches the live
+    engine config; both surfaces label ADB state from one helper; `tsc` and the
+    root package tests pass.
+  - Verified: see `PROGRESS.md`.
 
 ---
 

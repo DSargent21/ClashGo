@@ -24,7 +24,6 @@ import {
   IsRunning,
   ResetStats,
   GetConfig,
-  GetStrategies,
   GetUpdateStatus,
   GetAppVersion,
   CheckForUpdate,
@@ -276,7 +275,6 @@ function App() {
   const [elixirThreshold, setElixirThreshold] = useState(400000);
   const [deThreshold, setDeThreshold] = useState(2000);
   const [selectedStrategy, setSelectedStrategy] = useState('default');
-  const [strategies, setStrategiesList] = useState<string[]>([]);
   const [searchEnabled, setSearchEnabled] = useState(true);
   const [upgradeWalls, setUpgradeWalls] = useState(false);
   const [stallTimer, setStallTimer] = useState(30);
@@ -294,6 +292,7 @@ function App() {
   const [haltDE, setHaltDE] = useState(false);
   const [haltRule, setHaltRule] = useState("ANY");
   const [storageThreshold, setStorageThreshold] = useState(95);
+  const [resumeThreshold, setResumeThreshold] = useState(80);
   const [dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt] = useState(true);
 
   // Schedule states
@@ -305,6 +304,10 @@ function App() {
   const [forceStopOnBreak, setForceStopOnBreak] = useState(true);
   const [maxPerHour, setMaxPerHour] = useState(6);
   const [maxPerDay, setMaxPerDay] = useState(40);
+  // No controls: the form does not offer randomness, but a save must preserve
+  // whatever the user (or CLI) already stored instead of hardcoding it.
+  const [sessionJitter, setSessionJitter] = useState(15);
+  const [breakJitter, setBreakJitter] = useState(5);
 
   // Auto-upgrade states & filters
   const [autoBuilders, setAutoBuilders] = useState(false);
@@ -344,10 +347,9 @@ function App() {
   useEffect(() => {
     const init = async () => {
       try {
-        const [conf, running, strats] = await Promise.all([
+        const [conf, running] = await Promise.all([
           GetConfig(),
           IsRunning(),
-          GetStrategies()
         ]);
 
         setGoldThreshold(conf.search.min_loot_gold);
@@ -368,7 +370,11 @@ function App() {
           setHaltElixir(conf.storage.halt_when_elixir_full ?? true);
           setHaltDE(conf.storage.halt_when_de_full ?? false);
           setHaltRule(conf.storage.halt_rule || "ANY");
-          setStorageThreshold(conf.storage.full_threshold_percent ?? 95);
+          const fullThreshold = conf.storage.full_threshold_percent ?? 95;
+          setStorageThreshold(fullThreshold);
+          // A hand-edited config can hold a resume point above the halt point;
+          // keep the form valid instead of rendering an unfixable pair.
+          setResumeThreshold(Math.max(0, Math.min(fullThreshold - 1, conf.storage.resume_threshold_percent ?? 80)));
           setDumpToWallsBeforeHalt(conf.storage.dump_to_walls_before_halt ?? true);
           setAutoCollect(conf.storage.auto_collect ?? true);
         }
@@ -377,7 +383,9 @@ function App() {
           setActiveHoursStart(conf.schedule.active_hours_start || "08:00");
           setActiveHoursEnd(conf.schedule.active_hours_end || "23:00");
           setSessionDuration(conf.schedule.session_duration_minutes ?? 60);
+          setSessionJitter(conf.schedule.session_jitter_minutes ?? 15);
           setBreakDuration(conf.schedule.break_duration_minutes ?? 20);
+          setBreakJitter(conf.schedule.break_jitter_minutes ?? 5);
           setForceStopOnBreak(conf.schedule.force_stop_on_break ?? true);
           setMaxPerHour(conf.schedule.max_attacks_per_hour ?? 6);
           setMaxPerDay(conf.schedule.max_attacks_per_day ?? 40);
@@ -405,11 +413,6 @@ function App() {
           setDryRun(conf.upgrade.dry_run ?? false);
         }
         setIsRunning(running);
-        // Never let a null from the Go side reach the Config page — a
-        // nil slice marshals to JSON null, and ConfigView dereferences
-        // `strategies.length`. `?? []` keeps the UI resilient even if a
-        // future binding regresses to null.
-        setStrategiesList(strats ?? []);
         setAdbPort(conf.device.adb_port);
       } catch (err) {
         console.error('Init failed:', err);
@@ -624,7 +627,7 @@ function App() {
       haltDE,
       haltRule,
       storageThreshold,
-      80.0,
+      resumeThreshold,
       dumpToWallsBeforeHalt,
       autoCollect,
     );
@@ -633,9 +636,9 @@ function App() {
       activeHoursStart,
       activeHoursEnd,
       sessionDuration,
-      15,
+      sessionJitter,
       breakDuration,
-      5,
+      breakJitter,
       forceStopOnBreak,
       maxPerHour,
       maxPerDay,
@@ -911,65 +914,66 @@ function App() {
     setTab('config');
   }, [finishLaunch]);
 
-  const configProps = useMemo(() => {
-    // Prefer the effective values reported by Go so the config page agrees
-    // with the recipe and auto-end the bot actually arms.
-    const stratBase = selectedStrategy.split('/').pop() || '';
-    const activePlan = armyPlans.find((plan) => plan.active && plan.file === stratBase);
-    const currentArmySlot = activePlan?.army_slot
-      ?? strategySlots[stratBase]
-      ?? (stratBase.includes('valk') ? 4 : 1);
-    const currentAutoEnd = activePlan
-      ? activePlan.end_at_percent > 0
-      : (strategyAutoEnd[stratBase] ?? stratBase.toLowerCase().includes('valk'));
+  // Per-plan values live on the Army page: it lists the plans, so the active
+  // plan owns its recipe slot and auto-end switch. Config only carries
+  // engine-wide settings, so the same control never appears twice.
+  const stratBase = selectedStrategy.split('/').pop() || '';
+  const activePlan = armyPlans.find((plan) => plan.active && plan.file === stratBase);
+  const currentArmySlot = activePlan?.army_slot
+    ?? strategySlots[stratBase]
+    ?? (stratBase.includes('valk') ? 4 : 1);
+  const currentAutoEnd = activePlan
+    ? activePlan.end_at_percent > 0
+    : (strategyAutoEnd[stratBase] ?? stratBase.toLowerCase().includes('valk'));
 
-    const handleSetArmySlot = async (slot: number) => {
-      setStrategySlots(prev => ({ ...prev, [stratBase]: slot }));
-      try {
-        await SetStrategyArmySlot(selectedStrategy, slot);
-        await refreshArmyPlans();
-      } catch (err) {
-        console.error('Failed to set strategy army slot:', err);
-        setArmyError(err instanceof Error ? err.message : String(err));
-      }
-    };
+  const handleSetArmySlot = useCallback(async (slot: number) => {
+    setStrategySlots(prev => ({ ...prev, [stratBase]: slot }));
+    try {
+      await SetStrategyArmySlot(selectedStrategy, slot);
+      await refreshArmyPlans();
+    } catch (err) {
+      console.error('Failed to set strategy army slot:', err);
+      setArmyError(err instanceof Error ? err.message : String(err));
+    }
+  }, [selectedStrategy, stratBase, refreshArmyPlans]);
 
-    const handleSetAutoEnd = async (enabled: boolean) => {
-      setStrategyAutoEnd(prev => ({ ...prev, [stratBase]: enabled }));
-      try {
-        await SetStrategyAutoEnd(selectedStrategy, enabled);
-        await refreshArmyPlans();
-      } catch (err) {
-        console.error('Failed to set strategy auto end:', err);
-        setArmyError(err instanceof Error ? err.message : String(err));
-      }
-    };
+  const handleSetAutoEnd = useCallback(async (enabled: boolean) => {
+    setStrategyAutoEnd(prev => ({ ...prev, [stratBase]: enabled }));
+    try {
+      await SetStrategyAutoEnd(selectedStrategy, enabled);
+      await refreshArmyPlans();
+    } catch (err) {
+      console.error('Failed to set strategy auto end:', err);
+      setArmyError(err instanceof Error ? err.message : String(err));
+    }
+  }, [selectedStrategy, stratBase, refreshArmyPlans]);
 
-    const handleUseArmy = async (file: string) => {
-      try {
-        await SaveConfig(
-          goldThreshold,
-          elixirThreshold,
-          deThreshold,
-          upgradeWalls,
-          file,
-          searchEnabled,
-          stallTimer,
-        );
-        setSelectedStrategy(file);
-        await refreshArmyPlans();
-      } catch (err) {
-        setArmyError(err instanceof Error ? err.message : String(err));
-        throw err;
-      }
-    };
+  const handleUseArmy = useCallback(async (file: string) => {
+    try {
+      await SaveConfig(
+        goldThreshold,
+        elixirThreshold,
+        deThreshold,
+        upgradeWalls,
+        file,
+        searchEnabled,
+        stallTimer,
+      );
+      setSelectedStrategy(file);
+      await refreshArmyPlans();
+    } catch (err) {
+      setArmyError(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  }, [
+    goldThreshold, elixirThreshold, deThreshold, upgradeWalls,
+    searchEnabled, stallTimer, refreshArmyPlans,
+  ]);
 
-    return {
+  const configProps = useMemo(() => ({
       goldThreshold, setGoldThreshold,
       elixirThreshold, setElixirThreshold,
       deThreshold, setDeThreshold,
-      selectedStrategy, setSelectedStrategy,
-      strategies,
       searchEnabled, setSearchEnabled,
       upgradeWalls, setUpgradeWalls,
       stallTimer, setStallTimer,
@@ -978,16 +982,12 @@ function App() {
       onToggleAutoLoot: handleToggleAutoLoot,
       onApplyAutoLoot: handleApplyAutoLoot,
       onResetAutoLoot: handleResetAutoLoot,
-      armySlot: currentArmySlot,
-      onSetArmySlot: handleSetArmySlot,
-      autoEnd: currentAutoEnd,
-      onSetAutoEnd: handleSetAutoEnd,
-      onActivateArmy: handleUseArmy,
       haltGold, setHaltGold,
       haltElixir, setHaltElixir,
       haltDE, setHaltDE,
       haltRule, setHaltRule,
       storageThreshold, setStorageThreshold,
+      resumeThreshold, setResumeThreshold,
       dumpToWallsBeforeHalt, setDumpToWallsBeforeHalt,
       autoCollect, setAutoCollect,
       scheduleEnabled, setScheduleEnabled,
@@ -1019,12 +1019,11 @@ function App() {
       onSave: async () => {
         await saveSettings();
       }
-    };
-  }, [
+  }), [
     goldThreshold, elixirThreshold, deThreshold,
-    selectedStrategy, strategies, searchEnabled, upgradeWalls, stallTimer, strategySlots, strategyAutoEnd, armyPlans, refreshArmyPlans,
+    searchEnabled, upgradeWalls, stallTimer,
     autotune, autotuneBusy, handleToggleAutoLoot, handleApplyAutoLoot, handleResetAutoLoot,
-    haltGold, haltElixir, haltDE, haltRule, storageThreshold, dumpToWallsBeforeHalt, autoCollect,
+    haltGold, haltElixir, haltDE, haltRule, storageThreshold, resumeThreshold, dumpToWallsBeforeHalt, autoCollect,
     scheduleEnabled, activeHoursStart, activeHoursEnd, sessionDuration, breakDuration, forceStopOnBreak, maxPerHour, maxPerDay,
     autoBuilders, reserveBuilders, upgradeStrategy, upgradeDefenses, upgradeResources, upgradeArmy, upgradeTraps, upgradeHeroes,
     maxGoldPerUpgrade, maxElixirPerUpgrade, maxDEPerUpgrade,
@@ -1098,8 +1097,11 @@ function App() {
               plans={armyPlans}
               loading={armyLoading}
               error={armyError}
-              onSetSlot={configProps.onSetArmySlot}
-              onActivate={configProps.onActivateArmy}
+              armySlot={currentArmySlot}
+              autoEnd={currentAutoEnd}
+              onSetSlot={handleSetArmySlot}
+              onSetAutoEnd={handleSetAutoEnd}
+              onActivate={handleUseArmy}
             />
           )}
           {tab === 'accounts' && (

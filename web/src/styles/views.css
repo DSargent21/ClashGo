@@ -675,7 +675,8 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 .army-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .army-chip b { flex: none; color: var(--text-3); font: 500 10px var(--mono); }
 .army-plan-slot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border); }
-.army-plan-slot .hint { margin-top: 6px; }
+.army-plan-slot .switch-row { margin-top: 14px; }
+.army-plan-slot .hint { margin-top: 8px; }
 .army-no-active {
   display: flex;
   align-items: flex-start;
