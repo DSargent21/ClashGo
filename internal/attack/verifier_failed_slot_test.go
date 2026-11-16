@@ -92,6 +92,31 @@ func TestLogUnaccountedSlots_NamesUnobservedUnit(t *testing.T) {
 	}
 }
 
+// A FAILED siege machine is still on its card (the card stays armed with the
+// machine). Run 11 proved the gap: the deploy phase logged "the machine never
+// left its card", the verifier skipped the Siege category, announced "all units
+// successfully deployed", and the report claimed success. It must count as
+// remaining and be named as still on the bar.
+func TestCheckRemainingSlots_CountsFailedSiegeOnCard(t *testing.T) {
+	slot := &TrackedSlot{TroopSlot: TroopSlot{X: 239, Y: 682, Category: "Siege"}, UnitName: "stone slammer", State: SlotFailed}
+	v := newHeroVerifier(t, []*TrackedSlot{slot})
+	var buf bytes.Buffer
+	v.logger = zerolog.New(&buf)
+
+	nonEmpty := solidMat(900, 720, 255, 255, 255)
+	defer nonEmpty.Close()
+
+	remaining := v.checkRemainingSlots(nonEmpty)
+	if len(remaining) != 1 || remaining[0] != slot {
+		t.Fatalf("failed siege still holding its card must count as undeployed; got %d remaining", len(remaining))
+	}
+	v.logUnaccountedSlots(remaining)
+	out := buf.String()
+	if !strings.Contains(out, "verifier: unit still on the bar at battle end") || !strings.Contains(out, "stone slammer") {
+		t.Fatalf("failed siege was not named in the final accounting; log=%q", out)
+	}
+}
+
 func TestCheckRemainingSlots_IgnoresEmptyFailedSlot(t *testing.T) {
 	slot := &TrackedSlot{TroopSlot: TroopSlot{X: 360, Y: 682, Category: "Troop"}, UnitName: "balloon", Confidence: 0.9}
 	v := newHeroVerifier(t, []*TrackedSlot{slot})

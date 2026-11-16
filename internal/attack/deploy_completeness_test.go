@@ -128,19 +128,45 @@ func TestSiegeRefusedGrounds_LeadsOutward(t *testing.T) {
 	pin := image.Pt(262, 483)
 	cands := hm.siegeRefusedGrounds(pin)
 	if len(cands) < 3 {
-		t.Fatalf("candidates = %d, want at least the three outward steps", len(cands))
-	}
-	center := image.Pt(512, 384)
-	if dist(cands[0], center) <= dist(pin, center) {
-		t.Fatalf("first retry %v is not further from the base than the refused pin %v", cands[0], pin)
+		t.Fatalf("candidates = %d, want at least three alternatives", len(cands))
 	}
 	for i, p := range cands[:3] {
-		if p == line.Points[0] || p == line.Points[1] {
-			t.Fatalf("retry %d is the refused deploy-line point %v, not new ground", i+1, p)
+		if p == pin {
+			t.Fatalf("retry %d re-aims at the refused point %v", i+1, p)
 		}
-		if p.Y >= int(float64(hm.h)*0.85) || p.X < 8 || p.Y < 8 {
+		if p.Y >= int(float64(hm.h)*0.85) || p.X < 8 || p.Y < 8 || p.Y < BandTop() {
 			t.Fatalf("retry %v is outside the deployable band", p)
 		}
+	}
+}
+
+// Run 11's refusal: the pin sat 16 px above the troop line, and the outward
+// walk produced points up-left of it, two of them beyond the line and the last
+// at y=94 behind the top HUD. The retries must lead with ground on the troop
+// line near the pin and never leave the deployable band.
+func TestSiegeRefusedGrounds_LeadsWithTroopLineAndStaysInBand(t *testing.T) {
+	line := DeployLine{Points: []image.Point{{X: 461, Y: 130}, {X: 198, Y: 305}}}
+	hm := NewHeroManager(nil, &SlotManager{}, PrecisionConfig{}, "TopLeft", 1024, 768,
+		nil, nil, line, zerolog.Nop())
+
+	pin := image.Pt(321, 207)
+	cands := hm.siegeRefusedGrounds(pin)
+	if len(cands) < 3 {
+		t.Fatalf("candidates = %d, want three", len(cands))
+	}
+	for i, p := range cands {
+		if p.Y < BandTop() {
+			t.Fatalf("retry %d %v sits behind the top HUD (band top %d)", i+1, p, BandTop())
+		}
+		if p.Y > int(float64(hm.h)*0.85) || p.X < 8 || p.X >= hm.w-8 {
+			t.Fatalf("retry %d %v is outside the deployable band", i+1, p)
+		}
+	}
+	if _, d, ok := nearestDeployLinePoint(cands[0], line); !ok || d > 3 {
+		t.Fatalf("first retry %v is not on the troop line (distance %.1f); the line is the ground troops just used", cands[0], d)
+	}
+	if dist(cands[0], pin) > 100 {
+		t.Fatalf("first retry %v is %.0f px from the refused pin; should be beside it", cands[0], dist(cands[0], pin))
 	}
 }
 

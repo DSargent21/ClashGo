@@ -56,6 +56,13 @@ type HeroManager struct {
 	// ground the game refused while the troop line at x=192 was accepted.
 	troopGround []image.Point
 
+	// siegeRefused records the grounds this battle's siege card already fired
+	// at and the game refused. The hero phase must not lead with one of them;
+	// the machine proved the tile is not deployable. Live run 11: the pin was
+	// refused for the siege three times, then both heroes fired at it and were
+	// refused too.
+	siegeRefused []image.Point
+
 	// pinnedGround is true when the bearer of this battle's deploy line is the
 	// USER's pin from precision_config.json (see SetPinnedGround).
 	pinnedGround bool
@@ -627,6 +634,58 @@ func (hm *HeroManager) heroRescueGround(fired image.Point, cands []image.Point) 
 	return dedupePoints(out)
 }
 
+// groundRefusedBySiege reports whether p is within a tile of a ground this
+// battle's siege card already fired at and the game refused.
+func (hm *HeroManager) groundRefusedBySiege(p image.Point) bool {
+	for _, q := range hm.siegeRefused {
+		if math.Hypot(float64(p.X-q.X), float64(p.Y-q.Y)) <= 12 {
+			return true
+		}
+	}
+	return false
+}
+
+// noteSiegeRefused records a ground the game proved it would not accept for the
+// siege machine, so the hero phase does not lead with the same tile.
+func (hm *HeroManager) noteSiegeRefused(p image.Point) {
+	for _, q := range hm.siegeRefused {
+		if q == p {
+			return
+		}
+	}
+	hm.siegeRefused = append(hm.siegeRefused, p)
+}
+
+// heroLineLeadMaxPx is how far the authored hero point may sit from the troop
+// line for the line's nearest point to lead the hero's list. Beyond this the
+// line is a different part of the base, and the authored point is the better
+// first try.
+const heroLineLeadMaxPx = 150.0
+
+// nearestDeployLinePoint returns the closest point on the deploy line's
+// segments, its distance, and whether the line has a usable segment.
+func nearestDeployLinePoint(p image.Point, line DeployLine) (image.Point, float64, bool) {
+	best := image.Point{}
+	bestD := math.Inf(1)
+	ok := false
+	for i := 1; i < len(line.Points); i++ {
+		a, b := line.Points[i-1], line.Points[i]
+		dx, dy := float64(b.X-a.X), float64(b.Y-a.Y)
+		len2 := dx*dx + dy*dy
+		if len2 == 0 {
+			continue
+		}
+		t := (float64(p.X-a.X)*dx + float64(p.Y-a.Y)*dy) / len2
+		t = math.Max(0, math.Min(1, t))
+		q := image.Pt(a.X+int(math.Round(t*dx)), a.Y+int(math.Round(t*dy)))
+		d := math.Hypot(float64(p.X-q.X), float64(p.Y-q.Y))
+		if d < bestD {
+			best, bestD, ok = q, d, true
+		}
+	}
+	return best, bestD, ok
+}
+
 // containsPoint reports whether p is one of pts. Used by heroDropCandidates to
 // name the ground that actually leads its list after re-ordering.
 func containsPoint(pts []image.Point, p image.Point) bool {
@@ -675,9 +734,26 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 
 	var cands []image.Point
 	source := "deploy_line"
+
+	// A ground the siege JUST proved refused is not hero ground. Run 11: the
+	// siege card fired at the pinned point three times, then both heroes fired
+	// at that same point and both were refused; each landed on its first retry,
+	// on the troop line. The machine's refusal is direct evidence about the
+	// tile, so skip the authored point and lead with the nearest line point
+	// instead. Everywhere else the authored point keeps its lead.
+	var lineLeads []image.Point
+	if haveIntent && len(hm.deployLine.Points) >= 2 && hm.groundRefusedBySiege(intent) {
+		if lp, d, ok := nearestDeployLinePoint(intent, hm.deployLine); ok && d <= heroLineLeadMaxPx {
+			lineLeads = append(lineLeads, lp)
+			cands = append(cands, lp)
+			source = "troop_line"
+		}
+	}
 	if havePin {
 		cands = append(cands, pinnedPt)
-		source = "pinned"
+		if source == "deploy_line" {
+			source = "pinned"
+		}
 	}
 
 	// The ground the troop pass just used, snapped onto the axis those accepted
@@ -808,6 +884,8 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 	// ground_source must describe what actually LEADS the list: the siege and
 	// red-line filters can both move the authored point.
 	switch {
+	case containsPoint(lineLeads, cands[0]):
+		source = "troop_line"
 	case containsPoint(axisCands, cands[0]):
 		source = "troop_ground_axis"
 	case havePin && cands[0] == pinnedPt:
@@ -1552,9 +1630,13 @@ func (hm *HeroManager) siegeFallbackPoint() (image.Point, bool) {
 // sat 12 px from the refused pin, inside the same red pocket, and was refused
 // too. Stepping outward walks out of that pocket toward ground the game accepts.
 func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
-	out := make([]image.Point, 0, 7)
+	out := make([]image.Point, 0, 10)
 	add := func(p image.Point) {
-		if p.X < 8 || p.Y < 8 || p.X >= hm.w-8 || p.Y >= int(float64(hm.h)*0.85) {
+		// The deployable band is not the whole frame. Live 2026-11-16 run 11:
+		// the outward walk from a TopLeft pin produced y=94 — behind the top
+		// HUD — and the game could not have accepted it. That wasted one of
+		// three taps on ground the bot could never use.
+		if p.X < 8 || p.X >= hm.w-8 || p.Y < BandTop() || p.Y > int(float64(hm.h)*0.85) {
 			return
 		}
 		for _, q := range out {
@@ -1565,7 +1647,30 @@ func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
 		out = append(out, p)
 	}
 
-	// OUTWARD FIRST. A refusal is a region, not a pixel: the pin is a hero
+	// TROOP LINE FIRST, close to the refused point. Troops were accepted on
+	// that line seconds ago, so it is the strongest ground evidence available,
+	// and the points either side walk out of the refused pocket along it.
+	// Run 11's pin (321,207) sat 16 px off the line; both heroes landed on
+	// line points (292,242), and the previous version never tried the line at
+	// all because it spent all three taps walking up-left off the field.
+	if len(hm.deployLine.Points) >= 2 {
+		p1, p2 := hm.deployLine.Points[0], hm.deployLine.Points[len(hm.deployLine.Points)-1]
+		if near, d, ok := nearestDeployLinePoint(refused, hm.deployLine); ok {
+			if d >= 30 {
+				add(near)
+			}
+			dx, dy := float64(p2.X-p1.X), float64(p2.Y-p1.Y)
+			if l := math.Hypot(dx, dy); l > 0 {
+				ux, uy := dx/l, dy/l
+				for _, step := range []float64{40, 85} {
+					add(image.Pt(near.X+int(math.Round(ux*step)), near.Y+int(math.Round(uy*step))))
+					add(image.Pt(near.X-int(math.Round(ux*step)), near.Y-int(math.Round(uy*step))))
+				}
+			}
+		}
+	}
+
+	// Then OUTWARD. A refusal is a region, not a pixel: the pin is a hero
 	// entry point and can sit just inside the red line while the ground a step
 	// further out is accepted. Live 2026-11-16 (BottomLeft pin (262,483)) both
 	// heroes were refused on the pin and landed ~30 px outward, and all three
@@ -1617,6 +1722,7 @@ func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, 
 		hm.logger.Warn().Str("unit", unit.Name).Msg("siege refused its ground and no refused point was recorded; the machine stays on the card")
 		return false
 	}
+	hm.noteSiegeRefused(refused)
 	grounds := hm.siegeRefusedGrounds(refused)
 	// Three taps is the ceiling; the list now leads with the outward walk (see
 	// siegeRefusedGrounds), so the ceiling can no longer drop the only grounds

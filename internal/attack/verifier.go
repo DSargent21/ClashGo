@@ -276,7 +276,11 @@ func (v *Verifier) checkRemainingSlots(screen gocv.Mat) []*TrackedSlot {
 			continue
 		}
 
-		if slot.Category == "Troop" || slot.Category == "Spell" || slot.Category == "CC" || slot.Category == "Event" || slot.Category == "Hero" {
+		// Siege is included because a FAILED machine leaves its card armed with
+		// the machine: skipping it here is how run 11 logged "the machine never
+		// left its card" and then "all units successfully deployed", and the
+		// report claimed success with no UNDEPLOYED slot at all.
+		if slot.Category == "Troop" || slot.Category == "Spell" || slot.Category == "CC" || slot.Category == "Event" || slot.Category == "Hero" || slot.Category == "Siege" {
 			remaining = append(remaining, slot)
 		}
 	}
@@ -309,6 +313,18 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 			Int("x", slot.X).
 			Str("unit", slot.UnitName).
 			Msg("retry: the siege machine already took its placement tap; refusing to fire at it again")
+		return
+	}
+
+	// A machine the deploy phase proved it never placed is reported, not
+	// re-tapped here: its three ground attempts are already spent, and field
+	// taps from this pass are aimed at a card that still holds the machine.
+	// Counting it as remaining is what makes the run FAILED and visible.
+	if slot.Category == "Siege" {
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("retry: siege card still holds the machine; reporting it instead of firing more field taps")
 		return
 	}
 

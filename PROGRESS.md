@@ -120,3 +120,36 @@ Format:
   re-arm + one confirmed retry, both abilities; siege first tap,
   `siege_placements=1`, `siege_retries=0`; verifier confirmed ED and Balloon.
 - Next: F.1 dead-base detection.
+
+### 2026-11-16 — attack-polish: run 11's refused pin and the silent siege failure
+- Changed: `internal/attack/hero_manager.go`, `internal/attack/verifier.go`,
+  `internal/attack/deploy_completeness_test.go`,
+  `internal/attack/verifier_failed_slot_test.go`,
+  `internal/attack/hero_pin_ground_test.go`,
+  `internal/attacklog/attacklog_test.go`.
+- Live run 11 (`logs/live_hero_firsttap_run11.log`, full 350/352 army): the
+  pinned ground (321,207) was refused for the siege on all three attempts and
+  then refused for BOTH heroes; each hero landed on its first retry on the troop
+  line (292,242). The siege never left its card (`siege_placements=0`,
+  `siege_retries=3`), yet the verifier announced `all units successfully
+  deployed`, the report omitted the machine entirely, and
+  `last_attack_report.json` said `deploy_success: true`, `undeployed_slots: 0`.
+- Siege ground fix: retries now lead with the troop line within ~85 px of the
+  refused point (ground troops just used), and every candidate is clamped to
+  the deployable band. Run 11's outward walk had produced y=94, behind the top
+  HUD, and spent the three-tap ceiling before ever trying the line.
+- Hero first tap: a ground the siege proved refused is no longer used as a
+  hero's lead. `groundRefusedBySiege` / `noteSiegeRefused` make the hero phase
+  lead with the nearest troop-line point instead; the pin keeps its lead
+  everywhere else. Run 11 was the exact case: both first taps hit the pin the
+  machine had just failed on.
+- Report honesty: `checkRemainingSlots` now counts `Siege` slots, and
+  `retryDeploy` refuses to fire more field taps at a machine still on its card.
+  A refused machine is logged as `unit still on the bar at battle end` and the
+  report marks it FAILED, which flags the run.
+- Verified: `go test ./internal/attack ./internal/attacklog` PASS;
+  `go run ./cmd/attack_report -log tmp/siege_fail.log` prints
+  `Stone Slammer FAILED` and exits 1.
+- Live gap: run 11 spent the army, so the new ground and honesty fixes are
+  gate/test-proven only; no fresh battle yet. Run 11's own report was produced
+  before the verifier change and still shows the old false success.

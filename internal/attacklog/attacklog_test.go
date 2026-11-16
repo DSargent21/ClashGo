@@ -52,6 +52,27 @@ func TestParseVerifierRemainingUnit(t *testing.T) {
 	}
 }
 
+// The siege card is a slot like any other for the verdict: a machine the game
+// never accepted stays named and forces the run FAILED. Run 11's card was
+// armed at battle end with every retry refused.
+func TestParseVerifierRemainingSiegeFlagsRun(t *testing.T) {
+	log := strings.Join([]string{
+		`20:34:11 | WRN | siege machine never left its card this battle; the card is still armed, so this attack runs without it component=hero_manager unit="Stone Slammer"`,
+		`20:34:23 | WRN | verifier: unit still on the bar at battle end component=verifier category=Siege unit="Stone Slammer" x=239`,
+	}, "\n")
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := unit(t, rep, "Stone Slammer")
+	if u.Verdict != Failed {
+		t.Fatalf("verdict = %v, want FAILED for a siege machine still on its card", u.Verdict)
+	}
+	if !rep.Problem() {
+		t.Fatal("a battle that never placed its siege machine must flag the run")
+	}
+}
+
 // A positive post-deploy observation closes the handoff: the sweep left the
 // card empty, the verifier saw the empty card, and the unit is deployed. Run 9
 // logged the handoff and the 3-star battle result but no confirmation line, so

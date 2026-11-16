@@ -20,6 +20,26 @@ root unless absolute.
 | Attack-log verdict matches the observed deployment | `logs/live_polish_run10_report.txt` (produced by `go run ./cmd/attack_report -log logs/live_polish_run10.log`): `deployed=7`, `not in bar=4`, `UNVERIFIED=0`, verdict “nothing in the log contradicts a successful deployment”. `logs/live_polish_run10_last_attack_report.json`: `deploy_success: true`, `undeployed_slots: 0`. |
 | Report under-claim from run 9 is closed | Run 9's report kept Balloon/Electro Dragon/Royal Champion UNVERIFIED because the verifier closed empty cards without a log or state change. That path now logs the positive confirmation above; run 10 reports all seven bar units deployed. `logs/live_polish_run9.log` plus `last_attack_report.json` (timestamp `2026-11-15T21:52:54`) are the before case. |
 
+## Run 11 — a live refusal, and the report bug it exposed
+
+`logs/live_hero_firsttap_run11.log` (full army, 1 star) is the counterexample
+that must stay in this record. The pinned point (321,207) was refused for the
+siege three times (`siege_placements=0`, `siege_retries=3`) and then refused for
+both heroes; each hero landed on its first retry on the troop line. The battle
+ran without the machine, yet the verifier logged `all units successfully
+deployed` and `last_attack_report.json` said `deploy_success: true`,
+`undeployed_slots: 0`. That false success is fixed by counting `Siege` in
+`checkRemainingSlots` and refusing further field taps from `retryDeploy`; the
+CLI now prints `Stone Slammer FAILED` and exits 1 for that shape of log
+(`tmp/siege_fail.log`). Run 11's own report was written before the fix and still
+shows the old result.
+
+The siege ground list now leads with troop-line points near the refused tile and
+clamps every candidate to the deployable band; run 11's outward walk had put one
+retry at y=94, behind the top HUD. The hero phase also refuses to lead with a
+ground the siege just proved refused. These are gate/test-proven only: run 11
+spent the army, so no battle has exercised them yet.
+
 ## Coverage-only claims (no live battle yet)
 
 | Claim | Coverage |

@@ -48,6 +48,31 @@ func pinnedHM() *HeroManager {
 	}
 }
 
+// The first hero tap must land. Live runs 10/11: the authored point was
+// refused and the very next tap on the troop line deployed. The line was just
+// accepted by the troop pass, so it leads the candidate list when it sits near
+// the authored point.
+func TestHeroCandidates_AvoidSiegeRefusedPin(t *testing.T) {
+	hm := pinnedHM()
+	pin, _ := hm.pinnedHeroPoint()
+	// Run 11: the siege card fired at this pin and the game refused it.
+	hm.siegeRefused = []image.Point{pin}
+
+	cands := hm.heroDropCandidates(nil, "Minion Prince")
+	if len(cands) == 0 {
+		t.Fatal("no ground candidates")
+	}
+	if cands[0] == pin {
+		t.Fatalf("first ground is still the authored pin %v that live runs refused", pin)
+	}
+	if _, d, ok := nearestDeployLinePoint(cands[0], hm.deployLine); !ok || d > 3 {
+		t.Fatalf("first ground %v is not on the troop line (distance %.1f)", cands[0], d)
+	}
+	if dist(cands[0], pin) > heroLineLeadMaxPx {
+		t.Fatalf("first ground %v is %.0f px from the pin; line lead must stay near it", cands[0], dist(cands[0], pin))
+	}
+}
+
 func TestPinnedHeroPointFoundForPinnedSide(t *testing.T) {
 	hm := pinnedHM()
 
