@@ -103,3 +103,17 @@ persisted `attack_history.json`. Reason: the view mixed both windows, so a
 lifetime-looking number could be read as today's. Consequence: adding a card
 requires a window label; guard `TestUI_AnalyticsStatesWindow`. Changing the
 underlying aggregation is a separate decision.
+
+## D-12 Contextual shortcuts are not duplicate homes
+Status: accepted
+
+D-9 still owns canonical settings, but an action may appear as an explicit
+shortcut where context changes: sidebar Start/Stop plus the active account
+card; Settings > Check now plus the update modal's Re-check; the topbar update
+chip plus Settings > Review update; the setup wizard preset plus Army/Config.
+Reason: these are alternate entry points to one binding/state, not a second
+independent control. Consequence: every duplicate-looking action must call the
+same binding, use the same state, and be listed with its reason in
+`docs/UI_CONTROL_INVENTORY.md`; a copy that can drift is still a D-9 violation.
+One action gets one keyboard/AT target even when a broad pointer target remains
+(Dashboard report row click vs its chevron).

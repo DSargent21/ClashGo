@@ -403,6 +403,41 @@ func TestUI_AnalyticsStatesWindow(t *testing.T) {
 	}
 }
 
+// TestUI_DashboardReportHasOneKeyboardTarget enforces the control-inventory
+// result: a report row may stay clickable as a pointer shortcut, but the
+// chevron button is the only keyboard/AT target. Two focus stops for the same
+// action made every history row appear twice to keyboard and screen-reader
+// users.
+func TestUI_DashboardReportHasOneKeyboardTarget(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("web", "src", "components", "Dashboard.tsx"))
+	if err != nil {
+		t.Fatalf("read Dashboard: %v", err)
+	}
+	dashboard := string(raw)
+	if strings.Contains(dashboard, "tabIndex={0}") {
+		t.Error("Dashboard report rows regained their own tab stop; keep the chevron as the single keyboard target")
+	}
+	if got := strings.Count(dashboard, "aria-label={`Open report for ${strategyLabel(item.strategy)}`}"); got != 1 {
+		t.Errorf("Dashboard has %d \"Open report\" accessible names, want exactly the chevron button", got)
+	}
+}
+
+// TestUI_ScheduleInputsAreNamed covers the unnamed numeric fields the inventory
+// found: max/hour and max/day were visible only through a sibling text block,
+// so assistive tech announced bare spinbuttons.
+func TestUI_ScheduleInputsAreNamed(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("web", "src", "components", "ConfigView.tsx"))
+	if err != nil {
+		t.Fatalf("read ConfigView: %v", err)
+	}
+	configView := string(raw)
+	for _, name := range []string{"Max attacks per hour", "Max attacks per day"} {
+		if !strings.Contains(configView, `aria-label="`+name+`"`) {
+			t.Errorf("Config schedule input %q lost its accessible name", name)
+		}
+	}
+}
+
 // TestUI_ConfigSectionsPersistWhileDisabled proves the editable-before-enable
 // contract at the engine boundary: values written while every master switch is
 // off survive a save and a fresh app load. UI-only guards cannot see this.

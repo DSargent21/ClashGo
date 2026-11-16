@@ -365,7 +365,9 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
     return parts;
   };
 
-  const openReport = (event: React.MouseEvent | React.KeyboardEvent, item: AttackReport) => {
+  // Row click is a pointer convenience; the chevron button is the single
+  // keyboard/AT target, so each report adds one focus stop instead of two.
+  const openReport = (event: React.MouseEvent, item: AttackReport) => {
     if ((event.target as HTMLElement).closest('button')) return;
     setReport(item);
   };
@@ -493,15 +495,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                   {recentReports.map((item, index) => (
                     <tr
                       key={`${item.timestamp}-${index}`}
-                      tabIndex={0}
-                      aria-label={`Open report for ${strategyLabel(item.strategy)}`}
                       onClick={(event) => openReport(event, item)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          openReport(event, item);
-                        }
-                      }}
                     >
                       <td><Stars count={item.stars} /></td>
                       <td>

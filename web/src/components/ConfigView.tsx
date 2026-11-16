@@ -645,6 +645,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                       max={60}
                       className="field mono"
                       value={maxPerHour}
+                      aria-label="Max attacks per hour"
                       onChange={(event) => setMaxPerHour(parseInt(event.target.value, 10) || 6)}
                     />
                   </div>
@@ -662,6 +663,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                       max={300}
                       className="field mono"
                       value={maxPerDay}
+                      aria-label="Max attacks per day"
                       onChange={(event) => setMaxPerDay(parseInt(event.target.value, 10) || 40)}
                     />
                   </div>

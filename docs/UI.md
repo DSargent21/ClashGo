@@ -152,6 +152,9 @@ optional when they are not.
   form behind `pointer-events: none`. If a block genuinely cannot be edited,
   use native `disabled` controls plus a visible reason (the setup wizard's
   upgrade block and the adaptive-loot floors are the only two cases).
+- **Full inventory:** `docs/UI_CONTROL_INVENTORY.md` records every actionable
+  control, its location/action, and the deliberate shortcut decisions
+  (sidebar Start/Stop, update checks, wizard preset).
 - **Analytics names its window on every surface.** Session metrics reset at
   launch (KPI strip, loot chart, outcomes, revenue, strategy table); attack
   activity reads saved raid history. Never leave a number or chart without

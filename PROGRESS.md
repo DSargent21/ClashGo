@@ -421,3 +421,45 @@ Format:
   Builders has exactly 1 wall switch/resource, Storage has 0.
 - Not verified: real Wails IPC window (stub only, as scoped).
 - Next: F.1 dead-base detection.
+
+### 2026-11-16 — T.8: UI control inventory, duplicate sweep, size matrix
+- Changed: `web/src/components/{Dashboard,ConfigView}.tsx`,
+  `app_ui_bindings_test.go` (2 new guards), `docs/UI_CONTROL_INVENTORY.md`
+  (new), `docs/UI.md`, `DECISIONS.md` (D-12), `BUILD_PLAN.md`.
+- Inventory: recorded every rendered action in Dashboard, Army, Analytics,
+  Accounts, Config (Search & loot, Builders, Lab & pets, Schedule, Storage),
+  Settings, account drawer, update modal and all three wizard steps, including
+  conditional empty/error states and the crash fallback. Each row names its
+  label, location and action; repeated row patterns are recorded once.
+- Fixed:
+  - Dashboard raid rows were a second keyboard target for the same open-report
+    action (`tabIndex={0}` + Enter/Space) beside the chevron button. The row
+    keeps pointer click as a broad hit area; the chevron is now the only
+    keyboard/AT stop (`TestUI_DashboardReportHasOneKeyboardTarget`).
+  - Schedule max attacks/hour and max attacks/day inputs had no accessible
+    name. Both now carry explicit `aria-label`s
+    (`TestUI_ScheduleInputsAreNamed`).
+- Deliberately kept (all documented with reasons in the inventory): sidebar +
+  active-account Start/Stop (global vs contextual, same binding); Settings
+  Check now + modal Re-check; topbar update chip + Settings Review update;
+  setup wizard preset vs Army/Config (wizard says choices stay editable);
+  page-head/empty-state Add account; Refresh accounts + error Retry;
+  drawer/modal X/Cancel/Later/scrim dismissals.
+- No control was moved on taste. Walls remain only under Builders, per-plan
+  strategy/slot/auto-end only on Army, rotation on Accounts, diagnostics and
+  device tests on Settings.
+- Size matrix: measured in the Wails stub at 1024x768, 1024x600 and 1024x1440.
+  All main views and Config tabs: zero page/content horizontal overflow. A
+  reachability pass scrolled every rendered button/input/select/textarea/tab/
+  switch into view and checked it against its own scroll container: 0 failures
+  (Dashboard 9–12, Army 6, Analytics 3, Accounts 15, Config 14/20/32/14/14,
+  Settings 14; drawer 15; modal 7; wizard 11/18/10). Drawer, modal and wizard
+  bodies scroll under fixed headers/footers at 600px height.
+- Verified: `npx tsc --noEmit` PASS; focused Go guards PASS; fresh reload in
+  the stub -> only Vite/dev-stub info logs, then all views/tabs exercised with
+  console `[]` (0 errors, 0 React warnings). Schedule labels read
+  "Max attacks per hour/day"; the report row has `tabIndex=-1` with one
+  focusable chevron. `./tools/verify.sh` -> VERIFY PASSED (full).
+- Not verified: real Wails IPC window (stub only, as scoped); 480px-wide layout
+  is below the enforced 1024px minimum and was not restyled.
+- Next: F.1 dead-base detection.

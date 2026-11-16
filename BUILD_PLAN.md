@@ -203,6 +203,20 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     console errors or React warnings.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.8 UI control inventory, duplicate sweep, and size matrix**
+  - Why: the audit needed a per-view control inventory, a duplicate/label
+    adjudication for every repeated action, and proof that the layout holds at
+    the minimum, short and tall window sizes.
+  - Fixed: Dashboard report rows no longer add a second keyboard focus stop for
+    the same open-report action (chevron is the sole AT target; row click stays
+    as a pointer shortcut); Schedule max/hour and max/day inputs gained
+    accessible names. Added `docs/UI_CONTROL_INVENTORY.md` with all controls,
+    locations, actions and deliberate shortcut decisions.
+  - Acceptance: every view/tab/overlay inventory recorded; no unexplained
+    duplicate or inconsistent label; every control reachable at 1024x768,
+    1024x600 and 1024x1440; tsc, guards and full verify green; clean console.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)
