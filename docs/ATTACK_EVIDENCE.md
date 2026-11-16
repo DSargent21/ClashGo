@@ -40,6 +40,24 @@ retry at y=94, behind the top HUD. The hero phase also refuses to lead with a
 ground the siege just proved refused. These are gate/test-proven only: run 11
 spent the army, so no battle has exercised them yet.
 
+## Run 12 — the line leads, the first selection still refused
+
+`logs/live_hero_firsttap_run12.log` (full army, 1 star) tested the line-first
+hero ground. Both heroes logged `ground_source=troop_line` and first tap
+(293,507); both first taps were refused, and both retries on line ground
+(266,487) landed. So the authored-ground theory was incomplete: the FIRST
+selection of a hero card did not arm at pin (run 11), formula (run 10) or line
+ground (run 12), while the NEXT selection landed in all three. `PrimeSlot` now
+spends one extra card SELECTION tap before the first field tap (no placement,
+no re-arm, no ability budget); it is covered by `TestHeroFirstTap_*`, not by a
+battle, because run 12 spent the army.
+
+Siege in run 12 was refused on all three line-near retries
+(`siege_placements=0`, `siege_retries=3`). The verifier counted it
+(`last_attack_report.json`: `deploy_success: false`, `undeployed_slots: 1`) but
+logged a blank `unit=` for the unlinked fallback slot; `cmd/attack_report`
+therefore still printed a clean verdict. `markSiegeFailed` now names the slot.
+
 ## Coverage-only claims (no live battle yet)
 
 | Claim | Coverage |

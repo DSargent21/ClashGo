@@ -56,13 +56,6 @@ type HeroManager struct {
 	// ground the game refused while the troop line at x=192 was accepted.
 	troopGround []image.Point
 
-	// siegeRefused records the grounds this battle's siege card already fired
-	// at and the game refused. The hero phase must not lead with one of them;
-	// the machine proved the tile is not deployable. Live run 11: the pin was
-	// refused for the siege three times, then both heroes fired at it and were
-	// refused too.
-	siegeRefused []image.Point
-
 	// pinnedGround is true when the bearer of this battle's deploy line is the
 	// USER's pin from precision_config.json (see SetPinnedGround).
 	pinnedGround bool
@@ -292,6 +285,20 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 
 	// Wave 0: the drops, back to back. No captures between them.
 	for i, p := range batch {
+		if len(p.cands) == 0 {
+			// No ground inside the deployable band survived selection. Tapping
+			// the card here would spend the placement on a guess; report the
+			// hero failed so the report cannot call the run clean.
+			hm.logger.Warn().
+				Str("unit", p.d.Unit.Name).
+				Int("slot_x", p.d.Slot.X).
+				Msg("hero has no acceptable ground in the deployable band; reporting it failed")
+			p.d.Slot.State = SlotFailed
+			if hm.slotManager != nil {
+				hm.slotManager.MarkFailed(p.d.Unit.Name)
+			}
+			continue
+		}
 		hm.logger.Info().
 			Str("unit", p.d.Unit.Name).
 			Int("x", p.d.Slot.X).
@@ -307,6 +314,13 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 				Msg("hero card tap budget exhausted before placement; skipping hero")
 			continue
 		}
+		// The battle's first selection does not arm the card (runs 10-12: every
+		// first field tap refused, at three different classes of ground, while the
+		// next selection always landed). One more selection tap makes the first
+		// drop behave like the rescue/sweep selection that works, without spending
+		// the ability or the rescue budget.
+		hm.executor.client.HumanSleep(120, 20)
+		hm.executor.PrimeSlot(p.d.Slot)
 		hm.executor.client.HumanSleep(heroFirstArmMs, 30)
 		hm.debugDump(fmt.Sprintf("wave%d_pre", i))
 		// Spread the heroes over the candidate ground and widen the drop jitter
@@ -546,6 +560,10 @@ func (hm *HeroManager) fireHeroDrop(unitName string, pt image.Point, first bool,
 	// last thing between the aim point and the wire, or the jitter puts the tap
 	// straight back on the machine.
 	j := hm.executor.addJitter(pt, jitterPx)
+	// Jitter must not push a banded point back into the HUD or the troop bar:
+	// a tap there is not a placement the game can accept (run 11 also produced
+	// an off-band siege retry at y=94).
+	j = ClampToDeployBand(j, UICutoff(hm.h))
 	hm.executor.TapUnitField(j, 12.0)
 	if first && hm.OnDukeDeployed != nil && strings.Contains(strings.ToLower(unitName), "duke") {
 		hm.OnDukeDeployed(hm.targetEdge)
@@ -634,33 +652,65 @@ func (hm *HeroManager) heroRescueGround(fired image.Point, cands []image.Point) 
 	return dedupePoints(out)
 }
 
-// groundRefusedBySiege reports whether p is within a tile of a ground this
-// battle's siege card already fired at and the game refused.
-func (hm *HeroManager) groundRefusedBySiege(p image.Point) bool {
-	for _, q := range hm.siegeRefused {
-		if math.Hypot(float64(p.X-q.X), float64(p.Y-q.Y)) <= 12 {
-			return true
-		}
+// heroLineGrounds returns up to four points on the troop deploy line near the
+// hero's authored intent, clamped into the deployable band. These are the first
+// taps' ground: the line is the only ground this battle has already proven the
+// game accepts. One point is used when the intent is already close to the line;
+// otherwise the projection plus a short walk either way gives each hero in a
+// wave its own proven tile.
+func (hm *HeroManager) heroLineGrounds(intent image.Point) []image.Point {
+	near, d, ok := nearestDeployLinePoint(intent, hm.deployLine)
+	if !ok {
+		return nil
 	}
-	return false
-}
-
-// noteSiegeRefused records a ground the game proved it would not accept for the
-// siege machine, so the hero phase does not lead with the same tile.
-func (hm *HeroManager) noteSiegeRefused(p image.Point) {
-	for _, q := range hm.siegeRefused {
-		if q == p {
+	bottom := UICutoff(hm.h)
+	var out []image.Point
+	add := func(p image.Point) {
+		// Bound the line lead itself, so the authored point always survives the
+		// final candidate ceiling as an alternative.
+		if len(out) >= maxHeroGroundCandidates-1 {
 			return
 		}
+		p = ClampToDeployBand(p, bottom)
+		if p.X < 8 {
+			p.X = 8
+		}
+		if p.X >= hm.w-8 {
+			p.X = hm.w - 8
+		}
+		// A measured red outline overrides the line's usual authority: run 12's
+		// line was a stale edge that cut into the base, and the formula point
+		// outside the zone was the ground that landed. Only keep line points the
+		// no-deploy outline does not claim.
+		if len(hm.zone.Polygon) >= 3 && hm.zone.Inside(p.X, p.Y) {
+			return
+		}
+		for _, q := range out {
+			if q == p {
+				return
+			}
+		}
+		out = append(out, p)
 	}
-	hm.siegeRefused = append(hm.siegeRefused, p)
+	if d >= 24 {
+		add(near)
+	}
+	p1, p2 := hm.deployLine.Points[0], hm.deployLine.Points[len(hm.deployLine.Points)-1]
+	dx, dy := float64(p2.X-p1.X), float64(p2.Y-p1.Y)
+	if l := math.Hypot(dx, dy); l > 0 {
+		ux, uy := dx/l, dy/l
+		for _, step := range []float64{40, 85} {
+			add(image.Pt(near.X+int(math.Round(ux*step)), near.Y+int(math.Round(uy*step))))
+			add(image.Pt(near.X-int(math.Round(ux*step)), near.Y-int(math.Round(uy*step))))
+		}
+	}
+	// Leave one slot for the authored pin/formula point: the line leads, but a
+	// known-good authored point must stay available as the next alternative.
+	if len(out) < maxHeroGroundCandidates-1 {
+		add(near)
+	}
+	return out
 }
-
-// heroLineLeadMaxPx is how far the authored hero point may sit from the troop
-// line for the line's nearest point to lead the hero's list. Beyond this the
-// line is a different part of the base, and the authored point is the better
-// first try.
-const heroLineLeadMaxPx = 150.0
 
 // nearestDeployLinePoint returns the closest point on the deploy line's
 // segments, its distance, and whether the line has a usable segment.
@@ -735,17 +785,21 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 	var cands []image.Point
 	source := "deploy_line"
 
-	// A ground the siege JUST proved refused is not hero ground. Run 11: the
-	// siege card fired at the pinned point three times, then both heroes fired
-	// at that same point and both were refused; each landed on its first retry,
-	// on the troop line. The machine's refusal is direct evidence about the
-	// tile, so skip the authored point and lead with the nearest line point
-	// instead. Everywhere else the authored point keeps its lead.
+	// LEAD FROM THE LINE, not the authored point. The line was accepted by the
+	// troop pass seconds ago; the pinned/formula point is only an intention.
+	// Runs 10 and 11: every leading authored point was refused, and the first
+	// retry on the line landed. Run 10 is the formula case (MP (240,535) refused,
+	// line (236,464) landed; RC (283,169) refused, line endpoint (144,394)
+	// landed). Run 11 is the pin case (321,207) refused for the siege and both
+	// heroes, line (292,242) landed. Several line points lead so a two-hero wave
+	// spreads across proven ground instead of putting hero #2 on the refused
+	// authored point. The authored point is kept next, and every candidate is
+	// clamped into the deployable band.
 	var lineLeads []image.Point
-	if haveIntent && len(hm.deployLine.Points) >= 2 && hm.groundRefusedBySiege(intent) {
-		if lp, d, ok := nearestDeployLinePoint(intent, hm.deployLine); ok && d <= heroLineLeadMaxPx {
-			lineLeads = append(lineLeads, lp)
-			cands = append(cands, lp)
+	if haveIntent && len(hm.deployLine.Points) >= 2 {
+		lineLeads = hm.heroLineGrounds(intent)
+		cands = append(cands, lineLeads...)
+		if len(lineLeads) > 0 {
 			source = "troop_line"
 		}
 	}
@@ -855,7 +909,39 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 			cands = dedupePoints(free)
 		}
 	}
-	cands = dedupePoints(cands)
+	// Every tap must be inside the deployable band: an off-grid or HUD-covered
+	// point is not a placement the game can accept, and the rescue budget must
+	// never be spent discovering that. Clamping keeps the authored point usable
+	// instead of silently dropping it.
+	bottom := UICutoff(hm.h)
+	clampBand := func(p image.Point) image.Point {
+		// Y is the band the codebase calibrates (HUD above, troop bar below);
+		// X bounds are the field edge and are enforced by the pickers.
+		return ClampToDeployBand(p, bottom)
+	}
+	banded := make([]image.Point, 0, len(cands))
+	for _, p := range cands {
+		p = clampBand(p)
+		// Clamping can move a point back inside a measured red zone. Push it
+		// clear once more; ground that cannot be made legal is not a candidate.
+		if len(hm.zone.Polygon) >= 3 && hm.zone.Inside(p.X, p.Y) {
+			cx, cy := hm.zone.Centre()
+			pushed, ok := pushPointOutOfZone(p, cx, cy, tileStepPx(hm.h), hm.zone)
+			if !ok {
+				continue
+			}
+			p = clampBand(pushed)
+			if hm.zone.Inside(p.X, p.Y) {
+				continue
+			}
+		}
+		banded = append(banded, p)
+	}
+	cands = dedupePoints(banded)
+
+	if len(cands) > maxHeroGroundCandidates {
+		cands = cands[:maxHeroGroundCandidates]
+	}
 
 	// Retry ordering when this battle's red line is UNKNOWN. The no-deploy pocket
 	// hugs the middle of the map, so the farther a retry sits from the screen
@@ -865,7 +951,8 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 	// went to the farthest tile and was refused 4/4, while the next candidate —
 	// the one nearer the authored ground — landed 4/4. With a measured outline
 	// the zone-clearance order (heroGroundCandidates) is strictly better and is
-	// left alone.
+	// left alone. The ceiling is applied BEFORE this sort so the authored point,
+	// which was reserved a slot, cannot be pushed out of the list by it.
 	if len(hm.zone.Polygon) < 3 && len(cands) > 2 {
 		lead := cands[0]
 		rest := cands[1:]
@@ -874,13 +961,10 @@ func (hm *HeroManager) heroDropCandidates(slot *TrackedSlot, unitName string) []
 	}
 
 	if len(cands) == 0 {
-		pt, _ := hm.resolveHeroTarget(slot)
-		return []image.Point{pt}
+		// Nothing this battle proved deployable: the caller reports the hero
+		// failed instead of firing at a guess and calling the rescue a success.
+		return nil
 	}
-	if len(cands) > maxHeroGroundCandidates {
-		cands = cands[:maxHeroGroundCandidates]
-	}
-
 	// ground_source must describe what actually LEADS the list: the siege and
 	// red-line filters can both move the authored point.
 	switch {
@@ -1722,7 +1806,6 @@ func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, 
 		hm.logger.Warn().Str("unit", unit.Name).Msg("siege refused its ground and no refused point was recorded; the machine stays on the card")
 		return false
 	}
-	hm.noteSiegeRefused(refused)
 	grounds := hm.siegeRefusedGrounds(refused)
 	// Three taps is the ceiling; the list now leads with the outward walk (see
 	// siegeRefusedGrounds), so the ceiling can no longer drop the only grounds
@@ -1778,6 +1861,12 @@ func (hm *HeroManager) markSiegeFailed(unit strategy.Unit, slot *TrackedSlot) {
 	if slot != nil {
 		slot.SiegePlaced = false
 		slot.State = SlotFailed
+		// The fallback slot is linked without a unit name, which made the
+		// verifier log `unit=` and the report unable to name or fail the machine
+		// (live run 12: JSON said undeployed=1, the report said success).
+		if slot.UnitName == "" {
+			slot.UnitName = unit.Name
+		}
 		if hm.slotManager != nil && slot.UnitName != "" {
 			hm.slotManager.MarkFailed(slot.UnitName)
 		}

@@ -52,11 +52,9 @@ func pinnedHM() *HeroManager {
 // refused and the very next tap on the troop line deployed. The line was just
 // accepted by the troop pass, so it leads the candidate list when it sits near
 // the authored point.
-func TestHeroCandidates_AvoidSiegeRefusedPin(t *testing.T) {
+func TestHeroCandidates_LeadWithTroopLineNotRefusedPin(t *testing.T) {
 	hm := pinnedHM()
 	pin, _ := hm.pinnedHeroPoint()
-	// Run 11: the siege card fired at this pin and the game refused it.
-	hm.siegeRefused = []image.Point{pin}
 
 	cands := hm.heroDropCandidates(nil, "Minion Prince")
 	if len(cands) == 0 {
@@ -68,8 +66,8 @@ func TestHeroCandidates_AvoidSiegeRefusedPin(t *testing.T) {
 	if _, d, ok := nearestDeployLinePoint(cands[0], hm.deployLine); !ok || d > 3 {
 		t.Fatalf("first ground %v is not on the troop line (distance %.1f)", cands[0], d)
 	}
-	if dist(cands[0], pin) > heroLineLeadMaxPx {
-		t.Fatalf("first ground %v is %.0f px from the pin; line lead must stay near it", cands[0], dist(cands[0], pin))
+	if dist(cands[0], pin) > 200 {
+		t.Fatalf("first ground %v is %.0f px from the pin; line lead must stay on this side", cands[0], dist(cands[0], pin))
 	}
 }
 
@@ -115,8 +113,11 @@ func TestHeroDropCandidatesDemotesRefusedPin(t *testing.T) {
 		t.Fatal("no hero drop candidates")
 	}
 	pin := image.Point{X: 281, Y: 181}
-	if cands[0] != pin {
-		t.Fatalf("first candidate = %v, want the user's pin %v; the authored lead is what landed live", cands[0], pin)
+	if _, d, ok := nearestDeployLinePoint(cands[0], hm.deployLine); !ok || d > 3 {
+		t.Fatalf("first candidate = %v, want troop-line ground; the authored lead was refused live", cands[0])
+	}
+	if dist(cands[0], pin) > 60 {
+		t.Fatalf("first candidate %v is %.0f px from the user's pin %v", cands[0], dist(cands[0], pin), pin)
 	}
 	mid := image.Pt(hm.w/2, hm.h/2)
 	for i := 2; i < len(cands); i++ {

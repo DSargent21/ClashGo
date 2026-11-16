@@ -321,6 +321,16 @@ func parse(r io.Reader, path string) (*Report, error) {
 				u.Reason = "marked deployed after an unreadable saturated line pass; no confirmation the card left"
 			}
 
+		// A hero the ground selector could not place inside the deployable band is
+		// a proven failure, not an unverified guess: no tap was sent because no
+		// acceptable ground existed.
+		case strings.Contains(line, "hero has no acceptable ground in the deployable band"):
+			if n := unitOf(line); n != "" {
+				u := get(n, line)
+				u.Verdict = Failed
+				u.Reason = "no acceptable hero ground inside the deployable band; card never fired"
+			}
+
 		// The verifier's final per-unit line: after every retry, this card still
 		// showed content. This is a proof of an incomplete deploy, not a guess.
 		case strings.Contains(line, "verifier: unit still on the bar at battle end"):

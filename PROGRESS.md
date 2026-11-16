@@ -153,3 +153,38 @@ Format:
 - Live gap: run 11 spent the army, so the new ground and honesty fixes are
   gate/test-proven only; no fresh battle yet. Run 11's own report was produced
   before the verifier change and still shows the old false success.
+
+### 2026-11-16 — attack-polish: run 12 disproves the ground-only theory for hero first tap
+- Changed: `internal/attack/hero_manager.go`, `internal/attack/executor.go`,
+  `internal/attack/hero_first_tap_test.go` (new),
+  `internal/attack/hero_ground_test.go`, `internal/attack/hero_retry_test.go`,
+  `internal/attack/deploy_completeness_test.go`, `internal/attacklog/*`,
+  `internal/attack/verifier.go` (siege naming).
+- Hero first tap now always leads with troop-line ground:
+  `heroLineGrounds` returns up to three clamped line points near the authored
+  intent (pin/formula), capped one slot short so the authored point survives as
+  the next alternative. Y is clamped to `BandTop..UICutoff` after jitter too.
+  A measured red zone removes line points it covers (run 12's stale edge).
+- Run 12 (`logs/live_hero_firsttap_run12.log`, full army, 1 star) tested it:
+  `ground_source=troop_line`, first tap (293,507), **still refused**; both
+  heroes' retries on line ground (266,487) landed. That disproves "the authored
+  ground was the cause": a line tile was refused on the FIRST selection but
+  accepted on the second. Same pattern as runs 10/11 (first selection refused
+  at pin, formula and line ground; next selection always landed).
+- Fix: `PrimeSlot` sends one extra SELECTION tap (not a placement, not a
+  re-arm, spends no budget) before the first field tap, so the first drop uses
+  the selection behaviour that has landed every time. Physical card taps become
+  prime + placement + ability (tests updated). NOT live-proven: run 12 spent
+  the army.
+- Siege run 12: all three line-near retries refused (`siege_placements=0`,
+  `siege_retries=3`). The verifier now counts the failed machine (JSON
+  `deploy_success: false`, `undeployed_slots: 1`) but logged `unit=` blank, so
+  `cmd/attack_report` still printed a clean verdict; `markSiegeFailed` now fills
+  the fallback slot's `UnitName`, and the test asserts the name.
+- Tests: new `TestHeroFirstTap_*` cover run-11 pin, run-10 formula, HUD clamp,
+  reduced tap budget and no-acceptable-ground FAILED through
+  `deploySingleHero`/`deployHeroBatch`; parser covers the no-ground FAILED line.
+- Verified: `go test ./internal/attack ./internal/attacklog` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Live gap: army spent by run 12; hero prime and siege naming are gate-proven
+  only. Next live raid must confirm both first taps land with no rescue.

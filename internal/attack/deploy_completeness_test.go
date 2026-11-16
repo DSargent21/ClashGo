@@ -173,7 +173,9 @@ func TestSiegeRefusedGrounds_LeadsWithTroopLineAndStaysInBand(t *testing.T) {
 // A refused machine must be failed honestly: not marked deployed, and its slot
 // released so nothing treats it as a live machine.
 func TestMarkSiegeFailed_SlotIsFailedNotDeployed(t *testing.T) {
-	slot := &TrackedSlot{TroopSlot: TroopSlot{Category: "Siege"}, UnitName: "stone slammer", SiegePlaced: true, State: SlotDeployed}
+	// Run 12's fallback slot had no unit name; the report then could not name
+	// the machine even though the run was flagged. markSiegeFailed fills it in.
+	slot := &TrackedSlot{TroopSlot: TroopSlot{Category: "Siege"}, SiegePlaced: true, State: SlotDeployed}
 	sm := &SlotManager{
 		slots:     []*TrackedSlot{slot},
 		unitIndex: map[string]*TrackedSlot{"stone slammer": slot},
@@ -188,6 +190,9 @@ func TestMarkSiegeFailed_SlotIsFailedNotDeployed(t *testing.T) {
 	}
 	if slot.SiegePlaced {
 		t.Fatal("a failed machine must not stay on the one-placement contract")
+	}
+	if slot.UnitName != "Stone Slammer" {
+		t.Fatalf("slot unit name = %q, want the machine named so the report can fail it", slot.UnitName)
 	}
 }
 

@@ -80,8 +80,14 @@ func TestHeroDeploy_OnePlacementTapThenAbility(t *testing.T) {
 		t.Fatal("deploySingleHero failed on a drop whose slot transitioned to cooldown")
 	}
 
-	if got := len(tl.slotTaps()); got != 1 {
-		t.Fatalf("placement used %d card taps, want exactly 1", got)
+	// Two physical card taps: the selection prime (the battle's first selection
+	// does not arm) and the placement. SpotTaps below still proves only one was
+	// a PLACEMENT.
+	if got := len(tl.slotTaps()); got != 2 {
+		t.Fatalf("placement used %d card taps, want 2 (prime + one placement)", got)
+	}
+	if slot.SpotTaps != 1 {
+		t.Fatalf("placement budget spent = %d, want 1", slot.SpotTaps)
 	}
 	if got := len(tl.fieldTaps()); got != 1 {
 		t.Fatalf("placement used %d field taps, want exactly 1", got)
@@ -105,8 +111,8 @@ func TestHeroDeploy_OnePlacementTapThenAbility(t *testing.T) {
 	if hm.executor.TapSlot(slot, 8) {
 		t.Error("a second placement tap on an already-deployed hero must be refused")
 	}
-	if got := len(tl.slotTaps()); got != 2 {
-		t.Fatalf("total hero card taps = %d, want 2 (place + ability)", got)
+	if got := len(tl.slotTaps()); got != 3 {
+		t.Fatalf("total hero card taps = %d, want 3 (selection prime + place + ability)", got)
 	}
 }
 
@@ -154,8 +160,8 @@ func TestHeroDeploy_NoRetryTapWhenVerifyFails(t *testing.T) {
 		t.Fatal("deploySingleHero must not claim success on an unconfirmed drop")
 	}
 
-	if got := len(tl.slotTaps()); got != 1 {
-		t.Errorf("an unconfirmed drop with no new ground must fire exactly 1 card tap (the placement), got %d", got)
+	if got := len(tl.slotTaps()); got != 2 {
+		t.Errorf("an unconfirmed drop with no new ground must fire exactly 2 card taps (prime + placement), got %d", got)
 	}
 	if slot.SpotTaps != 1 {
 		t.Errorf("placement budget spent = %d, want 1", slot.SpotTaps)
@@ -314,13 +320,13 @@ func TestRearmDoesNotStealTheAbility(t *testing.T) {
 	if !hm.executor.TapHeroAbility(slot) {
 		t.Fatal("the ability tap must still be available after a re-arm: the re-arm replaces a tap the game never registered as a placement")
 	}
-	// Three physical card taps here, and that is the documented contract: the
-	// placement, the one re-arm this drop's single retry needs, and the ability.
+	// Four physical card taps here: the selection prime, the placement, the one
+	// re-arm this drop's single retry needs, and the ability.
 	// What is preserved is exactly one placement and exactly one ability, never a
 	// second placement — which is why the re-arm is accounted separately from the
 	// placement budget.
-	if got := len(tl.slotTaps()); got != 3 {
-		t.Fatalf("total card taps = %d, want 3 (placement + one re-arm + ability)", got)
+	if got := len(tl.slotTaps()); got != 4 {
+		t.Fatalf("total card taps = %d, want 4 (prime + placement + one re-arm + ability)", got)
 	}
 	// After the ability: the placement counter still holds exactly the one
 	// placement (the re-arm and the ability are accounted elsewhere), and the

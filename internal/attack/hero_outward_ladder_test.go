@@ -132,8 +132,23 @@ func TestHeroDropCandidatesOrdersOutwardFirst(t *testing.T) {
 	}
 	pin := image.Pt(230, 469)
 	mid := image.Pt(w/2, h/2)
-	if cands[0] != pin {
-		t.Fatalf("first candidate = %v, want the authored pin %v", cands[0], pin)
+	// The first tap is the troop-line ground near the pin; the pin itself is the
+	// next alternative. Live runs 10/11 refused every authored lead and landed
+	// on the line.
+	if _, d, ok := nearestDeployLinePoint(cands[0], hm.deployLine); !ok || d > 3 {
+		t.Fatalf("first candidate = %v, want ground on the troop line", cands[0])
+	}
+	if dist(cands[0], pin) > 60 {
+		t.Fatalf("first candidate %v is %.0f px from the pin", cands[0], dist(cands[0], pin))
+	}
+	foundPin := false
+	for _, p := range cands {
+		if p == pin {
+			foundPin = true
+		}
+	}
+	if !foundPin {
+		t.Fatalf("authored pin %v disappeared from the alternatives", pin)
 	}
 	// Every RETRY is strictly ordered: farthest from the field centre first.
 	for i := 2; i < len(cands); i++ {

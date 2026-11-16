@@ -134,8 +134,8 @@ func TestHeroDeploy_FieldRetryOnNewGroundKeepsCardBudget(t *testing.T) {
 		t.Fatal("deploySingleHero must confirm a placement the field retry achieved")
 	}
 
-	if got := len(tl.slotTaps()); got != 2 {
-		t.Errorf("card taps = %d, want 2 (the placement plus one re-arm)", got)
+	if got := len(tl.slotTaps()); got != 3 {
+		t.Errorf("card taps = %d, want 3 (selection prime + placement + one re-arm)", got)
 	}
 	if slot.SpotTaps != 1 {
 		t.Errorf("placement budget spent = %d, want 1: the re-arm must not eat the ability's tap", slot.SpotTaps)
@@ -177,8 +177,8 @@ func TestHeroDeploy_ExhaustedFieldRetriesCostNoCardTap(t *testing.T) {
 	}
 	// One re-arm per field retry: a refused tap deselects the card, so a retry
 	// that skips its own re-arm fires at an unselected card and can never land.
-	if got := len(tl.slotTaps()); got != 1+heroFieldRetries {
-		t.Errorf("card taps = %d, want %d (the placement plus one re-arm per field retry)", got, 1+heroFieldRetries)
+	if got := len(tl.slotTaps()); got != 2+heroFieldRetries {
+		t.Errorf("card taps = %d, want %d (selection prime + placement + one re-arm per field retry)", got, 2+heroFieldRetries)
 	}
 	if slot.SpotTaps != 1 {
 		t.Errorf("placement budget spent = %d, want 1: retries must never cost the ability's tap", slot.SpotTaps)
@@ -222,11 +222,21 @@ func TestHeroDeploy_FormulaGroundBeatsStalePinnedEdge(t *testing.T) {
 
 	pts := tl.fieldTaps()
 	if len(pts) != 1 {
-		t.Fatalf("got %d field taps, want 1 (the formula point is accepted on tap #1)", len(pts))
+		t.Fatalf("got %d field taps, want 1 (the first ground must be accepted, no rescue)", len(pts))
 	}
-	want := image.Pt(1088, 288)
-	if math.Abs(float64(pts[0].X-want.X)) > 3 || math.Abs(float64(pts[0].Y-want.Y)) > 3 {
-		t.Errorf("first hero field tap %v is not the strategy's pinned ground %v (it must not fall back to the stale edge line)", pts[0], want)
+	// The formula point (1088,288) is off the 860-wide field. It is clamped into
+	// the deployable band rather than tapped off-grid, and the stale edge line
+	// (inside the measured red zone) never leads.
+	if pts[0].Y < BandTop() || pts[0].Y > UICutoff(hm.h) {
+		t.Fatalf("first hero field tap %v is outside the deployable band", pts[0])
+	}
+	for _, lp := range line.Points {
+		if dist(pts[0], lp) <= 12 {
+			t.Fatalf("first tap %v fell back to the stale edge line point %v", pts[0], lp)
+		}
+	}
+	if slot.SpotRearms != 0 || slot.SpotTaps != 1 {
+		t.Fatalf("first tap used the rescue: spot_taps=%d rearms=%d", slot.SpotTaps, slot.SpotRearms)
 	}
 }
 
@@ -279,8 +289,8 @@ func TestHeroGround_ChosenGroundIsTheClearOne(t *testing.T) {
 	if len(cands) < 2 {
 		t.Fatalf("got %d candidates, want the blocked points demoted plus clear ground", len(cands))
 	}
-	if cands[0].X != 1088 {
-		t.Fatalf("chosen ground = %v, want an x=1088 point", cands[0])
+	if cands[0].Y < BandTop() || cands[0].Y > UICutoff(hm.h) {
+		t.Fatalf("chosen ground %v is outside the deployable band", cands[0])
 	}
 	if hm.zone.Inside(cands[0].X, cands[0].Y) {
 		t.Errorf("chosen ground %v is inside the red line", cands[0])

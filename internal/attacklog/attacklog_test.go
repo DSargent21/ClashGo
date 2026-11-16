@@ -52,6 +52,23 @@ func TestParseVerifierRemainingUnit(t *testing.T) {
 	}
 }
 
+// A hero with no acceptable ground is reported failed by the deploy phase, not
+// left on the bar: no tap was sent, and the report must say so.
+func TestParseHeroNoAcceptableGroundFails(t *testing.T) {
+	log := `20:10:00 | WRN | hero has no acceptable ground in the deployable band; reporting it failed component=hero_manager slot_x=287 unit="Archer Queen"`
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := unit(t, rep, "Archer Queen")
+	if u.Verdict != Failed {
+		t.Fatalf("verdict = %v, want FAILED when no acceptable ground existed", u.Verdict)
+	}
+	if !rep.Problem() {
+		t.Fatal("a hero with no acceptable ground must flag the run")
+	}
+}
+
 // The siege card is a slot like any other for the verdict: a machine the game
 // never accepted stays named and forces the run FAILED. Run 11's card was
 // armed at battle end with every retry refused.

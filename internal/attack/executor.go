@@ -581,6 +581,26 @@ func (t *TapExecutor) TapUnitField(pt image.Point, stdDev float64) {
 	t.noteInput(t.client.TapFast(pt.X, pt.Y, stdDev), "unit field tap")
 }
 
+// PrimeSlot is the wave's second selection tap on a hero card, sent before the
+// first field tap. Live runs 10-12: the battle's FIRST selection of a hero card
+// never armed — the first field tap was refused at formula ground (run 10), a
+// pinned tile (run 11) and a troop-line tile (run 12) — while the next selection
+// of the same card at the same kind of ground landed every time (rescue re-arm,
+// and the sweep's re-select at 150 ms). This tap is not a placement and not a
+// rescue: SpotTaps and SpotRearms stay untouched, so the ability and the bounded
+// rescue keep their taps.
+func (t *TapExecutor) PrimeSlot(slot *TrackedSlot) bool {
+	if !isHeroCardSlot(slot) {
+		return false
+	}
+	t.logger.Info().
+		Str("unit", slot.UnitName).
+		Int("x", slot.X).
+		Msg("second hero card selection before the first field tap (the battle's first selection does not arm)")
+	t.noteInput(t.fireSlotTap(slot, heroCardTapJitter), "hero selection prime")
+	return true
+}
+
 // RearmSlot re-selects a hero's card after a placement the game did not
 // register, so the next field tap is aimed at a SELECTED card. See maxHeroRearms
 // for the measurement that makes this necessary. It deliberately does not consume
