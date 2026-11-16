@@ -77,6 +77,82 @@ func TestClassify_BrightLeaguesPanelIsNotASplash(t *testing.T) {
 	}
 }
 
+// TestClassify_LoadingScreenTapPrompt pins the live 2026-11-16 defect: the
+// loading screen's "Tap!" prompt on the wooden table was unknown to the
+// classifier, so the bot restart-looped on it instead of tapping it away.
+// Probes are the prompt's white glyph row plus the dark vignette.
+func TestClassify_LoadingScreenTapPrompt(t *testing.T) {
+	c := newChestClassifier(t)
+
+	m := makeSplashFrame()
+	setRGB(m, 435, 247, 0xF8, 0xF7, 0xF8) // white glyph
+	setRGB(m, 415, 250, 0xFF, 0xFF, 0xFF) // white glyph
+	setRGB(m, 375, 253, 0xFA, 0xFA, 0xFA) // white glyph
+	setRGB(m, 40, 40, 0x14, 0x0D, 0x1E)   // dark vignette
+	defer m.Close()
+
+	state, _ := c.ClassifyState(m)
+	if state != StateTapToContinue {
+		t.Fatalf("expected StateTapToContinue for the loading Tap! prompt, got %s", state)
+	}
+}
+
+// TestClassify_LoadingTapPromptQuietOnVillage: the same probes sampled from a
+// live village frame (bright sky, grass) must not fire the prompt rule.
+func TestClassify_LoadingTapPromptQuietOnVillage(t *testing.T) {
+	c := newChestClassifier(t)
+
+	m := gocv.NewMatWithSize(RefHeight, RefWidth, gocv.MatTypeCV8UC3)
+	defer m.Close()
+	m.SetTo(gocv.NewScalar(0x2A, 0x5F, 0x3A, 0)) // grass
+	setRGB(m, 435, 247, 0x6B, 0xCE, 0xDD)        // sky
+	setRGB(m, 415, 250, 0x84, 0xB7, 0x3D)        // grass highlight
+	setRGB(m, 375, 253, 0x7D, 0x9E, 0x28)
+	setRGB(m, 40, 40, 0x07, 0x17, 0x01)
+
+	state, _ := c.ClassifyState(m)
+	if state == StateTapToContinue {
+		t.Fatal("village colours fired the loading Tap! prompt rule")
+	}
+}
+
+// TestClassify_LoadingTableRewardContinue covers the event-reward popup that
+// follows the prompt on the same table: green Continue button + white headline.
+func TestClassify_LoadingTableRewardContinue(t *testing.T) {
+	c := newChestClassifier(t)
+
+	m := makeSplashFrame()
+	setRGB(m, 419, 557, 0x8B, 0xD4, 0x3A) // green button face
+	setRGB(m, 420, 530, 0xBF, 0xEA, 0x8E) // top highlight
+	setRGB(m, 414, 205, 0xFF, 0xFF, 0xFF) // white headline
+	defer m.Close()
+
+	state, _ := c.ClassifyState(m)
+	if state != StateNewsSplash {
+		t.Fatalf("expected StateNewsSplash for the loading-table reward, got %s", state)
+	}
+}
+
+// TestClassify_LoadingRewardIsNotTheTapPrompt: the reward's own pixels must
+// not satisfy the Tap! prompt's white-glyph row.
+func TestClassify_LoadingRewardIsNotTheTapPrompt(t *testing.T) {
+	c := newChestClassifier(t)
+
+	m := makeSplashFrame()
+	setRGB(m, 435, 247, 0x3F, 0x40, 0x52)
+	setRGB(m, 415, 250, 0x61, 0x61, 0x71)
+	setRGB(m, 375, 253, 0x42, 0x43, 0x54)
+	setRGB(m, 40, 40, 0x43, 0x25, 0x27)
+	setRGB(m, 419, 557, 0x8B, 0xD4, 0x3A)
+	setRGB(m, 420, 530, 0xBF, 0xEA, 0x8E)
+	defer m.Close()
+
+	state, _ := c.ClassifyState(m)
+	if state == StateTapToContinue {
+		t.Fatal("the loading-table reward fired the Tap! prompt rule")
+	}
+}
+
 // TestClassify_NewsSplash asserts the post-boot news/announcement splash
 // (e.g. the "Meteor Golem" troop intro) with its light-green Continue
 // button is recognized.

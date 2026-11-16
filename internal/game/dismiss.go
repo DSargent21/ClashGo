@@ -63,10 +63,12 @@ const overlayDismissSettle = 400 * time.Millisecond
 var overlayControlProbes = map[GameState][]image.Point{
 	// The "ТАР!" collect splash has no button; the prompt text IS the target, and
 	// the classifier's beige-glyph probe is the only thing on that screen the bot
-	// has ever verified.
-	StateTapToContinue: {image.Pt(450, 185)},
-	// Light-green Continue button, bottom-centre.
-	StateNewsSplash: {image.Pt(403, 535)},
+	// has ever verified. The loading-screen variant is the same gesture with its
+	// own white-glyph probe; the candidate that still reads as its control wins.
+	StateTapToContinue: {image.Pt(450, 185), image.Pt(415, 250)},
+	// Light-green Continue button, bottom-centre. The loading-table event
+	// reward carries the same button at its own probe.
+	StateNewsSplash: {image.Pt(403, 535), image.Pt(419, 557)},
 	// The orange Cancel face of the quit-confirm dialog. The green Okay face is
 	// a probe of the same rule and deliberately absent: it quits the game.
 	StateConfirmExit: {image.Pt(279, 429)},
@@ -231,37 +233,43 @@ func DismissOverlay(dev DismissDevice, cal *Calibration, cl *Classifier, state G
 		return false
 	}
 
-	rule, ok := classifierRuleFor(cl, state)
-	if !ok {
+	rules := classifierRulesFor(cl, state)
+	if len(rules) == 0 {
 		logger.Warn().Str("state", state.String()).Msg("dismiss: no classifier rule to verify the control against; no tap fired")
 		return false
 	}
+	// A state may have several signatures (the ТАР! splash and the
+	// loading-screen Tap! prompt are both StateTapToContinue). Try every
+	// candidate against the rule that actually declares it, so a tap point is
+	// still evidence from the classifier that fired.
 	for _, probe := range probes {
-		chk, ok := rule.probeAt(probe)
-		if !ok {
-			continue
+		for _, rule := range rules {
+			chk, ok := rule.probeAt(probe)
+			if !ok {
+				continue
+			}
+			if !probeReadsAsControl(frame, cal, rule.Anchor, chk) {
+				continue
+			}
+			x, y := cal.AnchorPoint(probe.X, probe.Y, rule.Anchor)
+			if state == StateConfirmExit && !cal.IsReferenceGeometry() {
+				// At non-reference geometry (1280x720), the probe (279,429 -> live 444,442)
+				// lands on the upper border of the Cancel button (bounds: [435..556, 445..479]).
+				// Nudge into the button's center so the click reliably registers.
+				x += int(45.0 * (float64(cal.PhysicalW) / 1280.0))
+				y += int(18.0 * (float64(cal.PhysicalH) / 720.0))
+			}
+			logger.Info().
+				Str("state", state.String()).
+				Int("x", x).Int("y", y).
+				Msg("dismiss: tapping the control the classifier verified on this frame")
+			if err := dev.TapRandomized(x, y); err != nil {
+				logger.Warn().Err(err).Str("state", state.String()).Msg("dismiss: tap failed")
+				return false
+			}
+			time.Sleep(overlayDismissSettle)
+			return true
 		}
-		if !probeReadsAsControl(frame, cal, rule.Anchor, chk) {
-			continue
-		}
-		x, y := cal.AnchorPoint(probe.X, probe.Y, rule.Anchor)
-		if state == StateConfirmExit && !cal.IsReferenceGeometry() {
-			// At non-reference geometry (1280x720), the probe (279,429 -> live 444,442)
-			// lands on the upper border of the Cancel button (bounds: [435..556, 445..479]).
-			// Nudge into the button's center so the click reliably registers.
-			x += int(45.0 * (float64(cal.PhysicalW) / 1280.0))
-			y += int(18.0 * (float64(cal.PhysicalH) / 720.0))
-		}
-		logger.Info().
-			Str("state", state.String()).
-			Int("x", x).Int("y", y).
-			Msg("dismiss: tapping the control the classifier verified on this frame")
-		if err := dev.TapRandomized(x, y); err != nil {
-			logger.Warn().Err(err).Str("state", state.String()).Msg("dismiss: tap failed")
-			return false
-		}
-		time.Sleep(overlayDismissSettle)
-		return true
 	}
 
 	logger.Warn().Str("state", state.String()).
@@ -273,8 +281,10 @@ func DismissOverlay(dev DismissDevice, cal *Calibration, cl *Classifier, state G
 // frame, through the same scorer ClassifyState uses (see Classifier.EvaluateRules).
 func stateStillOnFrame(cl *Classifier, frame gocv.Mat, state GameState) bool {
 	for _, verdict := range cl.EvaluateRules(frame, false) {
-		if verdict.State == state {
-			return verdict.Matched
+		if verdict.State == state && verdict.Matched {
+			// Any signature of the state counts: an overlay may carry
+			// several artwork variants as separate rules.
+			return true
 		}
 	}
 	return false
@@ -289,6 +299,20 @@ func classifierRuleFor(cl *Classifier, state GameState) (StateRule, bool) {
 		}
 	}
 	return StateRule{}, false
+}
+
+// classifierRulesFor returns every rule the classifier authored for a state, in
+// rule order. Overlays with more than one signature (one per artwork variant)
+// are separate rules for the same state; the dismissal path has to be able to
+// verify a tap point against the signature that is actually on screen.
+func classifierRulesFor(cl *Classifier, state GameState) []StateRule {
+	var out []StateRule
+	for _, rule := range cl.GetRules() {
+		if rule.State == state {
+			out = append(out, rule)
+		}
+	}
+	return out
 }
 
 // probeAt returns the rule's own probe at a reference point, so a tap point can

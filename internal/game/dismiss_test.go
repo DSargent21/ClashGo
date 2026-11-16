@@ -66,15 +66,12 @@ func TestDismissOverlayControlProbesAreClassifierProbes(t *testing.T) {
 
 	checked := 0
 	for state, probes := range overlayControlProbes {
-		rules := cl.GetRules()
-		var rule *StateRule
-		for i := range rules {
-			if rules[i].State == state {
-				rule = &rules[i]
-				break
-			}
-		}
-		if rule == nil {
+		// A state can carry several signatures (the ТАР! splash and the
+		// loading-screen Tap! prompt are both StateTapToContinue), so a tap
+		// point has to be a probe of ONE of that state's rules, not
+		// necessarily the first one.
+		rules := classifierRulesFor(cl, state)
+		if len(rules) == 0 {
 			t.Errorf("%s: no classifier rule, so no probe of it can have been verified", state)
 			continue
 		}
@@ -83,14 +80,19 @@ func TestDismissOverlayControlProbesAreClassifierProbes(t *testing.T) {
 		}
 		for _, p := range probes {
 			found := false
-			for _, chk := range rule.Checks {
-				if chk.X == p.X && chk.Y == p.Y {
-					found = true
+			for _, rule := range rules {
+				for _, chk := range rule.Checks {
+					if chk.X == p.X && chk.Y == p.Y {
+						found = true
+						break
+					}
+				}
+				if found {
 					break
 				}
 			}
 			if !found {
-				t.Errorf("%s: tap point (%d,%d) is not one of the rule's probes — a tap nobody verified is a random tap", state, p.X, p.Y)
+				t.Errorf("%s: tap point (%d,%d) is not one of the state's probes — a tap nobody verified is a random tap", state, p.X, p.Y)
 			}
 			checked++
 		}
@@ -172,10 +174,30 @@ func TestDismissOverlayBackStates(t *testing.T) {
 	}
 }
 
+// overlayEvidenceFrameForProbe builds the frame for the rule that declares
+// probe, so a state with several artwork signatures can be driven one signature
+// at a time.
+func overlayEvidenceFrameForProbe(t *testing.T, cl *Classifier, state GameState, probe image.Point) gocv.Mat {
+	t.Helper()
+	for _, rule := range classifierRulesFor(cl, state) {
+		if _, ok := rule.probeAt(probe); !ok {
+			continue
+		}
+		m := gocv.NewMatWithSize(RefHeight, RefWidth, gocv.MatTypeCV8UC3)
+		m.SetTo(gocv.NewScalar(0, 0, 0, 0))
+		for _, chk := range rule.Checks {
+			setRGB(m, chk.X, chk.Y, chk.R, chk.G, chk.B)
+		}
+		return m
+	}
+	t.Fatalf("%s: no rule declares probe (%d,%d)", state, probe.X, probe.Y)
+	return gocv.Mat{}
+}
+
 // TestDismissOverlayTapsTheVerifiedProbeOnly: for the overlays that do advance on
 // a tap, the tap has to land exactly on the probe the classifier verified — the
-// prompt text on the "ТАР!" splash and the Continue button on the news splash.
-// Anything else on those screens is artwork.
+// prompt text on each tap-to-continue splash and the Continue button on each
+// news/reward splash. Anything else on those screens is artwork.
 func TestDismissOverlayTapsTheVerifiedProbeOnly(t *testing.T) {
 	cl := newDismissClassifier()
 
@@ -183,12 +205,14 @@ func TestDismissOverlayTapsTheVerifiedProbeOnly(t *testing.T) {
 		state GameState
 		want  image.Point
 	}{
-		{StateTapToContinue, image.Pt(450, 185)},
-		{StateNewsSplash, image.Pt(403, 535)},
+		{StateTapToContinue, image.Pt(450, 185)}, // ТАР! collect splash
+		{StateTapToContinue, image.Pt(415, 250)}, // loading-screen Tap! prompt
+		{StateNewsSplash, image.Pt(403, 535)},    // news announcement Continue
+		{StateNewsSplash, image.Pt(419, 557)},    // loading-table reward Continue
 	} {
-		dev := newFrameDevice(overlayEvidenceFrame(t, cl, tc.state))
+		dev := newFrameDevice(overlayEvidenceFrameForProbe(t, cl, tc.state, tc.want))
 		if acted := DismissOverlay(dev, cl.cal, cl, tc.state, nil, zerolog.Nop()); !acted {
-			t.Errorf("%s: no tap fired", tc.state)
+			t.Errorf("%s: no tap fired for probe %v", tc.state, tc.want)
 		}
 		if len(dev.recorded) != 1 {
 			t.Errorf("%s: want exactly 1 tap, got %d (%v)", tc.state, len(dev.recorded), dev.recorded)

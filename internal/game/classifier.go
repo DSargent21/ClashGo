@@ -493,6 +493,33 @@ func (c *Classifier) buildRules() {
 				{40, 40, 0x14, 0x0D, 0x1E, 30},
 			},
 		},
+		// StateTapToContinue, second signature: the LOADING screen's "Tap!"
+		// prompt. Same gesture as the ТАР! collect splash and the same state,
+		// different art — a wooden table carrying the event chest and the
+		// four-pip loading bar. Live 2026-11-16 it classified Unknown, so the
+		// bot restart-looped on it and the run had to be recovered by hand.
+		//
+		// The prompt's white glyph row (three interior pixels, measured on a
+		// live 1024x768 frame) plus the dark top-left vignette. The event
+		// reward that follows on the same table puts its headline at y≈200,
+		// not this row, and reads 150+ units off every glyph probe; the
+		// village sky/hud reads 150-250 off them too, so a bright screen
+		// cannot fake the prompt.
+		{
+			State:    StateTapToContinue,
+			Priority: 97,
+			Weight:   110,
+			Desc:     "loading-screen Tap! prompt (wooden table)",
+			Anchor:   AnchorCenter,
+			MinPass:  3,
+			Checks: []PixelCheck{
+				{435, 247, 0xF8, 0xF7, 0xF8, 40},
+				{415, 250, 0xFF, 0xFF, 0xFF, 40},
+				{375, 253, 0xFA, 0xFA, 0xFA, 40},
+				// Dark near-black top-left vignette (no bright HUD)
+				{40, 40, 0x14, 0x0D, 0x1E, 30},
+			},
+		},
 		// StateNewsSplash is the post-boot news/announcement screen (e.g. the
 		// "Meteor Golem" troop intro) with a light-green Continue button at
 		// bottom-center. Tapping Continue dismisses it into the village.
@@ -521,6 +548,29 @@ func (c *Classifier) buildRules() {
 				{403, 525, 0xFD, 0xFF, 0xF6, 25},
 				// Pink/purple announcement art (center)
 				{430, 200, 0xFE, 0xCA, 0xFF, 50},
+			},
+		},
+		// StateNewsSplash, second signature: the event-reward popup drawn on
+		// the same loading table ("2x Battle Bake" / "Item delivered to the
+		// Temporary Storage") with its green Continue button. It followed the
+		// Tap! prompt live and also read Unknown, which would have been the
+		// next restart-loop. Two probes on the button face/highlight plus the
+		// white headline; MinPass 2 lets the headline copy drift with the
+		// event while still requiring the button to be there.
+		{
+			State:    StateNewsSplash,
+			Priority: 95,
+			Weight:   100,
+			Desc:     "loading-table event reward with green Continue",
+			Anchor:   AnchorCenter,
+			MinPass:  2,
+			Checks: []PixelCheck{
+				// Green Continue button face (139,212,58 live)
+				{419, 557, 0x8B, 0xD4, 0x3A, 45},
+				// Button top highlight (191,234,142 live)
+				{420, 530, 0xBF, 0xEA, 0x8E, 45},
+				// White headline glyph
+				{414, 205, 0xFF, 0xFF, 0xFF, 40},
 			},
 		},
 		// StateLogo is the CoC castle logo / connecting splash shown while
