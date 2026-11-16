@@ -1,0 +1,114 @@
+# Build Plan
+
+Objective: keep improving ClashGO in small, independently verifiable
+increments — reliability, unattended farming, bot intelligence, test coverage —
+without needing one long agent session.
+
+Workflow and stop conditions live in `AGENTS.md`. Current state lives in
+`PROGRESS.md`. Architectural constraints live in `DECISIONS.md`.
+
+## Rules for this file
+
+- One task = one agent session (roughly one focused commit).
+- Every task has acceptance criteria a test can prove offline.
+- Tick `[x]` only after `./tools/verify.sh` passed and the session was logged in
+  `PROGRESS.md`.
+- New work goes at the bottom of the active phase, not scattered.
+- If a task turns out bigger than a session, split it and keep the first half.
+
+---
+
+## Phase 0 — Harness (done)
+
+- [x] **H.1 Persistent state + verification gate**
+  - Files: `AGENTS.md`, `BUILD_PLAN.md`, `PROGRESS.md`, `DECISIONS.md`,
+    `tools/verify.sh`, `Makefile`, `.agents/skills/*`
+  - Acceptance: `make verify` runs vet + tests + race + build; a fresh session
+    can find the next task without chat history.
+  - Verified: `make verify` on 2026-11-16 (see `PROGRESS.md`).
+
+- [x] **H.2 Offline testing story documented**
+  - Files: `.agents/skills/testing/SKILL.md`
+  - Acceptance: agent can name how each subsystem is tested without a device.
+
+---
+
+## Phase 1 — Reliable farming (active)
+
+- [ ] **F.1 Dead-base / collector detection**
+  - Why: full outside collectors are the cheapest loot; the bot currently
+    judges loot from the HUD counters only.
+  - Touch: `internal/game/loot.go` (+ zone helpers), attack search decision in
+    `internal/bot`.
+  - Acceptance: classifier over recorded frames returns an outside-full/core
+    verdict per base; unknown frames return `Unknown`; existing loot tests
+    unchanged; one table-driven fixture test per verdict.
+  - Verify: `go test ./internal/game -run 'Loot|Zone'`
+
+- [ ] **F.2 Early surrender on loot target**
+  - Why: end a raid once the target resource threshold is already banked.
+  - Touch: `internal/attack` battle-end logic, `internal/config` (threshold +
+    enable flag, default off), stats/history reason.
+  - Acceptance: fake battle clock + loot readings end the attack exactly once
+    at the threshold; disabled config never triggers; reason recorded in
+    history; test covers threshold already met on entry.
+  - Verify: `go test ./internal/attack -run 'BattleEnd|Surrender'`
+
+- [ ] **F.3 Hero recovery wait**
+  - Why: attacking without designated heroes wastes army and loot.
+  - Touch: `internal/bot` idle/halt gate, `internal/config` hero wait policy,
+    `BotStats.halted_reason`.
+  - Acceptance: with wait enabled and a hero regenerating, no attack starts and
+    the halt reason names the hero wait; with heroes ready the loop proceeds;
+    watchdog does not treat the wait as a hang; fake clock covers the boundary.
+  - Verify: `go test ./internal/bot -run 'Hero|Halt|Idle'`
+
+- [ ] **F.4 Classifier regression fixtures from bug reports**
+  - Why: recovered frames are the only way to stop regressions the emulator
+    cannot replay.
+  - Touch: `internal/game/testdata`, classifier tests, `cmd/capture_template`
+    only if a frame needs cropping.
+  - Acceptance: every fixture has an expected state; unknown fixtures are
+    labelled; suite fails on a deliberately changed classifier threshold.
+  - Verify: `go test ./internal/game -run Classifier`
+
+---
+
+## Phase 2 — Test depth (active, parallel-safe)
+
+- [ ] **T.1 Attack pipeline fake-device test**
+  - Why: deploy/spell/hero ordering is only covered in units; the orchestrated
+    path needs one offline end-to-end check.
+  - Touch: `internal/attack/testharness_test.go`, orchestrator test.
+  - Acceptance: fake capture + taps drive a full planned attack; assertion on
+    ordered tap list; no sleeps; passes under `-race`.
+  - Verify: `go test -race ./internal/attack -run Orchestrator`
+
+- [ ] **T.2 Pacing persistence round-trip**
+  - Why: restarts must not reset hourly/daily counters.
+  - Touch: `internal/bot` session state, `internal/paths` (temp dir in test).
+  - Acceptance: save → reload keeps counters and timestamps; corrupt file falls
+    back to safe defaults with a logged warning.
+  - Verify: `go test ./internal/bot -run 'Session|Pacing'`
+
+- [ ] **T.3 Config validation contract**
+  - Why: bad YAML must fail loudly, not silently disable farming.
+  - Touch: `internal/config`.
+  - Acceptance: table of invalid values (negative caps, unknown sort modes,
+    inverted schedules) rejected with named errors; defaults pass.
+  - Verify: `go test ./internal/config`
+
+---
+
+## Phase 3 — Backlog (plan before starting)
+
+Items not yet decomposed; promote one into Phase 1/2 with criteria before work:
+
+- Magic item spending (needs calibrated UI + spend ceiling).
+- Multi-instance supervisor.
+- Remote notifications for milestones/session summaries.
+- Windows port.
+- Community strategy import/export.
+
+Re-plan when the active phases are empty. See `docs/ROADMAP.md` for product
+context.

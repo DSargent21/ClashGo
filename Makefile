@@ -75,7 +75,7 @@ ifneq ($(OPENCV_LIBDIR),)
     CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names,-dead_strip_dylibs
 endif
 
-.PHONY: all build build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask smoke-live smoke-live-app
+.PHONY: all build build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask smoke-live smoke-live-app verify verify-fast
 
 all: build-cli build-gui
 
@@ -92,6 +92,14 @@ test-go:
 	go vet ./...
 	@echo "Running go test ./..."
 	go test $(GOTEST_LDFLAGS) ./...
+
+# verify: agent gate — vet, unit tests, race detector and build all pass.
+# verify-fast tests only changed packages for the inner edit loop.
+verify:
+	@bash tools/verify.sh
+
+verify-fast:
+	@bash tools/verify.sh --fast
 
 # smoke-live: real one-raid check through the Wails App bindings (headless).
 # Starts the same StartBot/StopBot path the window uses, waits for exactly
