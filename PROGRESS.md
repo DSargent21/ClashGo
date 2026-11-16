@@ -380,3 +380,44 @@ Format:
 - Not verified: visual click-through of the moved controls (no browser drive
   this session); real Wails IPC window.
 - Next: F.1 dead-base detection.
+
+### 2026-11-16 — T.7: honest gating + Analytics window labels
+- Changed: `web/src/components/{ConfigView,LaunchSetup,AccountsView,Analytics,
+  SettingsView}.tsx`, `web/src/styles/views.css`, `app_ui_bindings_test.go`
+  (3 new guards + persistence test), `docs/UI.md`, `DECISIONS.md` (D-10, D-11),
+  `BUILD_PLAN.md`.
+- Fixed:
+  - Config > Schedule/Builders/Lab/Pets used `.is-disabled` (opacity +
+    `pointer-events: none`), so fields looked off and swallowed clicks while
+    the master switch was off. All four wrappers are gone: fields are editable,
+    and Save writes every value; the switch only gates engine use. Proved by
+    `TestUI_ConfigSectionsPersistWhileDisabled` (disabled schedule, builders,
+    lab strategy/DE flags, pets, wall resource survive save + fresh app load).
+  - Search thresholds, wall resource and account-rotation controls had
+    `disabled` tied to their master switch; now editable and persisted.
+  - Setup wizard's upgrade block was the same pointer-events wall. It now keeps
+    its native controls disabled with an explicit "Upgrade engine is off"
+    reason and no pointer-events rule; lab order is editable while lab is off.
+  - Settings > Setup wizard disabled while the bot runs without a reason; the
+    row now says "Stop the bot to replay the guided setup".
+  - Analytics mixed windows silently. KPI strip says "session ...", chart,
+    outcomes, revenue and strategy table say "This session", activity says
+    "Saved history · last 12 months". No aggregation changed.
+  - Analytics chart legend refused to hide the last visible series with no
+    feedback; every chip toggles now.
+- Guards: `TestUI_ConfigSectionsEditableWhenOff` (no Config pointer-events/
+  master-switch disabled inputs), `TestUI_AnalyticsStatesWindow` (every window
+  label present; old ambiguous copy rejected),
+  `TestUI_ConfigSectionsPersistWhileDisabled` (Go save/reload proof).
+- Verified: `npx tsc --noEmit` PASS; `./tools/verify.sh --fast` -> VERIFY
+  PASSED (fast); `./tools/verify.sh` -> VERIFY PASSED (full).
+- Stub sweep (Vite `localhost:5199`, Wails IPC stub): loaded Dashboard, Army,
+  Analytics, Accounts, Config (Search & loot, Builders, Lab & pets, Schedule,
+  Storage) and Settings; 0 console errors and 0 React warnings. Measured in
+  the live DOM: wizard upgrade block `pointer-events: auto`, 11/11 controls
+  `disabled`, visible "Upgrade engine is off" note; Schedule off with 0
+  disabled form controls; Lab + Pets off while lab order, DE switch and Add-pet
+  stay enabled; rotation off while order/attacks/auto-start stay enabled;
+  Builders has exactly 1 wall switch/resource, Storage has 0.
+- Not verified: real Wails IPC window (stub only, as scoped).
+- Next: F.1 dead-base detection.

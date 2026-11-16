@@ -797,7 +797,6 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 .subnav .seg { flex: 1; min-width: 0; overflow-x: auto; }
 .save-btn { flex: none; min-width: 122px; }
 .config-stack { display: flex; flex-direction: column; gap: 16px; }
-.is-disabled { opacity: .45; pointer-events: none; user-select: none; }
 
 .set-row {
   display: flex;
@@ -1500,7 +1499,9 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 /* -------- Builders -------- */
 .launch-section { display: grid; gap: 14px; }
 .launch-block { display: grid; gap: 14px; }
-.launch-block.is-disabled { opacity: .45; pointer-events: none; }
+/* Controls inside carry their own `disabled` attributes; no pointer-events
+   wall, so the block is transparent about what it refuses. */
+.launch-block.is-disabled { opacity: .45; }
 
 .launch-choices { display: grid; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .launch-choice {

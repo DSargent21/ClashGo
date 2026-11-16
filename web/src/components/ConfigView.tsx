@@ -322,7 +322,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                             max={THRESHOLD_MAX}
                             value={item.value}
                             onChange={(event) => item.setter(parseInt(event.target.value, 10) || 0)}
-                            disabled={!searchEnabled}
                             aria-invalid={itemInvalid}
                             className="field"
                           />
@@ -576,7 +575,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 />
               )}
             >
-              <div className={scheduleEnabled ? '' : 'is-disabled'}>
                 <div className="form-grid">
                   <div className="form-section" style={{ marginTop: 0 }}>
                     <div className="form-section-title"><Icon name="clock" size={13} />Active hours</div>
@@ -682,7 +680,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     />
                   </div>
                 </div>
-              </div>
             </Section>
           ) : null}
 
@@ -698,7 +695,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 />
               )}
             >
-              <div className={autoBuilders ? '' : 'is-disabled'}>
                 <div className="form-grid">
                   <div className="f-field">
                     <label className="label" htmlFor="upgrade-strategy">Upgrade priority</label>
@@ -801,7 +797,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     <Switch checked={dryRun} onChange={setDryRun} ariaLabel="Dry run" />
                   </div>
                 </div>
-              </div>
 
               <div className="form-section">
                 <div className="form-section-title"><Icon name="layers" size={13} />Walls</div>
@@ -832,7 +827,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                       className="field select"
                       value={wallResource}
                       onChange={(event) => setWallResource(event.target.value)}
-                      disabled={!upgradeWalls && !dumpToWallsBeforeHalt}
                     >
                       <option value="both">Gold &amp; elixir</option>
                       <option value="gold">Gold only</option>
@@ -854,7 +848,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 sub="Automatic troop, spell, and siege upgrades"
                 action={<Switch checked={autoLab} onChange={setAutoLab} ariaLabel="Enable automatic lab research" />}
               >
-                <div className={autoLab ? '' : 'is-disabled'}>
                   <div className="form-grid">
                     <div className="f-field">
                       <label className="label" htmlFor="lab-strategy">Research priority</label>
@@ -881,7 +874,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                       </div>
                     </div>
                   </div>
-                </div>
               </Section>
 
               <Section
@@ -889,7 +881,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 sub="Upgrade order in the pet house"
                 action={<Switch checked={autoPets} onChange={setAutoPets} ariaLabel="Enable automatic pet upgrades" />}
               >
-                <div className={autoPets ? '' : 'is-disabled'}>
                   <span className="label">Priority order (top to bottom)</span>
                   {petPriorities.length === 0 ? (
                     <p className="hint">No pets in the queue. Add one below.</p>
@@ -952,7 +943,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                       ) : null}
                     </div>
                   </div>
-                </div>
               </Section>
             </>
           ) : null}

@@ -146,6 +146,16 @@ optional when they are not.
   owns halt/hysteresis and auto-collect only.
 - **Settings** owns machine-local UI preferences, diagnostics, updates, and
   the device test tools.
+- **Master switches gate the engine, not the form.** Schedule, Builders, Lab
+  and Pets stay editable while their switch is off; Save persists every value
+  and the switch alone decides whether the engine acts on it. Never hide a
+  form behind `pointer-events: none`. If a block genuinely cannot be edited,
+  use native `disabled` controls plus a visible reason (the setup wizard's
+  upgrade block and the adaptive-loot floors are the only two cases).
+- **Analytics names its window on every surface.** Session metrics reset at
+  launch (KPI strip, loot chart, outcomes, revenue, strategy table); attack
+  activity reads saved raid history. Never leave a number or chart without
+  its window in the subtitle or label.
 - Start/Stop appears in the sidebar and, contextually, on the active account
   card. Ticket-style row actions stay inside their own view.
 

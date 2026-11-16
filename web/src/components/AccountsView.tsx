@@ -325,7 +325,6 @@ const RotationPanel: React.FC<{
           <select
             id="rot-order"
             className="field select"
-            disabled={!rotation.enabled}
             value={rotation.order}
             onChange={(event) => onChange({ ...rotation, order: event.target.value as Rotation['order'] })}
           >
@@ -341,7 +340,6 @@ const RotationPanel: React.FC<{
             min={1}
             max={500}
             className="field mono"
-            disabled={!rotation.enabled}
             value={rotation.attacks_per_account}
             onChange={(event) => onChange({
               ...rotation,
@@ -354,7 +352,6 @@ const RotationPanel: React.FC<{
           role="switch"
           aria-checked={rotation.auto_start}
           aria-label="Auto-start the bot after switching accounts"
-          disabled={!rotation.enabled}
           onClick={() => onChange({ ...rotation, auto_start: !rotation.auto_start })}
           className={`btn ${rotation.auto_start ? 'primary' : ''}`.trim()}
         >

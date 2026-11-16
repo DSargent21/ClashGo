@@ -61,6 +61,14 @@ No new Go module for something the standard library or an installed package
 already does. Consequence: agent proposals that add a dependency need a stated
 reason and a decision entry here.
 
+## D-8 Deliberate pauses are not hangs
+Status: accepted
+
+Scheduler breaks, full storages and empty army publish a single halt reason
+(`BotStats.halted_reason`); watchdogs must not restart a halted bot, and pacing
+counters in `session_state.json` survive restarts. Consequence: any loop change
+must keep halt state and persistence intact, with a fake-clock test.
+
 ## D-9 One control, one home
 Status: accepted
 
@@ -73,10 +81,25 @@ percent) and make a setting look optional twice. Consequence: a new control
 joins an existing owner instead of being copied onto a second page; cross-links
 may summarise, but not edit. See `docs/UI.md` → Control ownership.
 
-## D-8 Deliberate pauses are not hangs
+## D-10 Master switches gate the engine, not the form
 Status: accepted
 
-Scheduler breaks, full storages and empty army publish a single halt reason
-(`BotStats.halted_reason`); watchdogs must not restart a halted bot, and pacing
-counters in `session_state.json` survive restarts. Consequence: any loop change
-must keep halt state and persistence intact, with a fake-clock test.
+A feature switch (schedule, builders, lab, pets, search, walls, rotation) must
+not disable its own inputs. Fields stay editable and Save writes them even
+while the feature is off; the switch is the only thing that decides whether
+the engine acts. Reason: visibly disabled controls hid a pointer-events wall,
+and a user could not prepare a feature before enabling it. Consequence: use
+native `disabled` only with a visible reason (setup wizard upgrade block,
+adaptive-loot floors); never `pointer-events: none` on a form. Regression
+guard: `TestUI_ConfigSectionsEditableWhenOff` +
+`TestUI_ConfigSectionsPersistWhileDisabled`.
+
+## D-11 Analytics states its time window
+Status: accepted
+
+Every metric, chart and table in Analytics names either "This session" or
+"Saved history". Session counters reset at launch; attack activity reads the
+persisted `attack_history.json`. Reason: the view mixed both windows, so a
+lifetime-looking number could be read as today's. Consequence: adding a card
+requires a window label; guard `TestUI_AnalyticsStatesWindow`. Changing the
+underlying aggregation is a separate decision.

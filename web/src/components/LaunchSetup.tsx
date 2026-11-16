@@ -378,12 +378,18 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                     <Switch checked={upgradesOn} onChange={setUpgradesOn} ariaLabel="Enable auto upgrades" />
                   </header>
 
-                  <div className={`launch-block${upgradesOn ? '' : ' is-disabled'}`}>
+                  {!upgradesOn ? (
+                    <p className="hint" role="status">
+                      Upgrade engine is off. Turn it on to edit these; the values shown stay saved.
+                    </p>
+                  ) : null}
+                  <div className={`launch-block${upgradesOn ? '' : ' is-disabled'}`} aria-disabled={!upgradesOn}>
                     <div className="launch-choices" role="radiogroup" aria-label="Upgrade plan">
                       <button
                         type="button"
                         role="radio"
                         aria-checked={upgradeMode === 'strategic_rush'}
+                        disabled={!upgradesOn}
                         className={`launch-choice ${upgradeMode === 'strategic_rush' ? 'active' : ''}`.trim()}
                         onClick={() => setUpgradeMode('strategic_rush')}
                       >
@@ -401,6 +407,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                         type="button"
                         role="radio"
                         aria-checked={upgradeMode === 'max'}
+                        disabled={!upgradesOn}
                         className={`launch-choice ${upgradeMode === 'max' ? 'active' : ''}`.trim()}
                         onClick={() => setUpgradeMode('max')}
                       >
@@ -429,8 +436,13 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                             key={key}
                             type="button"
                             aria-pressed={categories[key]}
+                            disabled={!upgradesOn || (categories[key] && Object.values(categories).filter(Boolean).length === 1)}
                             className={`type-chip ${categories[key] ? 'active' : ''}`.trim()}
-                            title={`${categories[key] ? 'Skip' : 'Include'} ${label.toLowerCase()} upgrades`}
+                            title={!upgradesOn
+                              ? 'Turn on the upgrade engine to edit types'
+                              : categories[key] && Object.values(categories).filter(Boolean).length === 1
+                                ? 'Keep at least one upgrade type active'
+                                : `${categories[key] ? 'Skip' : 'Include'} ${label.toLowerCase()} upgrades`}
                             onClick={() => setCategories((prev) => {
                               const nextCategories = { ...prev, [key]: !prev[key] };
                               return Object.values(nextCategories).some(Boolean) ? nextCategories : prev;
@@ -441,7 +453,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                           </button>
                         ))}
                       </div>
-                      <p className="field-hint">At least one type stays active. Click a type to include or skip it.</p>
+                      <p className="field-hint">At least one type stays active. The last one locks so the engine always has something to build.</p>
                     </div>
 
                     <div className="launch-toggle-row">
@@ -449,19 +461,19 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                         <b>Keep 1 builder for walls</b>
                         <span>Excess loot goes into walls instead of idling a builder.</span>
                       </div>
-                      <Switch checked={wallBuilder} onChange={setWallBuilder} ariaLabel="Keep 1 builder for walls" />
+                      <Switch checked={wallBuilder} onChange={setWallBuilder} disabled={!upgradesOn} ariaLabel="Keep 1 builder for walls" />
                     </div>
 
                     <div className="launch-automation">
                       <div className="automation-item">
                         <div className="automation-head">
                           <b>Laboratory</b>
-                          <Switch checked={labOn} onChange={setLabOn} ariaLabel="Automate laboratory research" />
+                          <Switch checked={labOn} onChange={setLabOn} disabled={!upgradesOn} ariaLabel="Automate laboratory research" />
                         </div>
                         <select
                           className="field select launch-order-select"
                           value={labMode}
-                          disabled={!labOn}
+                          disabled={!upgradesOn}
                           onChange={(event) => setLabMode(event.target.value as typeof labMode)}
                           aria-label="Laboratory research order"
                         >
@@ -476,7 +488,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                       <div className="automation-item">
                         <div className="automation-head">
                           <b>Hero pets</b>
-                          <Switch checked={petsOn} onChange={setPetsOn} ariaLabel="Automate hero pets" />
+                          <Switch checked={petsOn} onChange={setPetsOn} disabled={!upgradesOn} ariaLabel="Automate hero pets" />
                         </div>
                         <p className={`automation-order${petsOn ? '' : ' is-off'}`}>{petOrder.join(' → ')}</p>
                         <span className="automation-note">Upgrades follow this order when a pet is free.</span>

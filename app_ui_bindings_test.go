@@ -331,3 +331,126 @@ func TestUI_PlanAndWallControlsHaveOneHome(t *testing.T) {
 		}
 	}
 }
+
+// TestUI_ConfigSectionsEditableWhenOff enforces the honesty contract for
+// master switches: a switch turns the engine feature on/off, it must not wall
+// off its own form. Every input in Config stays editable and is written by the
+// Save button; the switch alone decides whether the engine acts on it.
+func TestUI_ConfigSectionsEditableWhenOff(t *testing.T) {
+	read := func(name string) string {
+		raw, err := os.ReadFile(filepath.Join("web", "src", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(raw)
+	}
+	configView := read(filepath.Join("components", "ConfigView.tsx"))
+	app := read("App.tsx")
+
+	forbidden := []string{
+		"is-disabled",
+		"pointer-events",
+		"disabled={!searchEnabled}",
+		"disabled={!autoBuilders}",
+		"disabled={!autoLab}",
+		"disabled={!autoPets}",
+		"disabled={!upgradeWalls",
+	}
+	for _, needle := range forbidden {
+		if strings.Contains(configView, needle) {
+			t.Errorf("ConfigView gates its form with %q; controls must stay editable and save regardless of the master switch", needle)
+		}
+	}
+
+	// The values the old gates used to lock must reach the bindings, including
+	// the resume/jitter fields that were hardcoded before T.6.
+	for _, needle := range []string{"resumeThreshold", "sessionJitter", "breakJitter"} {
+		if !strings.Contains(app, needle) {
+			t.Errorf("App save path lost %q", needle)
+		}
+	}
+}
+
+// TestUI_AnalyticsStatesWindow enforces D-9's companion rule: every number,
+// chart and table names its time window. Session metrics reset at launch;
+// attack activity reads the saved raid history. A card without a window label
+// is ambiguous by definition.
+func TestUI_AnalyticsStatesWindow(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("web", "src", "components", "Analytics.tsx"))
+	if err != nil {
+		t.Fatalf("read Analytics: %v", err)
+	}
+	analytics := string(raw)
+
+	for _, needle := range []string{
+		"session attacks",
+		"session 3★ rate",
+		"session avg loot / raid",
+		"session avg stars",
+		"Saved history",
+	} {
+		if !strings.Contains(analytics, needle) {
+			t.Errorf("Analytics lost the window label %q", needle)
+		}
+	}
+	if got := strings.Count(analytics, "This session"); got < 4 {
+		t.Errorf("Analytics labels only %d session surfaces, want chart + outcomes + revenue + strategies", got)
+	}
+	for _, ambiguous := range []string{"Session totals and per-attack averages", "Aggregated from the current report window"} {
+		if strings.Contains(analytics, ambiguous) {
+			t.Errorf("Analytics still uses the window-ambiguous copy %q", ambiguous)
+		}
+	}
+}
+
+// TestUI_ConfigSectionsPersistWhileDisabled proves the editable-before-enable
+// contract at the engine boundary: values written while every master switch is
+// off survive a save and a fresh app load. UI-only guards cannot see this.
+func TestUI_ConfigSectionsPersistWhileDisabled(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	if err := a.SaveConfig(123000, 234000, 3000, false, "", false, 0); err != nil {
+		t.Fatalf("SaveConfig with search disabled: %v", err)
+	}
+	if err := a.SetScheduleConfig(false, "08:15", "21:45", 80, 17, 25, 7, false, 8, 50); err != nil {
+		t.Fatalf("SetScheduleConfig disabled: %v", err)
+	}
+	if err := a.SetAutoUpgradeConfig(
+		false, 2, "max",
+		true, false, true, false, true,
+		700000, 0, 9000,
+		false, "spells_first", true,
+		false, []string{"Diggy", "Phoenix"},
+		"elixir",
+		false,
+	); err != nil {
+		t.Fatalf("SetAutoUpgradeConfig disabled: %v", err)
+	}
+
+	cfg := a.GetConfig()
+	if cfg.Search.Enabled || cfg.Search.MinLootGold != 123000 || cfg.Search.MinLootElixir != 234000 ||
+		cfg.Search.MinLootDarkElixir != 3000 {
+		t.Fatalf("disabled search lost form values: %+v", cfg.Search)
+	}
+	if cfg.Schedule.Enabled || cfg.Schedule.ActiveHoursStart != "08:15" ||
+		cfg.Schedule.SessionDurationMinutes != 80 || cfg.Schedule.BreakDurationMinutes != 25 ||
+		cfg.Schedule.MaxAttacksPerHour != 8 || cfg.Schedule.MaxAttacksPerDay != 50 {
+		t.Fatalf("disabled schedule lost form values: %+v", cfg.Schedule)
+	}
+	if cfg.Upgrade.AutoBuilders || cfg.Upgrade.UpgradeStrategy != "max" ||
+		!cfg.Upgrade.UpgradeDefenses || cfg.Upgrade.UpgradeResources ||
+		cfg.Upgrade.LabStrategy != "spells_first" || !cfg.Upgrade.LabAllowDE ||
+		!reflect.DeepEqual(cfg.Upgrade.PetPriorities, []string{"Diggy", "Phoenix"}) ||
+		cfg.Upgrade.WallResource != "elixir" {
+		t.Fatalf("disabled builder/lab/pet form lost values: %+v", cfg.Upgrade)
+	}
+
+	// A fresh App reads what was written; nothing here is UI memory only.
+	fresh := NewApp().GetConfig()
+	if fresh.Search.MinLootGold != 123000 || fresh.Schedule.ActiveHoursStart != "08:15" ||
+		fresh.Upgrade.LabStrategy != "spells_first" ||
+		!reflect.DeepEqual(fresh.Upgrade.PetPriorities, []string{"Diggy", "Phoenix"}) {
+		t.Fatalf("disabled section values did not survive reload: %+v %+v", fresh.Schedule, fresh.Upgrade)
+	}
+}

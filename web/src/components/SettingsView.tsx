@@ -271,7 +271,11 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
             <div className="setting-row">
               <div className="setting-label">
                 <b>Setup wizard</b>
-                <span>Replay the guided army, builder, and loot setup</span>
+                <span>
+                  {isBotRunning
+                    ? 'Stop the bot to replay the guided setup'
+                    : 'Replay the guided army, builder, and loot setup'}
+                </span>
               </div>
               <div className="setting-value">
                 <button

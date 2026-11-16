@@ -184,6 +184,25 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     root package tests pass.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.7 Honest gating + Analytics window labels**
+  - Why: Config's Schedule/Builders/Lab/Pets forms were wrapped in a
+    pointer-events wall while their master switch was off, so values could not
+    be prepared or saved; Analytics mixed session and saved-history numbers
+    under labels that did not say which was which.
+  - Fixed: every Config field is editable and persisted regardless of its
+    master switch (verified at the Go save/reload boundary). The setup wizard's
+    upgrade block is the one honestly-disabled form: native disabled controls
+    plus a visible "turn it on to edit these" reason, no pointer-events wall.
+    Rotation controls are editable while rotation is off; wall resource and
+    loot thresholds are always editable; Analytics labels every surface with
+    "This session" or "Saved history".
+  - Acceptance: no Config form uses `is-disabled`/`pointer-events`/master-switch
+    disabled attributes; values set with the feature off survive save + fresh
+    app load; every Analytics KPI/chart/table names its window; existing
+    aggregations unchanged; all views load against the Wails stub with no
+    console errors or React warnings.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

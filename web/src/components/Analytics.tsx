@@ -141,11 +141,10 @@ const LootChart: React.FC<{ history: AttackReport[] }> = ({ history }) => {
   const barWidth = Math.min(26, slot * 0.54);
   const yFor = (value: number) => top + plotHeight - (value / max) * plotHeight;
 
+  // Every legend chip toggles, including the last visible one. Refusing that
+  // click silently made the chip look broken; an all-off chart is reversible.
   const toggleSeries = (key: ChartSeriesKey) => {
-    setVisible((current) => {
-      if (current[key] && Object.values(current).filter(Boolean).length === 1) return current;
-      return { ...current, [key]: !current[key] };
-    });
+    setVisible((current) => ({ ...current, [key]: !current[key] }));
   };
 
   return (
@@ -153,7 +152,7 @@ const LootChart: React.FC<{ history: AttackReport[] }> = ({ history }) => {
       <div className="card-head">
         <div>
           <h3>Loot per raid</h3>
-          <p className="card-sub">Stacked resource yield · last 16 reported raids</p>
+          <p className="card-sub">This session · stacked resource yield · last 16 reported raids</p>
         </div>
         <div className="chart-legend" role="group" aria-label="Chart series">
           {CHART_SERIES.map((series) => (
@@ -318,15 +317,15 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
       <div className="page-head">
         <div>
           <h1>Analytics</h1>
-          <p>Loot throughput, attack outcomes, and daily activity for this profile.</p>
+          <p>Session metrics reset at launch; attack activity reads saved raid history.</p>
         </div>
       </div>
 
-      <div className="analytics-kpis">
-        <div className="analytics-kpi"><b>{exactNumber(stats.attacks_completed)}</b><span>attacks</span></div>
-        <div className="analytics-kpi"><b>{threeStarRate}%</b><span>three-star</span></div>
-        <div className="analytics-kpi"><b>{compactNumber(avgAll)}</b><span>avg loot / raid</span></div>
-        <div className="analytics-kpi"><b>{avgStars}</b><span>avg stars</span></div>
+      <div className="analytics-kpis" role="group" aria-label="This session totals">
+        <div className="analytics-kpi"><b>{exactNumber(stats.attacks_completed)}</b><span>session attacks</span></div>
+        <div className="analytics-kpi"><b>{threeStarRate}%</b><span>session 3★ rate</span></div>
+        <div className="analytics-kpi"><b>{compactNumber(avgAll)}</b><span>session avg loot / raid</span></div>
+        <div className="analytics-kpi"><b>{avgStars}</b><span>session avg stars</span></div>
       </div>
 
       <LootChart history={history} />
@@ -336,7 +335,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
           <div className="card-head">
             <div>
               <h3>Attack outcomes</h3>
-              <p className="card-sub">Star distribution across reported attacks</p>
+              <p className="card-sub">This session · star distribution across reported attacks</p>
             </div>
           </div>
 
@@ -373,7 +372,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
           <div className="card-head">
             <div>
               <h3>Revenue</h3>
-              <p className="card-sub">Session totals and per-attack averages</p>
+              <p className="card-sub">This session · loot banked and per-raid averages</p>
             </div>
           </div>
 
@@ -415,7 +414,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
           <div className="card-head">
             <div>
               <h3>Attack activity</h3>
-              <p className="card-sub">Daily raids across the last year</p>
+              <p className="card-sub">Saved history · daily raids across the last 12 months</p>
             </div>
             <div className="card-tools">
               <span className="tag">{exactNumber(activity.total)} in range</span>
@@ -485,7 +484,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
           <div className="card-head">
             <div>
               <h3>Strategy performance</h3>
-              <p className="card-sub">Aggregated from the current report window</p>
+              <p className="card-sub">This session · grouped from reported attacks</p>
             </div>
           </div>
 
