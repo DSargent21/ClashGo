@@ -334,7 +334,14 @@ func parse(r io.Reader, path string) (*Report, error) {
 		// The verifier's final per-unit line: after every retry, this card still
 		// showed content. This is a proof of an incomplete deploy, not a guess.
 		case strings.Contains(line, "verifier: unit still on the bar at battle end"):
-			if n := unitOf(line); n != "" {
+			n := unitOf(line)
+			// Run 12: the siege's fallback slot was linked without a unit name, so
+			// the proof line arrived as `category=Siege unit=`. A blank name must
+			// not let a run with an undeployed machine print a clean verdict.
+			if n == "" && strings.Contains(line, "category=Siege") {
+				n = "Siege Machine"
+			}
+			if n != "" {
 				u := get(n, line)
 				u.Verdict = Failed
 				u.Reason = "still on the bar after the verifier's retries; this unit was not placed"

@@ -52,6 +52,26 @@ func TestParseVerifierRemainingUnit(t *testing.T) {
 	}
 }
 
+// Run 12's exact proof line had no unit name: the siege slot was linked without
+// one. It must still fail the run and name the machine in the report.
+func TestParseBlankSiegeOnBarStillFails(t *testing.T) {
+	log := `23:03:16 | WRN | verifier: unit still on the bar at battle end category=Siege component=verifier unit= x=239`
+	rep, err := parse(strings.NewReader(log), "fixture.log")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	u := unit(t, rep, "Siege Machine")
+	if u.Verdict != Failed {
+		t.Fatalf("verdict = %v, want FAILED for a blank-named siege still on its card", u.Verdict)
+	}
+	if !rep.Problem() {
+		t.Fatal("a blank-named undeployed siege must flag the run")
+	}
+	if got := rep.FailedUnits(); len(got) != 1 || got[0].Name != "Siege Machine" {
+		t.Fatalf("failed units = %v, want the siege named", got)
+	}
+}
+
 // A hero with no acceptable ground is reported failed by the deploy phase, not
 // left on the bar: no tap was sent, and the report must say so.
 func TestParseHeroNoAcceptableGroundFails(t *testing.T) {

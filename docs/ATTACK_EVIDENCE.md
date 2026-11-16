@@ -55,8 +55,20 @@ battle, because run 12 spent the army.
 Siege in run 12 was refused on all three line-near retries
 (`siege_placements=0`, `siege_retries=3`). The verifier counted it
 (`last_attack_report.json`: `deploy_success: false`, `undeployed_slots: 1`) but
-logged a blank `unit=` for the unlinked fallback slot; `cmd/attack_report`
-therefore still printed a clean verdict. `markSiegeFailed` now names the slot.
+logged a blank `unit=` for the unlinked fallback slot, so `cmd/attack_report`
+printed a clean verdict. Two fixes now pin this: `markSiegeFailed` fills the
+slot name for future runs, and the parser turns a blank-name `category=Siege`
+proof line into a named FAILED unit. Re-running the CLI on run 12's own log now
+prints `Stone Slammer`-class `FAILED` (`Siege Machine`) and exits 1
+(`TestParseBlankSiegeOnBarStillFails`, `logs/live_hero_firsttap_run12_report.txt`).
+
+The hero first tap is now pinned by `TestHeroFirstTap_FirstSelectionRefusedAt*`
+(pin, formula, troop-line): each refuses the FIRST selection in the harness and
+still requires one field tap on the line with `SpotRearms==0`. Removing
+`PrimeSlot` makes all three fail with 2 field taps, so the suite would go red
+without the fix. No fresh battle has exercised the prime tap: run 12 spent the
+army (~350 troops) and training would outlast this session. The first-tap claim
+rests on that coverage plus run 12's negative evidence, not on a battle.
 
 ## Coverage-only claims (no live battle yet)
 

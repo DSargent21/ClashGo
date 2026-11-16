@@ -188,3 +188,24 @@ Format:
   `./tools/verify.sh` -> `VERIFY PASSED (full)`.
 - Live gap: army spent by run 12; hero prime and siege naming are gate-proven
   only. Next live raid must confirm both first taps land with no rescue.
+
+### 2026-11-16 — attack-polish: prime selection pinned; blank siege now fails the report
+- Added `TestHeroFirstTap_FirstSelectionRefusedAt{Pin,Formula,TroopLine}`. Each
+  models the live game: a field tap only lands after TWO card selections. The
+  tests deploy through `deploySingleHero`, require exactly one field tap on the
+  troop line, `SpotTaps==1`, `SpotRearms==0`.
+- Revert proof: removing `hm.executor.PrimeSlot(...)` makes all three fail
+  (pin/formula: 2 field taps, line: first tap refused). Restored.
+- Parser fix: a `verifier: unit still on the bar at battle end` line with
+  `category=Siege unit=` now produces a `Siege Machine` FAILED unit. Test
+  `TestParseBlankSiegeOnBarStillFails`; re-running `cmd/attack_report` on run
+  12's own log now prints `FAILED=1`, verdict must-not-call-success, exit 1.
+- No acceptable ground still reports FAILED through `deployHeroBatch`
+  (`TestHeroFirstTap_NoAcceptableGroundReportsFailed`); reduced budget case
+  lands its only placement (`TestHeroFirstTap_ReducedTapBudget`).
+- Army: run 12 spent the full 350-troop army at 23:03; no raid's worth existed
+  afterwards and training would outlast the session. Hero first-tap and siege
+  naming rest on gate/unit coverage plus run 12's negative evidence, not a
+  fresh battle.
+- Verified: `go test ./internal/attack ./internal/attacklog` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`.

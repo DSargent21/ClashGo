@@ -157,3 +157,67 @@ func TestHeroFirstTap_NoAcceptableGroundReportsFailed(t *testing.T) {
 		t.Fatalf("failure was not logged; log=%q", buf.String())
 	}
 }
+
+// twoSelectionArmHook models what the live game did in runs 10-12: a field tap
+// only lands once the hero card has been selected TWICE. With the prime tap the
+// first field tap already follows two selections; without it the first drop is
+// refused, the rescue re-arms, and SpotRearms becomes 1 — which these tests
+// reject.
+func twoSelectionArmHook(tl *tapLog) func() (float64, bool) {
+	return func() (float64, bool) {
+		if len(tl.slotTaps()) >= 2 {
+			return 0.11, true
+		}
+		return 0.74, true
+	}
+}
+
+func deployWithFirstSelectionRefused(t *testing.T, hm *HeroManager, tl *tapLog, name string, line DeployLine) *TrackedSlot {
+	t.Helper()
+	slot := heroSlotNamed(name, 287)
+	hm.slotManager = newTestSlotManager([]*TrackedSlot{slot})
+	hm.ratioHook = twoSelectionArmHook(tl)
+
+	pre := gocv.NewMat()
+	defer pre.Close()
+	if !hm.deploySingleHero(HeroDeployment{Unit: strategy.Unit{Name: name}, Slot: slot}, pre) {
+		t.Fatalf("%s: first field tap must land after the prime selection", name)
+	}
+	pts := tl.fieldTaps()
+	if len(pts) != 1 {
+		t.Fatalf("%s: field taps = %d, want 1", name, len(pts))
+	}
+	assertOnLine(t, pts[0], line, 65)
+	if slot.SpotRearms != 0 || slot.SpotTaps != 1 {
+		t.Fatalf("%s: rescue consumed: spot_taps=%d rearms=%d", name, slot.SpotTaps, slot.SpotRearms)
+	}
+	return slot
+}
+
+// (a) first selection refused at an authored PIN (run 11).
+func TestHeroFirstTap_FirstSelectionRefusedAtPin(t *testing.T) {
+	line := DeployLine{Points: []image.Point{{X: 461, Y: 130}, {X: 198, Y: 305}}}
+	hm, tl := heroHarnessWithLine(t, line)
+	hm.targetEdge = "TopLeft"
+	hm.pinnedGround = true
+	hm.pCfg.HeroTargets = map[string]image.Point{"TopLeft": {X: 321, Y: 207}}
+	deployWithFirstSelectionRefused(t, hm, tl, "archer queen", line)
+}
+
+// (b) first selection refused at a FORMULA point (run 10).
+func TestHeroFirstTap_FirstSelectionRefusedAtFormula(t *testing.T) {
+	line := DeployLine{Points: []image.Point{{X: 144, Y: 394}, {X: 359, Y: 558}}}
+	hm, tl := heroHarnessWithLine(t, line)
+	hm.formula = &formula.Formula{Units: map[string]formula.UnitEntry{
+		"archer queen": {Type: "point", P: &formula.Point{X: 283, Y: 169}},
+	}}
+	deployWithFirstSelectionRefused(t, hm, tl, "archer queen", line)
+}
+
+// (c) first selection refused even though the lead is already TROOP-LINE ground
+// (run 12): the prime tap, not the ground, is what makes the first drop land.
+func TestHeroFirstTap_FirstSelectionRefusedAtTroopLine(t *testing.T) {
+	line := DeployLine{Points: []image.Point{{X: 144, Y: 394}, {X: 359, Y: 558}}}
+	hm, tl := heroHarnessWithLine(t, line)
+	deployWithFirstSelectionRefused(t, hm, tl, "archer queen", line)
+}
