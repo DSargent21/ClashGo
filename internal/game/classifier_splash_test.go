@@ -1,8 +1,11 @@
 package game
 
 import (
+	"image"
+	"os"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
 
@@ -89,6 +92,7 @@ func TestClassify_LoadingScreenTapPrompt(t *testing.T) {
 	setRGB(m, 415, 250, 0xFF, 0xFF, 0xFF) // white glyph
 	setRGB(m, 375, 253, 0xFA, 0xFA, 0xFA) // white glyph
 	setRGB(m, 40, 40, 0x14, 0x0D, 0x1E)   // dark vignette
+	setRGB(m, 430, 398, 0x98, 0x26, 0x0B) // red chest front (the control)
 	defer m.Close()
 
 	state, _ := c.ClassifyState(m)
@@ -151,6 +155,51 @@ func TestClassify_LoadingRewardIsNotTheTapPrompt(t *testing.T) {
 	if state == StateTapToContinue {
 		t.Fatal("the loading-table reward fired the Tap! prompt rule")
 	}
+}
+
+// TestDismissLoadingChestFromTheLiveFrame drives the WHOLE dismissal path against
+// the real 1024x768 frame that restart-looped the bot after the 2026-11-16
+// disconnect: classify it, then let DismissOverlay pick its tap point. The tap has
+// to be the chest front (live 512,420) — the metal handle the old candidate
+// pointed at (495,253) advanced nothing live — with no Back and no other input.
+//
+// The frame is a live capture and stays out of the repo like the other
+// testdata/live fixtures, so this gate skips on a machine that never saw it.
+func TestDismissLoadingChestFromTheLiveFrame(t *testing.T) {
+	const path = "testdata/live/chest_loading_1024x768.png"
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("%s is not present (live captures are gitignored)", path)
+	}
+	frame := gocv.IMRead(path, gocv.IMReadColor)
+	if frame.Empty() {
+		t.Fatalf("could not read %s", path)
+	}
+	defer frame.Close()
+
+	cal := NewCalibration(frame.Cols(), frame.Rows())
+	cal.SetDisplayScale(1.1334)
+	cl := NewClassifier(cal, DefaultClassifierConfig(), zerolog.Nop())
+
+	state, score := cl.ClassifyState(frame)
+	if state != StateTapToContinue {
+		t.Fatalf("live chest frame classified as %s (score %d); the capture loop would self-heal/restart instead of dismissing it", state, score)
+	}
+
+	dev := newFrameDevice(frame.Clone())
+	defer dev.Close()
+	if acted := DismissOverlay(dev, cal, cl, StateTapToContinue, nil, zerolog.Nop()); !acted {
+		t.Fatal("dismissal refused the live chest frame")
+	}
+	if dev.wentBack {
+		t.Fatal("dismissal pressed Back on the chest screen")
+	}
+	if len(dev.recorded) != 1 {
+		t.Fatalf("want exactly 1 tap, got %d (%v)", len(dev.recorded), dev.recorded)
+	}
+	if got, want := dev.recorded[0], image.Pt(512, 420); got != want {
+		t.Fatalf("tapped %v, want the chest front %v", got, want)
+	}
+	t.Logf("live chest frame -> %s score=%d, tapped %v", state, score, dev.recorded[0])
 }
 
 // TestClassify_NewsSplash asserts the post-boot news/announcement splash

@@ -63,9 +63,10 @@ const overlayDismissSettle = 400 * time.Millisecond
 var overlayControlProbes = map[GameState][]image.Point{
 	// The "ТАР!" collect splash has no button; the prompt text IS the target, and
 	// the classifier's beige-glyph probe is the only thing on that screen the bot
-	// has ever verified. The loading-screen variant is the same gesture with its
-	// own white-glyph probe; the candidate that still reads as its control wins.
-	StateTapToContinue: {image.Pt(450, 185), image.Pt(415, 250)},
+	// has ever verified. The loading-table chest is a different signature: its
+	// metal handle (415,250) is not a control (live 2026-11-16, two taps there
+	// did nothing), so the candidate is the chest front the flow itself taps.
+	StateTapToContinue: {image.Pt(450, 185), image.Pt(430, 398)},
 	// Light-green Continue button, bottom-centre. The loading-table event
 	// reward carries the same button at its own probe.
 	StateNewsSplash: {image.Pt(403, 535), image.Pt(419, 557)},

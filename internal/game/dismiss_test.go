@@ -206,7 +206,7 @@ func TestDismissOverlayTapsTheVerifiedProbeOnly(t *testing.T) {
 		want  image.Point
 	}{
 		{StateTapToContinue, image.Pt(450, 185)}, // ТАР! collect splash
-		{StateTapToContinue, image.Pt(415, 250)}, // loading-screen Tap! prompt
+		{StateTapToContinue, image.Pt(430, 398)}, // loading-table chest front
 		{StateNewsSplash, image.Pt(403, 535)},    // news announcement Continue
 		{StateNewsSplash, image.Pt(419, 557)},    // loading-table reward Continue
 	} {

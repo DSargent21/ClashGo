@@ -499,12 +499,14 @@ func (c *Classifier) buildRules() {
 		// four-pip loading bar. Live 2026-11-16 it classified Unknown, so the
 		// bot restart-looped on it and the run had to be recovered by hand.
 		//
-		// The prompt's white glyph row (three interior pixels, measured on a
-		// live 1024x768 frame) plus the dark top-left vignette. The event
-		// reward that follows on the same table puts its headline at y≈200,
-		// not this row, and reads 150+ units off every glyph probe; the
-		// village sky/hud reads 150-250 off them too, so a bright screen
-		// cannot fake the prompt.
+		// What actually identifies this screen is the red chest on the wooden
+		// table: the white glyph row is the chest's metal handle bracket, and
+		// live 2026-11-16 a tap there (415,250) advanced nothing — the splash
+		// handler only got past the screen because the chest flow later
+		// hammered the chest body. The chest front at (430,398) is the control
+		// that opens it: (152,38,11) on both captured chest frames, gray/green
+		// on the village. MinPass 3 of 5 tolerates a lighting shift on the
+		// metal handles while still requiring the chest itself.
 		{
 			State:    StateTapToContinue,
 			Priority: 97,
@@ -518,6 +520,8 @@ func (c *Classifier) buildRules() {
 				{375, 253, 0xFA, 0xFA, 0xFA, 40},
 				// Dark near-black top-left vignette (no bright HUD)
 				{40, 40, 0x14, 0x0D, 0x1E, 30},
+				// Chest front — the point the dismissal taps
+				{430, 398, 0x96, 0x26, 0x0B, 45},
 			},
 		},
 		// StateNewsSplash is the post-boot news/announcement screen (e.g. the
