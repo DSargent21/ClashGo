@@ -75,6 +75,21 @@ ifneq ($(OPENCV_LIBDIR),)
     CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names,-dead_strip_dylibs
 endif
 
+# Release artifacts carry a pruned OpenCV. ClashGO calls only core, imgproc and
+# imgcodecs, but cgo links every gocv wrapper and pkg-config's opencv4 lists
+# every Homebrew module, so the bundle used to drag ffmpeg, GTK, OpenVINO and
+# ICU along (158 MB of dylibs). tools/slim_build.sh stages a gocv copy without
+# the unused wrappers plus an opencv4.pc whose Libs line names three modules;
+# these two variables point the release builds at it.
+#
+# Scoped to build-cli/build-gui on purpose: `make test`, `go vet ./...` and the
+# dev tools (attack_record needs highgui's Window) keep the stock module, so a
+# pruned wrapper never costs anyone an API.
+SLIM_DIR      := $(abspath $(BUILD_DIR)/slim)
+SLIM_MODFILE  := $(SLIM_DIR)/go.slim.mod
+SLIM_PC_DIR   := $(SLIM_DIR)/opencv
+SLIM_ENV      := PKG_CONFIG_PATH=$(SLIM_PC_DIR) GOFLAGS=-modfile=$(SLIM_MODFILE)
+
 .PHONY: all build build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask smoke-live smoke-live-app verify verify-fast
 
 all: build-cli build-gui
@@ -140,10 +155,13 @@ test-brew:
 	@bash tests/test_homebrew_cask.sh
 	@bash tests/test_brew_tap_sync.sh
 
-build-cli:
+$(SLIM_MODFILE): tools/slim_build.sh go.mod go.sum
+	@bash tools/slim_build.sh
+
+build-cli: $(SLIM_MODFILE)
 	@echo "Building CLI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
+	$(SLIM_ENV) MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
 
 # 24/7 daemon: runs the keepalive wrapper under a LaunchAgent so the farm
 # survives a closed terminal, a logout or a reboot, and caffeinate keeps the
@@ -321,7 +339,7 @@ attack-classify: build-attack-record
 # launches on a machine with the matching OpenCV at the same path. Bundling the
 # dylibs into Contents/Frameworks is the fix for that, and is not what this
 # flag does.
-build-gui:
+build-gui: $(SLIM_MODFILE)
 	@echo "Building GUI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
 	# -skipbindings: bindings are committed (web/wailsjs/go), and generating
@@ -330,7 +348,7 @@ build-gui:
 	# environment (CI run #11 failed here on a fresh checkout; locally the
 	# same way). Skipping it works because the committed bindings are what
 	# generation would emit.
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) wails build -o ClashGO -skipbindings -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)"
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) bash tools/build_gui.sh -o ClashGO -skipbindings -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)"
 
 # manifest target — produces build/bin/latest.json once the zip is on
 # disk. Standalone so it can be invoked from CI without a full GUI
@@ -450,9 +468,17 @@ release: checksums brew-cask
 # artifact the in-app updater installs, so it must be as self-contained as the DMG.
 build-zip: bundle-dylibs
 	@echo "Building release zip..."
+	# Removing the previous archive is not tidiness: `zip -r` UPDATES an existing
+	# file, so a rebuild appended the new bundle to whatever release the working
+	# tree last produced and grew the artifact instead of replacing it.
+	@rm -f $(BUILD_DIR)/$(RELEASE_ZIP)
 	@mkdir -p $(BUILD_DIR)/release
 	@cp -R $(BUILD_DIR)/ClashGO.app $(BUILD_DIR)/release/
-	@cd $(BUILD_DIR)/release && zip -r ../$(RELEASE_ZIP) ClashGO.app
+	# -y stores the Frameworks aliases as symlinks instead of following them:
+	# libopenblas is reachable under ten names (libopenblas.0, libcblas, liblapack,
+	# …) and without this flag zip wrote a 13 MB copy of it for each one, turning a
+	# 46 MB app into a 225 MB archive.
+	@cd $(BUILD_DIR)/release && zip -r -y ../$(RELEASE_ZIP) ClashGO.app
 	@rm -rf $(BUILD_DIR)/release
 
 clean:
