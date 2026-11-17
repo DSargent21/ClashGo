@@ -185,9 +185,8 @@ optional when they are not.
 - Segments: `.seg` + `.seg-btn.active`.
 - Tables: `.table-wrap` > `.data-table`; stars via `.stars` + `Icon name="star"`.
 - Status: `.status-pill` with `running|warn|error|info|green`; `.tag` for
-  compact metadata. Status chips use `--r-inner`, not `--pill`: with the
-  current 12px card radius and 20px inset the concentric formula clamps to
-  0px, so they stay inside the card's corner geometry.
+  compact metadata. Status chips are controls and use the compact `--r-xs`
+  badge radius, not `--pill` capsules and not the 0px card-inner fallback.
 - Settings rows share one 48px rhythm. `.settings-grid .switch-row` uses the
   same 10px vertical padding and divider as `.setting-row`; do not leave the
   appearance switches as unpadded flex rows.

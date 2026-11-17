@@ -694,3 +694,13 @@ Format:
   (full)`.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — UI: restore rounded status chips
+- Changed: `web/src/styles/design.css`, `docs/UI.md`.
+- Fixed: the card-inner zero clamp made `AWAITING` and `IDLE` square. Status
+  chips are controls, so they now use the compact 6px `--r-xs` badge radius;
+  the 999px capsule is gone, and the Settings switch-row rhythm stays.
+- Verified: computed status radius 6px; Settings and Dashboard checked at
+  1440x900 and 1920x1246 in both themes, no horizontal overflow; checks green.
+- Commit: this commit
+- Next: F.1 dead-base detection.

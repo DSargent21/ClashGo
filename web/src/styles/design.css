@@ -68,11 +68,6 @@
   --r: 12px;
   --r-sm: 8px;
   --r-xs: 6px;
-  --card-inset: 20px;
-  /* Concentric nesting: subtract the card inset and border. With 12px outer
-     and 20px inset the result clamps to 0, so nested chips stay inside the
-     card's corner geometry instead of becoming capsules. */
-  --r-inner: max(0px, calc(var(--r) - var(--card-inset) - 1px));
   --pill: 999px;
 
   --sidebar-w: 232px;
@@ -695,9 +690,9 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
   gap: 5px;
   height: 22px;
   padding: 0 8px;
-  /* Status chips are nested in the card at its 20px inset; the inner curve
-     must share that card's center instead of becoming a capsule. */
-  border-radius: var(--r-inner);
+  /* Status chips are controls, not nested card tiles: keep the compact badge
+     radius instead of a capsule or the card-inner zero-clamp. */
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--raised);
   color: var(--text-2);
