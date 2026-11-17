@@ -88,6 +88,14 @@ around a view: cards that switch between tabs must land on the same left and
 right edge. Nested tiles align to their parent card's content box, and a
 grid's outer cards align to the group's content box.
 
+Hierarchy comes from type, spacing and soft raised fills before rules. Do not
+put a divider under every row: settings, config, fact lists and tables should
+read as one surface. Reserve 1px borders for controls, selected choices, sticky
+surfaces and error/accent callouts. Nested groups use a quiet `--raised` fill
+instead of another outline; form sections and autotune are unboxed. Keep the
+dense rhythm (18px card inset, 12px view gaps, ~40px rows) unless content
+proves it needs more room.
+
 ### Motion
 
 The timings follow the consensus in [Apple's HIG](https://developer.apple.com/design/human-interface-guidelines/motion),

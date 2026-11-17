@@ -1225,6 +1225,11 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   font-size: 11.5px;
   font-weight: 500;
 }
+/* Card-like status blocks inside the update dialog follow the card radius.
+   Scoped to the modal so the shared banner primitive keeps its row radius. */
+.modal .update-warn,
+.modal .update-verified,
+.modal .error-banner { border-radius: var(--r); }
 .splash {
   position: fixed;
   inset: 0;
@@ -1965,4 +1970,102 @@ html:not(.dark) .data-table tbody tr:focus-within { background: rgba(0, 0, 0, .0
    breakpoint; the 1024px desktop minimum keeps the 3-up row. */
 @media (max-width: 900px) {
   .res-grid { grid-template-columns: 1fr; }
+}
+
+/* ===== Quiet pass: fewer rules, tighter rhythm =====
+   The setup panel is the reference: hierarchy comes from type, soft fills and
+   spacing, not a rule around every row. Keep control borders; drop dividers
+   between content. */
+.page-head { margin-bottom: var(--space-5); }
+.res-grid,
+.dash-grid,
+.dash-rail,
+.analytics-grid,
+.analytics-lower,
+.settings-grid,
+.account-grid,
+.fleet-stats,
+.config-stack,
+.section-stack,
+.army-deck { gap: 12px; }
+.card-head { padding: 18px 18px 10px; }
+.card-body { padding: 0 18px 18px; }
+.card-pad { padding: 18px; }
+
+.res-card { padding: 16px 18px 14px; }
+.stat-card { padding: 14px 16px; }
+.acct-card { padding: 16px 18px 16px; }
+.army-plan { padding: 18px; }
+.analytics-kpi { padding: 10px 16px; }
+.star-summary { padding: 0 18px 18px; gap: 18px; }
+.revenue-grid { padding: 0 18px 18px; }
+.engine-body { padding: 0 18px 16px; }
+.kv-list { padding: 0 18px 10px; }
+.console-toolbar { padding: 0 18px 10px; }
+.mini-grid { margin: 10px 0 12px; }
+.mini { padding: 8px 10px; }
+
+/* Rows get rhythm and hover, not a hairline between every pair. */
+.setting-row,
+.settings-appearance .switch-row,
+.set-row {
+  min-height: 40px;
+  padding: 7px 0;
+  border-bottom: 0;
+}
+.kv { padding: 7px 0; border-bottom: 0; }
+.autotune-row { padding: 5px 0; border-top: 0; }
+.unit-head { border-top: 0; border-bottom: 0; }
+.unit-row { border-bottom: 0; }
+.rotation-note,
+.rotation-toggle { border-top: 0; margin-top: 10px; padding-top: 0; }
+
+/* Nested blocks read as soft surfaces. Borders belong to controls and the
+   selected choice, not to every container. */
+.form-section {
+  margin-top: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.form-section-title { margin-bottom: 8px; }
+.autotune {
+  padding: 12px 14px;
+  border: 0;
+  background: var(--raised);
+}
+.mini,
+.rev-tile,
+.meta-grid div,
+.army-plan-metric,
+.army-metric { border: 0; background: var(--raised); }
+.halt-tile,
+.option-card,
+.pet-row { border-color: transparent; background: var(--raised); }
+.halt-tile:hover,
+.option-card:hover,
+.pet-row:hover { border-color: var(--border-strong); }
+
+/* Tables and logs: one surface, no row rules. */
+.table-wrap { border-top: 0; }
+.data-table th { padding: 8px 12px; border-bottom: 0; }
+.data-table td { padding: 9px 12px; border-bottom: 0; }
+.table-foot { padding: 8px 18px 12px; border-top: 0; }
+.console { border-top: 0; }
+.analytics-strategies .table-wrap { border-top: 0; }
+
+/* Analytics and Army internal rules. */
+.analytics-kpi + .analytics-kpi { border-left: 0; }
+.analytics-kpi:nth-child(n) { border-top: 0; }
+.star-rate { border-right: 0; }
+.army-plan-facts { border-top: 0; border-bottom: 0; }
+.army-plan-facts div + div { border: 0; }
+.army-plan-facts div { padding: 9px 0; }
+.army-plan-action,
+.army-plan-slot { padding-top: 12px; border-top: 0; }
+.army-phase { padding-top: 10px; border-top: 0; }
+.army-slot-block { padding: 12px 18px; border-top: 0; }
+
+@media (max-width: 760px) {
+  .star-rate { border-bottom: 0; }
 }

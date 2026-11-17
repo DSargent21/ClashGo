@@ -840,3 +840,23 @@ Format:
   (full)`.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.15: quiet surfaces and tighter rhythm
+- Changed: `web/src/styles/views.css`, `docs/UI.md`, `BUILD_PLAN.md`.
+- Fixed: used the setup panel as the reference and removed the per-row rules
+  that segmented Settings, Config, Engine/Device, Army plan facts/phases/actions,
+  rotation blocks and data tables. Nested mini/revenue/metric tiles now use soft
+  raised fills without borders; autotune and form sections are unboxed. Card
+  headers/bodies, view gaps and row heights tightened (18px card inset, 12px
+  grids, 40px rows). Controls, selected choices and error/accent callouts keep
+  their borders.
+- Verified: 24-view capture at 390x844 and 1440x900 in both themes: 0
+  horizontal overflow, 0 functional text under 11px; Settings, Config,
+  Dashboard, Accounts, Analytics and Army captures reviewed. The prior 60-state
+  edge harness still reports max card/group delta `0.0px`, max shell delta
+  `0.0px` and zero overflow.
+- Checks: `cd web && npx tsc --noEmit` PASS; `npx vite build` PASS; `node
+  --check web/public/wails-stub.js` PASS; `./tools/verify.sh` -> `VERIFY PASSED
+  (full)`.
+- Commit: this commit
+- Next: F.1 dead-base detection.

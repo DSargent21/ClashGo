@@ -371,6 +371,23 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     syntax, vite build and full verify pass.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.15 Quiet surfaces and tighter rhythm**
+  - Why: the setup panel read cleaner than the main app. Main views still put
+    a rule under nearly every row and wrapped each nested group in another
+    border, which made the UI feel segmented rather than composed.
+  - Files: `web/src/styles/views.css`, `docs/UI.md`, `PROGRESS.md`,
+    `BUILD_PLAN.md`.
+  - Fixed: dropped content dividers in settings/config rows, Engine/Device
+    facts, Army plan facts/phases/actions, rotation blocks and data tables;
+    nested tiles now use soft raised fills instead of their own outlines;
+    autotune and form sections lost their boxes. Card headers/bodies and view
+    gaps tightened (18px card inset, 12px grids, 40px row rhythm). Controls,
+    selected choices and error/accent callouts keep their borders.
+  - Acceptance: no horizontal overflow or sub-11px functional text at 390x844
+    and 1440x900 in both themes; card alignment remains within 1px; tsc, stub
+    syntax, vite build and full verify pass.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)
