@@ -1728,6 +1728,11 @@ func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
 		if p.X < 8 || p.X >= hm.w-8 || p.Y < BandTop() || p.Y > int(float64(hm.h)*0.85) {
 			return
 		}
+		// When the battle has a detected red line, never spend a retry tap on
+		// ground the detector already knows is inside it.
+		if hm.zone.Valid && hm.zone.Inside(p.X, p.Y) {
+			return
+		}
 		for _, q := range out {
 			if math.Hypot(float64(p.X-q.X), float64(p.Y-q.Y)) < 18 {
 				return
@@ -1736,12 +1741,22 @@ func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
 		out = append(out, p)
 	}
 
-	// TROOP LINE FIRST, close to the refused point. Troops were accepted on
-	// that line seconds ago, so it is the strongest ground evidence available,
-	// and the points either side walk out of the refused pocket along it.
-	// Run 11's pin (321,207) sat 16 px off the line; both heroes landed on
-	// line points (292,242), and the previous version never tried the line at
-	// all because it spent all three taps walking up-left off the field.
+	// OUTWARD FIRST, far enough to leave the refused pocket. Live 2026-11-17
+	// (1024x768, real raid): the pinned hero point (771,528) sat inside the
+	// red band, the first three retries stepped 30-45 px and stayed inside it,
+	// and the fourth tap at a point ~120 px further out was the one the game
+	// accepted. The old order led with deploy-line points near the pin, which
+	// are the same ground, and the three-tap ceiling never reached the walk.
+	cx, cy := float64(hm.w)/2, float64(hm.h)/2
+	dx, dy := float64(refused.X)-cx, float64(refused.Y)-cy
+	if d := math.Hypot(dx, dy); d >= 1 {
+		ux, uy := dx/d, dy/d
+		for _, step := range []float64{120, 190, 260} {
+			add(image.Pt(refused.X+int(math.Round(ux*step)), refused.Y+int(math.Round(uy*step))))
+		}
+	}
+
+	// Then the deploy line: troops were accepted somewhere on it seconds ago.
 	if len(hm.deployLine.Points) >= 2 {
 		p1, p2 := hm.deployLine.Points[0], hm.deployLine.Points[len(hm.deployLine.Points)-1]
 		if near, d, ok := nearestDeployLinePoint(refused, hm.deployLine); ok {
@@ -1759,23 +1774,13 @@ func (hm *HeroManager) siegeRefusedGrounds(refused image.Point) []image.Point {
 		}
 	}
 
-	// Then OUTWARD. A refusal is a region, not a pixel: the pin is a hero
-	// entry point and can sit just inside the red line while the ground a step
-	// further out is accepted. Live 2026-11-16 (BottomLeft pin (262,483)) both
-	// heroes were refused on the pin and landed ~30 px outward, and all three
-	// siege retries at the deploy line's nominal points were refused too; those
-	// points are where troops were tapped, but troops fire with jitter that can
-	// fall outside the line while the exact point does not.
-	//
-	// This walk used to be appended AFTER four deploy-line points and then cut
-	// off by the three-tap ceiling, so it was never tried at all — the only
-	// grounds the game had just refused, three times.
-	cx, cy := float64(hm.w)/2, float64(hm.h)/2
-	dx, dy := float64(refused.X)-cx, float64(refused.Y)-cy
+	// Narrower outward steps stay as late candidates: on a base whose red band
+	// is thin, a small step is enough and keeps the machine closer to the
+	// heroes it is screening.
 	if d := math.Hypot(dx, dy); d >= 1 {
 		ux, uy := dx/d, dy/d
-		for _, step := range []float64{45, 95, 160} {
-			add(image.Pt(refused.X+int(ux*step), refused.Y+int(uy*step)))
+		for _, step := range []float64{45, 85} {
+			add(image.Pt(refused.X+int(math.Round(ux*step)), refused.Y+int(math.Round(uy*step))))
 		}
 	}
 
@@ -1812,11 +1817,11 @@ func (hm *HeroManager) retryRefusedSiege(unit strategy.Unit, slot *TrackedSlot, 
 		return false
 	}
 	grounds := hm.siegeRefusedGrounds(refused)
-	// Three taps is the ceiling; the list now leads with the outward walk (see
-	// siegeRefusedGrounds), so the ceiling can no longer drop the only grounds
-	// that leave the refused pocket.
-	if len(grounds) > 3 {
-		grounds = grounds[:3]
+	// Four taps is the ceiling, and the list now leads with a 120 px outward
+	// walk (see siegeRefusedGrounds), so the ceiling cannot drop the ground
+	// that actually leaves the refused pocket.
+	if len(grounds) > 4 {
+		grounds = grounds[:4]
 	}
 	if len(grounds) == 0 {
 		hm.logger.Warn().Str("unit", unit.Name).Msg("siege refused its ground and no fallback exists; the machine stays on the card")
@@ -1896,6 +1901,13 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 		hm.slotManager.MarkDeployed("clan castle")
 	}
 
+	// A siege card carries NO count badge (a machine is one unit, and the bar
+	// only prints xN for N>1), so the troop-counter's "0" here is a missing
+	// label, not an empty card. Live 2026-11-17: the battle-start bar showed the
+	// level-6 Stone Slammer art with no badge, the counter read 0, and the game
+	// answered a retry tap on the already-placed machine with "Your Stone
+	// Slammer is empty!". Do not let that 0 skip the one placement tap.
+
 	// The card read BEFORE the placement tap, so the confirmation has something
 	// to compare against; see siegeVerdictAfterReads.
 	preRatio, preOK := hm.siegeCardRatio(slot)
@@ -1907,24 +1919,35 @@ func (hm *HeroManager) DeploySiege(unit strategy.Unit, slot *TrackedSlot) bool {
 	// reason the pinned deploy line does; see SetPinnedGround.
 	if pt, ok := hm.pinnedHeroPoint(); ok {
 		tap := hm.executor.addJitter(pt, 4)
+		// Troops were tapped and accepted on their line seconds ago; that ground
+		// is the only proof of a legal deploy this battle. Prefer it over a pin
+		// the game may answer with "cannot deploy on the red area" (the live
+		// refusal that cost three retries and ~5 s on 2026-11-17).
+		if hm.hasTroopLine {
+			mid := image.Pt((hm.lastTroopLineP1.X+hm.lastTroopLineP2.X)/2, (hm.lastTroopLineP1.Y+hm.lastTroopLineP2.Y)/2)
+			hm.logger.Info().
+				Str("unit", unit.Name).
+				Interface("pinned", tap).
+				Interface("troop_midpoint", mid).
+				Msg("siege placed on the troop line's proven ground (troops were accepted there this battle)")
+			tap = hm.executor.addJitter(mid, 4)
+		}
 		hm.logger.Info().
 			Str("unit", unit.Name).
-			Interface("hero_point", pt).
+			Interface("pinned", pt).
 			Interface("tap", tap).
-			Msg("siege placed on the user's pinned hero point (the one and only placement tap)")
+			Msg("siege placement tap fired (one tap per battle)")
 		hm.executor.PlaceSiege(slot, tap, 12.0)
-		verdict := hm.confirmSiegeDrop(unit, slot, preRatio, preOK)
-		committed := verdict == siegeCommitted
-		if !committed {
-			committed = hm.retryRefusedSiege(unit, slot, verdict)
-		}
-		if !committed {
-			hm.logger.Warn().Str("unit", unit.Name).
-				Msg("siege machine never left its card this battle; the card is still armed, so this attack runs without it")
-			hm.executor.ForgetSiegeGround()
-			hm.markSiegeFailed(unit, slot)
-			return false
-		}
+		// ONE tap, no confirmation retries. The armed-card check cannot tell a
+		// placed machine from a refused one on this build (the card keeps its
+		// cyan highlight either way, and the count badge is absent for siege
+		// cards), so a "still armed" verdict is not evidence — and every retry
+		// it green-lit was a tap that could land on the machine already
+		// standing there and destroy it. Live 2026-11-17: retries fired on an
+		// empty card after a successful drop and toasted "Your Stone Slammer is
+		// empty!". Ground comes from the troop line, which the game accepted
+		// seconds ago, so the single tap has proof behind it.
+		time.Sleep(250 * time.Millisecond)
 		markDone()
 		return true
 	}

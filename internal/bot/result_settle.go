@@ -61,8 +61,12 @@ const (
 
 	// resultSettleAttempts and resultPanelMinObserve must allow a result read
 	// beyond the latest measured bonus-count animation (8 s), then confirm it
-	// again. At 400 ms cadence this allows about 11 s of observation.
-	resultSettleAttempts = 28
+	// again. At 400 ms cadence this allows about 11 s of observation. Live
+	// 2026-11-17: a 1-star panel whose league-bonus row never painted at all
+	// burned the whole budget and was then recorded with 0 loot, so the budget
+	// also has to be long enough to survive a panel that animates in slowly
+	// (one raid needed ~25 s before its counters held still).
+	resultSettleAttempts = 40
 
 	// Never accept a stable-looking result before every bonus counter had time
 	// to animate. This exceeds the latest measured 8 s delay with 2 s margin.
@@ -137,6 +141,19 @@ func plausibleBattleResult(res game.BattleResult) bool {
 
 func plausibleResource(value, max int) bool {
 	return value >= 0 && value <= max
+}
+
+// zeroLootOnDamagingRaid reports a parsed read that cannot be true: a battle
+// that destroyed buildings looted something, so an all-zero loot AND bonus row
+// is an unread panel, not a measurement. Live 2026-11-17: an 80% victory
+// recorded 0 gold / 0 bonus after 40 reads while the identical panel layout
+// read 578,860 gold on the next raid.
+func zeroLootOnDamagingRaid(res game.BattleResult, destructionPct int) bool {
+	if destructionPct <= 0 {
+		return false
+	}
+	return res.Loot.Gold == 0 && res.Loot.Elixir == 0 && res.Loot.DarkElixir == 0 &&
+		res.Bonus.Gold == 0 && res.Bonus.Elixir == 0 && res.Bonus.DarkElixir == 0
 }
 
 func keepResultFrame(attempt, lastAttempt int, accepted, parseFailed bool) bool {
@@ -241,27 +258,45 @@ func (s *resultSettle) observe(hash uint64, res game.BattleResult, now time.Time
 			Msg("battle result accepted: panel froze and reads zero (real no-loot result)")
 		return res, true
 	case s.reads >= resultSettleAttempts:
-		// Fallback: never discard a plausible read. An OCR read that never
-		// settled (e.g. star emblem unread at this geometry, gold read fine)
-		// previously banked nothing and counted a looted win as 0 stars.
-		// Accept the best plausible read seen; caller still cross-checks
-		// stars against the destruction rule.
-		// Fallback target is the live-measured failure: star emblem reads 0
-		// while loot reads fine and the bonus column never completes. A
-		// win that reports stars>=1 with an incomplete bonus is still
-		// animating, so it stays rejected (existing contract).
+		// Bounded give-up. Never discard a plausible read: a panel that keeps
+		// animating for the whole budget (or never paints its league-bonus
+		// column at this geometry) still carries the stars and the loot rows,
+		// and recording the raid as 0 loot is worse than banking a measurement
+		// that is missing only the bonus. The read has passed
+		// plausibleBattleResult, so this is a value the OCR actually saw; the
+		// caller still cross-checks stars against the destruction rule.
+		// The give-up only banks a read that was STABLE across consecutive
+		// captures (sameRead >= 2). A panel whose numbers keep moving is not a
+		// measurement, it is a moving target — the destruction-rule stars from
+		// the caller are the only honest outcome for it.
+		if valid && s.sameRead >= 2 && !res.IsZero() {
+			s.log.Warn().
+				Int("reads", s.reads).
+				Bool("bonus_pending", bonusPending).
+				Int("stars", res.Stars).
+				Int("gold", res.Loot.Gold).
+				Int("bonus_gold", res.Bonus.Gold).
+				Float64("watched_s", watched.Seconds()).
+				Msg("battle result never fully settled; banking the stable read (league bonus may be partial)")
+			return res, true
+		}
+		// Legacy fallback for a star emblem this geometry cannot read: loot
+		// rows stable while stars read 0. The caller takes the stars from the
+		// destruction rule.
 		if s.bestValid && s.bestSeen >= 2 && !s.best.IsZero() && s.best.Stars == 0 {
 			s.log.Warn().
 				Int("reads", s.reads).
 				Bool("bonus_pending", bonusPending).
 				Int("stars", s.best.Stars).
 				Int("gold", s.best.Loot.Gold).
+				Float64("watched_s", watched.Seconds()).
 				Msg("battle result never fully settled; accepting best plausible read as fallback")
 			return s.best, true
 		}
 		s.log.Error().
 			Int("reads", s.reads).
 			Bool("bonus_pending", bonusPending).
+			Float64("watched_s", watched.Seconds()).
 			Msg("battle result OCR did not produce a plausible settled result; refusing to persist suspicious resource values")
 		return game.BattleResult{}, false
 	}

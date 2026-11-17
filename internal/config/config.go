@@ -267,8 +267,9 @@ type AttackConfig struct {
 	// battle (Return Home) and the start of the next attack sequence.
 	// Armies take real time to retrain; without this gate the bot attacked
 	// back-to-back ~8s apart with whatever the camps held (observed live:
-	// three near-identical defeats in under four minutes). 0 disables the
-	// pause.
+	// three near-identical defeats in under four minutes). Defaults to 300 s
+	// (human-paced); a config file that sets it explicitly, including 0 to
+	// disable the pause, keeps that value.
 	MinSecondsBetweenAttacks int `json:"min_seconds_between_attacks"`
 }
 
@@ -481,17 +482,22 @@ func DefaultConfig() *BotConfig {
 			SleepAfterTrain:      Duration{5 * time.Second},
 		},
 		Attack: AttackConfig{
-			Enabled:                  true,
-			StrategyFile:             paths.Resolve("strategies/auto_edrag_rush.yaml"),
-			MaxAttackPerSession:      0, // 0 = unlimited: run until the user stops the session
-			DropDelay:                Duration{500 * time.Millisecond},
-			SpellDelay:               Duration{2 * time.Second},
-			EndBattleDelay:           Duration{30 * time.Second},
-			QueenChargeAtPct:         50,
-			WardenUseAtPct:           30,
-			ReserveDEPercent:         200,
-			StallTimerSeconds:        30,
-			MinSecondsBetweenAttacks: 30,
+			Enabled:             true,
+			StrategyFile:        paths.Resolve("strategies/auto_edrag_rush.yaml"),
+			MaxAttackPerSession: 0, // 0 = unlimited: run until the user stops the session
+			DropDelay:           Duration{500 * time.Millisecond},
+			SpellDelay:          Duration{2 * time.Second},
+			EndBattleDelay:      Duration{30 * time.Second},
+			QueenChargeAtPct:    50,
+			WardenUseAtPct:      30,
+			ReserveDEPercent:    200,
+			StallTimerSeconds:   30,
+			// Five minutes between raids. The old 30 s default let a 68-minute
+			// session fire 22 attacks — a cadence no human sustains and the
+			// loudest server-side pattern the account had. The pause is still
+			// jittered ±22% with a 1-in-10 longer tail (see humanizedAttackGap),
+			// and any explicit config value overrides this default untouched.
+			MinSecondsBetweenAttacks: 300,
 		},
 		Search: SearchConfig{
 			Enabled:              true,

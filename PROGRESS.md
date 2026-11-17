@@ -640,3 +640,38 @@ Format:
   (`siege_placements=0`); battle-result OCR can fail after ~28 animation reads
   and drop the loot row (run3 recorded 0 loot on a 1-star result).
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — H.8: siege one-tap fix, result settle, human-paced default
+- Siege cause (live, three raids + screenshots): the Stone Slammer card carries
+  NO count badge (a siege is one unit; the bar only prints xN for N>1), so the
+  troop counter read slot 239 as 0. The armed-card check also reads the card as
+  "still armed" after a successful drop, so every confirmation called a placed
+  machine a refusal, fired up to four retries on the now-empty card (the game
+  answered "Your Stone Slammer is empty!") and burned 5-7 s of the window.
+  Confirmed with battle-start bar captures and the result panel's expended strip.
+- Fix: siege is one tap on the troop line's midpoint — ground the game accepted
+  seconds earlier — with no confirmation retries and no count-based skip. The
+  refused-ground retry path is not entered from this path any more.
+- Live proof (`tmp/evdev_run10.log`): siege phase 912 ms (was 5448-7078 ms),
+  siege_placements=1, siege_retries=0, and the result panel's expended strip
+  shows the x1 Stone Slammer. Raid 80% / 1 star, Gold 437,708 + 320,000 bonus,
+  Elixir 689,603, DE 4,765. Deploy window 12.8 s (Balloons 2.2, EDrags 3.0,
+  Siege 0.9, Spells 1.0, Heroes 5.5).
+- Result parsing: 40 settle attempts; a stable read is banked at the bounded
+  give-up with a warning and a partial bonus is never invented; a win that
+  reads zero loot on a raid with destruction is treated as a parse failure, not
+  a zero-loot row (`zeroLootOnDamagingRaid`). Live raids captured with stars,
+  destruction and loot: 100%/3 stars 578,860+320,000; 70%/1 star
+  476,112+320,000; 49%/0 stars 302,715; 80%/1 star 437,708+320,000.
+- Cadence: shipped default `min_seconds_between_attacks` 30 s -> 300 s, ±22%
+  jitter and the 1-in-10 long tail unchanged; an explicit config value still
+  overrides it (test `TestAttackIntervalDefaultIsHumanPacedAndConfigurable`).
+  Live test config set 300 explicitly and the cooldown waited it out.
+- Verified: `./tools/verify.sh` PASS; `go test ./internal/attack ./internal/adb
+  ./cmd/tapaudit` PASS; `tapaudit -trace tmp/evdev_taps10.ndjson -assert-human`
+  exit 0 (56 taps, min gap 65 ms, no fixed-interval run).
+- Open: the 22:18:39 raid still exists in history as 80% / 0 loot — that read
+  predates the zero-loot guard; no way to recover its loot row. The result OCR
+  needs 13-19 reads on this geometry (~10-15 s) before the bonus column holds
+  still; it is bounded and logged, not silent.
+- Next: F.1 dead-base detection.

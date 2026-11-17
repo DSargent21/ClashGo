@@ -44,7 +44,10 @@ full army, inside the 7 s `DeployGoal`. Hero abilities moved from 80 ms apart to
 ### 2. Every raid started on the same beat
 
 `min_seconds_between_attacks` was applied verbatim: Return Home, wait exactly
-30 s, search. Fifty raids a day, all 30 s apart.
+30 s, search. Fifty raids a day, all 30 s apart. The shipped default is now
+300 s (a raid every ~5-6 min, plus the pauses below); an explicit
+`min_seconds_between_attacks` in config.json still overrides it, including a
+faster value the user chooses for themselves.
 
 Now `humanizedAttackGap` applies ±22% and, about one raid in ten, a 30-150 s
 extra pause (checking the result, answering a message). The configured value

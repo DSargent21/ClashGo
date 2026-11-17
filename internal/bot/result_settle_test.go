@@ -79,8 +79,12 @@ func TestResultSettleAcceptsStableResultAfterLateLeagueBonus(t *testing.T) {
 }
 
 // TestResultSettleWaitsForCompleteLeagueBonus pins the league-bonus gate: a
-// win with no bonus, or with mismatched gold/elixir bonus, is unfinished or
-// misread even after the observation window.
+// win with no bonus, or with mismatched gold/elixir bonus, never SETTLES inside
+// the observation window. At the end of the budget it is banked as a stable
+// read with whatever bonus rows the panel painted (live 2026-11-17: a 1-star
+// panel on this geometry never painted a bonus row at all, and the strict
+// contract recorded the whole raid as 0 loot instead). The loot rows are the
+// measurement the caller needs; the bonus is logged as possibly partial.
 func TestResultSettleWaitsForCompleteLeagueBonus(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -99,13 +103,26 @@ func TestResultSettleWaitsForCompleteLeagueBonus(t *testing.T) {
 				Bonus: tc.bonus,
 			}
 
-			// Eleven seconds of an unchanging but incomplete win: beyond the
-			// observation window it must still be rejected, not banked.
+			last := resultSettleAttempts - 1
+			accepted := false
 			for i := 0; i < resultSettleAttempts; i++ {
 				got, ok := settle.observe(200, win, base.Add(time.Duration(i)*resultSettleAnimatingPause))
-				if ok {
-					t.Fatalf("capture %d accepted an incomplete league bonus: %+v", i, got)
+				if !ok {
+					continue
 				}
+				if i != last {
+					t.Fatalf("capture %d accepted an incomplete league bonus; only the bounded give-up may bank it: %+v", i, got)
+				}
+				if got.Stars != win.Stars || got.Loot != win.Loot {
+					t.Fatalf("give-up banked %+v, want the stable stars/loot %+v", got, win)
+				}
+				if got.Bonus != win.Bonus {
+					t.Fatalf("give-up invented a bonus: %+v, want %+v", got.Bonus, win.Bonus)
+				}
+				accepted = true
+			}
+			if !accepted {
+				t.Fatal("bounded give-up refused a stable, plausible win read; the raid would record zero loot")
 			}
 		})
 	}
@@ -317,6 +334,25 @@ func TestBattleResultIsZero(t *testing.T) {
 	for _, tc := range cases {
 		if got := tc.res.IsZero(); got != tc.want {
 			t.Errorf("%s: IsZero() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestZeroLootOnDamagingRaidIsNotAResult(t *testing.T) {
+	cases := []struct {
+		name    string
+		res     game.BattleResult
+		pct     int
+		wantBad bool
+	}{
+		{"80% victory read as zero loot", game.BattleResult{Stars: 1}, 80, true},
+		{"no damage, zero loot (a genuine defeat)", game.BattleResult{}, 0, false},
+		{"damage with loot", game.BattleResult{Stars: 1, Loot: loot(500_000, 0, 0)}, 60, false},
+		{"damage with bonus only", game.BattleResult{Stars: 1, Bonus: loot(320_000, 320_000, 0)}, 70, false},
+	}
+	for _, tc := range cases {
+		if got := zeroLootOnDamagingRaid(tc.res, tc.pct); got != tc.wantBad {
+			t.Errorf("%s: zeroLootOnDamagingRaid(%+v, %d) = %v, want %v", tc.name, tc.res, tc.pct, got, tc.wantBad)
 		}
 	}
 }

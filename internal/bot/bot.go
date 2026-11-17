@@ -2480,6 +2480,20 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			}
 		}
 
+		// A raid that damaged the base cannot have looted nothing. When every
+		// loot row reads zero anyway, the panel was not understood (live
+		// 2026-11-17: an 80% victory recorded 0 gold / 0 bonus after 40 reads,
+		// while the same panel layout read 578,860 gold on the next raid). Keep
+		// the destruction-derived stars but do not persist a fabricated zero
+		// loot row; the failure is logged as a parse failure instead.
+		if parsedOK && zeroLootOnDamagingRaid(parsedResult, finalPct) {
+			b.logger.Error().
+				Int("destruction_pct", finalPct).
+				Int("stars", parsedResult.Stars).
+				Msg("battle result read zero loot on a raid that destroyed buildings; treating the read as a parse failure, not as loot")
+			parsedOK = false
+		}
+
 		if parsedOK {
 			battleStars = parsedResult.Stars
 			battleGold = parsedResult.Loot.Gold

@@ -36,12 +36,12 @@ func TestResultSettleFallbackBanksLootWhenBonusRowNeverPaints(t *testing.T) {
 		}
 		got, settled = s.observe(uint64(i+1), r, start.Add(time.Duration(i)*resultSettleAnimatingPause))
 	}
-	if settled {
-		t.Fatal("strict settle accepted a read with no league-bonus row; the victory wait contract must hold")
-	}
-	got, ok := s.Fallback()
-	if !ok {
-		t.Fatal("fallback refused a repeated, plausible, non-zero read")
+	if !settled {
+		var ok bool
+		got, ok = s.Fallback()
+		if !ok {
+			t.Fatal("neither the bounded give-up nor the fallback banked a repeated, plausible, non-zero read")
+		}
 	}
 	if got.Loot.Gold != 1159086 || got.Loot.Elixir != 535916 || got.Loot.DarkElixir != 8670 {
 		t.Fatalf("fallback lost loot: %+v", got.Loot)
