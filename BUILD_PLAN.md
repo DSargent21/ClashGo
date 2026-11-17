@@ -260,6 +260,30 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     syntax, UI guards and full verify pass; all views render running and idle.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.10 Responsive UI polish + Wails parity**
+  - Why: T.9 unified the visual language, but narrow and 1024px layouts still
+    clipped the Config subnav, left the third Dashboard resource card alone,
+    hid the wizard exit, and stretched an empty delete hit area in Accounts.
+  - Files: `web/src/App.tsx`, `web/src/components/{AccountsView,ConfigView,
+    LaunchSetup}.tsx`, `web/src/components/ui/Switch.tsx`,
+    `web/src/styles/{design,views}.css`, `docs/UI.md`.
+  - Fixed: forced icon rail below 900px and a 68px rail below 760px; reset
+    content scroll on tab changes and Config sub-tabs; kept master switches
+    labelled and top-right at narrow widths; two-column subnav below 520px;
+    filled the wide subnav/tab strip; kept the 3-up Dashboard resource strip at
+    1024px; stacked Settings rows and wizard automation on narrow; restored a
+    visible wizard exit (`Set up manually`); hid the 52-column heatmap month
+    labels below 760px; compacted the Accounts delete action; normalized
+    remaining 8/10/12/16px radii to the 14/9/6 tokens; raised light off-state
+    contrast to 66% and styled disabled primaries as inert neutrals.
+  - Acceptance: all primary views, empty states, off states and all three
+    wizard steps reviewed at 390x844 and 1440x900 in both themes; 1024x768
+    checked as the Wails minimum; no horizontal page overflow in reviewed
+    states; tsc and full verify green; Wails `.app` builds and its 1200x850
+    render matches the stub apart from native window chrome, version and live
+    device data.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

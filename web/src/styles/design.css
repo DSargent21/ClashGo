@@ -245,7 +245,7 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   background: var(--raised);
   border: 1px solid var(--border-strong);
   overflow: hidden;
@@ -624,7 +624,15 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
 .btn.ghost:hover { background: var(--raised); border-color: var(--border); }
 .btn.sm { height: 30px; padding: 0 11px; font-size: 11.5px; gap: 5px; }
 .btn.block { width: 100%; }
-.btn:disabled { opacity: .42; cursor: not-allowed; pointer-events: none; }
+.btn:disabled { opacity: .55; cursor: not-allowed; pointer-events: none; }
+/* A disabled primary should read as inert, not as a low-contrast gold CTA. */
+.btn.primary:disabled {
+  background: var(--raised);
+  border-color: var(--border);
+  color: var(--text-3);
+  box-shadow: none;
+  opacity: 1;
+}
 .btn.saved { background: var(--green); border-color: var(--green); color: #06130D; }
 .btn.failed { background: var(--red); border-color: var(--red); color: #FFF; }
 
@@ -821,16 +829,19 @@ select.field,
   opacity: .58;
   transition: opacity var(--motion-base) var(--ease-out);
 }
+html:not(.dark) .off-block { opacity: .66; }
 .off-block:focus-within { opacity: .85; }
+html:not(.dark) .off-block:focus-within { opacity: .9; }
 .off-note {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   margin-bottom: 12px;
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: 11px;
+  line-height: 1.5;
 }
-.off-note svg { flex: none; color: var(--text-faint); }
+.off-note svg { flex: none; margin-top: 2px; color: var(--text-faint); }
 
 .note {
   padding: 10px 12px;
@@ -880,13 +891,22 @@ select.field,
 .switch-row .switch-text b { display: block; font-size: 12.5px; font-weight: 500; color: var(--text); }
 .switch-row .switch-text span { display: block; margin-top: 1px; font-size: 11px; color: var(--text-3); }
 
+.master-toggle { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.master-state {
+  color: var(--text-3);
+  font: 600 9.5px var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.master-state.on { color: var(--text-2); }
+
 /* Segmented control */
 .seg {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   padding: 3px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--border);
   background: var(--bg);
   max-width: 100%;
@@ -910,6 +930,7 @@ select.field,
 }
 .seg-btn:hover { color: var(--text-2); }
 .seg-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .035); }
+html:not(.dark) .seg-btn.active { box-shadow: 0 1px 2px rgba(0, 0, 0, .08), inset 0 1px 0 rgba(255, 255, 255, .9); }
 
 /* Search field */
 .search {
@@ -1161,7 +1182,7 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-radius: 16px;
+  border-radius: var(--r);
   border: 1px solid var(--border-strong);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
@@ -1212,7 +1233,7 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   height: 44px;
   display: grid;
   place-items: center;
-  border-radius: 12px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--border);
   background: var(--raised);
   color: var(--text-3);
@@ -1274,13 +1295,31 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   .clock { display: none; }
 }
 
+/* Below 900px the sidebar is always the icon rail; the topbar toggle would
+   have nothing to expand, so it is hidden rather than left as a dead button. */
+@media (max-width: 900px) {
+  .sidebar-toggle { display: none; }
+}
+
 @media (max-width: 760px) {
+  :root { --rail-w: 68px; }
   .topbar { padding: 0 14px; gap: 8px; }
-  .crumb span { display: none; }
+  .crumb span,
+  .crumb svg { display: none; }
   .content { padding: 16px; }
   .page-head { align-items: flex-start; flex-direction: column; }
   .stat-strip { grid-template-columns: 1fr; }
   .drawer { width: 100%; max-width: 100%; }
+  .sidebar.collapsed { padding: 0 8px 12px; }
+  .sidebar.collapsed .side-drag { height: 24px; }
+  .sidebar.collapsed .brand { padding-left: 9px; }
+  .sidebar.collapsed .nav-btn { padding: 0 8px 0 17.5px; }
+  .card-head { flex-wrap: wrap; row-gap: 10px; }
+  .card-tools { flex-wrap: wrap; }
+  /* Master switches stay on the title row so the ON/OFF position does not
+     jump between cards with short and long subtitles. */
+  .card-master .card-head { flex-wrap: nowrap; }
+  .card-master .card-head > div:first-child { min-width: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

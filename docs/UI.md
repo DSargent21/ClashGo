@@ -104,15 +104,36 @@ which once left the sparkline drawn only part-way across its card.
 - Fixed sidebar: 38px draggable strip reserved for macOS traffic lights, brand,
   grouped nav, and one Start/Stop control. Starts as an 84px rail
   below 1150px on first run; the top-bar toggle or Cmd/Ctrl+B collapses and
-  expands it at any width. The preference persists.
+  expands it at any width. The preference persists. Below 900px the rail is
+  forced regardless of the stored preference; below 760px it narrows to 68px
+  and the top-bar toggle and breadcrumb trail are hidden.
 - Sticky 56px top bar: sidebar toggle, breadcrumb, a session-status pill
   (Idle/Farming + active account), updater banner when an update exists, and
   the live clock. ADB health lives on Dashboard/Settings; the theme switch
-  lives in Settings. Interactive children need `no-drag`.
-- `.content` is the only scroll container. Top bar stays outside it.
+  lives in Settings. Interactive children need `no-drag`. The status cluster
+  hides below 760px.
+- `.content` is the only scroll container. Top bar stays outside it. A main-tab
+  change scrolls it to the top, and a Config sub-tab change does the same (the
+  subnav is sticky on desktop and static on narrow windows).
+
+Responsive frame:
+
+- `<=1150px`: Settings drops to one column and the first-run sidebar starts as
+  a rail.
+- `<=1024px`: Analytics KPIs and fleet stats become two columns; the Dashboard
+  resource strip stays three-up so its three cards never leave an orphan.
+- `<=900px`: sidebar is always the icon rail and the top-bar toggle is hidden.
+- `<=760px`: 68px rail, one-column page grids, stacked page heads and setting
+  rows, 16px content padding, and heatmap month labels hidden (52 weekly
+  columns cannot fit them; the card subtitle still names the 12-month range).
+- `<=520px`: Config subnav becomes a two-column tab grid.
 
 Wails rules: any new draggable region gets `draggable`; buttons inside it get
 `no-drag`. Do not wrap the shell in a transform — it breaks fixed overlays.
+The Wails window is `MinWidth 1024 / MinHeight 768`; narrower layouts are for
+browser preview and do not imply a 390px desktop window. The macOS native
+window chrome is configured `NSAppearanceNameDarkAqua`; only the content
+palette follows `html.dark`.
 
 ## Launch setup
 
@@ -133,6 +154,10 @@ together.
 - Plan choices are a two-up comparison on wide windows and one column when
   the panel is narrow. The rate is the loudest value, the recommendation is
   plain accent text, and the selected plan takes the gold radio.
+- Below 880px the left rail becomes a horizontal step strip. The rail footer
+  is hidden there, so the content header carries a `Set up manually` exit;
+  never trap a narrow user inside the wizard. Builder lab/pet columns stack
+  below 680px.
 - Adaptive loot owns the floors: while it is on, the three floor inputs are
   disabled and dimmed. Turning it off restores manual editing.
 - Dry run is a Config → Builders control, not part of setup.
@@ -155,9 +180,11 @@ optional when they are not.
 - **Master switches gate the engine, not the form.** Schedule, Builders, Lab
   and Pets stay editable while their switch is off; Save persists every value
   and the switch alone decides whether the engine acts on it. Wrap dependent
-  blocks in `.off-block` at 58% opacity and add a one-line `.off-note` that
-  says the values still save; focus inside restores opacity. Never hide a
-  form behind `pointer-events: none`. If a block genuinely cannot be edited,
+  blocks in `.off-block` at 58% dark / 66% light opacity and add a one-line
+  `.off-note` that says the values still save; focus inside restores opacity
+  to 85/90. Use `MasterToggle` in card heads so the ON/OFF state stays visible
+  and stays on the title row at narrow widths. Never hide a form behind
+  `pointer-events: none`. If a block genuinely cannot be edited,
   use native `disabled` controls plus a visible reason. Allowed cases: the
   setup wizard's upgrade block and adaptive-loot floors, Settings device
   tests while the bot runs, and replaying the wizard mid-run.
@@ -192,8 +219,11 @@ optional when they are not.
 - Off states: `.off-block` dims a dependent form without disabling it;
   `.off-note` carries the reason and the save promise. Use both together.
 - Switches: `<Switch checked onChange ariaLabel />` in a control slot;
-  `<SwitchRow checked onChange label description />` when the label is the row.
-- Segments: `.seg` + `.seg-btn.active`.
+  `<SwitchRow checked onChange label description />` when the label is the row;
+  `<MasterToggle>` for a card's gating switch (adds visible ON/OFF text).
+- Segments: `.seg` + `.seg-btn.active`. Config subnav buttons share the row
+  width, then switch to a two-column grid at 520px; do not leave a long empty
+  track beside content-sized tabs.
 - Tables: `.table-wrap` > `.data-table`; stars via `.stars` + `Icon name="star"`.
 - Status: `.status-pill` with `running|warn|error|info|green`; `.tag` for
   compact metadata.
@@ -236,7 +266,8 @@ to Wails or runtime data.
 2. Render it inside `.content`; start with `.page-head` (h1 + one-line purpose).
 3. Compose from `.card`, `.stat-strip`, `.set-row`, and the table primitives.
 4. Put layout-only rules in `views.css`, shared primitives in `design.css`.
-5. Verify both themes at 1440×900 and 1024 width, and check keyboard flow.
+5. Verify both themes at 1440×900, 1024×768, and 390×844; check keyboard
+   flow and horizontal overflow. The 390px pass is browser-preview only.
 
 ## Theme and preferences
 

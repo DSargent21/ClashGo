@@ -245,7 +245,17 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
 
         <div className="launch-main">
           <header className="launch-head">
-            <span className="launch-step-label">Step {step + 1} of {STEPS.length}</span>
+            <div className="launch-head-top">
+              <span className="launch-step-label">Step {step + 1} of {STEPS.length}</span>
+              <button
+                type="button"
+                className="launch-skip"
+                onClick={onManual}
+                disabled={busy}
+              >
+                Set up manually
+              </button>
+            </div>
             <h1 id="launch-title">{stepInfo.title}</h1>
             <p id="launch-desc">{stepInfo.blurb}</p>
           </header>
@@ -578,8 +588,9 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                         <div>
                           <b>Adaptive loot</b>
                           <span>
-                            Sets the floors above from what you actually see. Needs about {options?.min_samples ?? 40} bases;
-                            your numbers seed it until then.
+                            {adaptive
+                              ? `Sets the floors above from what you actually see. Needs about ${options?.min_samples ?? 40} bases; your numbers seed it until then.`
+                              : 'Off — the floors above are used exactly as entered.'}
                           </span>
                         </div>
                         <Switch checked={adaptive} onChange={setAdaptive} ariaLabel="Adaptive loot" />

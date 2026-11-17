@@ -6,8 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **T.9 UI polish: one design language, honest off states, Army
-  loot rates** (see the 2026-11-17 session log entry).
+- Last task: **T.10 Responsive UI polish + Wails parity** (see the
+  2026-11-17 session log entry).
 - Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`).
 - Last green commit: see `git log -1`.
 - Verify gate: `./tools/verify.sh` (full) / `./tools/verify.sh --fast`.
@@ -700,5 +700,38 @@ Format:
   and network clean. Visual review of Dashboard, Army, Config (Search,
   Schedule), Accounts, Settings, Analytics and the launch wizard; not a
   click-through of every tab at every window size.
+- Commit: this commit
+- Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.10: responsive polish + Wails parity
+- Changed: `web/src/App.tsx`, `web/src/components/{AccountsView,ConfigView,
+  LaunchSetup}.tsx`, `web/src/components/ui/Switch.tsx`,
+  `web/src/styles/{design,views}.css`, `docs/UI.md`, `BUILD_PLAN.md`.
+- Fixed:
+  - Frame: forced icon rail below 900px, 68px rail below 760px, sidebar toggle
+    and breadcrumb trail hidden there; main-tab and Config sub-tab changes now
+    reset `.content` scroll instead of opening a form mid-page.
+  - Header actions: master switches use visible ON/OFF text and stay on the
+    title row at narrow widths; Settings switch rows and the wizard's lab/pet
+    columns stack cleanly; the wizard keeps a `Set up manually` exit at narrow
+    widths instead of hiding its only way out; adaptive-loot copy now reflects
+    the off state.
+  - Density: Config subnav uses the full row at wide widths and a 2-column grid
+    below 520px (no clipped `Schedule`); Dashboard keeps its 3-up resource strip
+    at the Wails minimum 1024px; heatmap month labels hide below 760px where 52
+    columns cannot hold them.
+  - Detail: compact Accounts delete action (no stretched empty button), gold
+    tone for Gold banked, remaining 8/10/12/16px surface radii normalized to
+    the 14/9/6 tokens, light off-block adjusted to 66% (focus 90%) and disabled
+    primaries rendered as inert neutrals.
+- Verified: `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js`
+  PASS; `./tools/verify.sh` -> `VERIFY PASSED (full)`; `make build-gui` ->
+  built `build/bin/ClashGO.app`. Stub screenshots reviewed at 390x844 and
+  1440x900 in light and dark, plus 1024x768 with the sidebar both collapsed
+  and expanded: every primary view, empty state, Config off state, and all
+  three wizard steps. Wails 1200x850 dark render matches the stub except
+  native macOS window chrome, version string, and live ADB/config data; the
+  macOS window appearance remains `NSAppearanceNameDarkAqua` as documented,
+  and sub-1024 layouts remain browser-preview only.
 - Commit: this commit
 - Next: F.1 dead-base detection.

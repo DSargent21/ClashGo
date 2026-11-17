@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import AccountsView from './components/AccountsView';
@@ -107,6 +107,8 @@ const getInitialDarkMode = (): boolean => {
   }
 };
 
+const NARROW_NAV_QUERY = '(max-width: 900px)';
+
 const getInitialSidebarExpanded = (): boolean => {
   try {
     const stored = localStorage.getItem('sidebarExpanded');
@@ -115,6 +117,14 @@ const getInitialSidebarExpanded = (): boolean => {
     return window.innerWidth > 1150;
   } catch {
     return true;
+  }
+};
+
+const getInitialNarrowNav = (): boolean => {
+  try {
+    return window.matchMedia(NARROW_NAV_QUERY).matches;
+  } catch {
+    return window.innerWidth <= 900;
   }
 };
 
@@ -222,6 +232,7 @@ function App() {
   const [adbPort, setAdbPort] = useState(5555);
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
   const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarExpanded);
+  const [narrowNav, setNarrowNav] = useState(getInitialNarrowNav);
   const [reduceMotion, setReduceMotion] = useState(() => getInitialBoolean('reduceMotion', false));
   const [compactMode, setCompactMode] = useState(() => getInitialBoolean('compactMode', false));
   const [clock24h, setClock24h] = useState(() => getInitialBoolean('clock24h', true));
@@ -558,6 +569,25 @@ function App() {
     }
   }, [sidebarExpanded]);
 
+  // Below 900px the sidebar is a fixed icon rail. Keeping the stored
+  // expanded preference lets a wide window restore the user's layout.
+  useEffect(() => {
+    const media = window.matchMedia(NARROW_NAV_QUERY);
+    const sync = () => setNarrowNav(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+
+  const navExpanded = sidebarExpanded && !narrowNav;
+
+  // Each page owns its own scroll position; reusing the previous page's offset
+  // dropped a freshly opened Config mid-form and hid its page head.
+  const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [tab]);
+
   useEffect(() => {
     document.documentElement.classList.toggle('reduce-motion', reduceMotion);
     try {
@@ -604,12 +634,12 @@ function App() {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
         event.preventDefault();
-        setSidebarExpanded((value) => !value);
+        if (!narrowNav) setSidebarExpanded((value) => !value);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [narrowNav]);
 
   const saveSettings = async () => {
     await SaveConfig(
@@ -1039,23 +1069,23 @@ function App() {
       <Sidebar
         tab={tab}
         setTab={setTab}
-        expanded={sidebarExpanded}
+        expanded={navExpanded}
         running={isRunning}
         onStart={handleStart}
         onStop={handleStop}
       />
 
-      <main className={`main ${sidebarExpanded ? '' : 'main--collapsed'}`}>
+      <main className={`main ${navExpanded ? '' : 'main--collapsed'}`}>
         <header className="topbar draggable">
           <div className="topbar-left">
             <button
               type="button"
               onClick={() => setSidebarExpanded(!sidebarExpanded)}
-              className="icon-btn plain no-drag"
-              aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-              aria-expanded={sidebarExpanded}
+              className="icon-btn plain no-drag sidebar-toggle"
+              aria-label={navExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+              aria-expanded={navExpanded}
               aria-controls="app-sidebar"
-              title={`${sidebarExpanded ? 'Collapse' : 'Expand'} sidebar (⌘B)`}
+              title={`${navExpanded ? 'Collapse' : 'Expand'} sidebar (⌘B)`}
             >
               <Icon name="sidebar" size={16} />
             </button>
@@ -1091,7 +1121,7 @@ function App() {
           </div>
         </header>
 
-        <div className="content">
+        <div className="content" ref={contentRef}>
           {tab === 'dashboard' && (
             <Dashboard
               {...dashboardProps}

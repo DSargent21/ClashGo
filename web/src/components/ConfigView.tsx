@@ -2,7 +2,7 @@ import React from 'react';
 import { main } from '../../wailsjs/go/models';
 import { compactNumber, exactNumber } from '../utils';
 import Icon, { IconName } from './ui/Icon';
-import { Switch, SwitchRow } from './ui/Switch';
+import { MasterToggle, Switch } from './ui/Switch';
 
 interface ConfigViewProps {
   goldThreshold: number;
@@ -105,12 +105,14 @@ const Section: React.FC<{
   title: string;
   sub?: string;
   action?: React.ReactNode;
+  /** Header action is the card's master switch; keep it on the title row when narrow. */
+  master?: boolean;
   /** Visual de-emphasis only: controls stay editable and Save still writes them. */
   off?: boolean;
   offNote?: string;
   children: React.ReactNode;
-}> = ({ title, sub, action, off = false, offNote, children }) => (
-  <section className="card">
+}> = ({ title, sub, action, master = false, off = false, offNote, children }) => (
+  <section className={`card ${master ? 'card-master' : ''}`.trim()}>
     <div className="card-head">
       <div>
         <h3>{title}</h3>
@@ -193,6 +195,10 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   onSave,
 }) => {
   const [activeTab, setActiveTab] = React.useState<ConfigSubTab>('attack');
+  const pageRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    pageRef.current?.closest<HTMLElement>('.content')?.scrollTo({ top: 0 });
+  }, [activeTab]);
   const [saveStatus, setSaveStatus] = React.useState<SaveStatus>('idle');
   const [lastSaveError, setLastSaveError] = React.useState<string | null>(null);
   const savedTimerRef = React.useRef<number | null>(null);
@@ -290,7 +296,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   ];
 
   return (
-    <div className="config-page">
+    <div className="config-page" ref={pageRef}>
       <div className="page-head">
         <div>
           <h1>Config</h1>
@@ -334,8 +340,9 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               <Section
                 title="Search & loot"
                 sub="Matchmaking acceptance thresholds and the strategy to execute"
+                master
                 action={(
-                  <Switch
+                  <MasterToggle
                     checked={searchEnabled}
                     onChange={setSearchEnabled}
                     ariaLabel="Enable search"
@@ -383,7 +390,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     </span>
                   </div>
                   <div className="set-ctl">
-                    <Switch
+                    <MasterToggle
                       checked={autoLoot?.enabled ?? false}
                       onChange={(v) => void onToggleAutoLoot(v)}
                       ariaLabel="Auto loot tuning"
@@ -598,10 +605,11 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
             <Section
               title="Schedule & anti-ban"
               sub="Humanized sessions, natural breaks, and offline simulation"
+              master
               off={!scheduleEnabled}
               offNote="The schedule is off — the bot runs continuously. Every value below is saved and applies when you turn it on."
               action={(
-                <Switch
+                <MasterToggle
                   checked={scheduleEnabled}
                   onChange={setScheduleEnabled}
                   ariaLabel="Enable 24/7 schedule"
@@ -722,10 +730,11 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
             <Section
               title="Village builders & upgrades"
               sub="Builder assignment, hero priority, spend limits, and walls"
+              master
               off={!autoBuilders}
               offNote="Automatic builders are off — nothing below runs, but every value is saved for when you enable it."
               action={(
-                <Switch
+                <MasterToggle
                   checked={autoBuilders}
                   onChange={setAutoBuilders}
                   ariaLabel="Enable automatic builders"
@@ -883,9 +892,10 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               <Section
                 title="Laboratory research"
                 sub="Automatic troop, spell, and siege upgrades"
+                master
                 off={!autoLab}
                 offNote="Automatic research is off — the order and DE permission below are saved for when you enable it."
-                action={<Switch checked={autoLab} onChange={setAutoLab} ariaLabel="Enable automatic lab research" />}
+                action={<MasterToggle checked={autoLab} onChange={setAutoLab} ariaLabel="Enable automatic lab research" />}
               >
                   <div className="form-grid">
                     <div className="f-field">
@@ -919,9 +929,10 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               <Section
                 title="Hero pets"
                 sub="Upgrade order in the pet house"
+                master
                 off={!autoPets}
                 offNote="Automatic pet upgrades are off — this queue is saved and resumes when you enable it."
-                action={<Switch checked={autoPets} onChange={setAutoPets} ariaLabel="Enable automatic pet upgrades" />}
+                action={<MasterToggle checked={autoPets} onChange={setAutoPets} ariaLabel="Enable automatic pet upgrades" />}
               >
                   <span className="label">Priority order (top to bottom)</span>
                   {petPriorities.length === 0 ? (

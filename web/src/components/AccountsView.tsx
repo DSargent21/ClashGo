@@ -9,7 +9,7 @@ import type {
 import { compactNumber, relativeTime } from '../utils';
 import Icon from './ui/Icon';
 import Drawer from './ui/Drawer';
-import { Switch, SwitchRow } from './ui/Switch';
+import { MasterToggle, SwitchRow } from './ui/Switch';
 import StatCard from './ui/StatCard';
 
 const DEFAULT_ROTATION: Rotation = {
@@ -303,7 +303,7 @@ const RotationPanel: React.FC<{
   busy: boolean;
   onChange: (rotation: Rotation) => void;
 }> = ({ rotation, busy, onChange }) => (
-  <section className="card">
+  <section className="card card-master">
     <div className="card-head">
       <div>
         <h3>Fleet rotation</h3>
@@ -311,7 +311,7 @@ const RotationPanel: React.FC<{
       </div>
       <div className="card-tools">
         {busy ? <Icon name="refresh" size={13} className="spin" /> : null}
-        <Switch
+        <MasterToggle
           checked={rotation.enabled}
           onChange={(next) => onChange({ ...rotation, enabled: next })}
           ariaLabel="Enable automatic account rotation"
@@ -471,7 +471,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
           label="Gold banked"
           value={compactNumber(totalGold)}
           detail="fleet total"
-          tone="elixir"
+          tone="gold"
         />
       </div>
 
@@ -639,7 +639,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                     disabled={account.active || accounts.length === 1}
                     onClick={() => handleDelete(account.id)}
                     onBlur={() => setConfirmDelete(null)}
-                    className={`btn sm ${confirmDelete === account.id ? 'danger' : ''}`.trim()}
+                    className={`btn sm acct-delete ${confirmDelete === account.id ? 'danger' : ''}`.trim()}
                     aria-label={confirmDelete === account.id ? `Confirm delete ${account.name}` : `Delete ${account.name}`}
                     title={account.active ? 'Switch away before deleting the active account' : 'Delete'}
                   >
