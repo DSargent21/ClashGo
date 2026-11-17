@@ -90,11 +90,35 @@ SLIM_MODFILE  := $(SLIM_DIR)/go.slim.mod
 SLIM_PC_DIR   := $(SLIM_DIR)/opencv
 SLIM_ENV      := PKG_CONFIG_PATH=$(SLIM_PC_DIR) GOFLAGS=-modfile=$(SLIM_MODFILE)
 
-.PHONY: all build build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask smoke-live smoke-live-app verify verify-fast
+.PHONY: all build dev dev-bindings build-cli build-gui clean release manifest test test-go test-py test-install test-brew checksums cli-archive brew-cask smoke-live smoke-live-app verify verify-fast
 
 all: build-cli build-gui
 
 build: build-cli build-gui
+
+# Fast GUI dev loop. `wails dev` runs `go mod tidy`, regenerates the Wails JS
+# bindings (a cgo build that is then EXECUTED, ~5 s) and rebuilds the frontend
+# before launching: ~20 s to a usable window, measured on this machine
+# 2026-11-16. These flags skip all three, 6 s instead; vite still hot-reloads
+# the UI and Go edits still trigger a backend rebuild. Bindings are NOT
+# regenerated, so run `make dev-bindings` after changing a bound Go method
+# signature. The CGO_LDFLAGS rpath is what lets the generated bindings binary
+# spawn without the dyld abort ("Library not loaded ... no LC_RPATH's found").
+dev:
+	@if [ -n "$(OPENCV_LIBDIR)" ]; then \
+		CGO_LDFLAGS="-Wl,-rpath,$(OPENCV_LIBDIR)" wails dev -m -skipbindings -s; \
+	else \
+		wails dev -m -skipbindings -s; \
+	fi
+
+# Full launch: regenerates bindings and rebuilds the frontend. Slower, but the
+# only mode that updates web/wailsjs after a bound-method change.
+dev-bindings:
+	@if [ -n "$(OPENCV_LIBDIR)" ]; then \
+		CGO_LDFLAGS="-Wl,-rpath,$(OPENCV_LIBDIR)" wails dev -m; \
+	else \
+		wails dev -m; \
+	fi
 
 # test: full verification suite — vet, Go tests, Python strategy contract
 # tests. go vet before tests so a type error fails fast without paying
