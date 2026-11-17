@@ -48,6 +48,8 @@ type TapExecutor struct {
 	cal         *game.Calibration
 	logger      zerolog.Logger
 	lineForward bool
+	// dragState: 0 unknown (drag allowed), -1 a stroke was refused this battle.
+	dragState int
 
 	// siegeGround is the screen point of the siege machine this battle has
 	// already placed, recorded by PlaceSiege. Every later UNIT placement tap is
@@ -645,6 +647,80 @@ func (t *TapExecutor) fireSlotTap(slot *TrackedSlot, jitterPx int) error {
 	return t.client.TapFast(jPt.X, jPt.Y, 2.0)
 }
 
+// DragDeployLine streams a held finger across the line with evdev multi-touch:
+// contact is acquired on slot 0 and kept down for the whole path, so the game
+// sees a continuous drag and places along it. It returns false when the image
+// has no ABS_MT panel or the shell write failed.
+func (t *TapExecutor) DragDeployLine(from, to image.Point) bool {
+	if !t.dragAllowed() {
+		return false
+	}
+	panel := t.client.TouchPanel()
+	if panel == nil {
+		return false
+	}
+	w, h := 1024, 768
+	if t.cal != nil && t.cal.PhysicalW > 0 && t.cal.PhysicalH > 0 {
+		w, h = t.cal.PhysicalW, t.cal.PhysicalH
+	}
+	// Natural hand: a short lift after the card tap, then the drag commits.
+	t.client.HumanSleep(90, 20)
+	// The press has to be on the CARD: a field-only drag is read as a camera
+	// pan (measured live 2026-11-17: two strokes, both placed nothing). The
+	// finger goes down on the selected card, is held until the drag commits,
+	// crosses to the line start, then sweeps the line.
+	t.inputMu.Lock()
+	slot := t.lastNonHeroSlot
+	t.inputMu.Unlock()
+	if slot == nil {
+		return false
+	}
+	card := image.Pt(slot.X, slot.Y)
+	hold := time.Duration(260+rand.Intn(180)) * time.Millisecond
+	dur := time.Duration(420+rand.Intn(240)) * time.Millisecond
+	samples := 22 + rand.Intn(10)
+	stroke := adb.BuildWaypointDrag([]image.Point{card, from, to}, w, h, hold, dur, samples, 4)
+	if err := t.client.DragStroke(panel, stroke, w, h); err != nil {
+		t.logger.Warn().Err(err).Msg("drag stroke failed to reach the touch panel; taps stay the fallback")
+		return false
+	}
+	// The card badge animates down after a stream; give the reconcile read a
+	// settled number instead of an unchanged one that looks like a refusal.
+	t.client.HumanSleep(200, 40)
+	t.logger.Info().
+		Interface("from", from).Interface("to", to).
+		Dur("hold", hold).Dur("stroke", dur).Int("samples", samples).
+		Msg("drag-deploy stroke")
+	return true
+}
+
+// evdevDragEnabled gates the multi-touch drag deployment.
+//
+// It is OFF after live measurement, not for lack of support: the panel takes
+// injected multi-touch (a held sendevent stroke pans the village, verified
+// 2026-11-17), but this game build never deployed a unit from one. Four live
+// raids with the stroke on placed nothing per stroke — the card count did not
+// move, and the reconcile's top-up taps did all the work — while each stroke
+// cost ~1.2s and often left the badge mid-animation and unreadable, which fired
+// blind top-ups. Raids: 70%, 60%, 50% destruction against 80% for the tap path.
+// The primitive and its tests stay for a build where the gesture lands; the
+// tap path is authoritative meanwhile.
+const evdevDragEnabled = false
+
+// dragAllowed reports whether a drag may be attempted this battle. A stroke the
+// reconcile step proved refused turns it off, so a failed drag cannot keep
+// deselecting the card: the tap path re-selects and places instead.
+func (t *TapExecutor) dragAllowed() bool {
+	return evdevDragEnabled && t.dragState >= 0 && t.client != nil && t.client.TouchPanel() != nil
+}
+
+// DisableDrag is called when a drag landed nothing; taps own the rest of the
+// battle. ResetDrag re-arms it at the start of a new battle.
+func (t *TapExecutor) DisableDrag() { t.dragState = -1 }
+
+// ResetDrag re-arms drag deployment for a new battle.
+func (t *TapExecutor) ResetDrag() { t.dragState = 0 }
+
 // TapDeployLine distributes taps along a line from p1 to p2.
 // Anchors each end of the line (p1, p2) first, then fans the remaining units
 // in the central segment of the line.
@@ -654,6 +730,14 @@ func (t *TapExecutor) TapDeployLine(p1, p2 image.Point, count int, jitterPx int)
 	// Protect points from landing on placed siege machine or bottom-left UI buttons.
 	for i, pt := range points {
 		points[i] = t.safeFieldPoint(pt)
+	}
+
+	// Bulk slots are dragged: the card is already armed by the caller's select
+	// tap, so one held stroke across the line places along it the way a hand
+	// does. The caller's reconcile read is the referee — if the card's count
+	// does not drop it calls DisableDrag and the tap loop below takes over.
+	if len(points) >= 6 && t.DragDeployLine(points[0], points[len(points)-1]) {
+		return
 	}
 
 	for i := 0; i < len(points); {

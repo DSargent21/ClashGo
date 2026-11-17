@@ -141,8 +141,12 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	// Record the active strategy so the battle-end wait can honor
 	// per-strategy knobs (e.g. end_at_percent auto-end threshold).
 	e.activeStrategy = s
-	// A new battle owns a new HP watch; heroes are re-tracked as they deploy.
+	// A new battle owns a new HP watch; heroes are re-tracked as they deploy,
+	// and drag deployment is re-armed after any refusal in the previous one.
 	e.clearHeroWatch()
+	if e.tapExec != nil {
+		e.tapExec.ResetDrag()
+	}
 
 	// Pre-flight validation
 	if err := e.Validate(s); err != nil {

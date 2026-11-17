@@ -1471,6 +1471,11 @@ func (hm *HeroManager) DeployTroops(
 		// line is what filled the deploy window with refused taps. Step the line
 		// slightly back from the base and spend this round on the new ground.
 		if trusted && progressBase > 0 && live >= progressBase {
+			// Nothing left the card on the pass that just ran. If that pass was a
+			// drag, the gesture was refused (or the card was already deselected),
+			// and repeating it would only deselect again: hand the rest of the
+			// battle to the tap path, which re-selects the slot first.
+			hm.executor.DisableDrag()
 			// One confirmation read first: the card's label lags its own animation,
 			// and moving a line because a frame was mid-animation would send the
 			// rest of the army to ground nobody proved was refused.

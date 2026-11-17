@@ -59,6 +59,11 @@ type Client struct {
 	tapPaceMu sync.Mutex
 	lastTapAt time.Time
 
+	// panelOnce caches the evdev touch panel used for multi-touch drags.
+	panelOnce sync.Once
+	panel     *TouchPanel
+	panelErr  error
+
 	jitterTaps      bool
 	jitterDelays    bool
 	maxJitterPixels float64

@@ -609,3 +609,34 @@ Format:
   (`tmp/coldboot.log`) is the last complete evidence: 80% / 1 star, Return Home,
   village, min tap gap 67 ms.
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — H.7: evdev multi-touch primitive, and why it stays off on this build
+- Changed: new `internal/adb/multitouch.go` (`TouchPanel` discovery from
+  `getevent -pl`, `BuildDragStroke`/`BuildHoldThenDrag`/`BuildWaypointDrag`,
+  `Client.DragStroke` streaming one held contact over `/dev/input/event2`),
+  `internal/adb/multitouch_test.go`, `internal/adb/client.go` (panel cache),
+  `internal/attack/executor.go` (`DragDeployLine`, one-shot `dragState`),
+  `internal/attack/hero_manager.go` (a refused pass calls `DisableDrag`),
+  `internal/attack/orchestrator.go` (`ResetDrag` per battle), `PROGRESS.md`.
+- Device proof: "BlueStacks Virtual Touch" at `/dev/input/event2` reports
+  ABS_MT_SLOT/TRACKING_ID/POSITION_X/Y (0..32767 over 1024x768). An injected
+  held stroke pans the village, so the panel accepts the stream end to end.
+- Live finding: this CoC build deploys nothing from it. Field-only strokes
+  (held 0/300 ms, paced with sleeps), field strokes with a pause, and a
+  card-anchored stroke (press on the slot, hold, cross to the line, sweep) all
+  left the card's count untouched; the reconcile's top-up taps did every
+  placement. Four raids with the stroke on: 70%, 60%, 50% destruction vs 80%
+  with taps. The emitter itself is sound, so this is the game, not the input.
+- Decision: `evdevDragEnabled = false` keeps the primitive and its tests in the
+  tree but lets the tap path own deployment; the guard still exists for a build
+  where the gesture lands.
+- Live re-verify with taps only (`tmp/evdev_run5.log`, `tmp/evdev_taps5.ndjson`):
+  100% / 3 stars, Gold 549,395 + 320,000 bonus, Return Home processed. Deploy
+  window 17.1 s (Balloons 2.3, EDrags 2.4, Siege 5.4, Spells 1.0, Heroes 5.9),
+  beating the previous 17.6 s baseline despite three refused siege placements.
+- Cadence: 56 taps, minimum consecutive gap 65 ms, no fixed-interval run,
+  `tapaudit -trace tmp/evdev_taps5.ndjson -assert-human` exit 0.
+- Still open (audit findings): siege placement refused on all four grounds
+  (`siege_placements=0`); battle-result OCR can fail after ~28 animation reads
+  and drop the loot row (run3 recorded 0 loot on a 1-star result).
+- Next: F.1 dead-base detection.
