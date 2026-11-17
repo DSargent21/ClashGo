@@ -860,3 +860,23 @@ Format:
   (full)`.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.16: concentric nested corners
+- Changed: `web/src/styles/design.css`, `web/src/styles/views.css`,
+  `docs/UI.md`, `BUILD_PLAN.md`.
+- Fixed: added `--r-inner: max(0px, calc(var(--r) - var(--card-inset) -
+  1px))`. At the shared 14px outer radius, 18px card inset and 1px border,
+  nested card tiles resolve to 0px; their diagonal gap now matches the edge
+  gap instead of reusing the outer radius. Applied to mini and revenue tiles,
+  meta grids, Army metric/rate tiles, autotune, report results and form
+  sections. Controls, option cards and the setup wizard keep their existing
+  radii.
+- Verified: browser computed geometry reports `.acct-card` 14px with `.mini`
+  0px, `.autotune` 0px, and option controls at 9px. The 24-view capture at
+  390x844 and 1440x900 in both themes still has 0 horizontal overflow and 0
+  functional text under 11px; Accounts, Analytics, Army and Config reviewed.
+- Checks: `cd web && npx tsc --noEmit` PASS; `npx vite build` PASS; `node
+  --check web/public/wails-stub.js` PASS; `./tools/verify.sh` -> `VERIFY PASSED
+  (full)`.
+- Commit: this commit
+- Next: F.1 dead-base detection.

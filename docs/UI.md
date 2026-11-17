@@ -79,9 +79,19 @@ Spacing is 4px based (`--space-1`…`--space-8`) with 16/24/32px for layout
 rhythm; page padding 32px; content max 1500px including padding. Use weight and
 color for hierarchy before adding another size.
 
-Every card-like surface, including tiles and panels nested inside a card, uses
-`--r`. `--r-sm` and `--r-xs` are for controls, badges, inputs and rows, so a
-control never inherits a card corner by accident.
+Every outer card-like surface uses `--r`. Nested card tiles use `--r-inner`:
+
+```css
+--r-inner: max(0px, calc(var(--r) - var(--card-inset) - 1px));
+```
+
+The nested radius subtracts the card inset and border so both curves share a
+center. With the current 14px outer radius, 18px inset and 1px border it
+resolves to 0px; if the outer radius grows, the inner curve follows. Apply it
+to non-interactive tiles and inset panels, not to controls. `--r-sm` and
+`--r-xs` are for controls, badges, inputs and rows, so a control never
+inherits a card corner by accident. The setup wizard is the fixed visual
+reference and keeps its established radii.
 
 Views share one content shell. Do not add page-specific `max-width` wrappers
 around a view: cards that switch between tabs must land on the same left and

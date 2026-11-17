@@ -77,9 +77,14 @@
   --space-6: 24px;
   --space-8: 32px;
 
-  --r: 14px;    /* all card-like surfaces */
+  --r: 14px;    /* outer card-like surfaces */
   --r-sm: 9px;  /* controls, rows, inputs */
   --r-xs: 6px;  /* badges and chips */
+  /* Nested tiles share the outer corner's center: subtract the card inset
+     and its border. With the 18px card inset this resolves to 0px; if the
+     outer radius grows, the inner radius follows automatically. */
+  --card-inset: 18px;
+  --r-inner: max(0px, calc(var(--r) - var(--card-inset) - 1px));
   --pill: 999px;
 
   --sidebar-w: 232px;

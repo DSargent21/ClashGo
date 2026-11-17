@@ -388,6 +388,23 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     syntax, vite build and full verify pass.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.16 Concentric nested corners**
+  - Why: nested tiles carried the same 14px radius as the padded card around
+    them. Equal radii at different insets do not share a corner center, so the
+    diagonal gap ballooned and the inner tiles looked bloated.
+  - Files: `web/src/styles/design.css`, `web/src/styles/views.css`,
+    `docs/UI.md`, `PROGRESS.md`, `BUILD_PLAN.md`.
+  - Fixed: added `--r-inner: max(0px, calc(var(--r) - var(--card-inset) -
+    1px))`. With the 14px outer radius, 18px card inset and 1px border, inner
+    tiles resolve to 0px so their corner gap matches the straight edges. This
+    applies to mini/revenue tiles, meta grids, Army metric/rate tiles,
+    autotune, report results and form sections. Controls, selected choices
+    and the setup wizard keep their smaller/established radii.
+  - Acceptance: computed nested tiles resolve to 0px while controls stay at
+    9px; no horizontal overflow or sub-11px functional text at both sizes and
+    themes; tsc, stub syntax, vite build and full verify pass.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

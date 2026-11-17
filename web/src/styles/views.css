@@ -2038,10 +2038,19 @@ html:not(.dark) .data-table tbody tr:focus-within { background: rgba(0, 0, 0, .0
 .rev-tile,
 .meta-grid div,
 .army-plan-metric,
+.army-metric,
+.army-plan-rate,
+.autotune,
+.form-section,
+.report-result { border-radius: var(--r-inner); }
+.mini,
+.rev-tile,
+.meta-grid div,
+.army-plan-metric,
 .army-metric { border: 0; background: var(--raised); }
 .halt-tile,
 .option-card,
-.pet-row { border-color: transparent; background: var(--raised); }
+.pet-row { border-color: transparent; background: var(--raised); border-radius: var(--r-sm); }
 .halt-tile:hover,
 .option-card:hover,
 .pet-row:hover { border-color: var(--border-strong); }
