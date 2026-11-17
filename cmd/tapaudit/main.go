@@ -74,6 +74,7 @@ func main() {
 	w := flag.Int("w", 1280, "live screen width")
 	h := flag.Int("h", 720, "live screen height")
 	verbose := flag.Bool("v", false, "print every touch with its classification")
+	assertHuman := flag.Bool("assert-human", false, "fail unless the minimum consecutive gap is at least humanTapFloorMs and no fixed-interval run repeats")
 	flag.Parse()
 
 	if *tracePath == "" {
@@ -92,6 +93,13 @@ func main() {
 	}
 
 	flagged := audit(taps, *w, *h)
+
+	if *assertHuman {
+		if err := assertHumanCadence(taps); err != nil {
+			fmt.Fprintf(os.Stderr, "tapaudit: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	if *verbose {
 		for _, t := range taps {
@@ -122,6 +130,58 @@ func reasonSuffix(reasons []flagReason) string {
 		parts[i] = string(r)
 	}
 	return " [" + strings.Join(parts, ",") + "]"
+}
+
+// humanTapFloorMs mirrors adb.HumanTapFloor. Duplicated for the same reason
+// TapEvent is: this tool links no OpenCV.
+const humanTapFloorMs = 65
+
+// assertHumanCadence is the acceptance gate for a live trace: no two
+// consecutive taps closer than the human floor, and no run of four or more
+// consecutive gaps that are all within 2 ms of each other (machine cadence).
+func assertHumanCadence(taps []auditTap) error {
+	if len(taps) < 2 {
+		return nil
+	}
+	minGap, minAt := int64(1<<62), 0
+	for i := 1; i < len(taps); i++ {
+		g := taps[i].Ts - taps[i-1].Ts
+		if g < 0 {
+			continue
+		}
+		if g < minGap {
+			minGap, minAt = g, i
+		}
+	}
+	if minGap < humanTapFloorMs {
+		return fmt.Errorf(
+			"consecutive taps %d ms apart at %s (%s -> %s) — below the %d ms human floor",
+			minGap, time.UnixMilli(taps[minAt].Ts).Format("15:04:05.000"),
+			taps[minAt-1].Type, taps[minAt].Type, humanTapFloorMs)
+	}
+	// Fixed interval: 8 consecutive gaps whose spread is 5 ms or less is
+	// machine output — the same rule the choreography audit calls
+	// bot-cadence, re-used here against short one-finger burst signatures
+	// (a floor-clamped run of 65,66,65,66... is exactly what that catches).
+	const run = 8
+	for i := 0; i+run < len(taps); i++ {
+		sum, sumsq := 0.0, 0.0
+		for j := i; j < i+run; j++ {
+			g := float64(taps[j+1].Ts - taps[j].Ts)
+			sum += g
+			sumsq += g * g
+		}
+		mean := sum / float64(run)
+		sd := math.Sqrt(sumsq/float64(run) - mean*mean)
+		if mean < 400 && sd <= 5 {
+			return fmt.Errorf(
+				"fixed-interval run: %d consecutive gaps, mean %.1f ms, sd %.1f ms at %s",
+				run, mean, sd, time.UnixMilli(taps[i].Ts).Format("15:04:05.000"))
+		}
+	}
+	fmt.Printf("  human cadence OK: minimum consecutive gap %d ms >= %d ms, no fixed-interval run\n",
+		minGap, humanTapFloorMs)
+	return nil
 }
 
 func loadTrace(path string) ([]auditTap, error) {

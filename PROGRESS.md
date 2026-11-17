@@ -548,3 +548,34 @@ Format:
   (`TestDismissLoadingChestFromTheLiveFrame`: TapToContinue 610, tap (512,420)),
   not on a fresh live boot.
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — H.5: process-wide tap floor + cold-boot splash coverage
+- Changed: `internal/adb/{client,jitter_test}.go`, `internal/bot/{bot,bot_test}.go`,
+  `cmd/tapaudit/{main,main_test}.go`, `PROGRESS.md`.
+- Fixed:
+  - `HumanTapFloor` (65 ms) is enforced in `routeTap` via `paceTap`, the single
+    funnel every tap path uses. Concurrent paths can no longer emit a pair
+    closer than the floor; the paced remainder is jittered so collisions do not
+    produce a run of exactly-65 ms gaps, and the dual/triple settle resamples
+    the sub-65 ms tail instead of clamping it (same 90±20 ms shape).
+  - `splashStateForFrame` gives the splash probes first refusal on Unknown,
+    Loading and ChestReward frames, so a cold boot whose table reads as the
+    generic loading rule still hands the frame to the splash handler.
+  - `tapaudit -assert-human` fails a trace whose minimum consecutive gap is
+    below 65 ms or whose 8 consecutive gaps have sd <= 5 ms (fixed interval).
+- Verified: real-frame cold-boot routing test
+  `TestSplashFirstCoversUnknownLoadingAndChest` (Unknown/Loading/ChestReward ->
+  TapToContinue, village untouched) plus the existing
+  `TestDismissLoadingChestFromTheLiveFrame`; `TestTapPacingFloorSerializesGoroutines`;
+  `cmd/tapaudit` tests.
+- Live: cold boot from the launcher, zero hand taps, one raid:
+  match -> deploy -> 80% / 1 star -> result parsed -> Return Home -> village.
+  Loot Gold 874,034 (incl. 320,000 bonus), Elixir 787,214, DE 10,648.
+  `tapaudit -assert-human` on the trace: minimum consecutive gap 67 ms >= 65 ms,
+  no fixed-interval run. Trace 66 taps, 63 jittered, one boot Back self-heal,
+  zero recovery restarts, zero personal-break warnings
+  (`tmp/coldboot.log`, `tmp/coldboot_taps.ndjson`).
+- Not verified: the live game still never re-offered the "Tap!" loading table
+  (cold boot goes straight to the village; same attempts as the H.4 entry).
+  The dismissal path is covered by the real-frame tests above instead.
+- Next: F.1 dead-base detection.

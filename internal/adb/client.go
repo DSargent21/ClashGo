@@ -53,6 +53,12 @@ type Client struct {
 	tapHook   func(TapEvent)
 	tapSeq    int64
 
+	// tapPace serialises the moments taps leave the process so two goroutines
+	// (deploy, hero ability, a dialog dismissal) cannot emit a pair closer
+	// together than HumanTapFloor. lastTapAt is the previous send time.
+	tapPaceMu sync.Mutex
+	lastTapAt time.Time
+
 	jitterTaps      bool
 	jitterDelays    bool
 	maxJitterPixels float64
@@ -520,12 +526,36 @@ func (c *Client) TapAsync(x, y int) error {
 	return err
 }
 
+// HumanTapFloor is the smallest gap the bot allows between any two taps,
+// whichever goroutine issues them. A finger cannot repeat-tap faster than
+// ~65 ms; a Gaussian settle tail alone used to produce 25-50 ms pairs when
+// two code paths tapped concurrently (see the tap trace of 2026-11-17).
+const HumanTapFloor = 65 * time.Millisecond
+
+// paceTap blocks until at least HumanTapFloor has passed since the previous
+// tap left this client. Every tap path funnels through routeTap, so this is
+// the single place the floor is enforced.
+func (c *Client) paceTap() {
+	c.tapPaceMu.Lock()
+	if !c.lastTapAt.IsZero() {
+		if wait := HumanTapFloor - time.Since(c.lastTapAt); wait > 0 {
+			// Jitter the remainder too: waiting exactly to the floor would emit
+			// a run of precisely 65 ms gaps whenever two paths collide, which is
+			// its own machine cadence.
+			time.Sleep(wait + time.Duration(rand.Intn(12))*time.Millisecond)
+		}
+	}
+	c.lastTapAt = time.Now()
+	c.tapPaceMu.Unlock()
+}
+
 // routeTap is the shared router for Tap/TapAsync/TapFast through either
 // the persistent pipe (when alive) or the legacy transport.Exec fallback.
 func (c *Client) routeTap(cmd string, x, y int, async bool) error {
 	if err := c.checkInputContext(); err != nil {
 		return err
 	}
+	c.paceTap()
 	// Every tap variant funnels through here (and through tapLocked on the pipe
 	// fallback), so this is the one place that has to invalidate the capture
 	// cache for all of them.
@@ -792,11 +822,14 @@ func (c *Client) SettleTap() { time.Sleep(nextTapSettle()) }
 // a finger can move twice and reads as automation to any server-side cadence
 // check. Clash still registers two separate gestures at 65 ms.
 func nextTapSettle() time.Duration {
-	ms := 90 + int(rand.NormFloat64()*20)
-	if ms < 65 {
-		ms = 65
+	// Resample the tail instead of clamping it: a clamp turns every undershoot
+	// into the same 65 ms value, and several in a row read as a fixed interval.
+	for {
+		ms := 90 + int(rand.NormFloat64()*20)
+		if ms >= 65 {
+			return time.Duration(ms) * time.Millisecond
+		}
 	}
-	return time.Duration(ms) * time.Millisecond
 }
 
 func (c *Client) HumanSleep(baseMs, stdDevMs int) {

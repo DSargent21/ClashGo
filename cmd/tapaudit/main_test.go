@@ -54,3 +54,36 @@ func TestAudit_FlagsTopHUD(t *testing.T) {
 		t.Fatalf("class = %q, want top-hud", taps[0].class)
 	}
 }
+
+func TestAssertHumanCadenceRejectsShortGap(t *testing.T) {
+	taps := []auditTap{
+		{TapEvent: TapEvent{Type: "tap_fast", Ts: 1000}},
+		{TapEvent: TapEvent{Type: "tap_fast", Ts: 1050}},
+		{TapEvent: TapEvent{Type: "tap_fast", Ts: 1200}},
+	}
+	if err := assertHumanCadence(taps); err == nil {
+		t.Fatal("50 ms gap must fail the human floor")
+	}
+}
+
+func TestAssertHumanCadenceRejectsFixedIntervalRun(t *testing.T) {
+	taps := make([]auditTap, 0, 10)
+	for i := 0; i < 10; i++ {
+		taps = append(taps, auditTap{TapEvent: TapEvent{Type: "tap_fast", Ts: int64(1000 + i*100)}})
+	}
+	if err := assertHumanCadence(taps); err == nil {
+		t.Fatal("9 gaps at exactly 100 ms must be flagged as fixed-interval")
+	}
+}
+
+func TestAssertHumanCadenceAcceptsJitteredTrace(t *testing.T) {
+	gaps := []int64{92, 118, 74, 131, 88, 105}
+	taps := []auditTap{{TapEvent: TapEvent{Type: "tap_fast", Ts: 1000}}}
+	for _, g := range gaps {
+		last := taps[len(taps)-1].Ts
+		taps = append(taps, auditTap{TapEvent: TapEvent{Type: "tap_fast", Ts: last + g}})
+	}
+	if err := assertHumanCadence(taps); err != nil {
+		t.Fatalf("jittered trace rejected: %v", err)
+	}
+}

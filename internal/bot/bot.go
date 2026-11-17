@@ -1193,6 +1193,24 @@ func (b *Bot) recoverEmulator() {
 	b.restartGame()
 }
 
+// splashStateForFrame gives the classifier's splash probes first refusal on a
+// frame whose own state is not already a splash. The loading-table artwork is
+// shared by the reward chest and the boot "Tap!" prompt, so ChestReward, the
+// generic Loading rule and an unclassified boot frame can each win the frame
+// while a splash is on it. A hit replaces the state; anything else keeps the
+// original verdict.
+func splashStateForFrame(state game.GameState, cl *game.Classifier, screen gocv.Mat) game.GameState {
+	switch state {
+	case game.StateUnknown, game.StateLoading, game.StateChestReward:
+	default:
+		return state
+	}
+	if splash, ok := game.SplashStateOnFrame(cl, screen); ok {
+		return splash
+	}
+	return state
+}
+
 func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, captureMs time.Duration) {
 	if err != nil {
 		gc.RecordCaptureError()
@@ -1289,16 +1307,13 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	}
 
 	// Splash signatures get first refusal on a frame. The reward-chest rule
-	// outranks TapToContinue and shares the loading-table artwork, and an
+	// outranks TapToContinue and shares the loading-table artwork; the generic
+	// loading rule can win the frame on a cold boot for the same reason; and an
 	// unclassified frame used to run the generic self-heal (Back) before any
 	// splash probe was consulted — live 2026-11-16 the "Tap!" table was on
 	// screen while the heal branch owned the frame. Ask the classifier's own
 	// splash probes first; a hit is handed to the splash handler below.
-	if state == game.StateChestReward || state == game.StateUnknown {
-		if splash, ok := game.SplashStateOnFrame(b.classifier, screen); ok {
-			state = splash
-		}
-	}
+	state = splashStateForFrame(state, b.classifier, screen)
 
 	if state == game.StateChestReward {
 		if b.cfg.Device.DisableChestDismissal {

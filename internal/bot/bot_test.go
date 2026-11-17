@@ -380,3 +380,34 @@ func TestRecordAttackReport_StoresHistoryAndLimitsCapacity(t *testing.T) {
 
 
 
+
+// TestSplashFirstCoversUnknownLoadingAndChest pins the cold-boot routing: the
+// "Tap!" loading-table frame can classify as Unknown (first frames), Loading
+// (the generic loading probe) or ChestReward (shared table artwork), and in all
+// three the classifier's own splash probes must win the frame so the splash
+// handler — not the Unknown Back self-heal — dismisses it. The frame is a real
+// capture from the bot's own screencap path.
+func TestSplashFirstCoversUnknownLoadingAndChest(t *testing.T) {
+	const path = "../game/testdata/live/chest_loading_1024x768.png"
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("%s is not present (live captures are gitignored)", path)
+	}
+	frame := gocv.IMRead(path, gocv.IMReadColor)
+	if frame.Empty() {
+		t.Fatalf("could not read %s", path)
+	}
+	defer frame.Close()
+
+	cal := game.NewCalibration(frame.Cols(), frame.Rows())
+	cal.SetDisplayScale(1.1334)
+	cl := game.NewClassifier(cal, game.DefaultClassifierConfig(), zerolog.Nop())
+
+	for _, in := range []game.GameState{game.StateUnknown, game.StateLoading, game.StateChestReward} {
+		if got := splashStateForFrame(in, cl, frame); got != game.StateTapToContinue {
+			t.Fatalf("splash-first on %s = %s, want TapToContinue (splash probe must win)", in, got)
+		}
+	}
+	if got := splashStateForFrame(game.StateMainVillage, cl, frame); got != game.StateMainVillage {
+		t.Fatalf("a classified village must not be rewritten by splash probes, got %s", got)
+	}
+}

@@ -2,6 +2,8 @@ package adb
 
 import (
 	"math"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 )
@@ -94,6 +96,36 @@ func TestTapSettleStaysInsideHumanCadence(t *testing.T) {
 		}
 		if d > 250*time.Millisecond {
 			t.Fatalf("settle %v is slower than the intended human cadence", d)
+		}
+	}
+}
+
+// TestTapPacingFloorSerializesGoroutines pins the process-wide floor: every tap
+// path funnels through routeTap, which calls paceTap, so two goroutines that
+// tap at the same instant must still leave HumanTapFloor apart. Before the
+// floor, concurrent deploy/ability paths produced 25-50 ms pairs.
+func TestTapPacingFloorSerializesGoroutines(t *testing.T) {
+	var c Client
+	const n = 4
+	var mu sync.Mutex
+	times := make([]time.Time, 0, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.paceTap()
+			mu.Lock()
+			times = append(times, time.Now())
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	for i := 1; i < len(times); i++ {
+		if gap := times[i].Sub(times[i-1]); gap < HumanTapFloor-5*time.Millisecond {
+			t.Fatalf("taps %d and %d left %v apart, want >= %v", i-1, i, gap, HumanTapFloor)
 		}
 	}
 }
