@@ -351,6 +351,26 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     themes; tsc, stub syntax, full verify and Wails build pass.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.14 One card edge grid across views**
+  - Why: the card radius was shared, but Analytics and Config narrowed their
+    page wrappers (1120px and 1100px) while Army capped at 1200px. Switching
+    views moved every card edge inward by 10–22px, so corners with the same
+    radius did not line up.
+  - Files: `web/src/styles/views.css`, `docs/UI.md`, `PROGRESS.md`,
+    `BUILD_PLAN.md`.
+  - Fixed: Analytics, Army and Config page wrappers now fill the shared content
+    shell instead of applying page-specific max-widths. Top-level cards in all
+    views share `264..1408` at 1440x900 and `84..374` at 390x844; nested card
+    groups (revenue tiles, account mini cards, Army loot blocks, Config
+    sections/autotune/halt/option cards, drawer sections, wizard
+    plans/choices/brief) share their parent content box. No card radius or
+    control geometry changed.
+  - Acceptance: card-like edges match within 1px at both required sizes and
+    themes in every captured state, including builders off, Config tabs,
+    account drawer and all wizard steps; no horizontal overflow; tsc, stub
+    syntax, vite build and full verify pass.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

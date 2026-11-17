@@ -820,3 +820,23 @@ Format:
   PASS; `make build-gui` PASS.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.14: one card edge grid across views
+- Changed: `web/src/styles/views.css`, `docs/UI.md`, `BUILD_PLAN.md`.
+- Fixed: removed page-specific max-widths from the Analytics, Army and Config
+  wrappers. All views now use the same content shell, so top-level cards share
+  `264..1408` at 1440x900 and `84..374` at 390x844 instead of shifting inward
+  by 10–22px on Analytics/Config. Nested revenue tiles, mini cards, Army loot
+  blocks, Config sections, drawer sections and wizard panels still share their
+  parent content box; card radius and control geometry are unchanged.
+- Verified: `node tmp/ui_edges_check.mjs` captured 60 states (all six views,
+  Config Builders on/off and every Config tab, the account drawer, and all
+  three wizard steps) at 390x844 and 1440x900 in both themes. The assertions
+  reported max card/group delta `0.0px`, max shell delta `0.0px`, and zero
+  horizontal overflow. A 24-view screenshot audit at the same sizes was
+  reviewed for Analytics, Config and Dashboard.
+- Checks: `cd web && npx tsc --noEmit` PASS; `npx vite build` PASS; `node
+  --check web/public/wails-stub.js` PASS; `./tools/verify.sh` -> `VERIFY PASSED
+  (full)`.
+- Commit: this commit
+- Next: F.1 dead-base detection.

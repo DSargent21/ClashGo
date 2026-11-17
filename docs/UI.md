@@ -83,6 +83,11 @@ Every card-like surface, including tiles and panels nested inside a card, uses
 `--r`. `--r-sm` and `--r-xs` are for controls, badges, inputs and rows, so a
 control never inherits a card corner by accident.
 
+Views share one content shell. Do not add page-specific `max-width` wrappers
+around a view: cards that switch between tabs must land on the same left and
+right edge. Nested tiles align to their parent card's content box, and a
+grid's outer cards align to the group's content box.
+
 ### Motion
 
 The timings follow the consensus in [Apple's HIG](https://developer.apple.com/design/human-interface-guidelines/motion),
