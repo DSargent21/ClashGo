@@ -185,7 +185,12 @@ optional when they are not.
 - Segments: `.seg` + `.seg-btn.active`.
 - Tables: `.table-wrap` > `.data-table`; stars via `.stars` + `Icon name="star"`.
 - Status: `.status-pill` with `running|warn|error|info|green`; `.tag` for
-  compact metadata.
+  compact metadata. Status chips use `--r-inner`, not `--pill`: with the
+  current 12px card radius and 20px inset the concentric formula clamps to
+  0px, so they stay inside the card's corner geometry.
+- Settings rows share one 48px rhythm. `.settings-grid .switch-row` uses the
+  same 10px vertical padding and divider as `.setting-row`; do not leave the
+  appearance switches as unpadded flex rows.
 - Empty states: `.empty` + `.empty-ico` + `<b>` + `<p>`.
 - Drawers: use `components/ui/Drawer.tsx`; never rebuild scrim/ESC/focus logic.
 - Overlays: portal modals and splashes to `document.body`. A `position: fixed`

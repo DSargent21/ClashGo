@@ -1008,6 +1008,12 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 .settings-system { grid-area: system; }
 .settings-updates { grid-area: updates; }
 .settings-danger { grid-area: danger; }
+.settings-grid .switch-row {
+  min-height: 48px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-grid .switch-row:last-child { border-bottom: 0; }
 .setting-row {
   display: flex;
   align-items: center;

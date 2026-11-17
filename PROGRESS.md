@@ -675,3 +675,22 @@ Format:
   needs 13-19 reads on this geometry (~10-15 s) before the bonus column holds
   still; it is bounded and logged, not silent.
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — UI: settings rhythm and concentric status chips
+- Changed: `web/src/styles/design.css`, `web/src/styles/views.css`,
+  `docs/UI.md`.
+- Fixed: added `--card-inset` and `--r-inner` (`max(0px, outer - inset - 1px)`).
+  Status pills now use the inner radius instead of a 999px capsule; at the
+  current 12px card radius and 20px inset the formula clamps to 0px, so
+  `AWAITING`, `IDLE` and the other status chips sit inside the card's corner
+  geometry. Settings switch rows now match `.setting-row`: 10px vertical
+  padding, 48px minimum height and the same divider. Appearance switches no
+  longer stack as unpadded flex rows.
+- Verified: computed `.status-pill` radius 0px, `.switch-row` 58px tall with
+  10px padding and a 1px divider; 24-view capture at 1440x900 and 1920x1246
+  in both themes has 0 horizontal overflow; Settings and Dashboard reviewed.
+- Checks: `cd web && npx tsc --noEmit` PASS; `npx vite build` PASS; `node
+  --check web/public/wails-stub.js` PASS; `./tools/verify.sh` -> `VERIFY PASSED
+  (full)`.
+- Commit: this commit
+- Next: F.1 dead-base detection.
