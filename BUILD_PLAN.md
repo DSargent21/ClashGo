@@ -334,6 +334,23 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     syntax, full verify and the Wails build pass.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.13 One card radius across views**
+  - Why: T.12 made transient surfaces feel attached, but card-like tiles and
+    panels still mixed the 14px card radius with the 9px control radius, so
+    corners did not read as one system.
+  - Files: `web/src/styles/views.css`, `docs/UI.md`, `PROGRESS.md`,
+    `BUILD_PLAN.md`.
+  - Fixed: every card-like surface now uses `--r` (14px): dashboard/card
+    content, account mini cards, Analytics revenue tiles, Army summary and
+    metric tiles, plan loot/metric blocks, Config form sections and autotune
+    panel, halt/option cards, and the setup wizard's plan/choice/brief
+    surfaces. Controls, inputs, badges and rows keep `--r-sm`/`--r-xs`.
+    Replaced the last hardcoded 14px card radius with the token.
+  - Acceptance: one radius value on card-like surfaces; no horizontal overflow,
+    clipped content or control reshaping at 390x844 and 1440x900 in both
+    themes; tsc, stub syntax, full verify and Wails build pass.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

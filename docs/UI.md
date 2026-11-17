@@ -68,7 +68,7 @@ Defined on `:root` (dark) and `html:not(.dark)` (light).
 | `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#8F6710` / `#9C3FB4` / `#6351C9` | Resource series |
 | `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#187A4B` / `#C62F35` / `#1E6EA8` | Status |
 | `--scrollbar` / `--scrollbar-hover` | `#2A2A30` / `#45454E` | `#C7C7CE` / `#A8A8B2` | Browser scrollbars |
-| `--r` / `--r-sm` / `--r-xs` | `14px` / `9px` / `6px` | same | Cards / controls / chips |
+| `--r` / `--r-sm` / `--r-xs` | `14px` / `9px` / `6px` | same | Card-like surfaces / controls / chips |
 | `--sidebar-w` / `--rail-w` / `--topbar-h` | `232px` / `84px` / `56px` | same | Frame |
 | `--font` / `--mono` | Inter / JetBrains Mono | same | Typography |
 
@@ -78,6 +78,10 @@ Type scale: body 14/1.55; page title 24/600; card title 14/600; micro-label
 Spacing is 4px based (`--space-1`…`--space-8`) with 16/24/32px for layout
 rhythm; page padding 32px; content max 1500px including padding. Use weight and
 color for hierarchy before adding another size.
+
+Every card-like surface, including tiles and panels nested inside a card, uses
+`--r`. `--r-sm` and `--r-xs` are for controls, badges, inputs and rows, so a
+control never inherits a card corner by accident.
 
 ### Motion
 

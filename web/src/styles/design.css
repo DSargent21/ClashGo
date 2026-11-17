@@ -77,9 +77,9 @@
   --space-6: 24px;
   --space-8: 32px;
 
-  --r: 14px;
-  --r-sm: 9px;
-  --r-xs: 6px;
+  --r: 14px;    /* all card-like surfaces */
+  --r-sm: 9px;  /* controls, rows, inputs */
+  --r-xs: 6px;  /* badges and chips */
   --pill: 999px;
 
   --sidebar-w: 232px;

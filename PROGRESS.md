@@ -803,3 +803,20 @@ Format:
   `make build-gui` -> `build/bin/ClashGO.app`.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.13: one card radius across views
+- Changed: `web/src/styles/{design,views}.css`, `docs/UI.md`, `BUILD_PLAN.md`.
+- Fixed: card-like surfaces now share `--r` (14px): accounts fleet tiles and
+  mini cards, Analytics revenue tiles, Army summary/loot/metric/plan blocks,
+  Config form sections and autotune, halt/option cards, and the setup wizard's
+  plan, choice and brief surfaces. Controls, inputs, badges and rows keep
+  `--r-sm`/`--r-xs`. The last hardcoded card radius now uses the token.
+- Verified: 24-view capture audit at 390x844 and 1440x900 in both themes:
+  0 horizontal overflow, 0 functional text under 11px; Army, Analytics,
+  Accounts, Config, Settings and wizard screenshots reviewed. No card content
+  clipped or control geometry changed.
+- Checks: `cd web && npx tsc --noEmit` PASS; `node --check
+  web/public/wails-stub.js` PASS; `npx vite build` PASS; `./tools/verify.sh`
+  PASS; `make build-gui` PASS.
+- Commit: this commit
+- Next: F.1 dead-base detection.
