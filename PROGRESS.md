@@ -6,8 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **H.4 splash-first dismissal + live misread + tap-floor pass**
-  (see the 2026-11-17 session log entry).
+- Last task: **T.9 UI polish: one design language, honest off states, Army
+  loot rates** (see the 2026-11-17 session log entry).
 - Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`).
 - Last green commit: see `git log -1`.
 - Verify gate: `./tools/verify.sh` (full) / `./tools/verify.sh --fast`.
@@ -674,4 +674,31 @@ Format:
   predates the zero-loot guard; no way to recover its loot row. The result OCR
   needs 13-19 reads on this geometry (~10-15 s) before the bonus column holds
   still; it is bounded and logged, not silent.
+- Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.9: UI polish, honest off states, Army loot rates
+- Changed: `web/src/styles/{design,views}.css`, `web/index.html`,
+  `web/src/App.tsx`,
+  `web/src/components/{ArmyView,ConfigView,AccountsView,SettingsView,Dashboard}.tsx`,
+  `web/src/armyApi.ts`, `web/public/wails-stub.js`, `app_army.go`,
+  `app_army_test.go`, `docs/UI.md`, `BUILD_PLAN.md`, `PROGRESS.md`.
+- Fixed: applied the launch wizard's design language across every view (darker
+  surfaces, 14/9 radii, 24px page titles, hairline cards, one gold accent,
+  mono numerals); added top-bar session status (Idle/Farming + active
+  account); Config/Accounts/Settings dependent blocks now dim to 58% with an
+  `off-note` while staying editable and saveable; Search's master switch moved
+  into its card head; Army plan cards show loot/hour with a measured or
+  first-launch basis and their own recipe slot / auto-end values (the active
+  plan's slot/auto-end had leaked onto every card).
+- Added: `GetArmyPlans` returns `loot_per_hour`, `measured`, `raids` from the
+  same estimator as the launch screen; `TestArmyPlansCarryLootEstimates`
+  proves the empty-profile fallback; Army list and wizard cannot disagree.
+- Verified: `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js`
+  PASS; `./tools/verify.sh --fast` PASS; `./tools/verify.sh` -> VERIFY PASSED
+  (full); stub preview at 1280x800 checked idle and with the bot running
+  (Farming pill, disabled Settings test tools with visible reason), console
+  and network clean. Visual review of Dashboard, Army, Config (Search,
+  Schedule), Accounts, Settings, Analytics and the launch wizard; not a
+  click-through of every tab at every window size.
+- Commit: this commit
 - Next: F.1 dead-base detection.

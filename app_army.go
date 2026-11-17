@@ -23,7 +23,8 @@ type ArmyPlanPhase struct {
 }
 
 // ArmyPlan is the actual on-disk strategy definition plus the effective
-// recipe slot / auto-end values the bot will use for it.
+// recipe slot / auto-end values the bot will use for it and the same loot/hour
+// estimate the launch screen shows (history-backed once a profile has raids).
 type ArmyPlan struct {
 	File         string          `json:"file"`
 	Name         string          `json:"name"`
@@ -32,6 +33,9 @@ type ArmyPlan struct {
 	TargetEdge   string          `json:"target_edge"`
 	ArmySlot     int             `json:"army_slot"`
 	EndAtPercent int             `json:"end_at_percent"`
+	LootPerHour  int64           `json:"loot_per_hour"`
+	Measured     bool            `json:"measured"`
+	Raids        int             `json:"raids"`
 	Active       bool            `json:"active"`
 	Phases       []ArmyPlanPhase `json:"phases"`
 }
@@ -44,6 +48,7 @@ func (a *App) GetArmyPlans() []ArmyPlan {
 	activeBase := filepath.Base(filepath.ToSlash(cfg.Attack.StrategyFile))
 
 	plans := []ArmyPlan{}
+	history := a.GetAttackHistory()
 	matches, err := filepath.Glob(paths.Resolve("strategies/*.yaml"))
 	if err != nil {
 		return plans
@@ -83,6 +88,11 @@ func (a *App) GetArmyPlans() []ArmyPlan {
 			emblem = strat.Phases[0].Units[0].Name
 		}
 
+		// Same estimate the launch screen uses, so the two pages cannot
+		// disagree about an army's loot rate.
+		key := lootEstimateKey(base)
+		lootPerHour, measured, raids := estimateLootPerHour(history, key, placeholderLootPerHour[key])
+
 		plans = append(plans, ArmyPlan{
 			File:         base,
 			Name:         strat.Name,
@@ -91,11 +101,28 @@ func (a *App) GetArmyPlans() []ArmyPlan {
 			TargetEdge:   strat.TargetEdge,
 			ArmySlot:     slot,
 			EndAtPercent: effectivePlanEnd(cfg.Attack.StrategyAutoEnd, base, strat.Name, strat.EndAtPercent),
+			LootPerHour:  lootPerHour,
+			Measured:     measured,
+			Raids:        raids,
 			Active:       base == activeBase,
 			Phases:       phases,
 		})
 	}
 	return plans
+}
+
+// lootEstimateKey maps a strategy file to the estimate key used by history
+// matching. The two shipped armies keep their placeholder keys so a fresh
+// install still shows a first-launch estimate; any other strategy simply
+// matches its own file stem and stays unmeasured until raids exist.
+func lootEstimateKey(base string) string {
+	lower := strings.ToLower(base)
+	for _, key := range []string{"edrag", "valk"} {
+		if strings.Contains(lower, key) {
+			return key
+		}
+	}
+	return strings.TrimSuffix(lower, ".yaml")
 }
 
 // effectivePlanEnd mirrors the bot's per-strategy auto-end resolution.

@@ -441,7 +441,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
               <span className="rate">{rateLabel(resource.value, uptimeHours)}</span>
             </div>
             <div className="res-value">{exactNumber(resource.value)}</div>
-            <div className="res-meta">Session total</div>
+            <div className="res-meta">This session</div>
             <Sparkline values={resource.series} tone={resource.key} />
           </article>
         ))}

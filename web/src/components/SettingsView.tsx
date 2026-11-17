@@ -421,6 +421,12 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
             <p className="hint">
               Sit in the main village first. These only tap navigation — no upgrade is confirmed or bought.
             </p>
+            {isBotRunning ? (
+              <p className="off-note">
+                <Icon name="info" size={11} />
+                <span>The bot is running — stop it to use these test tools.</span>
+              </p>
+            ) : null}
             <div className="settings-actions">
               <button
                 type="button"
@@ -449,9 +455,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                 Close menu
               </button>
             </div>
-            {isBotRunning ? (
-              <p className="hint">Stop the bot before using test tools.</p>
-            ) : testNote ? (
+            {testNote ? (
               <p className="hint" aria-live="polite">{testNote}</p>
             ) : null}
           </div>

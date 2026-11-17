@@ -319,7 +319,7 @@ const RotationPanel: React.FC<{
       </div>
     </div>
     <div className="card-body">
-      <div className="rotation-controls">
+      <div className={`rotation-controls ${rotation.enabled ? '' : 'off-controls'}`.trim()}>
         <div className="ctl">
           <label className="label" htmlFor="rot-order">Order</label>
           <select
@@ -347,17 +347,19 @@ const RotationPanel: React.FC<{
             })}
           />
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={rotation.auto_start}
-          aria-label="Auto-start the bot after switching accounts"
-          onClick={() => onChange({ ...rotation, auto_start: !rotation.auto_start })}
-          className={`btn ${rotation.auto_start ? 'primary' : ''}`.trim()}
-        >
-          <Icon name={rotation.auto_start ? 'check' : 'power'} size={13} />
-          Auto-start
-        </button>
+      </div>
+      {!rotation.enabled ? (
+        <p className="rotation-off-note">
+          Rotation is off — order and per-account caps are stored and apply the next time you turn it on.
+        </p>
+      ) : null}
+      <div className="rotation-toggle">
+        <SwitchRow
+          checked={rotation.auto_start}
+          onChange={(next) => onChange({ ...rotation, auto_start: next })}
+          label="Auto-start after switching"
+          description="Start the bot on the next account as soon as the handover completes."
+        />
       </div>
       {rotation.enabled ? (
         <p className="rotation-note">
@@ -522,11 +524,10 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                   <div className="acct-main">
                     <div className="acct-name">
                       <h3>{account.name}</h3>
-                      {meta.label !== 'Running' ? (
-                        <span className={`status-pill ${meta.tone}`.trim()}>
-                          <i />{meta.label}
-                        </span>
-                      ) : null}
+                      <span className={`status-pill ${meta.tone}`.trim()}>
+                        <i />{meta.label}
+                      </span>
+                      {account.active ? <span className="tag gold">Active</span> : null}
                     </div>
                     <div className="acct-meta">
                       {account.player_tag ? <span className="mono">{account.player_tag}</span> : null}

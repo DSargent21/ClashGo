@@ -27,7 +27,8 @@ design layer wins over Tailwind preflight.
 
 1. **One accent.** Gold marks brand, focus, selection, and primary data. Status
    colors are reserved for state (green/red/blue/amber). It is not a structural
-   marker: no colored edge bars, glows, or tinted panel borders.
+   marker: no colored edge bars, glows, or tinted panel fills. A gold hairline
+   on a selected plan or active army card is allowed because it marks state.
 2. **Borders over shadows.** Cards use a 1px hairline and a near-invisible
    shadow; elevation is for overlays only.
 3. **Numbers are mono.** Every figure, timestamp, port, and counter uses
@@ -46,12 +47,12 @@ Defined on `:root` (dark) and `html:not(.dark)` (light).
 
 | Token | Dark | Light | Use |
 | --- | --- | --- | --- |
-| `--bg` | `#0B0B0C` | `#F6F6F7` | App background, inputs |
-| `--surface` | `#121214` | `#FFFFFF` | Cards, sidebar, top bar |
-| `--raised` | `#1A1A1D` | `#F1F1F3` | Hover fills, icon tiles |
-| `--overlay` | `#222226` | `#E8E8EC` | Active rows, switch off, chips |
-| `--border` | `rgba(255,255,255,.07)` | `rgba(0,0,0,.08)` | Hairlines |
-| `--border-strong` | `rgba(255,255,255,.14)` | `rgba(0,0,0,.16)` | Hover, drawer edge |
+| `--bg` | `#0A0A0B` | `#F6F6F7` | App background, inputs |
+| `--surface` | `#111113` | `#FFFFFF` | Cards, sidebar, top bar |
+| `--raised` | `#17171A` | `#F1F1F3` | Hover fills, icon tiles |
+| `--overlay` | `#202024` | `#E8E8EC` | Active rows, switch off, chips |
+| `--border` | `rgba(255,255,255,.075)` | `rgba(0,0,0,.08)` | Hairlines |
+| `--border-strong` | `rgba(255,255,255,.145)` | `rgba(0,0,0,.16)` | Hover, drawer edge |
 | `--text` | `#EDEDEF` | `#151517` | Primary text |
 | `--text-2` | `#A1A1A8` | `#52525B` | Secondary text |
 | `--text-3` | `#8A8A93` | `#6B6B74` | Meta labels (AA on surface) |
@@ -62,12 +63,12 @@ Defined on `:root` (dark) and `html:not(.dark)` (light).
 | `--on-accent` | `#14120B` | `#FFFFFF` | Text on accent fill |
 | `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#A9791C` / `#9C3FB4` / `#6351C9` | Resource series |
 | `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#1E8E5A` / `#C62F35` / `#2277B8` | Status |
-| `--r` / `--r-sm` / `--r-xs` | `12px` / `8px` / `6px` | same | Cards / controls / chips |
+| `--r` / `--r-sm` / `--r-xs` | `14px` / `9px` / `6px` | same | Cards / controls / chips |
 | `--sidebar-w` / `--rail-w` / `--topbar-h` | `232px` / `84px` / `56px` | same | Frame |
 | `--font` / `--mono` | Inter / JetBrains Mono | same | Typography |
 
-Type scale: body 14/1.55; page title 22/600; card title 14/600; micro-label
-10.5/600 uppercase `.07em`; display figure 27/600; stat figure 19/600.
+Type scale: body 14/1.55; page title 24/600; card title 14/600; micro-label
+10.5/600 uppercase `.07em`; display figure 29/600; stat figure 19/600.
 
 Spacing is 4px based with 8/12/16/24 gaps; page padding 28px; content max
 1500px including padding.
@@ -104,9 +105,10 @@ which once left the sparkline drawn only part-way across its card.
   grouped nav, and one Start/Stop control. Starts as an 84px rail
   below 1150px on first run; the top-bar toggle or Cmd/Ctrl+B collapses and
   expands it at any width. The preference persists.
-- Sticky 56px top bar: sidebar toggle, breadcrumb, updater chip, live clock.
-  ADB health lives on Dashboard/Settings; the theme switch lives in Settings.
-  Interactive children need `no-drag`.
+- Sticky 56px top bar: sidebar toggle, breadcrumb, a session-status pill
+  (Idle/Farming + active account), updater banner when an update exists, and
+  the live clock. ADB health lives on Dashboard/Settings; the theme switch
+  lives in Settings. Interactive children need `no-drag`.
 - `.content` is the only scroll container. Top bar stays outside it.
 
 Wails rules: any new draggable region gets `draggable`; buttons inside it get
@@ -123,12 +125,14 @@ together.
   or gradient. Completed steps use a small check.
 - Sections are separated by rules and whitespace, not nested cards. Only plan
   choices and inputs get a fill.
-- Gold is limited to the primary CTA, selected radio dot, switches, the
-  recommended label, and status. Everything else is neutral.
+- Gold is limited to the primary CTA, the selected plan's radio and hairline,
+  the selected recipe slot, switches, the recommended label, and status.
+  Everything else is neutral.
 - Builders covers the full progression loop: plan, types, wall reserve, lab
   research order, and pet order. Lab and pets follow the engine switch.
-- Plan choices are stacked radio rows, not equal marketing cards. The rate is
-  the loudest value; the recommendation is plain accent text.
+- Plan choices are a two-up comparison on wide windows and one column when
+  the panel is narrow. The rate is the loudest value, the recommendation is
+  plain accent text, and the selected plan takes the gold radio.
 - Adaptive loot owns the floors: while it is on, the three floor inputs are
   disabled and dimmed. Turning it off restores manual editing.
 - Dry run is a Config → Builders control, not part of setup.
@@ -139,7 +143,9 @@ One setting has one home. Duplicated controls drift out of sync and read as
 optional when they are not.
 
 - **Army** owns per-plan choices: which strategy is active, its recipe slot,
-  and its auto-end switch. Config carries no plan controls.
+  and its auto-end switch. Config carries no plan controls. Each plan card
+  shows the same loot/hour estimate as the launch wizard (`loot_per_hour`,
+  `measured`, `raids`), so a roster comparison cannot disagree with setup.
 - **Config** owns engine-wide settings across five tabs: Search & loot,
   Builders, Lab & pets, Schedule, Storage. Wall upgrading and the wall
   resource live with Builders, next to the reserved-builder count; Storage
@@ -148,10 +154,13 @@ optional when they are not.
   the device test tools.
 - **Master switches gate the engine, not the form.** Schedule, Builders, Lab
   and Pets stay editable while their switch is off; Save persists every value
-  and the switch alone decides whether the engine acts on it. Never hide a
+  and the switch alone decides whether the engine acts on it. Wrap dependent
+  blocks in `.off-block` at 58% opacity and add a one-line `.off-note` that
+  says the values still save; focus inside restores opacity. Never hide a
   form behind `pointer-events: none`. If a block genuinely cannot be edited,
-  use native `disabled` controls plus a visible reason (the setup wizard's
-  upgrade block and the adaptive-loot floors are the only two cases).
+  use native `disabled` controls plus a visible reason. Allowed cases: the
+  setup wizard's upgrade block and adaptive-loot floors, Settings device
+  tests while the bot runs, and replaying the wizard mid-run.
 - **Full inventory:** `docs/UI_CONTROL_INVENTORY.md` records every actionable
   control, its location/action, and the deliberate shortcut decisions
   (sidebar Start/Stop, update checks, wizard preset).
@@ -180,6 +189,8 @@ optional when they are not.
   `.hint`, `.hint.error`. Invalid inputs use `aria-invalid="true"`.
 - Rows: `.set-row` (label/description left, `.set-ctl` right) for config and
   settings; `.kv` for read-only key/value pairs.
+- Off states: `.off-block` dims a dependent form without disabling it;
+  `.off-note` carries the reason and the save promise. Use both together.
 - Switches: `<Switch checked onChange ariaLabel />` in a control slot;
   `<SwitchRow checked onChange label description />` when the label is the row.
 - Segments: `.seg` + `.seg-btn.active`.
@@ -249,7 +260,8 @@ and no column is left with a tall blank gap.
   not send.
 - Don't introduce a chart, router, or component library for this UI.
 - Don't mark active navigation with a colored edge, glow, or accent fill.
-- Don't turn a two-option choice into an equal card grid with badges and
-  gradients; use a radio list.
+- Don't turn a plain two-option choice into an equal card grid with badges and
+  gradients; use a radio list. The launch plan picker is the exception: its
+  two choices carry a comparable loot rate, so they share one card grid.
 - Don't add decorative loops, parallax, spring/bounce easing, or entrance
   animation on data viz; use the motion tokens above and keep it stateful.

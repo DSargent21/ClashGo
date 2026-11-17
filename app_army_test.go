@@ -37,6 +37,33 @@ func TestGetArmyPlansReadsAuthoredStrategies(t *testing.T) {
 	}
 }
 
+// TestArmyPlansCarryLootEstimates keeps the Army page honest: every shipped
+// plan must expose the same loot/hour estimate the launch screen shows, and a
+// profile without raids must label it as an estimate rather than measured data.
+func TestArmyPlansCarryLootEstimates(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+
+	seen := map[string]ArmyPlan{}
+	for _, plan := range (&App{}).GetArmyPlans() {
+		seen[plan.File] = plan
+	}
+	for file, key := range map[string]string{
+		"auto_edrag_rush.yaml": "edrag",
+		"valk_spam.yaml":       "valk",
+	} {
+		plan, ok := seen[file]
+		if !ok {
+			t.Fatalf("%s missing from plans", file)
+		}
+		if plan.LootPerHour != placeholderLootPerHour[key] {
+			t.Errorf("%s loot/hour = %d, want first-launch estimate %d", file, plan.LootPerHour, placeholderLootPerHour[key])
+		}
+		if plan.Measured || plan.Raids != 0 {
+			t.Errorf("%s claims measured loot on an empty profile: measured=%v raids=%d", file, plan.Measured, plan.Raids)
+		}
+	}
+}
+
 func TestArmyControlsFlowThroughToPlans(t *testing.T) {
 	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
 	a := &App{}

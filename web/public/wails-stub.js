@@ -354,6 +354,9 @@
                             target_edge: 'Random',
                             army_slot: 1,
                             end_at_percent: 0,
+                            loot_per_hour: 5800000,
+                            measured: false,
+                            raids: 0,
                             active: true,
                             phases: [
                                 { name: 'Balloons', units: [{ name: 'Balloon', amount: 'All' }] },
@@ -372,6 +375,9 @@
                             target_edge: 'Random',
                             army_slot: 4,
                             end_at_percent: 50,
+                            loot_per_hour: 4900000,
+                            measured: false,
+                            raids: 0,
                             active: false,
                             phases: [
                                 { name: 'Valkyrie Spam', units: [{ name: 'Valkyrie', amount: 'All' }] },

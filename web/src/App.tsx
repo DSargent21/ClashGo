@@ -914,6 +914,8 @@ function App() {
     setTab('config');
   }, [finishLaunch]);
 
+  const activeAccount = accountsState?.accounts.find((account) => account.active) ?? null;
+
   // Per-plan values live on the Army page: it lists the plans, so the active
   // plan owns its recipe slot and auto-end switch. Config only carries
   // engine-wide settings, so the same control never appears twice.
@@ -1065,6 +1067,12 @@ function App() {
           </div>
 
           <div className="top-actions">
+            <span className="top-status no-drag" aria-live="polite">
+              <span className={`top-status-dot ${isRunning ? 'on' : ''}`.trim()} aria-hidden="true" />
+              <b>{isRunning ? 'Farming' : 'Idle'}</b>
+              {activeAccount ? <span className="top-status-sep" aria-hidden="true" /> : null}
+              {activeAccount ? <span className="top-status-account" title={activeAccount.name}>{activeAccount.name}</span> : null}
+            </span>
             <UpdateBanner
               status={updateStatus}
               appVersion={appVersion}

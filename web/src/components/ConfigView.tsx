@@ -105,8 +105,11 @@ const Section: React.FC<{
   title: string;
   sub?: string;
   action?: React.ReactNode;
+  /** Visual de-emphasis only: controls stay editable and Save still writes them. */
+  off?: boolean;
+  offNote?: string;
   children: React.ReactNode;
-}> = ({ title, sub, action, children }) => (
+}> = ({ title, sub, action, off = false, offNote, children }) => (
   <section className="card">
     <div className="card-head">
       <div>
@@ -115,9 +118,35 @@ const Section: React.FC<{
       </div>
       {action ? <div className="card-tools">{action}</div> : null}
     </div>
-    <div className="card-body">{children}</div>
+    <div className="card-body">
+      {off && offNote ? (
+        <p className="off-note">
+          <Icon name="info" size={11} />
+          <span>{offNote}</span>
+        </p>
+      ) : null}
+      <div className={off ? 'off-block' : undefined}>{children}</div>
+    </div>
   </section>
 );
+
+/** Dimmed sub-form for switches that gate one part of a card. */
+const OffBlock: React.FC<{
+  off: boolean;
+  note: string;
+  children: React.ReactNode;
+}> = ({ off, note, children }) => {
+  if (!off) return <>{children}</>;
+  return (
+    <div className="off-block">
+      <p className="off-note">
+        <Icon name="info" size={11} />
+        <span>{note}</span>
+      </p>
+      {children}
+    </div>
+  );
+};
 
 const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   goldThreshold, setGoldThreshold,
@@ -305,7 +334,18 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               <Section
                 title="Search & loot"
                 sub="Matchmaking acceptance thresholds and the strategy to execute"
+                action={(
+                  <Switch
+                    checked={searchEnabled}
+                    onChange={setSearchEnabled}
+                    ariaLabel="Enable search"
+                  />
+                )}
               >
+                <OffBlock
+                  off={!searchEnabled}
+                  note="Search matching is off — these thresholds are saved but not applied until it is on."
+                >
                 <div className="threshold-grid">
                   {thresholdItems.map((item) => {
                     const itemInvalid = invalid(item.value, THRESHOLD_MAX);
@@ -409,6 +449,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     </div>
                   </div>
                 ) : null}
+                </OffBlock>
 
                 <div className="set-row">
                   <div className="set-label">
@@ -430,16 +471,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   </div>
                 </div>
                 {stallInvalid ? <p className="hint error" role="alert">Use 0 or 10–{STALL_MAX}s</p> : null}
-
-                <div className="set-row">
-                  <div className="set-label">
-                    <b>Enable search</b>
-                    <span>Automatically skip bases that do not meet loot requirements.</span>
-                  </div>
-                  <div className="set-ctl">
-                    <Switch checked={searchEnabled} onChange={setSearchEnabled} ariaLabel="Enable search" />
-                  </div>
-                </div>
               </Section>
             </>
           ) : null}
@@ -567,6 +598,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
             <Section
               title="Schedule & anti-ban"
               sub="Humanized sessions, natural breaks, and offline simulation"
+              off={!scheduleEnabled}
+              offNote="The schedule is off — the bot runs continuously. Every value below is saved and applies when you turn it on."
               action={(
                 <Switch
                   checked={scheduleEnabled}
@@ -689,6 +722,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
             <Section
               title="Village builders & upgrades"
               sub="Builder assignment, hero priority, spend limits, and walls"
+              off={!autoBuilders}
+              offNote="Automatic builders are off — nothing below runs, but every value is saved for when you enable it."
               action={(
                 <Switch
                   checked={autoBuilders}
@@ -848,6 +883,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               <Section
                 title="Laboratory research"
                 sub="Automatic troop, spell, and siege upgrades"
+                off={!autoLab}
+                offNote="Automatic research is off — the order and DE permission below are saved for when you enable it."
                 action={<Switch checked={autoLab} onChange={setAutoLab} ariaLabel="Enable automatic lab research" />}
               >
                   <div className="form-grid">
@@ -882,6 +919,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               <Section
                 title="Hero pets"
                 sub="Upgrade order in the pet house"
+                off={!autoPets}
+                offNote="Automatic pet upgrades are off — this queue is saved and resumes when you enable it."
                 action={<Switch checked={autoPets} onChange={setAutoPets} ariaLabel="Enable automatic pet upgrades" />}
               >
                   <span className="label">Priority order (top to bottom)</span>

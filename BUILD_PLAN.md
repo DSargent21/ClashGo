@@ -238,6 +238,28 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     1024x600 and 1024x1440; tsc, guards and full verify green; clean console.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.9 UI polish: one design language, honest off states, Army loot rates**
+  - Why: the views had drifted — different card radii, two competing accents,
+    decorative edge gradients, and off master switches that dimmed nothing.
+    Army also made players open the setup wizard to compare loot rates.
+  - Files: `web/src/styles/{design,views}.css`, `web/index.html`,
+    `web/src/App.tsx`,
+    `web/src/components/{ArmyView,ConfigView,AccountsView,SettingsView,Dashboard}.tsx`,
+    `web/src/armyApi.ts`, `web/public/wails-stub.js`, `app_army.go`,
+    `app_army_test.go`, `docs/UI.md`.
+  - Fixed: propagated the launch wizard's tokens (darker surfaces, 14/9 radii,
+    24px page titles, hairline cards, one gold accent, mono numerals) to every
+    view; added the session-status pill to the top bar; Army plan cards show
+    loot/hour with measured-vs-first-launch basis and their own recipe slot /
+    auto-end values; dependent Config/Accounts/Settings blocks dim to 58% with
+    an "off" note while staying editable and saveable.
+  - Acceptance: `GetArmyPlans` carries `loot_per_hour`, `measured` and `raids`
+    from the same estimator the launch screen uses; a root test proves the
+    empty-profile fallback; no Config form adds `is-disabled`,
+    `pointer-events`, or a master-switch `disabled` attribute; tsc, stub
+    syntax, UI guards and full verify pass; all views render running and idle.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)
