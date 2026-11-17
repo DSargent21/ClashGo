@@ -96,8 +96,8 @@
   --motion-fast: 140ms;
   --motion-base: 180ms;
   --motion-enter: 240ms;
-  --motion-exit: 160ms;
-  --motion-overlay: 280ms;
+  --motion-exit: 140ms;
+  --motion-overlay: 320ms;
   --ease-out: cubic-bezier(.16, 1, .3, 1);
   --ease-in-out: cubic-bezier(.65, 0, .35, 1);
 
@@ -1150,11 +1150,13 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   background: var(--surface);
   border-left: 1px solid var(--border-strong);
   box-shadow: -24px 0 60px rgba(0, 0, 0, .4);
+  transform-origin: var(--anchor-x, 100%) var(--anchor-y, 0%);
   animation: drawer-in var(--motion-overlay) var(--ease-out);
+  will-change: transform, opacity;
 }
 .drawer.closing {
   pointer-events: none;
-  animation: drawer-out var(--motion-exit) var(--ease-in-out) forwards;
+  animation: drawer-out var(--motion-exit) var(--ease-out) forwards;
 }
 
 .drawer-head {
@@ -1189,6 +1191,10 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   -webkit-backdrop-filter: blur(4px);
   animation: fade var(--motion-base) var(--ease-out);
 }
+.modal-scrim.closing {
+  pointer-events: none;
+  animation: fade-out var(--motion-exit) var(--ease-out) forwards;
+}
 .modal {
   width: 100%;
   max-width: 470px;
@@ -1200,7 +1206,13 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   border: 1px solid var(--border-strong);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
-  animation: pop var(--motion-enter) var(--ease-out);
+  transform-origin: var(--anchor-x, 50%) var(--anchor-y, 0%);
+  animation: surface-in var(--motion-overlay) var(--ease-out);
+  will-change: transform, opacity;
+}
+.modal.closing {
+  pointer-events: none;
+  animation: surface-out var(--motion-exit) var(--ease-out) forwards;
 }
 .modal-head {
   flex: none;
@@ -1286,13 +1298,16 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
 @keyframes view-in { from { opacity: 0; transform: translateY(4px); } }
 @keyframes chart-grow { from { transform: scaleY(0); } }
 @keyframes softpulse { 50% { opacity: .4; } }
-@keyframes panel-in { from { opacity: 0; transform: translateY(6px) scale(.996); } }
-@keyframes log-in { from { opacity: 0; transform: translateY(-2px); } }
+@keyframes panel-in { from { opacity: 0; transform: scale(.97); } }
+@keyframes panel-out { to { opacity: 0; transform: scale(.985); } }
+@keyframes surface-in { from { opacity: 0; transform: scale(.94); } }
+@keyframes surface-out { to { opacity: 0; transform: scale(.97); } }
+@keyframes log-in { from { opacity: 0; transform: translateY(3px) scale(.995); } }
 @keyframes check-in { from { opacity: 0; transform: scale(.7); } }
 @keyframes fade { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: scale(.97) translateY(4px); } }
-@keyframes drawer-in { from { transform: translateX(100%); } }
-@keyframes drawer-out { to { transform: translateX(100%); } }
+@keyframes drawer-in { from { opacity: .25; transform: scale(.94); } }
+@keyframes drawer-out { to { opacity: 0; transform: scale(.97); } }
 @keyframes fade-out { to { opacity: 0; } }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1348,6 +1363,16 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
     transition-delay: 0ms !important;
     scroll-behavior: auto !important;
   }
+  .drawer, .drawer.closing, .modal, .modal.closing,
+  .launch-panel, .launch-panel.closing, .log-row {
+    animation: none !important;
+    transform: none !important;
+  }
+  .drawer, .drawer.closing, .modal, .modal.closing, .launch-panel, .launch-panel.closing {
+    opacity: 1 !important;
+  }
+  .drawer.closing, .modal.closing, .launch-panel.closing,
+  .scrim.closing, .modal-scrim.closing, .launch-scrim.closing { opacity: 0 !important; }
 }
 
 html.reduce-motion *, html.reduce-motion *::before, html.reduce-motion *::after {
@@ -1358,3 +1383,22 @@ html.reduce-motion *, html.reduce-motion *::before, html.reduce-motion *::after 
   transition-delay: 0ms !important;
   scroll-behavior: auto !important;
 }
+
+html.reduce-motion .drawer, html.reduce-motion .drawer.closing,
+html.reduce-motion .modal, html.reduce-motion .modal.closing,
+html.reduce-motion .launch-panel, html.reduce-motion .launch-panel.closing,
+html.reduce-motion .log-row {
+  animation: none !important;
+  transform: none !important;
+}
+
+html.reduce-motion .drawer, html.reduce-motion .drawer.closing,
+html.reduce-motion .modal, html.reduce-motion .modal.closing,
+html.reduce-motion .launch-panel, html.reduce-motion .launch-panel.closing {
+  opacity: 1 !important;
+}
+
+html.reduce-motion .drawer.closing, html.reduce-motion .modal.closing,
+html.reduce-motion .launch-panel.closing,
+html.reduce-motion .scrim.closing, html.reduce-motion .modal-scrim.closing,
+html.reduce-motion .launch-scrim.closing { opacity: 0 !important; }

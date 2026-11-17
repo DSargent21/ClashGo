@@ -15,6 +15,7 @@ the reference for extending it. Architecture lives in [`DESIGN.md`](DESIGN.md).
 | `web/src/components/ui/Switch.tsx` | `Switch` control + `SwitchRow` |
 | `web/src/components/LaunchSetup.tsx` | First-run army → builders → settings wizard |
 | `web/src/components/ui/Drawer.tsx` | Right-side drawer with focus/ESC/scroll handling |
+| `web/src/components/ui/motion.ts` | Trigger-anchored transform origin + shared overlay exit timing |
 | `web/src/components/ui/StatCard.tsx` | Shared stat tile |
 | `web/src/utils.ts` | `compactNumber`, `exactNumber`, `relativeTime`, `formatUptime`, log parsing |
 | `web/src/components/ArmyView.tsx` | Live YAML phases, effective recipe slot, and auto-end for each strategy |
@@ -38,10 +39,11 @@ design layer wins over Tailwind preflight.
    below 11px, body copy is 12.5–14px, and values carry the weight through size
    and color rather than extra font sizes.
 5. **No invented data.** The UI only renders fields the Go side actually sends.
-6. **Fast, quiet motion.** Feedback lands in 90–140ms, state changes in 180ms,
-   entrances in 240ms, overlays in 280ms. Animate transform and opacity,
-   decelerate with ease-out, keep travel at 4–6px, and never bounce or loop
-   decorative elements. Reduced motion is honored.
+6. **Anchored, quiet motion.** Feedback lands in 90–140ms, state changes in
+   180ms, entrances in 240ms, and transient surfaces enter in 320ms but leave
+   in 140ms. Animate transform and opacity only; overlays scale from the exact
+   trigger rather than sliding across the screen, keep travel small, and never
+   bounce or loop decorative elements. Reduced motion is honored.
 
 ## Tokens
 
@@ -84,7 +86,7 @@ The timings follow the consensus in [Apple's HIG](https://developer.apple.com/de
 [Atlassian's motion system](https://atlassian.design/foundations/motion), and
 [Nielsen Norman Group's duration research](https://www.nngroup.com/articles/animation-duration/):
 hover and press feedback under 150ms, small state changes around 180ms,
-overlays under 300ms, and deceleration rather than spring or bounce.
+transient overlays around 320ms, and deceleration rather than spring or bounce.
 
 | Token | Value | Use |
 | --- | --- | --- |
@@ -92,14 +94,19 @@ overlays under 300ms, and deceleration rather than spring or bounce.
 | `--motion-fast` | `140ms` | Hover fills, borders, color, focus |
 | `--motion-base` | `180ms` | Toggles, tabs, status, small state |
 | `--motion-enter` | `240ms` | View and card entrances |
-| `--motion-exit` | `160ms` | Drawer and scrim exits |
-| `--motion-overlay` | `280ms` | Drawers, modals, setup panel |
+| `--motion-exit` | `140ms` | Transient surface and scrim exits |
+| `--motion-overlay` | `320ms` | Drawer, modal, setup panel entry |
 | `--ease-out` | `cubic-bezier(.16,1,.3,1)` | Entrances and hover feedback |
-| `--ease-in-out` | `cubic-bezier(.65,0,.35,1)` | Exits and reversible state |
+| `--ease-in-out` | `cubic-bezier(.65,0,.35,1)` | Reversible state |
 
-Entrances are opacity plus 4–6px of travel; press feedback is `.98` scale.
-Nothing moves while the user is typing, and status pulses are the only infinite
-animation besides loading spinners. Data viz does not get entrance animation:
+Overlay entry is opacity plus scale (`.94` drawer/modal, `.97` setup panel)
+from a `transform-origin` set to the trigger's center by
+`components/ui/motion.ts`; exit uses the same geometry, faster (140ms) and
+slightly smaller. Standard content entrances retain their small travel; press
+feedback is `.98` scale. Only the appended log row enters, so existing rows
+displace instead of every row re-fading. Nothing moves while the user is
+typing, and status pulses are the only infinite animation besides loading
+spinners. Data viz does not get entrance animation:
 the Wails webview can freeze CSS animations while its window is not painting,
 which once left the sparkline drawn only part-way across its card.
 
@@ -246,8 +253,9 @@ optional when they are not.
   `<h2>` follow the same rule.
 - Empty states: `.empty` + `.empty-ico` + `<b>` + `<p>`.
 - Drawers: use `components/ui/Drawer.tsx`; never rebuild scrim/ESC/focus logic.
-  Long drawer forms keep their `.form-actions` sticky to the drawer foot so the
-  commit action is reachable without scrolling to the end.
+  Pass the opening control as `anchor` so the panel grows from it, not from the
+  screen edge. Long drawer forms keep their `.form-actions` sticky to the
+  drawer foot so the commit action is reachable without scrolling to the end.
 - Browser surfaces: scrollbars, caret, selection, and focus ring are themed
   from the palette. Keep numerals tabular; never hard-code a native control
   color.
@@ -272,6 +280,8 @@ Icons: add the name to `IconName` and a 24×24 path to `paths` in
 - Charts and sparklines are `aria-hidden`; the numbers they visualize are
   rendered as text.
 - Respect `prefers-reduced-motion`; never add autoplaying motion that blocks use.
+  Drawers, modals and the setup panel drop keyframes and transforms outright;
+  their closing state still clears so dismissal is immediate.
 - Icon-only buttons require `aria-label` and usually `title`.
 
 ## Mockup reference

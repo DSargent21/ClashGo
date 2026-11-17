@@ -292,6 +292,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   const [severityFilter, setSeverityFilter] = React.useState<LogSeverity | 'all'>('all');
   const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null);
   const [report, setReport] = React.useState<AttackReport | null>(null);
+  const [reportAnchor, setReportAnchor] = React.useState<HTMLElement | null>(null);
   const copiedTimerRef = React.useRef<number | null>(null);
   const uptimeHours = stats.uptime / (1e9 * 3600);
 
@@ -369,6 +370,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   // keyboard/AT target, so each report adds one focus stop instead of two.
   const openReport = (event: React.MouseEvent, item: AttackReport) => {
     if ((event.target as HTMLElement).closest('button')) return;
+    setReportAnchor(event.currentTarget as HTMLElement);
     setReport(item);
   };
 
@@ -531,7 +533,10 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                           type="button"
                           className="icon-btn plain sm"
                           aria-label={`Open report for ${strategyLabel(item.strategy)}`}
-                          onClick={() => setReport(item)}
+                          onClick={(event) => {
+                            setReportAnchor(event.currentTarget);
+                            setReport(item);
+                          }}
                         >
                           <Icon name="chevronRight" size={14} />
                         </button>
@@ -710,6 +715,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
         onClose={() => setReport(null)}
         kicker={report ? `Raid report · ${report.total_attacks_session} in session` : 'Raid report'}
         title={report ? strategyLabel(report.strategy) : 'Raid report'}
+        anchor={reportAnchor}
         footer={<button type="button" className="btn block" onClick={() => setReport(null)}>Close</button>}
       >
         {report ? <RaidReport report={report} /> : null}

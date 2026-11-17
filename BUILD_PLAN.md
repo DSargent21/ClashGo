@@ -309,6 +309,31 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     verify and the Wails build pass.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.12 Anchored transient motion + reduced motion**
+  - Why: T.11 polished the static hierarchy, but drawers still slid from the
+    screen edge, the setup wizard entered from its center, exits snapped, and
+    the motion system had no explicit reduced-motion contract.
+  - Files: `web/src/components/ui/{motion.ts,Drawer.tsx}`,
+    `web/src/components/{AccountsView,Dashboard,LaunchSetup,UpdateBanner,
+    SettingsView}.tsx`, `web/src/App.tsx`, `web/src/styles/{design,views}.css`,
+    `docs/UI.md`, `BUILD_PLAN.md`, `PROGRESS.md`.
+  - Fixed: every transient surface now records its trigger and sets
+    `--anchor-x/--anchor-y` from that element; drawers grow from the top-right
+    edge of the button that opened them, the update dialog and setup panel grow
+    from their trigger, and the first-run wizard falls back to center. Entry is
+    320ms ease-out with scale + opacity; exit is 140ms, slightly smaller and
+    visibly faster. The launch wizard keeps its panel alive while applying,
+    so a failed choose leaves it usable; successful and manual closes fade
+    through a shared 160ms cleanup. Only appended log rows enter. Reduced
+    motion removes keyframes/transforms and clears closing state immediately.
+  - Acceptance: trigger origins match within 10px for accounts drawers and the
+    setup wizard at 320x720, 390x844, 768x1024, 1024x768 and 1440x900 in both
+    themes; entry/exit durations are 320/140ms; no transient overflow, clipping
+    or content reflow; Escape/focus/outside-click still work; reduced motion
+    reports `animation: none`, `transform: none` and a clear close; tsc, stub
+    syntax, full verify and the Wails build pass.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

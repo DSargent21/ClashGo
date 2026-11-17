@@ -54,6 +54,7 @@ import type { ArmyPlan } from './armyApi';
 import UpdateBanner from './components/UpdateBanner';
 import LaunchSetup, { type LaunchTuning, type LaunchUpgrades } from './components/LaunchSetup';
 import Icon from './components/ui/Icon';
+import { SURFACE_EXIT_MS } from './components/ui/motion';
 import { formatClock } from './utils';
 
 /**
@@ -243,6 +244,11 @@ function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
   const [appVersion, setAppVersion] = useState('');
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+  const [updateAnchor, setUpdateAnchor] = useState<HTMLElement | null>(null);
+  const handleUpdateOpenChange = useCallback((open: boolean) => {
+    setIsUpdateModalOpen(open);
+    if (open) setUpdateAnchor(null);
+  }, []);
 
   // Loot autotune snapshot. Read when Config opens and after every action, not
   // on the poll: it parses the search history, and nothing else displays it.
@@ -251,8 +257,11 @@ function App() {
 
   // Launch quick-setup state.
   const [launchOpen, setLaunchOpen] = useState(getInitialLaunchOpen);
+  const [launchAnchor, setLaunchAnchor] = useState<HTMLElement | null>(null);
   const [launchOptions, setLaunchOptions] = useState<main.LaunchOptions | null>(null);
   const [launchBusy, setLaunchBusy] = useState(false);
+  const [launchClosing, setLaunchClosing] = useState(false);
+  const launchCloseTimerRef = useRef<number | null>(null);
 
   // Multi-account switcher state. Kept at App level because the sidebar,
   // header and Accounts page all read the same active account.
@@ -863,13 +872,23 @@ function App() {
     }
   }, []);
 
+  useEffect(() => () => {
+    if (launchCloseTimerRef.current) window.clearTimeout(launchCloseTimerRef.current);
+  }, []);
+
   const finishLaunch = useCallback(() => {
     try {
       localStorage.setItem('launchSetupDone', '1');
     } catch {
       // No storage: the screen simply shows again next launch.
     }
-    setLaunchOpen(false);
+    setLaunchClosing(true);
+    if (launchCloseTimerRef.current) window.clearTimeout(launchCloseTimerRef.current);
+    launchCloseTimerRef.current = window.setTimeout(() => {
+      launchCloseTimerRef.current = null;
+      setLaunchOpen(false);
+      setLaunchClosing(false);
+    }, SURFACE_EXIT_MS);
   }, []);
 
   useEffect(() => {
@@ -1108,7 +1127,8 @@ function App() {
               appVersion={appVersion}
               isBotRunning={isRunning}
               isOpen={isUpdateModalOpen}
-              onOpenChange={setIsUpdateModalOpen}
+              anchor={updateAnchor}
+              onOpenChange={handleUpdateOpenChange}
               onCheckNow={handleUpdaterCheck}
               onDownload={handleUpdaterDownload}
               onApply={handleUpdaterApply}
@@ -1181,8 +1201,14 @@ function App() {
               updateStatus={updateStatus}
               onCheckUpdates={handleUpdaterCheck}
               onClearSkip={handleUpdaterClearSkip}
-              onOpenUpdateModal={() => setIsUpdateModalOpen(true)}
-              onOpenSetupWizard={() => setLaunchOpen(true)}
+              onOpenUpdateModal={(anchor) => {
+                setUpdateAnchor(anchor ?? null);
+                setIsUpdateModalOpen(true);
+              }}
+              onOpenSetupWizard={(anchor) => {
+                setLaunchAnchor(anchor ?? null);
+                setLaunchOpen(true);
+              }}
               isBotRunning={isRunning}
             />
           )}
@@ -1193,6 +1219,8 @@ function App() {
         <LaunchSetup
           options={launchOptions}
           busy={launchBusy}
+          closing={launchClosing}
+          anchor={launchAnchor}
           onChoose={(file, slot, upgrades, tuning) => void handleChooseArmy(file, slot, upgrades, tuning)}
           onManual={handleManualSetup}
         />

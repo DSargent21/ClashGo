@@ -1431,8 +1431,14 @@ html:not(.dark) .data-table tbody tr:focus-within { background: rgba(0, 0, 0, .0
   -webkit-backdrop-filter: blur(4px);
   animation: fade var(--motion-base) var(--ease-out);
 }
+.launch-scrim.closing {
+  pointer-events: none;
+  animation: fade-out var(--motion-exit) var(--ease-out) forwards;
+}
 .launch-panel {
   animation: panel-in var(--motion-overlay) var(--ease-out) both;
+  transform-origin: var(--anchor-x, 50%) var(--anchor-y, 50%);
+  will-change: transform, opacity;
   display: grid;
   grid-template-columns: 228px minmax(0, 1fr);
   width: min(1000px, 100%);
@@ -1442,6 +1448,10 @@ html:not(.dark) .data-table tbody tr:focus-within { background: rgba(0, 0, 0, .0
   border-radius: var(--r);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
+}
+.launch-panel.closing {
+  pointer-events: none;
+  animation: panel-out var(--motion-exit) var(--ease-out) forwards;
 }
 
 /* -------- Rail -------- */

@@ -25,8 +25,8 @@ interface SettingsViewProps {
   updateStatus: UpdateStatus;
   onCheckUpdates: () => void;
   onClearSkip: () => void;
-  onOpenUpdateModal?: () => void;
-  onOpenSetupWizard: () => void;
+  onOpenUpdateModal?: (anchor?: HTMLElement) => void;
+  onOpenSetupWizard: (anchor?: HTMLElement) => void;
   isBotRunning: boolean;
 }
 
@@ -281,7 +281,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                 <button
                   type="button"
                   className="btn sm"
-                  onClick={onOpenSetupWizard}
+                  onClick={(event) => onOpenSetupWizard(event.currentTarget)}
                   disabled={isBotRunning}
                 >
                   <Icon name="sliders" size={12} />
@@ -388,7 +388,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                   <span>Downloads, verifies, swaps the bundle, and restarts.</span>
                 </div>
                 <div className="setting-value">
-                  <button type="button" className="btn primary sm" onClick={onOpenUpdateModal}>
+                  <button type="button" className="btn primary sm" onClick={(event) => onOpenUpdateModal?.(event.currentTarget)}>
                     Review update
                   </button>
                 </div>

@@ -767,3 +767,39 @@ Format:
   reason, Stop returned to Idle; console and network clean.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.12: anchored transient motion
+- Changed: `web/src/components/ui/{motion.ts,Drawer.tsx}`,
+  `web/src/components/{AccountsView,Dashboard,LaunchSetup,UpdateBanner,
+  SettingsView}.tsx`, `web/src/App.tsx`, `web/src/styles/{design,views}.css`,
+  `docs/UI.md`, `BUILD_PLAN.md`.
+- Fixed:
+  - Anchors: a shared `setAnchorOrigin` measures the opening control and sets
+    panel-local custom properties after layout; accounts/report drawers grow
+    from their button, the update modal from Settings or its top-bar chip, and
+    the setup wizard from Settings. The first-run wizard intentionally stays
+    centered because it has no trigger. Drawer origins use the final layout,
+    not the scaled entry rect, so no 20–30px drift.
+  - Motion: drawer/modal/setup entry is opacity + scale from `.94`/`.97` over
+    320ms ease-out; exit is 140ms and shrinks slightly. Scrims fade out over
+    the same 140ms. App owns the setup close timer so a failed `ChooseArmy`
+    cannot leave an invisible, stuck panel; the panel stays visible and busy
+    until the write succeeds. Only appended log rows animate.
+  - Reduced motion: explicit rules remove keyframes/transforms from drawers,
+    modals, the setup panel and log rows, collapse timing globally, and keep
+    the closing opacity clear.
+- Verified: `node tmp/ui_motion_check.mjs` PASS at 320x720, 390x844, 768x1024,
+  1024x768 and 1440x900 in both themes: drawer and wizard origins exact (0px
+  delta), entry 0.32s, exit 0.14s, panels inside the viewport, no content
+  reflow, reduced motion `animation: none` / `transform: none` / close opacity
+  0. Full capture audit: 60 views across the same five sizes and both themes,
+  0 horizontal overflow and 0 functional text under 11px. Preview: Add account
+  Escape and outside-click close, focus returns to Add account; Army shows
+  5.8M/4.9M loot/hour; Builders master off dims its body to 0.58 with an
+  off note; running disables test tools with a visible reason and Stop returns
+  to Idle. Console and network clean.
+- Checks: `cd web && npx tsc --noEmit` PASS; `node --check
+  web/public/wails-stub.js` PASS; `./tools/verify.sh` -> `VERIFY PASSED`;
+  `make build-gui` -> `build/bin/ClashGO.app`.
+- Commit: this commit
+- Next: F.1 dead-base detection.

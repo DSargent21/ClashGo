@@ -384,7 +384,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
   onResetUsage,
   onRotation,
 }) => {
-  const [editor, setEditor] = React.useState<{ account: AccountView | null } | null>(null);
+  const [editor, setEditor] = React.useState<{ account: AccountView | null; anchor?: HTMLElement } | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState<string | null>(null);
@@ -438,7 +438,11 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
             <Icon name="refresh" size={13} className={loading ? 'spin' : undefined} />
             Refresh
           </button>
-          <button type="button" className="btn sm" onClick={() => setEditor({ account: null })}>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={(event) => setEditor({ account: null, anchor: event.currentTarget })}
+          >
             <Icon name="plus" size={13} />
             Add account
           </button>
@@ -501,7 +505,11 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
           <span className="empty-ico"><Icon name="users" size={20} /></span>
           <b>No accounts yet</b>
           <p>Add your first village and bind it to the emulator instance it is signed in to.</p>
-          <button type="button" className="btn primary" onClick={() => setEditor({ account: null })}>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={(event) => setEditor({ account: null, anchor: event.currentTarget })}
+          >
             <Icon name="plus" size={13} />
             Add account
           </button>
@@ -617,7 +625,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                   )}
                   <button
                     type="button"
-                    onClick={() => setEditor({ account })}
+                    onClick={(event) => setEditor({ account, anchor: event.currentTarget })}
                     className="icon-btn"
                     aria-label={`Edit ${account.name}`}
                     title="Edit"
@@ -657,6 +665,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
         onClose={() => setEditor(null)}
         kicker={editor?.account ? 'Edit village' : 'New village'}
         title={editor?.account ? editor.account.name : 'Add account'}
+        anchor={editor?.anchor ?? null}
       >
         {editor ? (
           <AccountForm
