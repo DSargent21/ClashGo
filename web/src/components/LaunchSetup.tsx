@@ -2,7 +2,6 @@ import React from 'react';
 import { main } from '../../wailsjs/go/models';
 import { compactNumber } from '../utils';
 import Icon from './ui/Icon';
-import { setAnchorOrigin } from './ui/motion';
 import UnitIcon from './ui/UnitIcon';
 import { Switch } from './ui/Switch';
 
@@ -30,8 +29,6 @@ export interface LaunchUpgrades {
 interface LaunchSetupProps {
   options: main.LaunchOptions | null;
   busy: boolean;
-  closing: boolean;
-  anchor?: HTMLElement | null;
   onChoose: (file: string, armySlot: number, upgrades: LaunchUpgrades, tuning: LaunchTuning) => void;
   onManual: () => void;
 }
@@ -76,7 +73,7 @@ const DEFAULT_PET_ORDER = [
  * The rail is orientation only; the content pane carries one decision per
  * step. Start lives on the last step and writes all three together.
  */
-const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, closing, anchor, onChoose, onManual }) => {
+const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onChoose, onManual }) => {
   const [step, setStep] = React.useState(0);
   const [selected, setSelected] = React.useState('');
   const [adaptive, setAdaptive] = React.useState(true);
@@ -99,10 +96,6 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, clo
   const [wallBuilder, setWallBuilder] = React.useState(true);
   const cardRefs = React.useRef<(HTMLButtonElement | null)[]>([]);
   const panelRef = React.useRef<HTMLDivElement | null>(null);
-
-  React.useLayoutEffect(() => {
-    setAnchorOrigin(panelRef.current, anchor);
-  }, [anchor]);
 
   // A modal must own the keyboard: focus starts on the selected step's first
   // control, Tab cycles inside the panel, and the page behind stays inert.
@@ -207,13 +200,13 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, clo
 
   return (
     <div
-      className={`launch-scrim${closing ? ' closing' : ''}`}
+      className="launch-scrim"
       role="dialog"
       aria-modal="true"
       aria-labelledby="launch-title"
       aria-describedby="launch-desc"
     >
-      <div className={`launch-panel${closing ? ' closing' : ''}`} ref={panelRef}>
+      <div className="launch-panel" ref={panelRef}>
         <aside className="launch-rail">
           <div className="launch-brand">
             <Icon name="bolt" size={15} />
@@ -243,7 +236,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, clo
           </nav>
 
           <div className="launch-rail-foot">
-            <button type="button" className="launch-manual" onClick={onManual} disabled={busy || closing}>
+            <button type="button" className="launch-manual" onClick={onManual} disabled={busy}>
               Set up manually
               <Icon name="chevronRight" size={12} />
             </button>
@@ -252,17 +245,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, clo
 
         <div className="launch-main">
           <header className="launch-head">
-            <div className="launch-head-top">
-              <span className="launch-step-label">Step {step + 1} of {STEPS.length}</span>
-              <button
-                type="button"
-                className="launch-skip"
-                onClick={onManual}
-                disabled={busy || closing}
-              >
-                Set up manually
-              </button>
-            </div>
+            <span className="launch-step-label">Step {step + 1} of {STEPS.length}</span>
             <h1 id="launch-title">{stepInfo.title}</h1>
             <p id="launch-desc">{stepInfo.blurb}</p>
           </header>
@@ -595,9 +578,8 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, clo
                         <div>
                           <b>Adaptive loot</b>
                           <span>
-                            {adaptive
-                              ? `Sets the floors above from what you actually see. Needs about ${options?.min_samples ?? 40} bases; your numbers seed it until then.`
-                              : 'Off. The floors above are used exactly as entered.'}
+                            Sets the floors above from what you actually see. Needs about {options?.min_samples ?? 40} bases;
+                            your numbers seed it until then.
                           </span>
                         </div>
                         <Switch checked={adaptive} onChange={setAdaptive} ariaLabel="Adaptive loot" />
@@ -663,7 +645,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, clo
                 <button
                   type="button"
                   className="btn primary launch-cta"
-                  disabled={!canStart || busy || closing}
+                  disabled={!canStart}
                   onClick={() => onChoose(selected, slot, upgrades, { adaptive, minGold, minElixir, minDark })}
                 >
                   {busy ? 'Applying…' : selectedOption ? `Start with ${selectedOption.name}` : 'Start with this army'}

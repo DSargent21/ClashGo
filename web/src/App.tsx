@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import AccountsView from './components/AccountsView';
@@ -54,7 +54,6 @@ import type { ArmyPlan } from './armyApi';
 import UpdateBanner from './components/UpdateBanner';
 import LaunchSetup, { type LaunchTuning, type LaunchUpgrades } from './components/LaunchSetup';
 import Icon from './components/ui/Icon';
-import { SURFACE_EXIT_MS } from './components/ui/motion';
 import { formatClock } from './utils';
 
 /**
@@ -108,8 +107,6 @@ const getInitialDarkMode = (): boolean => {
   }
 };
 
-const NARROW_NAV_QUERY = '(max-width: 900px)';
-
 const getInitialSidebarExpanded = (): boolean => {
   try {
     const stored = localStorage.getItem('sidebarExpanded');
@@ -118,14 +115,6 @@ const getInitialSidebarExpanded = (): boolean => {
     return window.innerWidth > 1150;
   } catch {
     return true;
-  }
-};
-
-const getInitialNarrowNav = (): boolean => {
-  try {
-    return window.matchMedia(NARROW_NAV_QUERY).matches;
-  } catch {
-    return window.innerWidth <= 900;
   }
 };
 
@@ -233,7 +222,6 @@ function App() {
   const [adbPort, setAdbPort] = useState(5555);
   const [darkMode, setDarkMode] = useState(getInitialDarkMode);
   const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarExpanded);
-  const [narrowNav, setNarrowNav] = useState(getInitialNarrowNav);
   const [reduceMotion, setReduceMotion] = useState(() => getInitialBoolean('reduceMotion', false));
   const [compactMode, setCompactMode] = useState(() => getInitialBoolean('compactMode', false));
   const [clock24h, setClock24h] = useState(() => getInitialBoolean('clock24h', true));
@@ -244,11 +232,6 @@ function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>(DEFAULT_UPDATE_STATUS);
   const [appVersion, setAppVersion] = useState('');
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
-  const [updateAnchor, setUpdateAnchor] = useState<HTMLElement | null>(null);
-  const handleUpdateOpenChange = useCallback((open: boolean) => {
-    setIsUpdateModalOpen(open);
-    if (open) setUpdateAnchor(null);
-  }, []);
 
   // Loot autotune snapshot. Read when Config opens and after every action, not
   // on the poll: it parses the search history, and nothing else displays it.
@@ -257,11 +240,8 @@ function App() {
 
   // Launch quick-setup state.
   const [launchOpen, setLaunchOpen] = useState(getInitialLaunchOpen);
-  const [launchAnchor, setLaunchAnchor] = useState<HTMLElement | null>(null);
   const [launchOptions, setLaunchOptions] = useState<main.LaunchOptions | null>(null);
   const [launchBusy, setLaunchBusy] = useState(false);
-  const [launchClosing, setLaunchClosing] = useState(false);
-  const launchCloseTimerRef = useRef<number | null>(null);
 
   // Multi-account switcher state. Kept at App level because the sidebar,
   // header and Accounts page all read the same active account.
@@ -578,25 +558,6 @@ function App() {
     }
   }, [sidebarExpanded]);
 
-  // Below 900px the sidebar is a fixed icon rail. Keeping the stored
-  // expanded preference lets a wide window restore the user's layout.
-  useEffect(() => {
-    const media = window.matchMedia(NARROW_NAV_QUERY);
-    const sync = () => setNarrowNav(media.matches);
-    sync();
-    media.addEventListener('change', sync);
-    return () => media.removeEventListener('change', sync);
-  }, []);
-
-  const navExpanded = sidebarExpanded && !narrowNav;
-
-  // Each page owns its own scroll position; reusing the previous page's offset
-  // dropped a freshly opened Config mid-form and hid its page head.
-  const contentRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    contentRef.current?.scrollTo({ top: 0 });
-  }, [tab]);
-
   useEffect(() => {
     document.documentElement.classList.toggle('reduce-motion', reduceMotion);
     try {
@@ -643,12 +604,12 @@ function App() {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
         event.preventDefault();
-        if (!narrowNav) setSidebarExpanded((value) => !value);
+        setSidebarExpanded((value) => !value);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [narrowNav]);
+  }, []);
 
   const saveSettings = async () => {
     await SaveConfig(
@@ -872,23 +833,13 @@ function App() {
     }
   }, []);
 
-  useEffect(() => () => {
-    if (launchCloseTimerRef.current) window.clearTimeout(launchCloseTimerRef.current);
-  }, []);
-
   const finishLaunch = useCallback(() => {
     try {
       localStorage.setItem('launchSetupDone', '1');
     } catch {
       // No storage: the screen simply shows again next launch.
     }
-    setLaunchClosing(true);
-    if (launchCloseTimerRef.current) window.clearTimeout(launchCloseTimerRef.current);
-    launchCloseTimerRef.current = window.setTimeout(() => {
-      launchCloseTimerRef.current = null;
-      setLaunchOpen(false);
-      setLaunchClosing(false);
-    }, SURFACE_EXIT_MS);
+    setLaunchOpen(false);
   }, []);
 
   useEffect(() => {
@@ -962,8 +913,6 @@ function App() {
     finishLaunch();
     setTab('config');
   }, [finishLaunch]);
-
-  const activeAccount = accountsState?.accounts.find((account) => account.active) ?? null;
 
   // Per-plan values live on the Army page: it lists the plans, so the active
   // plan owns its recipe slot and auto-end switch. Config only carries
@@ -1088,23 +1037,23 @@ function App() {
       <Sidebar
         tab={tab}
         setTab={setTab}
-        expanded={navExpanded}
+        expanded={sidebarExpanded}
         running={isRunning}
         onStart={handleStart}
         onStop={handleStop}
       />
 
-      <main className={`main ${navExpanded ? '' : 'main--collapsed'}`}>
+      <main className={`main ${sidebarExpanded ? '' : 'main--collapsed'}`}>
         <header className="topbar draggable">
           <div className="topbar-left">
             <button
               type="button"
               onClick={() => setSidebarExpanded(!sidebarExpanded)}
-              className="icon-btn plain no-drag sidebar-toggle"
-              aria-label={navExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-              aria-expanded={navExpanded}
+              className="icon-btn plain no-drag"
+              aria-label={sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
+              aria-expanded={sidebarExpanded}
               aria-controls="app-sidebar"
-              title={`${navExpanded ? 'Collapse' : 'Expand'} sidebar (⌘B)`}
+              title={`${sidebarExpanded ? 'Collapse' : 'Expand'} sidebar (⌘B)`}
             >
               <Icon name="sidebar" size={16} />
             </button>
@@ -1116,19 +1065,12 @@ function App() {
           </div>
 
           <div className="top-actions">
-            <span className="top-status no-drag" aria-live="polite">
-              <span className={`top-status-dot ${isRunning ? 'on' : ''}`.trim()} aria-hidden="true" />
-              <b>{isRunning ? 'Farming' : 'Idle'}</b>
-              {activeAccount ? <span className="top-status-sep" aria-hidden="true" /> : null}
-              {activeAccount ? <span className="top-status-account" title={activeAccount.name}>{activeAccount.name}</span> : null}
-            </span>
             <UpdateBanner
               status={updateStatus}
               appVersion={appVersion}
               isBotRunning={isRunning}
               isOpen={isUpdateModalOpen}
-              anchor={updateAnchor}
-              onOpenChange={handleUpdateOpenChange}
+              onOpenChange={setIsUpdateModalOpen}
               onCheckNow={handleUpdaterCheck}
               onDownload={handleUpdaterDownload}
               onApply={handleUpdaterApply}
@@ -1141,7 +1083,7 @@ function App() {
           </div>
         </header>
 
-        <div className="content" ref={contentRef}>
+        <div className="content">
           {tab === 'dashboard' && (
             <Dashboard
               {...dashboardProps}
@@ -1201,14 +1143,8 @@ function App() {
               updateStatus={updateStatus}
               onCheckUpdates={handleUpdaterCheck}
               onClearSkip={handleUpdaterClearSkip}
-              onOpenUpdateModal={(anchor) => {
-                setUpdateAnchor(anchor ?? null);
-                setIsUpdateModalOpen(true);
-              }}
-              onOpenSetupWizard={(anchor) => {
-                setLaunchAnchor(anchor ?? null);
-                setLaunchOpen(true);
-              }}
+              onOpenUpdateModal={() => setIsUpdateModalOpen(true)}
+              onOpenSetupWizard={() => setLaunchOpen(true)}
               isBotRunning={isRunning}
             />
           )}
@@ -1219,8 +1155,6 @@ function App() {
         <LaunchSetup
           options={launchOptions}
           busy={launchBusy}
-          closing={launchClosing}
-          anchor={launchAnchor}
           onChoose={(file, slot, upgrades, tuning) => void handleChooseArmy(file, slot, upgrades, tuning)}
           onManual={handleManualSetup}
         />

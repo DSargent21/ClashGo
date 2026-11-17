@@ -25,8 +25,8 @@ interface SettingsViewProps {
   updateStatus: UpdateStatus;
   onCheckUpdates: () => void;
   onClearSkip: () => void;
-  onOpenUpdateModal?: (anchor?: HTMLElement) => void;
-  onOpenSetupWizard: (anchor?: HTMLElement) => void;
+  onOpenUpdateModal?: () => void;
+  onOpenSetupWizard: () => void;
   isBotRunning: boolean;
 }
 
@@ -204,7 +204,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-appearance">
           <div className="card-head">
             <div>
-              <h2>Appearance</h2>
+              <h3>Appearance</h3>
               <p className="card-sub">Display preferences persist on this machine</p>
             </div>
           </div>
@@ -213,7 +213,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
               checked={darkMode}
               onChange={setDarkMode}
               label="Dark theme"
-              description="Use the dark command palette across the app."
+              description="Command surfaces stay dark; switch off for the light palette."
             />
             <SwitchRow
               checked={compactMode}
@@ -239,7 +239,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-behavior">
           <div className="card-head">
             <div>
-              <h2>Behavior</h2>
+              <h3>Behavior</h3>
               <p className="card-sub">Launch and engine safety preferences</p>
             </div>
           </div>
@@ -281,7 +281,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                 <button
                   type="button"
                   className="btn sm"
-                  onClick={(event) => onOpenSetupWizard(event.currentTarget)}
+                  onClick={onOpenSetupWizard}
                   disabled={isBotRunning}
                 >
                   <Icon name="sliders" size={12} />
@@ -295,7 +295,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-system">
           <div className="card-head">
             <div>
-              <h2>System</h2>
+              <h3>System</h3>
               <p className="card-sub">Connection and runtime diagnostics</p>
             </div>
           </div>
@@ -352,7 +352,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-updates">
           <div className="card-head">
             <div>
-              <h2>Updates</h2>
+              <h3>Updates</h3>
               <p className="card-sub">Signed in-app updates from GitHub releases</p>
             </div>
           </div>
@@ -388,7 +388,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                   <span>Downloads, verifies, swaps the bundle, and restarts.</span>
                 </div>
                 <div className="setting-value">
-                  <button type="button" className="btn primary sm" onClick={(event) => onOpenUpdateModal?.(event.currentTarget)}>
+                  <button type="button" className="btn primary sm" onClick={onOpenUpdateModal}>
                     Review update
                   </button>
                 </div>
@@ -413,20 +413,14 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-testing">
           <div className="card-head">
             <div>
-              <h2>Testing</h2>
+              <h3>Testing</h3>
               <p className="card-sub">Pop up the in-game build menu without starting the bot</p>
             </div>
           </div>
           <div className="card-body">
             <p className="hint">
-              Sit in the main village first. These only tap navigation; no upgrade is confirmed or bought.
+              Sit in the main village first. These only tap navigation — no upgrade is confirmed or bought.
             </p>
-            {isBotRunning ? (
-              <p className="off-note">
-                <Icon name="info" size={11} />
-                <span>The bot is running. Stop it to use these test tools.</span>
-              </p>
-            ) : null}
             <div className="settings-actions">
               <button
                 type="button"
@@ -455,7 +449,9 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
                 Close menu
               </button>
             </div>
-            {testNote ? (
+            {isBotRunning ? (
+              <p className="hint">Stop the bot before using test tools.</p>
+            ) : testNote ? (
               <p className="hint" aria-live="polite">{testNote}</p>
             ) : null}
           </div>
@@ -464,7 +460,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card danger-card settings-danger">
           <div className="card-head">
             <div>
-              <h2>Danger zone</h2>
+              <h3>Danger zone</h3>
               <p className="card-sub">Irreversible actions for this profile</p>
             </div>
           </div>

@@ -9,7 +9,7 @@ import type {
 import { compactNumber, relativeTime } from '../utils';
 import Icon from './ui/Icon';
 import Drawer from './ui/Drawer';
-import { MasterToggle, SwitchRow } from './ui/Switch';
+import { Switch, SwitchRow } from './ui/Switch';
 import StatCard from './ui/StatCard';
 
 const DEFAULT_ROTATION: Rotation = {
@@ -303,15 +303,15 @@ const RotationPanel: React.FC<{
   busy: boolean;
   onChange: (rotation: Rotation) => void;
 }> = ({ rotation, busy, onChange }) => (
-  <section className="card card-master">
+  <section className="card">
     <div className="card-head">
       <div>
-        <h2>Fleet rotation</h2>
+        <h3>Fleet rotation</h3>
         <p className="card-sub">Hand the device to the next eligible account after a session</p>
       </div>
       <div className="card-tools">
         {busy ? <Icon name="refresh" size={13} className="spin" /> : null}
-        <MasterToggle
+        <Switch
           checked={rotation.enabled}
           onChange={(next) => onChange({ ...rotation, enabled: next })}
           ariaLabel="Enable automatic account rotation"
@@ -319,7 +319,7 @@ const RotationPanel: React.FC<{
       </div>
     </div>
     <div className="card-body">
-      <div className={`rotation-controls ${rotation.enabled ? '' : 'off-controls'}`.trim()}>
+      <div className="rotation-controls">
         <div className="ctl">
           <label className="label" htmlFor="rot-order">Order</label>
           <select
@@ -347,19 +347,17 @@ const RotationPanel: React.FC<{
             })}
           />
         </div>
-      </div>
-      {!rotation.enabled ? (
-        <p className="rotation-off-note">
-          Rotation is off. Order and per-account caps are stored and apply the next time you turn it on.
-        </p>
-      ) : null}
-      <div className="rotation-toggle">
-        <SwitchRow
-          checked={rotation.auto_start}
-          onChange={(next) => onChange({ ...rotation, auto_start: next })}
-          label="Auto-start after switching"
-          description="Start the bot on the next account as soon as the handover completes."
-        />
+        <button
+          type="button"
+          role="switch"
+          aria-checked={rotation.auto_start}
+          aria-label="Auto-start the bot after switching accounts"
+          onClick={() => onChange({ ...rotation, auto_start: !rotation.auto_start })}
+          className={`btn ${rotation.auto_start ? 'primary' : ''}`.trim()}
+        >
+          <Icon name={rotation.auto_start ? 'check' : 'power'} size={13} />
+          Auto-start
+        </button>
       </div>
       {rotation.enabled ? (
         <p className="rotation-note">
@@ -384,7 +382,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
   onResetUsage,
   onRotation,
 }) => {
-  const [editor, setEditor] = React.useState<{ account: AccountView | null; anchor?: HTMLElement } | null>(null);
+  const [editor, setEditor] = React.useState<{ account: AccountView | null } | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState<string | null>(null);
@@ -438,11 +436,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
             <Icon name="refresh" size={13} className={loading ? 'spin' : undefined} />
             Refresh
           </button>
-          <button
-            type="button"
-            className="btn sm"
-            onClick={(event) => setEditor({ account: null, anchor: event.currentTarget })}
-          >
+          <button type="button" className="btn primary sm" onClick={() => setEditor({ account: null })}>
             <Icon name="plus" size={13} />
             Add account
           </button>
@@ -475,7 +469,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
           label="Gold banked"
           value={compactNumber(totalGold)}
           detail="fleet total"
-          tone="gold"
+          tone="elixir"
         />
       </div>
 
@@ -505,11 +499,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
           <span className="empty-ico"><Icon name="users" size={20} /></span>
           <b>No accounts yet</b>
           <p>Add your first village and bind it to the emulator instance it is signed in to.</p>
-          <button
-            type="button"
-            className="btn primary"
-            onClick={(event) => setEditor({ account: null, anchor: event.currentTarget })}
-          >
+          <button type="button" className="btn primary" onClick={() => setEditor({ account: null })}>
             <Icon name="plus" size={13} />
             Add account
           </button>
@@ -531,11 +521,12 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                   <div className="acct-avatar">{initials}</div>
                   <div className="acct-main">
                     <div className="acct-name">
-                      <h2>{account.name}</h2>
-                      <span className={`status-pill ${meta.tone}`.trim()}>
-                        <i />{meta.label}
-                      </span>
-                      {account.active ? <span className="tag gold">Active</span> : null}
+                      <h3>{account.name}</h3>
+                      {meta.label !== 'Running' ? (
+                        <span className={`status-pill ${meta.tone}`.trim()}>
+                          <i />{meta.label}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="acct-meta">
                       {account.player_tag ? <span className="mono">{account.player_tag}</span> : null}
@@ -596,7 +587,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                         type="button"
                         disabled={isBusy || !account.enabled}
                         onClick={() => void run(account.id, () => onSwitch(account.id, true))}
-                        className="btn"
+                        className="btn primary"
                       >
                         <Icon name="play" size={13} />
                         {busy === account.id ? 'Starting…' : 'Start bot'}
@@ -608,7 +599,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                         type="button"
                         disabled={isBusy || !account.enabled}
                         onClick={() => void run(account.id, () => onSwitch(account.id, true))}
-                        className="btn"
+                        className="btn primary"
                       >
                         <Icon name="play" size={13} />
                         {busy === account.id ? 'Switching…' : 'Switch & start'}
@@ -625,7 +616,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                   )}
                   <button
                     type="button"
-                    onClick={(event) => setEditor({ account, anchor: event.currentTarget })}
+                    onClick={() => setEditor({ account })}
                     className="icon-btn"
                     aria-label={`Edit ${account.name}`}
                     title="Edit"
@@ -647,7 +638,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                     disabled={account.active || accounts.length === 1}
                     onClick={() => handleDelete(account.id)}
                     onBlur={() => setConfirmDelete(null)}
-                    className={`btn sm acct-delete ${confirmDelete === account.id ? 'danger' : ''}`.trim()}
+                    className={`btn sm ${confirmDelete === account.id ? 'danger' : ''}`.trim()}
                     aria-label={confirmDelete === account.id ? `Confirm delete ${account.name}` : `Delete ${account.name}`}
                     title={account.active ? 'Switch away before deleting the active account' : 'Delete'}
                   >
@@ -665,7 +656,6 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
         onClose={() => setEditor(null)}
         kicker={editor?.account ? 'Edit village' : 'New village'}
         title={editor?.account ? editor.account.name : 'Add account'}
-        anchor={editor?.anchor ?? null}
       >
         {editor ? (
           <AccountForm

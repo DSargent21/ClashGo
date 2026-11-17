@@ -2,7 +2,6 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { UpdateStatus } from '../types';
 import Icon, { IconName } from './ui/Icon';
-import { SURFACE_EXIT_MS, setAnchorOrigin } from './ui/motion';
 
 // UpdateBanner is the user-facing surface for the in-app updater.
 //
@@ -16,8 +15,6 @@ interface UpdateBannerProps {
   appVersion: string;
   isBotRunning: boolean;
   isOpen?: boolean;
-  /** Trigger from outside the top bar, such as Settings → Update. */
-  anchor?: HTMLElement | null;
   onOpenChange?: (open: boolean) => void;
   onCheckNow: () => void;
   onDownload: () => Promise<string>;
@@ -102,7 +99,6 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   appVersion,
   isBotRunning,
   isOpen,
-  anchor,
   onOpenChange,
   onCheckNow,
   onDownload,
@@ -122,11 +118,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   const [busy, setBusy] = React.useState<string | null>(null);
   const [lastError, setLastError] = React.useState<string | null>(null);
   const [mountedChecksumFlash, setMountedChecksumFlash] = React.useState(false);
-  const [rendered, setRendered] = React.useState(open);
-  const [closing, setClosing] = React.useState(false);
   const closeButtonRef = React.useRef<HTMLButtonElement>(null);
-  const chipRef = React.useRef<HTMLButtonElement>(null);
-  const modalRef = React.useRef<HTMLDivElement>(null);
   const busyRef = React.useRef(busy);
   const dismissRef = React.useRef(onDismiss);
   busyRef.current = busy;
@@ -170,28 +162,6 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.available, status?.latest_version]);
-
-  // Keep the dialog mounted for its short exit, then release it. The visible
-  // state is controlled by the parent, so this must mirror that state locally.
-  React.useEffect(() => {
-    if (open) {
-      setRendered(true);
-      setClosing(false);
-      return;
-    }
-    if (!rendered) return;
-    setClosing(true);
-    const timer = window.setTimeout(() => {
-      setRendered(false);
-      setClosing(false);
-    }, SURFACE_EXIT_MS);
-    return () => window.clearTimeout(timer);
-  }, [open, rendered]);
-
-  React.useLayoutEffect(() => {
-    if (!open || !rendered) return;
-    setAnchorOrigin(modalRef.current, anchor ?? chipRef.current);
-  }, [open, rendered, anchor]);
 
   if (!status) return null;
   if (status.state === 'restarting') return <RestartSplash status={status} />;
@@ -240,7 +210,6 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   return (
     <>
       <button
-        ref={chipRef}
         type="button"
         onClick={() => setOpen(true)}
         className={`update-chip no-drag ${status.state === 'error' ? 'error' : ''}`.trim()}
@@ -255,18 +224,17 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
         {status.available ? <span className="update-dot" /> : null}
       </button>
 
-      {rendered ? createPortal((
+      {open ? createPortal((
         <div
-          className={`modal-scrim${closing ? ' closing' : ''}`}
+          className="modal-scrim"
           role="presentation"
           onClick={() => setOpen(false)}
         >
           <div
-            ref={modalRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="update-banner-title"
-            className={`modal${closing ? ' closing' : ''}`}
+            className="modal"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-head">

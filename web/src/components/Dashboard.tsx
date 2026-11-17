@@ -292,7 +292,6 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   const [severityFilter, setSeverityFilter] = React.useState<LogSeverity | 'all'>('all');
   const [copiedIdx, setCopiedIdx] = React.useState<number | null>(null);
   const [report, setReport] = React.useState<AttackReport | null>(null);
-  const [reportAnchor, setReportAnchor] = React.useState<HTMLElement | null>(null);
   const copiedTimerRef = React.useRef<number | null>(null);
   const uptimeHours = stats.uptime / (1e9 * 3600);
 
@@ -370,7 +369,6 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   // keyboard/AT target, so each report adds one focus stop instead of two.
   const openReport = (event: React.MouseEvent, item: AttackReport) => {
     if ((event.target as HTMLElement).closest('button')) return;
-    setReportAnchor(event.currentTarget as HTMLElement);
     setReport(item);
   };
 
@@ -411,7 +409,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   // the user, mapped from BotStats.halted_reason.
   const haltText =
     stats.halted_reason === 'scheduler'
-      ? { title: 'Scheduled break', detail: 'Pacing paused the account. No taps, no captures, game stopped if configured.' }
+      ? { title: 'Scheduled break', detail: 'Pacing paused the account — no taps, no captures, game stopped if configured.' }
       : stats.halted_reason === 'storage_full'
         ? { title: 'Storages full', detail: 'Attacks are halted to stop wasting loot. Walls and upgrades keep running; attacks resume below the resume threshold.' }
         : stats.halted_reason === 'army_empty'
@@ -428,7 +426,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       <div className="page-head">
         <div>
           <h1>Dashboard</h1>
-          <p>Live loot, raids, and engine health from the bot.</p>
+          <p>Loot, raids, and engine health — live from the bot.</p>
         </div>
       </div>
 
@@ -443,7 +441,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
               <span className="rate">{rateLabel(resource.value, uptimeHours)}</span>
             </div>
             <div className="res-value">{exactNumber(resource.value)}</div>
-            <div className="res-meta">This session</div>
+            <div className="res-meta">Session total</div>
             <Sparkline values={resource.series} tone={resource.key} />
           </article>
         ))}
@@ -453,7 +451,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
         <article className="card" role="status" aria-live="polite">
           <div className="card-head">
             <div>
-              <h2>{haltText.title}</h2>
+              <h3>{haltText.title}</h3>
               <p className="card-sub">{haltText.detail}</p>
             </div>
             <span className="status-pill warn"><i />Paused</span>
@@ -465,7 +463,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
         <div className="card history-card">
           <div className="card-head">
             <div>
-              <h2>Attack history</h2>
+              <h3>Attack history</h3>
               <p className="card-sub">Recent deployments and results</p>
             </div>
             <div className="card-tools history-meta">
@@ -533,10 +531,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
                           type="button"
                           className="icon-btn plain sm"
                           aria-label={`Open report for ${strategyLabel(item.strategy)}`}
-                          onClick={(event) => {
-                            setReportAnchor(event.currentTarget);
-                            setReport(item);
-                          }}
+                          onClick={() => setReport(item)}
                         >
                           <Icon name="chevronRight" size={14} />
                         </button>
@@ -553,7 +548,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           <div className="card">
             <div className="card-head">
               <div>
-                <h2>Engine</h2>
+                <h3>Engine</h3>
                 <p className="card-sub">Autonomous raiding</p>
               </div>
               <span className={`status-pill ${running ? 'running' : ''}`.trim()}>
@@ -582,7 +577,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           <div className="card">
             <div className="card-head">
               <div>
-                <h2>Device</h2>
+                <h3>Device</h3>
                 <p className="card-sub">ADB bridge</p>
               </div>
               <span className={`status-pill ${adbState.tone}`}>
@@ -607,7 +602,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       <section className="card">
         <div className="card-head">
           <div>
-            <h2>System console</h2>
+            <h3>System console</h3>
             <p className="card-sub">Live bot output · click a line to copy</p>
           </div>
           <div className="card-tools">
@@ -715,7 +710,6 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
         onClose={() => setReport(null)}
         kicker={report ? `Raid report · ${report.total_attacks_session} in session` : 'Raid report'}
         title={report ? strategyLabel(report.strategy) : 'Raid report'}
-        anchor={reportAnchor}
         footer={<button type="button" className="btn block" onClick={() => setReport(null)}>Close</button>}
       >
         {report ? <RaidReport report={report} /> : null}

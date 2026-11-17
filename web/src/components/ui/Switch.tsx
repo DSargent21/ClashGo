@@ -30,33 +30,6 @@ export const Switch = React.memo<SwitchProps>(({
 
 Switch.displayName = 'Switch';
 
-/**
- * A bare switch plus its visible state. Use where the surrounding card title
- * names the feature: the user should not have to infer what an unlabelled
- * toggle controls, especially once narrow layouts push it onto its own row.
- */
-export const MasterToggle = React.memo<SwitchProps>(({
-  checked,
-  onChange,
-  disabled = false,
-  ariaLabel,
-  className = '',
-}) => (
-  <span className={`master-toggle ${className}`.trim()}>
-    <span className={`master-state ${checked ? 'on' : ''}`.trim()} aria-hidden="true">
-      {checked ? 'On' : 'Off'}
-    </span>
-    <Switch
-      checked={checked}
-      onChange={onChange}
-      disabled={disabled}
-      ariaLabel={ariaLabel}
-    />
-  </span>
-));
-
-MasterToggle.displayName = 'MasterToggle';
-
 export interface SwitchRowProps {
   checked: boolean;
   onChange: (next: boolean) => void;

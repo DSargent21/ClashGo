@@ -15,7 +15,6 @@ the reference for extending it. Architecture lives in [`DESIGN.md`](DESIGN.md).
 | `web/src/components/ui/Switch.tsx` | `Switch` control + `SwitchRow` |
 | `web/src/components/LaunchSetup.tsx` | First-run army → builders → settings wizard |
 | `web/src/components/ui/Drawer.tsx` | Right-side drawer with focus/ESC/scroll handling |
-| `web/src/components/ui/motion.ts` | Trigger-anchored transform origin + shared overlay exit timing |
 | `web/src/components/ui/StatCard.tsx` | Shared stat tile |
 | `web/src/utils.ts` | `compactNumber`, `exactNumber`, `relativeTime`, `formatUptime`, log parsing |
 | `web/src/components/ArmyView.tsx` | Live YAML phases, effective recipe slot, and auto-end for each strategy |
@@ -28,22 +27,18 @@ design layer wins over Tailwind preflight.
 
 1. **One accent.** Gold marks brand, focus, selection, and primary data. Status
    colors are reserved for state (green/red/blue/amber). It is not a structural
-   marker: no colored edge bars, glows, or tinted panel fills. A gold hairline
-   on a selected plan or active army card is allowed because it marks state.
+   marker: no colored edge bars, glows, or tinted panel borders.
 2. **Borders over shadows.** Cards use a 1px hairline and a near-invisible
    shadow; elevation is for overlays only.
 3. **Numbers are mono.** Every figure, timestamp, port, and counter uses
    JetBrains Mono with `font-variant-numeric: tabular-nums`.
-4. **Quiet labels, loud values.** Uppercase 11px labels carry context in data
-   views; setup and settings use sentence case. Functional copy never drops
-   below 11px, body copy is 12.5–14px, and values carry the weight through size
-   and color rather than extra font sizes.
+4. **Quiet labels, loud values.** Uppercase 10.5px labels carry context in data
+   views; setup and settings use sentence case. Values carry the weight.
 5. **No invented data.** The UI only renders fields the Go side actually sends.
-6. **Anchored, quiet motion.** Feedback lands in 90–140ms, state changes in
-   180ms, entrances in 240ms, and transient surfaces enter in 320ms but leave
-   in 140ms. Animate transform and opacity only; overlays scale from the exact
-   trigger rather than sliding across the screen, keep travel small, and never
-   bounce or loop decorative elements. Reduced motion is honored.
+6. **Fast, quiet motion.** Feedback lands in 90–140ms, state changes in 180ms,
+   entrances in 240ms, overlays in 280ms. Animate transform and opacity,
+   decelerate with ease-out, keep travel at 4–6px, and never bounce or loop
+   decorative elements. Reduced motion is honored.
 
 ## Tokens
 
@@ -51,60 +46,31 @@ Defined on `:root` (dark) and `html:not(.dark)` (light).
 
 | Token | Dark | Light | Use |
 | --- | --- | --- | --- |
-| `--bg` | `#0A0A0B` | `#F6F6F7` | App background, inputs |
-| `--surface` | `#111113` | `#FFFFFF` | Cards, sidebar, top bar |
-| `--raised` | `#17171A` | `#F1F1F3` | Hover fills, icon tiles |
-| `--overlay` | `#202024` | `#E8E8EC` | Active rows, switch off, chips |
-| `--border` | `rgba(255,255,255,.075)` | `rgba(0,0,0,.08)` | Hairlines |
-| `--border-strong` | `rgba(255,255,255,.145)` | `rgba(0,0,0,.16)` | Hover, drawer edge |
+| `--bg` | `#0B0B0C` | `#F6F6F7` | App background, inputs |
+| `--surface` | `#121214` | `#FFFFFF` | Cards, sidebar, top bar |
+| `--raised` | `#1A1A1D` | `#F1F1F3` | Hover fills, icon tiles |
+| `--overlay` | `#222226` | `#E8E8EC` | Active rows, switch off, chips |
+| `--border` | `rgba(255,255,255,.07)` | `rgba(0,0,0,.08)` | Hairlines |
+| `--border-strong` | `rgba(255,255,255,.14)` | `rgba(0,0,0,.16)` | Hover, drawer edge |
 | `--text` | `#EDEDEF` | `#151517` | Primary text |
 | `--text-2` | `#A1A1A8` | `#52525B` | Secondary text |
 | `--text-3` | `#8A8A93` | `#6B6B74` | Meta labels (AA on surface) |
-| `--text-faint` | `#7F7F89` | `#6C6C76` | Placeholders and tertiary meta (AA on bg) |
+| `--text-faint` | `#63636B` | `#9A9AA3` | Decorative only |
 | `--accent` | `#E3B341` | `#B88413` | Brand fill, focus ring |
 | `--accent-ink` | `#E3B341` | `#7A5700` | Accent text on surface |
 | `--accent-soft` | `rgba(227,179,65,.12)` | `rgba(184,132,19,.12)` | Accent tint |
-| `--on-accent` | `#14120B` | `#1B1404` | Ink on accent fill (light gold needs dark ink) |
-| `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#8F6710` / `#9C3FB4` / `#6351C9` | Resource series |
-| `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#187A4B` / `#C62F35` / `#1E6EA8` | Status |
-| `--scrollbar` / `--scrollbar-hover` | `#2A2A30` / `#45454E` | `#C7C7CE` / `#A8A8B2` | Browser scrollbars |
-| `--r` / `--r-sm` / `--r-xs` | `14px` / `9px` / `6px` | same | Card-like surfaces / controls / chips |
+| `--on-accent` | `#14120B` | `#FFFFFF` | Text on accent fill |
+| `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#A9791C` / `#9C3FB4` / `#6351C9` | Resource series |
+| `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#1E8E5A` / `#C62F35` / `#2277B8` | Status |
+| `--r` / `--r-sm` / `--r-xs` | `12px` / `8px` / `6px` | same | Cards / controls / chips |
 | `--sidebar-w` / `--rail-w` / `--topbar-h` | `232px` / `84px` / `56px` | same | Frame |
 | `--font` / `--mono` | Inter / JetBrains Mono | same | Typography |
 
-Type scale: body 14/1.55; page title 24/600; card title 14/600; micro-label
-11/600 uppercase `.04–.07em`; display figure 24–29/600; stat figure 19/600.
+Type scale: body 14/1.55; page title 22/600; card title 14/600; micro-label
+10.5/600 uppercase `.07em`; display figure 27/600; stat figure 19/600.
 
-Spacing is 4px based (`--space-1`…`--space-8`) with 16/24/32px for layout
-rhythm; page padding 32px; content max 1500px including padding. Use weight and
-color for hierarchy before adding another size.
-
-Every outer card-like surface uses `--r`. Nested card tiles use `--r-inner`:
-
-```css
---r-inner: max(0px, calc(var(--r) - var(--card-inset) - 1px));
-```
-
-The nested radius subtracts the card inset and border so both curves share a
-center. With the current 14px outer radius, 18px inset and 1px border it
-resolves to 0px; if the outer radius grows, the inner curve follows. Apply it
-to non-interactive tiles and inset panels, not to controls. `--r-sm` and
-`--r-xs` are for controls, badges, inputs and rows, so a control never
-inherits a card corner by accident. The setup wizard is the fixed visual
-reference and keeps its established radii.
-
-Views share one content shell. Do not add page-specific `max-width` wrappers
-around a view: cards that switch between tabs must land on the same left and
-right edge. Nested tiles align to their parent card's content box, and a
-grid's outer cards align to the group's content box.
-
-Hierarchy comes from type, spacing and soft raised fills before rules. Do not
-put a divider under every row: settings, config, fact lists and tables should
-read as one surface. Reserve 1px borders for controls, selected choices, sticky
-surfaces and error/accent callouts. Nested groups use a quiet `--raised` fill
-instead of another outline; form sections and autotune are unboxed. Keep the
-dense rhythm (18px card inset, 12px view gaps, ~40px rows) unless content
-proves it needs more room.
+Spacing is 4px based with 8/12/16/24 gaps; page padding 28px; content max
+1500px including padding.
 
 ### Motion
 
@@ -113,7 +79,7 @@ The timings follow the consensus in [Apple's HIG](https://developer.apple.com/de
 [Atlassian's motion system](https://atlassian.design/foundations/motion), and
 [Nielsen Norman Group's duration research](https://www.nngroup.com/articles/animation-duration/):
 hover and press feedback under 150ms, small state changes around 180ms,
-transient overlays around 320ms, and deceleration rather than spring or bounce.
+overlays under 300ms, and deceleration rather than spring or bounce.
 
 | Token | Value | Use |
 | --- | --- | --- |
@@ -121,19 +87,14 @@ transient overlays around 320ms, and deceleration rather than spring or bounce.
 | `--motion-fast` | `140ms` | Hover fills, borders, color, focus |
 | `--motion-base` | `180ms` | Toggles, tabs, status, small state |
 | `--motion-enter` | `240ms` | View and card entrances |
-| `--motion-exit` | `140ms` | Transient surface and scrim exits |
-| `--motion-overlay` | `320ms` | Drawer, modal, setup panel entry |
+| `--motion-exit` | `160ms` | Drawer and scrim exits |
+| `--motion-overlay` | `280ms` | Drawers, modals, setup panel |
 | `--ease-out` | `cubic-bezier(.16,1,.3,1)` | Entrances and hover feedback |
-| `--ease-in-out` | `cubic-bezier(.65,0,.35,1)` | Reversible state |
+| `--ease-in-out` | `cubic-bezier(.65,0,.35,1)` | Exits and reversible state |
 
-Overlay entry is opacity plus scale (`.94` drawer/modal, `.97` setup panel)
-from a `transform-origin` set to the trigger's center by
-`components/ui/motion.ts`; exit uses the same geometry, faster (140ms) and
-slightly smaller. Standard content entrances retain their small travel; press
-feedback is `.98` scale. Only the appended log row enters, so existing rows
-displace instead of every row re-fading. Nothing moves while the user is
-typing, and status pulses are the only infinite animation besides loading
-spinners. Data viz does not get entrance animation:
+Entrances are opacity plus 4–6px of travel; press feedback is `.98` scale.
+Nothing moves while the user is typing, and status pulses are the only infinite
+animation besides loading spinners. Data viz does not get entrance animation:
 the Wails webview can freeze CSS animations while its window is not painting,
 which once left the sparkline drawn only part-way across its card.
 
@@ -142,41 +103,14 @@ which once left the sparkline drawn only part-way across its card.
 - Fixed sidebar: 38px draggable strip reserved for macOS traffic lights, brand,
   grouped nav, and one Start/Stop control. Starts as an 84px rail
   below 1150px on first run; the top-bar toggle or Cmd/Ctrl+B collapses and
-  expands it at any width. The preference persists. Below 900px the rail is
-  forced regardless of the stored preference; below 760px it narrows to 68px
-  and the top-bar toggle and breadcrumb trail are hidden.
-- Sticky 56px top bar: sidebar toggle, breadcrumb, a session-status pill
-  (Idle/Farming + active account), updater banner when an update exists, and
-  the live clock. ADB health lives on Dashboard/Settings; the theme switch
-  lives in Settings. Interactive children need `no-drag`. The active-account
-  label and clock hide below 900px; the whole status cluster hides below
-  760px. The bar is a solid `--bg` surface; overlays keep blur, the persistent
-  frame does not.
-- `.content` is the only scroll container. Top bar stays outside it. A main-tab
-  change scrolls it to the top, and a Config sub-tab change does the same (the
-  subnav is sticky on desktop and static on narrow windows).
-
-Responsive frame:
-
-- `<=1150px`: Settings drops to one column and the first-run sidebar starts as
-  a rail.
-- `<=1024px`: Analytics KPIs and fleet stats become two columns; the Dashboard
-  resource strip stays three-up at the Wails minimum so its cards never leave
-  an orphan.
-- `<=900px`: sidebar is always the icon rail, the top-bar toggle is hidden,
-  the active-account label and clock drop out, and the Dashboard resource strip
-  stacks so labels and six-to-nine digit values never wrap or truncate.
-- `<=760px`: 68px rail, one-column page grids, stacked page heads and setting
-  rows, 16px content padding, and heatmap month labels hidden (52 weekly
-  columns cannot fit them; the card subtitle still names the 12-month range).
-- `<=520px`: Config subnav becomes a two-column tab grid.
+  expands it at any width. The preference persists.
+- Sticky 56px top bar: sidebar toggle, breadcrumb, updater chip, live clock.
+  ADB health lives on Dashboard/Settings; the theme switch lives in Settings.
+  Interactive children need `no-drag`.
+- `.content` is the only scroll container. Top bar stays outside it.
 
 Wails rules: any new draggable region gets `draggable`; buttons inside it get
 `no-drag`. Do not wrap the shell in a transform — it breaks fixed overlays.
-The Wails window is `MinWidth 1024 / MinHeight 768`; narrower layouts are for
-browser preview and do not imply a 390px desktop window. The macOS native
-window chrome is configured `NSAppearanceNameDarkAqua`; only the content
-palette follows `html.dark`.
 
 ## Launch setup
 
@@ -189,20 +123,12 @@ together.
   or gradient. Completed steps use a small check.
 - Sections are separated by rules and whitespace, not nested cards. Only plan
   choices and inputs get a fill.
-- Gold is limited to the primary CTA, the selected plan's radio and hairline,
-  the selected recipe slot, switches, the recommended label, and status.
-  Everything else is neutral.
+- Gold is limited to the primary CTA, selected radio dot, switches, the
+  recommended label, and status. Everything else is neutral.
 - Builders covers the full progression loop: plan, types, wall reserve, lab
   research order, and pet order. Lab and pets follow the engine switch.
-- Plan choices are a two-up comparison on wide windows and one column when
-  the panel is narrow. The rate is the loudest value, the recommendation is
-  plain accent text, and the selected plan takes the gold radio.
-- Below 880px the left rail becomes a horizontal step strip. The rail footer
-  is hidden there, so the content header carries a `Set up manually` exit;
-  never trap a narrow user inside the wizard. Step names stay visible down to
-  350px; below that the strip becomes three dots with a gold active dot, and
-  plan names wrap instead of truncating. Builder lab/pet columns stack below
-  680px.
+- Plan choices are stacked radio rows, not equal marketing cards. The rate is
+  the loudest value; the recommendation is plain accent text.
 - Adaptive loot owns the floors: while it is on, the three floor inputs are
   disabled and dimmed. Turning it off restores manual editing.
 - Dry run is a Config → Builders control, not part of setup.
@@ -213,9 +139,7 @@ One setting has one home. Duplicated controls drift out of sync and read as
 optional when they are not.
 
 - **Army** owns per-plan choices: which strategy is active, its recipe slot,
-  and its auto-end switch. Config carries no plan controls. Each plan card
-  shows the same loot/hour estimate as the launch wizard (`loot_per_hour`,
-  `measured`, `raids`), so a roster comparison cannot disagree with setup.
+  and its auto-end switch. Config carries no plan controls.
 - **Config** owns engine-wide settings across five tabs: Search & loot,
   Builders, Lab & pets, Schedule, Storage. Wall upgrading and the wall
   resource live with Builders, next to the reserved-builder count; Storage
@@ -224,16 +148,10 @@ optional when they are not.
   the device test tools.
 - **Master switches gate the engine, not the form.** Schedule, Builders, Lab
   and Pets stay editable while their switch is off; Save persists every value
-  and the switch alone decides whether the engine acts on it. Wrap dependent
-  blocks in `.off-block` at 62% dark / 72% light opacity and add a one-line
-  `.off-note` that says the values still save; focus inside restores opacity
-  to 90/95. Inline dependent panels such as Auto loot tuning use `.is-off`.
-  Use `MasterToggle` in card heads so the ON/OFF state stays visible
-  and stays on the title row at narrow widths. Never hide a form behind
-  `pointer-events: none`. If a block genuinely cannot be edited,
-  use native `disabled` controls plus a visible reason. Allowed cases: the
-  setup wizard's upgrade block and adaptive-loot floors, Settings device
-  tests while the bot runs, and replaying the wizard mid-run.
+  and the switch alone decides whether the engine acts on it. Never hide a
+  form behind `pointer-events: none`. If a block genuinely cannot be edited,
+  use native `disabled` controls plus a visible reason (the setup wizard's
+  upgrade block and the adaptive-loot floors are the only two cases).
 - **Full inventory:** `docs/UI_CONTROL_INVENTORY.md` records every actionable
   control, its location/action, and the deliberate shortcut decisions
   (sidebar Start/Stop, update checks, wizard preset).
@@ -242,16 +160,14 @@ optional when they are not.
   activity reads saved raid history. Never leave a number or chart without
   its window in the subtitle or label.
 - Start/Stop appears in the sidebar and, contextually, on the active account
-  card. The sidebar control is the single global primary; page-level Add
-  account and per-account start actions are secondary. Ticket-style row
-  actions stay inside their own view.
+  card. Ticket-style row actions stay inside their own view.
 
 ## Component recipes
 
 ```tsx
 <article className="card">
   <div className="card-head">
-    <div><h2>Title</h2><p className="card-sub">Context</p></div>
+    <div><h3>Title</h3><p className="card-sub">Context</p></div>
     <div className="card-tools">…</div>
   </div>
   <div className="card-body">…</div>
@@ -264,28 +180,14 @@ optional when they are not.
   `.hint`, `.hint.error`. Invalid inputs use `aria-invalid="true"`.
 - Rows: `.set-row` (label/description left, `.set-ctl` right) for config and
   settings; `.kv` for read-only key/value pairs.
-- Off states: `.off-block` dims a dependent form without disabling it;
-  `.off-note` carries the reason and the save promise. Use both together.
 - Switches: `<Switch checked onChange ariaLabel />` in a control slot;
-  `<SwitchRow checked onChange label description />` when the label is the row;
-  `<MasterToggle>` for a card's gating switch (adds visible ON/OFF text).
-- Segments: `.seg` + `.seg-btn.active`. Config subnav buttons share the row
-  width, then switch to a two-column grid at 520px; do not leave a long empty
-  track beside content-sized tabs.
+  `<SwitchRow checked onChange label description />` when the label is the row.
+- Segments: `.seg` + `.seg-btn.active`.
 - Tables: `.table-wrap` > `.data-table`; stars via `.stars` + `Icon name="star"`.
 - Status: `.status-pill` with `running|warn|error|info|green`; `.tag` for
   compact metadata.
-- Headings: page title is `<h1>`; every card title in that page is `<h2>`.
-  Do not skip from `<h1>` to `<h3>`; the setup wizard's step `<h1>` and section
-  `<h2>` follow the same rule.
 - Empty states: `.empty` + `.empty-ico` + `<b>` + `<p>`.
 - Drawers: use `components/ui/Drawer.tsx`; never rebuild scrim/ESC/focus logic.
-  Pass the opening control as `anchor` so the panel grows from it, not from the
-  screen edge. Long drawer forms keep their `.form-actions` sticky to the
-  drawer foot so the commit action is reachable without scrolling to the end.
-- Browser surfaces: scrollbars, caret, selection, and focus ring are themed
-  from the palette. Keep numerals tabular; never hard-code a native control
-  color.
 - Overlays: portal modals and splashes to `document.body`. A `position: fixed`
   overlay rendered inside the top bar is clipped because the bar's backdrop
   filter creates a containing block.
@@ -307,8 +209,6 @@ Icons: add the name to `IconName` and a 24×24 path to `paths` in
 - Charts and sparklines are `aria-hidden`; the numbers they visualize are
   rendered as text.
 - Respect `prefers-reduced-motion`; never add autoplaying motion that blocks use.
-  Drawers, modals and the setup panel drop keyframes and transforms outright;
-  their closing state still clears so dismissal is immediate.
 - Icon-only buttons require `aria-label` and usually `title`.
 
 ## Mockup reference
@@ -325,8 +225,7 @@ to Wails or runtime data.
 2. Render it inside `.content`; start with `.page-head` (h1 + one-line purpose).
 3. Compose from `.card`, `.stat-strip`, `.set-row`, and the table primitives.
 4. Put layout-only rules in `views.css`, shared primitives in `design.css`.
-5. Verify both themes at 1440×900, 1024×768, and 390×844; check keyboard
-   flow and horizontal overflow. The 390px pass is browser-preview only.
+5. Verify both themes at 1440×900 and 1024 width, and check keyboard flow.
 
 ## Theme and preferences
 
@@ -350,8 +249,7 @@ and no column is left with a tall blank gap.
   not send.
 - Don't introduce a chart, router, or component library for this UI.
 - Don't mark active navigation with a colored edge, glow, or accent fill.
-- Don't turn a plain two-option choice into an equal card grid with badges and
-  gradients; use a radio list. The launch plan picker is the exception: its
-  two choices carry a comparable loot rate, so they share one card grid.
+- Don't turn a two-option choice into an equal card grid with badges and
+  gradients; use a radio list.
 - Don't add decorative loops, parallax, spring/bounce easing, or entrance
   animation on data viz; use the motion tokens above and keep it stateful.

@@ -1,7 +1,6 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import Icon from './Icon';
-import { SURFACE_EXIT_MS, setAnchorOrigin } from './motion';
 
 export interface DrawerProps {
   open: boolean;
@@ -10,8 +9,6 @@ export interface DrawerProps {
   title: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
-  /** Element the drawer grows out of. Falls back to the focused trigger. */
-  anchor?: HTMLElement | null;
 }
 
 const FOCUSABLE = [
@@ -30,7 +27,7 @@ const FOCUSABLE = [
  * scrim click, body scroll lock, initial focus, focus restore, and a
  * Tab loop so keyboard users cannot wander behind the scrim.
  */
-const Drawer: React.FC<DrawerProps> = ({ open, onClose, kicker, title, children, footer, anchor }) => {
+const Drawer: React.FC<DrawerProps> = ({ open, onClose, kicker, title, children, footer }) => {
   const panelRef = React.useRef<HTMLElement>(null);
   const titleId = React.useId();
   const closeRef = React.useRef(onClose);
@@ -50,14 +47,9 @@ const Drawer: React.FC<DrawerProps> = ({ open, onClose, kicker, title, children,
     const timer = window.setTimeout(() => {
       setRendered(false);
       setClosing(false);
-    }, SURFACE_EXIT_MS);
+    }, 280);
     return () => window.clearTimeout(timer);
   }, [open, rendered]);
-
-  React.useLayoutEffect(() => {
-    if (!open || !rendered) return;
-    setAnchorOrigin(panelRef.current, anchor, 'right');
-  }, [open, rendered, anchor]);
 
   React.useEffect(() => {
     if (!open) return;

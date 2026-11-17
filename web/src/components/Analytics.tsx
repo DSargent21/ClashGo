@@ -151,7 +151,7 @@ const LootChart: React.FC<{ history: AttackReport[] }> = ({ history }) => {
     <section className="card chart-card">
       <div className="card-head">
         <div>
-          <h2>Loot per raid</h2>
+          <h3>Loot per raid</h3>
           <p className="card-sub">This session · stacked resource yield · last 16 reported raids</p>
         </div>
         <div className="chart-legend" role="group" aria-label="Chart series">
@@ -334,7 +334,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
         <section className="card">
           <div className="card-head">
             <div>
-              <h2>Attack outcomes</h2>
+              <h3>Attack outcomes</h3>
               <p className="card-sub">This session · star distribution across reported attacks</p>
             </div>
           </div>
@@ -371,7 +371,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
         <section className="card">
           <div className="card-head">
             <div>
-              <h2>Revenue</h2>
+              <h3>Revenue</h3>
               <p className="card-sub">This session · loot banked and per-raid averages</p>
             </div>
           </div>
@@ -413,7 +413,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
         <section className="card analytics-activity">
           <div className="card-head">
             <div>
-              <h2>Attack activity</h2>
+              <h3>Attack activity</h3>
               <p className="card-sub">Saved history · daily raids across the last 12 months</p>
             </div>
             <div className="card-tools">
@@ -483,7 +483,7 @@ const Analytics: React.FC<AnalyticsProps> = React.memo(({ stats, history, activi
         <section className="card analytics-strategies">
           <div className="card-head">
             <div>
-              <h2>Strategy performance</h2>
+              <h3>Strategy performance</h3>
               <p className="card-sub">This session · grouped from reported attacks</p>
             </div>
           </div>
