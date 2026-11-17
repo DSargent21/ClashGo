@@ -46,7 +46,7 @@ const ArmyPlanCard: React.FC<{
     <div className="army-plan-head">
       <span className="army-emblem"><UnitIcon name={plan.emblem} size={21} /></span>
       <div className="army-plan-title">
-        <h3>{plan.name}</h3>
+        <h2>{plan.name}</h2>
         <span>{plan.phases.length} phases · {plan.target_edge || 'no target edge'}</span>
       </div>
       <span className={`tag ${active ? 'gold' : ''}`.trim()}>{active ? 'Active' : 'Reference'}</span>

@@ -115,7 +115,7 @@ const Section: React.FC<{
   <section className={`card ${master ? 'card-master' : ''}`.trim()}>
     <div className="card-head">
       <div>
-        <h3>{title}</h3>
+        <h2>{title}</h2>
         {sub ? <p className="card-sub">{sub}</p> : null}
       </div>
       {action ? <div className="card-tools">{action}</div> : null}
@@ -258,11 +258,11 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
         : saveStatus === 'error' ? 'Save failed'
           : 'Save settings';
 
-  const saveIcon: IconName =
+  const saveIcon: IconName | null =
     saveStatus === 'saving' ? 'refresh'
       : saveStatus === 'saved' ? 'check'
         : saveStatus === 'error' ? 'alert'
-          : 'check';
+          : null;
 
   const saveClass =
     saveStatus === 'saved' ? 'saved'
@@ -329,7 +329,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           className={`btn primary save-btn ${saveClass}`.trim()}
         >
           {saveButtonLabel}
-          <Icon name={saveIcon} size={13} className={saveStatus === 'saving' ? 'spin' : undefined} />
+          {saveIcon ? <Icon name={saveIcon} size={13} className={saveStatus === 'saving' ? 'spin' : undefined} /> : null}
         </button>
       </div>
 
@@ -351,7 +351,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               >
                 <OffBlock
                   off={!searchEnabled}
-                  note="Search matching is off — these thresholds are saved but not applied until it is on."
+                  note="Search matching is off. These thresholds are saved but not applied until it is on."
                 >
                 <div className="threshold-grid">
                   {thresholdItems.map((item) => {
@@ -399,7 +399,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 </div>
 
                 {autoLoot ? (
-                  <div className="autotune" aria-live="polite">
+                  <div className={`autotune ${autoLoot.enabled ? '' : 'is-off'}`.trim()} aria-live="polite">
                     <div className="autotune-head">
                       <span className={`status-pill ${autoLoot.ready ? 'running' : ''}`.trim()}>
                         <i />{autoLoot.ready ? 'Tuned' : 'Learning'}
@@ -607,7 +607,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               sub="Humanized sessions, natural breaks, and offline simulation"
               master
               off={!scheduleEnabled}
-              offNote="The schedule is off — the bot runs continuously. Every value below is saved and applies when you turn it on."
+              offNote="The schedule is off. The bot runs continuously. Every value below is saved and applies when you turn it on."
               action={(
                 <MasterToggle
                   checked={scheduleEnabled}
@@ -732,7 +732,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
               sub="Builder assignment, hero priority, spend limits, and walls"
               master
               off={!autoBuilders}
-              offNote="Automatic builders are off — nothing below runs, but every value is saved for when you enable it."
+              offNote="Automatic builders are off. Nothing below runs, but every value is saved for when you enable it."
               action={(
                 <MasterToggle
                   checked={autoBuilders}
@@ -894,7 +894,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 sub="Automatic troop, spell, and siege upgrades"
                 master
                 off={!autoLab}
-                offNote="Automatic research is off — the order and DE permission below are saved for when you enable it."
+                offNote="Automatic research is off. The order and DE permission below are saved for when you enable it."
                 action={<MasterToggle checked={autoLab} onChange={setAutoLab} ariaLabel="Enable automatic lab research" />}
               >
                   <div className="form-grid">
@@ -931,7 +931,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                 sub="Upgrade order in the pet house"
                 master
                 off={!autoPets}
-                offNote="Automatic pet upgrades are off — this queue is saved and resumes when you enable it."
+                offNote="Automatic pet upgrades are off. This queue is saved and resumes when you enable it."
                 action={<MasterToggle checked={autoPets} onChange={setAutoPets} ariaLabel="Enable automatic pet upgrades" />}
               >
                   <span className="label">Priority order (top to bottom)</span>
@@ -1005,7 +1005,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
           <div className="config-foot" style={{ marginTop: 16 }}>
             {anyInvalid ? (
               <div className="form-warn" role="alert">
-                Some values are out of range — fix them before saving.
+                Some values are out of range. Fix them before saving.
               </div>
             ) : null}
             {lastSaveError && saveStatus === 'error' ? (

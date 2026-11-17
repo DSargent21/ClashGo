@@ -204,7 +204,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-appearance">
           <div className="card-head">
             <div>
-              <h3>Appearance</h3>
+              <h2>Appearance</h2>
               <p className="card-sub">Display preferences persist on this machine</p>
             </div>
           </div>
@@ -213,7 +213,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
               checked={darkMode}
               onChange={setDarkMode}
               label="Dark theme"
-              description="Command surfaces stay dark; switch off for the light palette."
+              description="Use the dark command palette across the app."
             />
             <SwitchRow
               checked={compactMode}
@@ -239,7 +239,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-behavior">
           <div className="card-head">
             <div>
-              <h3>Behavior</h3>
+              <h2>Behavior</h2>
               <p className="card-sub">Launch and engine safety preferences</p>
             </div>
           </div>
@@ -295,7 +295,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-system">
           <div className="card-head">
             <div>
-              <h3>System</h3>
+              <h2>System</h2>
               <p className="card-sub">Connection and runtime diagnostics</p>
             </div>
           </div>
@@ -352,7 +352,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-updates">
           <div className="card-head">
             <div>
-              <h3>Updates</h3>
+              <h2>Updates</h2>
               <p className="card-sub">Signed in-app updates from GitHub releases</p>
             </div>
           </div>
@@ -413,18 +413,18 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card settings-testing">
           <div className="card-head">
             <div>
-              <h3>Testing</h3>
+              <h2>Testing</h2>
               <p className="card-sub">Pop up the in-game build menu without starting the bot</p>
             </div>
           </div>
           <div className="card-body">
             <p className="hint">
-              Sit in the main village first. These only tap navigation — no upgrade is confirmed or bought.
+              Sit in the main village first. These only tap navigation; no upgrade is confirmed or bought.
             </p>
             {isBotRunning ? (
               <p className="off-note">
                 <Icon name="info" size={11} />
-                <span>The bot is running — stop it to use these test tools.</span>
+                <span>The bot is running. Stop it to use these test tools.</span>
               </p>
             ) : null}
             <div className="settings-actions">
@@ -464,7 +464,7 @@ const SettingsView: React.FC<SettingsViewProps> = React.memo(({
         <section className="card danger-card settings-danger">
           <div className="card-head">
             <div>
-              <h3>Danger zone</h3>
+              <h2>Danger zone</h2>
               <p className="card-sub">Irreversible actions for this profile</p>
             </div>
           </div>

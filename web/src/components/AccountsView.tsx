@@ -306,7 +306,7 @@ const RotationPanel: React.FC<{
   <section className="card card-master">
     <div className="card-head">
       <div>
-        <h3>Fleet rotation</h3>
+        <h2>Fleet rotation</h2>
         <p className="card-sub">Hand the device to the next eligible account after a session</p>
       </div>
       <div className="card-tools">
@@ -350,7 +350,7 @@ const RotationPanel: React.FC<{
       </div>
       {!rotation.enabled ? (
         <p className="rotation-off-note">
-          Rotation is off — order and per-account caps are stored and apply the next time you turn it on.
+          Rotation is off. Order and per-account caps are stored and apply the next time you turn it on.
         </p>
       ) : null}
       <div className="rotation-toggle">
@@ -438,7 +438,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
             <Icon name="refresh" size={13} className={loading ? 'spin' : undefined} />
             Refresh
           </button>
-          <button type="button" className="btn primary sm" onClick={() => setEditor({ account: null })}>
+          <button type="button" className="btn sm" onClick={() => setEditor({ account: null })}>
             <Icon name="plus" size={13} />
             Add account
           </button>
@@ -523,7 +523,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                   <div className="acct-avatar">{initials}</div>
                   <div className="acct-main">
                     <div className="acct-name">
-                      <h3>{account.name}</h3>
+                      <h2>{account.name}</h2>
                       <span className={`status-pill ${meta.tone}`.trim()}>
                         <i />{meta.label}
                       </span>
@@ -588,7 +588,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                         type="button"
                         disabled={isBusy || !account.enabled}
                         onClick={() => void run(account.id, () => onSwitch(account.id, true))}
-                        className="btn primary"
+                        className="btn"
                       >
                         <Icon name="play" size={13} />
                         {busy === account.id ? 'Starting…' : 'Start bot'}
@@ -600,7 +600,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                         type="button"
                         disabled={isBusy || !account.enabled}
                         onClick={() => void run(account.id, () => onSwitch(account.id, true))}
-                        className="btn primary"
+                        className="btn"
                       >
                         <Icon name="play" size={13} />
                         {busy === account.id ? 'Switching…' : 'Switch & start'}

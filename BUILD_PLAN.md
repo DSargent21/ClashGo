@@ -284,6 +284,31 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     device data.
   - Verified: see `PROGRESS.md`.
 
+- [x] **T.11 Intuitive UI polish: hierarchy, edge widths, live states**
+  - Why: T.10 fixed the responsive frame, but the rendered product still had
+    no semantic card headings, 10.5px functional labels, a translucent top
+    bar that failed contrast, nested Army phase cards, an Auto loot overflow
+    at 320px, and account-drawer actions below the fold.
+  - Files: `web/src/styles/{design,views}.css`,
+    `web/src/components/{AccountsView,Analytics,ArmyView,ConfigView,Dashboard,
+    LaunchSetup,SettingsView}.tsx`, `docs/UI.md`, `BUILD_PLAN.md`,
+    `PROGRESS.md`.
+  - Fixed: one primary action per screen (sidebar Start; page and account
+    actions neutral); page `h1` / card `h2` semantics; 11px functional text
+    floor; solid top bar; 4px spacing rhythm; observed light `--on-accent` ink
+    and darker resource greens/blues; mobile Army plans with a full-width title,
+    tag row and labeled fact rows; rule-separated phases instead of nested
+    cards; phone Auto loot wrapping; sticky account-drawer commits; labeled
+    wizard steps down to 350px; wrapped plan names; short copy without em-dash
+    cadence; idle Save no longer shows a fake check.
+  - Acceptance: all primary views, both themes, off states and the setup wizard
+    have no horizontal overflow or functional text under 11px at 320x720,
+    390x844, 768x1024, 1024x768, 1440x900, 1920x1080 and 2560x1080; running
+    state shows Farming and disables Settings test tools with a visible reason;
+    Impeccable reports only the deliberate Inter font; tsc, stub syntax, full
+    verify and the Wails build pass.
+  - Verified: see `PROGRESS.md`.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

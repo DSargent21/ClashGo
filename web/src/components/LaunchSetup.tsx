@@ -590,7 +590,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                           <span>
                             {adaptive
                               ? `Sets the floors above from what you actually see. Needs about ${options?.min_samples ?? 40} bases; your numbers seed it until then.`
-                              : 'Off — the floors above are used exactly as entered.'}
+                              : 'Off. The floors above are used exactly as entered.'}
                           </span>
                         </div>
                         <Switch checked={adaptive} onChange={setAdaptive} ariaLabel="Adaptive loot" />

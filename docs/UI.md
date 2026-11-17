@@ -33,8 +33,10 @@ design layer wins over Tailwind preflight.
    shadow; elevation is for overlays only.
 3. **Numbers are mono.** Every figure, timestamp, port, and counter uses
    JetBrains Mono with `font-variant-numeric: tabular-nums`.
-4. **Quiet labels, loud values.** Uppercase 10.5px labels carry context in data
-   views; setup and settings use sentence case. Values carry the weight.
+4. **Quiet labels, loud values.** Uppercase 11px labels carry context in data
+   views; setup and settings use sentence case. Functional copy never drops
+   below 11px, body copy is 12.5–14px, and values carry the weight through size
+   and color rather than extra font sizes.
 5. **No invented data.** The UI only renders fields the Go side actually sends.
 6. **Fast, quiet motion.** Feedback lands in 90–140ms, state changes in 180ms,
    entrances in 240ms, overlays in 280ms. Animate transform and opacity,
@@ -56,22 +58,24 @@ Defined on `:root` (dark) and `html:not(.dark)` (light).
 | `--text` | `#EDEDEF` | `#151517` | Primary text |
 | `--text-2` | `#A1A1A8` | `#52525B` | Secondary text |
 | `--text-3` | `#8A8A93` | `#6B6B74` | Meta labels (AA on surface) |
-| `--text-faint` | `#63636B` | `#9A9AA3` | Decorative only |
+| `--text-faint` | `#7F7F89` | `#6C6C76` | Placeholders and tertiary meta (AA on bg) |
 | `--accent` | `#E3B341` | `#B88413` | Brand fill, focus ring |
 | `--accent-ink` | `#E3B341` | `#7A5700` | Accent text on surface |
 | `--accent-soft` | `rgba(227,179,65,.12)` | `rgba(184,132,19,.12)` | Accent tint |
-| `--on-accent` | `#14120B` | `#FFFFFF` | Text on accent fill |
-| `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#A9791C` / `#9C3FB4` / `#6351C9` | Resource series |
-| `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#1E8E5A` / `#C62F35` / `#2277B8` | Status |
+| `--on-accent` | `#14120B` | `#1B1404` | Ink on accent fill (light gold needs dark ink) |
+| `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#8F6710` / `#9C3FB4` / `#6351C9` | Resource series |
+| `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#187A4B` / `#C62F35` / `#1E6EA8` | Status |
+| `--scrollbar` / `--scrollbar-hover` | `#2A2A30` / `#45454E` | `#C7C7CE` / `#A8A8B2` | Browser scrollbars |
 | `--r` / `--r-sm` / `--r-xs` | `14px` / `9px` / `6px` | same | Cards / controls / chips |
 | `--sidebar-w` / `--rail-w` / `--topbar-h` | `232px` / `84px` / `56px` | same | Frame |
 | `--font` / `--mono` | Inter / JetBrains Mono | same | Typography |
 
 Type scale: body 14/1.55; page title 24/600; card title 14/600; micro-label
-10.5/600 uppercase `.07em`; display figure 29/600; stat figure 19/600.
+11/600 uppercase `.04–.07em`; display figure 24–29/600; stat figure 19/600.
 
-Spacing is 4px based with 8/12/16/24 gaps; page padding 28px; content max
-1500px including padding.
+Spacing is 4px based (`--space-1`…`--space-8`) with 16/24/32px for layout
+rhythm; page padding 32px; content max 1500px including padding. Use weight and
+color for hierarchy before adding another size.
 
 ### Motion
 
@@ -110,8 +114,10 @@ which once left the sparkline drawn only part-way across its card.
 - Sticky 56px top bar: sidebar toggle, breadcrumb, a session-status pill
   (Idle/Farming + active account), updater banner when an update exists, and
   the live clock. ADB health lives on Dashboard/Settings; the theme switch
-  lives in Settings. Interactive children need `no-drag`. The status cluster
-  hides below 760px.
+  lives in Settings. Interactive children need `no-drag`. The active-account
+  label and clock hide below 900px; the whole status cluster hides below
+  760px. The bar is a solid `--bg` surface; overlays keep blur, the persistent
+  frame does not.
 - `.content` is the only scroll container. Top bar stays outside it. A main-tab
   change scrolls it to the top, and a Config sub-tab change does the same (the
   subnav is sticky on desktop and static on narrow windows).
@@ -121,8 +127,11 @@ Responsive frame:
 - `<=1150px`: Settings drops to one column and the first-run sidebar starts as
   a rail.
 - `<=1024px`: Analytics KPIs and fleet stats become two columns; the Dashboard
-  resource strip stays three-up so its three cards never leave an orphan.
-- `<=900px`: sidebar is always the icon rail and the top-bar toggle is hidden.
+  resource strip stays three-up at the Wails minimum so its cards never leave
+  an orphan.
+- `<=900px`: sidebar is always the icon rail, the top-bar toggle is hidden,
+  the active-account label and clock drop out, and the Dashboard resource strip
+  stacks so labels and six-to-nine digit values never wrap or truncate.
 - `<=760px`: 68px rail, one-column page grids, stacked page heads and setting
   rows, 16px content padding, and heatmap month labels hidden (52 weekly
   columns cannot fit them; the card subtitle still names the 12-month range).
@@ -156,8 +165,10 @@ together.
   plain accent text, and the selected plan takes the gold radio.
 - Below 880px the left rail becomes a horizontal step strip. The rail footer
   is hidden there, so the content header carries a `Set up manually` exit;
-  never trap a narrow user inside the wizard. Builder lab/pet columns stack
-  below 680px.
+  never trap a narrow user inside the wizard. Step names stay visible down to
+  350px; below that the strip becomes three dots with a gold active dot, and
+  plan names wrap instead of truncating. Builder lab/pet columns stack below
+  680px.
 - Adaptive loot owns the floors: while it is on, the three floor inputs are
   disabled and dimmed. Turning it off restores manual editing.
 - Dry run is a Config → Builders control, not part of setup.
@@ -180,9 +191,10 @@ optional when they are not.
 - **Master switches gate the engine, not the form.** Schedule, Builders, Lab
   and Pets stay editable while their switch is off; Save persists every value
   and the switch alone decides whether the engine acts on it. Wrap dependent
-  blocks in `.off-block` at 58% dark / 66% light opacity and add a one-line
+  blocks in `.off-block` at 62% dark / 72% light opacity and add a one-line
   `.off-note` that says the values still save; focus inside restores opacity
-  to 85/90. Use `MasterToggle` in card heads so the ON/OFF state stays visible
+  to 90/95. Inline dependent panels such as Auto loot tuning use `.is-off`.
+  Use `MasterToggle` in card heads so the ON/OFF state stays visible
   and stays on the title row at narrow widths. Never hide a form behind
   `pointer-events: none`. If a block genuinely cannot be edited,
   use native `disabled` controls plus a visible reason. Allowed cases: the
@@ -196,14 +208,16 @@ optional when they are not.
   activity reads saved raid history. Never leave a number or chart without
   its window in the subtitle or label.
 - Start/Stop appears in the sidebar and, contextually, on the active account
-  card. Ticket-style row actions stay inside their own view.
+  card. The sidebar control is the single global primary; page-level Add
+  account and per-account start actions are secondary. Ticket-style row
+  actions stay inside their own view.
 
 ## Component recipes
 
 ```tsx
 <article className="card">
   <div className="card-head">
-    <div><h3>Title</h3><p className="card-sub">Context</p></div>
+    <div><h2>Title</h2><p className="card-sub">Context</p></div>
     <div className="card-tools">…</div>
   </div>
   <div className="card-body">…</div>
@@ -227,8 +241,16 @@ optional when they are not.
 - Tables: `.table-wrap` > `.data-table`; stars via `.stars` + `Icon name="star"`.
 - Status: `.status-pill` with `running|warn|error|info|green`; `.tag` for
   compact metadata.
+- Headings: page title is `<h1>`; every card title in that page is `<h2>`.
+  Do not skip from `<h1>` to `<h3>`; the setup wizard's step `<h1>` and section
+  `<h2>` follow the same rule.
 - Empty states: `.empty` + `.empty-ico` + `<b>` + `<p>`.
 - Drawers: use `components/ui/Drawer.tsx`; never rebuild scrim/ESC/focus logic.
+  Long drawer forms keep their `.form-actions` sticky to the drawer foot so the
+  commit action is reachable without scrolling to the end.
+- Browser surfaces: scrollbars, caret, selection, and focus ring are themed
+  from the palette. Keep numerals tabular; never hard-code a native control
+  color.
 - Overlays: portal modals and splashes to `document.body`. A `position: fixed`
   overlay rendered inside the top bar is clipped because the bar's backdrop
   filter creates a containing block.

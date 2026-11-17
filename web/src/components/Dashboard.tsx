@@ -409,7 +409,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
   // the user, mapped from BotStats.halted_reason.
   const haltText =
     stats.halted_reason === 'scheduler'
-      ? { title: 'Scheduled break', detail: 'Pacing paused the account — no taps, no captures, game stopped if configured.' }
+      ? { title: 'Scheduled break', detail: 'Pacing paused the account. No taps, no captures, game stopped if configured.' }
       : stats.halted_reason === 'storage_full'
         ? { title: 'Storages full', detail: 'Attacks are halted to stop wasting loot. Walls and upgrades keep running; attacks resume below the resume threshold.' }
         : stats.halted_reason === 'army_empty'
@@ -426,7 +426,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       <div className="page-head">
         <div>
           <h1>Dashboard</h1>
-          <p>Loot, raids, and engine health — live from the bot.</p>
+          <p>Live loot, raids, and engine health from the bot.</p>
         </div>
       </div>
 
@@ -451,7 +451,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
         <article className="card" role="status" aria-live="polite">
           <div className="card-head">
             <div>
-              <h3>{haltText.title}</h3>
+              <h2>{haltText.title}</h2>
               <p className="card-sub">{haltText.detail}</p>
             </div>
             <span className="status-pill warn"><i />Paused</span>
@@ -463,7 +463,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
         <div className="card history-card">
           <div className="card-head">
             <div>
-              <h3>Attack history</h3>
+              <h2>Attack history</h2>
               <p className="card-sub">Recent deployments and results</p>
             </div>
             <div className="card-tools history-meta">
@@ -548,7 +548,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           <div className="card">
             <div className="card-head">
               <div>
-                <h3>Engine</h3>
+                <h2>Engine</h2>
                 <p className="card-sub">Autonomous raiding</p>
               </div>
               <span className={`status-pill ${running ? 'running' : ''}`.trim()}>
@@ -577,7 +577,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
           <div className="card">
             <div className="card-head">
               <div>
-                <h3>Device</h3>
+                <h2>Device</h2>
                 <p className="card-sub">ADB bridge</p>
               </div>
               <span className={`status-pill ${adbState.tone}`}>
@@ -602,7 +602,7 @@ const Dashboard: React.FC<DashboardProps> = React.memo(({
       <section className="card">
         <div className="card-head">
           <div>
-            <h3>System console</h3>
+            <h2>System console</h2>
             <p className="card-sub">Live bot output · click a line to copy</p>
           </div>
           <div className="card-tools">

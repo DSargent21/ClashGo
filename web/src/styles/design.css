@@ -41,7 +41,8 @@
   --text: #EDEDEF;
   --text-2: #A1A1A8;
   --text-3: #8A8A93;
-  --text-faint: #63636B;
+  /* 4.5:1 on raised surfaces, so placeholders and micro-labels stay legible. */
+  --text-faint: #7F7F89;
 
   --accent: #E3B341;
   --accent-ink: #E3B341;
@@ -64,6 +65,17 @@
   --star-off: #3F3F46;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .025);
   --shadow-pop: 0 22px 60px rgba(0, 0, 0, .58);
+  --scrollbar: #2A2A30;
+  --scrollbar-hover: #45454E;
+
+  /* 4px spacing base. Layout gaps use 16/24/32; keep new rules on scale. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
 
   --r: 14px;
   --r-sm: 9px;
@@ -106,29 +118,32 @@ html:not(.dark) {
   --text: #151517;
   --text-2: #52525B;
   --text-3: #6B6B74;
-  --text-faint: #9A9AA3;
+  --text-faint: #6C6C76;
 
   --accent: #B88413;
   --accent-ink: #7A5700;
   --accent-soft: rgba(184, 132, 19, .12);
-  --on-accent: #FFFFFF;
+  /* Dark ink on light-theme gold: 5.5:1. White on this gold is only 3.3:1. */
+  --on-accent: #1B1404;
 
-  --gold: #A9791C;
+  --gold: #8F6710;
   --elixir: #9C3FB4;
   --de: #6351C9;
 
-  --green: #1E8E5A;
-  --green-soft: rgba(30, 142, 90, .10);
+  --green: #187A4B;
+  --green-soft: rgba(24, 122, 75, .10);
   --red: #C62F35;
   --red-soft: rgba(198, 47, 53, .09);
-  --blue: #2277B8;
-  --blue-soft: rgba(34, 119, 184, .10);
+  --blue: #1E6EA8;
+  --blue-soft: rgba(30, 110, 168, .10);
   --violet: #6351C9;
   --violet-soft: rgba(99, 81, 201, .10);
 
   --star-off: #D4D4D8;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .04);
   --shadow-pop: 0 18px 48px rgba(0, 0, 0, .16);
+  --scrollbar: #C7C7CE;
+  --scrollbar-hover: #A8A8B2;
 
   --logo-filter: none;
 }
@@ -164,7 +179,7 @@ html:not(.dark) body {
 
 h1, h2, h3, h4, p { margin: 0; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-input, select, textarea { font: inherit; color: inherit; }
+input, select, textarea { font: inherit; color: inherit; caret-color: var(--accent); }
 svg { display: block; }
 img { max-width: 100%; }
 a { color: var(--accent-ink); text-decoration: none; }
@@ -180,9 +195,9 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--overlay); border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
-* { scrollbar-width: thin; scrollbar-color: var(--overlay) transparent; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+* { scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; }
 
 .sr-only {
   position: absolute;
@@ -301,7 +316,7 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   padding: 12px 10px 5px;
   max-height: 36px;
   overflow: hidden;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: .08em;
   text-transform: uppercase;
@@ -393,7 +408,7 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
   background: var(--overlay);
   border: 1px solid var(--border-strong);
   color: var(--text-2);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -408,7 +423,7 @@ html:not(.dark) ::selection { background: rgba(184, 132, 19, .22); }
 }
 .user-text span {
   display: block;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -482,12 +497,11 @@ html:not(.dark) .engine-power.start { color: var(--on-accent); }
   justify-content: space-between;
   gap: 16px;
   padding: 0 28px;
-  background: rgba(10, 10, 11, .86);
+  /* Solid top bar: the content scrolls under it, but glass here added a
+     second surface language and made native-webview contrast unpredictable. */
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
-html:not(.dark) .topbar { background: rgba(246, 246, 247, .88); }
 
 .topbar-left,
 .top-actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -549,7 +563,7 @@ html:not(.dark) .topbar { background: rgba(246, 246, 247, .88); }
   width: 100%;
   max-width: 1500px;
   margin: 0 auto;
-  padding: 30px;
+  padding: var(--space-8);
   overflow-y: auto;
 }
 
@@ -560,8 +574,8 @@ html.compact .content { padding: 20px 24px 28px; }
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 22px;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
 }
 .page-head h1 {
   font-size: 24px;
@@ -574,10 +588,10 @@ html.compact .card-head { padding: 14px 18px 12px; }
 html.compact .card-body { padding: 14px 18px; }
 html.compact .setting-row { padding: 8px 0; }
 
-.page-head p { margin-top: 5px; font-size: 12.5px; color: var(--text-3); }
+.page-head p { margin-top: var(--space-1); font-size: 13px; color: var(--text-3); }
 .page-side { display: flex; align-items: center; gap: 10px; flex: none; }
 
-.muted { font-size: 12px; color: var(--text-3); }
+.muted { font-size: 12.5px; color: var(--text-3); }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* ============================== BUTTONS ============================== */
@@ -592,7 +606,7 @@ html.compact .setting-row { padding: 8px 0; }
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-2);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
   transition:
@@ -622,7 +636,7 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
 .btn.danger:hover { background: var(--red-soft); border-color: rgba(229, 72, 77, .45); color: var(--red); }
 .btn.ghost { background: transparent; border-color: transparent; }
 .btn.ghost:hover { background: var(--raised); border-color: var(--border); }
-.btn.sm { height: 30px; padding: 0 11px; font-size: 11.5px; gap: 5px; }
+.btn.sm { height: 30px; padding: 0 11px; font-size: 12px; gap: 5px; }
 .btn.block { width: 100%; }
 .btn:disabled { opacity: .55; cursor: not-allowed; pointer-events: none; }
 /* A disabled primary should read as inert, not as a low-contrast gold CTA. */
@@ -701,12 +715,12 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
-  padding: 19px 20px 13px;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-5) var(--space-3);
 }
 .card-head h2,
-.card-head h3 { font-size: 13.5px; font-weight: 600; letter-spacing: -.012em; }
-.card-sub { margin-top: 3px; font-size: 11.5px; color: var(--text-3); }
+.card-head h3 { font-size: 14px; font-weight: 600; letter-spacing: -.012em; }
+.card-sub { margin-top: var(--space-1); font-size: 12px; color: var(--text-3); }
 .card-tools { display: flex; align-items: center; gap: 8px; flex: none; }
 .card-body { padding: 0 20px 20px; }
 .card-pad { padding: 20px; }
@@ -718,13 +732,13 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 22px;
-  padding: 0 8px;
+  height: 24px;
+  padding: 0 9px;
   border-radius: var(--pill);
   border: 1px solid var(--border);
   background: var(--raised);
   color: var(--text-2);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: .005em;
   white-space: nowrap;
@@ -752,13 +766,13 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--raised);
   color: var(--text-3);
-  font: 500 10px var(--mono);
+  font: 500 11px var(--mono);
   letter-spacing: .01em;
   white-space: nowrap;
 }
@@ -770,7 +784,7 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
 .label {
   display: block;
   margin-bottom: 6px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: .075em;
   text-transform: uppercase;
@@ -785,7 +799,7 @@ html:not(.dark) .btn.danger { border-color: rgba(198, 47, 53, .28); }
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 13px;
   outline: none;
   transition:
     border-color var(--motion-fast) var(--ease-out),
@@ -819,7 +833,7 @@ select.field,
 }
 .select option { background: var(--surface); color: var(--text); }
 
-.hint { margin-top: 4px; font-size: 10.5px; color: var(--text-3); line-height: 1.5; }
+.hint { margin-top: 4px; font-size: 11.5px; color: var(--text-3); line-height: 1.5; }
 .hint.error { color: var(--red); }
 
 /* A master switch turns the engine off, not the form. The block dims so the
@@ -829,16 +843,16 @@ select.field,
   opacity: .58;
   transition: opacity var(--motion-base) var(--ease-out);
 }
-html:not(.dark) .off-block { opacity: .66; }
-.off-block:focus-within { opacity: .85; }
-html:not(.dark) .off-block:focus-within { opacity: .9; }
+html:not(.dark) .off-block { opacity: .72; }
+.off-block:focus-within { opacity: .9; }
+html:not(.dark) .off-block:focus-within { opacity: .95; }
 .off-note {
   display: flex;
   align-items: flex-start;
   gap: 6px;
   margin-bottom: 12px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 .off-note svg { flex: none; margin-top: 2px; color: var(--text-faint); }
@@ -848,7 +862,7 @@ html:not(.dark) .off-block:focus-within { opacity: .9; }
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
   background: var(--bg);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   line-height: 1.5;
 }
@@ -888,14 +902,14 @@ html:not(.dark) .off-block:focus-within { opacity: .9; }
   text-align: left;
 }
 .switch-row .switch-text { min-width: 0; }
-.switch-row .switch-text b { display: block; font-size: 12.5px; font-weight: 500; color: var(--text); }
-.switch-row .switch-text span { display: block; margin-top: 1px; font-size: 11px; color: var(--text-3); }
+.switch-row .switch-text b { display: block; font-size: 13px; font-weight: 500; color: var(--text); }
+.switch-row .switch-text span { display: block; margin-top: 2px; font-size: 11.5px; color: var(--text-3); }
 
 .master-toggle { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .master-state {
   color: var(--text-3);
-  font: 600 9.5px var(--mono);
-  letter-spacing: .06em;
+  font: 600 11px var(--mono);
+  letter-spacing: .05em;
   text-transform: uppercase;
 }
 .master-state.on { color: var(--text-2); }
@@ -920,7 +934,7 @@ html:not(.dark) .off-block:focus-within { opacity: .9; }
   gap: 5px;
   border-radius: 6px;
   color: var(--text-3);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   transition:
@@ -1029,7 +1043,7 @@ html:not(.dark) .seg-btn.active { box-shadow: 0 1px 2px rgba(0, 0, 0, .08), inse
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-3);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: .07em;
   text-transform: uppercase;
@@ -1039,7 +1053,7 @@ html:not(.dark) .seg-btn.active { box-shadow: 0 1px 2px rgba(0, 0, 0, .08), inse
 .data-table td {
   padding: 11px 14px;
   border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
+  font-size: 13px;
   vertical-align: middle;
 }
 .data-table tbody tr { cursor: pointer; transition: background var(--motion-fast) var(--ease-out); }
@@ -1064,7 +1078,7 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
 }
 .loot-cell { display: flex; flex-direction: column; gap: 2px; }
 .loot span { display: inline-flex; align-items: center; gap: 5px; }
-.loot-bonus { display: flex; gap: 9px; color: var(--text-faint); font: 400 9.5px var(--mono); }
+.loot-bonus { display: flex; gap: 9px; color: var(--text-faint); font: 400 11px var(--mono); }
 .loot-bonus .gold { color: var(--gold); }
 .loot-bonus .elixir { color: var(--elixir); }
 .loot-bonus .de { color: var(--de); }
@@ -1096,7 +1110,7 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
 .stat-ico.green { color: var(--green); background: var(--green-soft); border-color: rgba(76, 195, 138, .2); }
 .stat-ico.blue { color: var(--blue); background: var(--blue-soft); border-color: rgba(92, 179, 240, .2); }
 .stat-body { min-width: 0; }
-.stat-label { font-size: 11.5px; color: var(--text-3); }
+.stat-label { font-size: 12px; color: var(--text-3); }
 .stat-value {
   font-size: 20px;
   font-weight: 600;
@@ -1107,7 +1121,7 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.stat-detail { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-detail { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ============================ DRAWER/MODAL =========================== */
 .scrim {
@@ -1148,18 +1162,18 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
-  padding: 20px 22px 16px;
+  gap: 16px;
+  padding: 20px 24px 16px;
   border-bottom: 1px solid var(--border);
 }
-.drawer-kicker { margin-bottom: 3px; font-size: 11px; color: var(--text-3); }
+.drawer-kicker { margin-bottom: 3px; font-size: 12px; color: var(--text-3); }
 .drawer-head h2 { font-size: 18px; font-weight: 600; letter-spacing: -.01em; line-height: 1.3; }
-.drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 22px; }
+.drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px; }
 .drawer-foot {
   flex: none;
   display: flex;
   gap: 8px;
-  padding: 14px 22px;
+  padding: 16px 24px;
   border-top: 1px solid var(--border);
 }
 
@@ -1193,8 +1207,8 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
-  padding: 18px 20px 14px;
+  gap: 16px;
+  padding: 20px 20px 16px;
   border-bottom: 1px solid var(--border);
 }
 .modal-kicker {
@@ -1203,7 +1217,7 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   gap: 6px;
   margin-bottom: 4px;
   color: var(--accent-ink);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: .12em;
   text-transform: uppercase;
@@ -1211,7 +1225,7 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
 .modal-head h2 { font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
 .modal-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--text-3); }
 .modal-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; }
-.modal-foot { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 14px 20px 18px; }
+.modal-foot { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 16px 20px 20px; }
 .modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 .progress { position: relative; height: 6px; overflow: hidden; border-radius: var(--pill); background: var(--raised); }
@@ -1238,8 +1252,8 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   background: var(--raised);
   color: var(--text-3);
 }
-.empty b { font-size: 13px; font-weight: 600; color: var(--text-2); }
-.empty p { max-width: 46ch; font-size: 12px; line-height: 1.5; }
+.empty b { font-size: 13.5px; font-weight: 600; color: var(--text-2); }
+.empty p { max-width: 46ch; font-size: 12.5px; line-height: 1.5; }
 
 .error-banner {
   display: flex;
@@ -1292,6 +1306,9 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
 @media (max-width: 1024px) {
   .content { padding: 20px; }
   .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
   .clock { display: none; }
 }
 

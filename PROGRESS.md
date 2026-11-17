@@ -6,8 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **T.10 Responsive UI polish + Wails parity** (see the
-  2026-11-17 session log entry).
+- Last task: **T.11 Intuitive UI polish: hierarchy, edge widths, live states**
+  (see the 2026-11-17 session log entry).
 - Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`).
 - Last green commit: see `git log -1`.
 - Verify gate: `./tools/verify.sh` (full) / `./tools/verify.sh --fast`.
@@ -733,5 +733,37 @@ Format:
   native macOS window chrome, version string, and live ADB/config data; the
   macOS window appearance remains `NSAppearanceNameDarkAqua` as documented,
   and sub-1024 layouts remain browser-preview only.
+- Commit: this commit
+- Next: F.1 dead-base detection.
+
+### 2026-11-17 — T.11: intuitive UI polish
+- Changed: `web/src/styles/{design,views}.css`,
+  `web/src/components/{AccountsView,Analytics,ArmyView,ConfigView,Dashboard,
+  LaunchSetup,SettingsView}.tsx`, `docs/UI.md`, `BUILD_PLAN.md`.
+- Fixed:
+  - Hierarchy: every card title is now `h2` under the page `h1`; page and
+    account actions are neutral, leaving the sidebar Start/Stop as the single
+    global primary; the idle Save button no longer renders a fake check.
+  - Legibility: functional text floor is 11px; labels are 11, body 12.5–13,
+    card titles 14; the light accent uses dark ink, and light gold/green/blue
+    values were darkened for contrast. Topbar is solid, not translucent.
+  - Spacing: content 32px, page heads 24, cards 16, card heads 20/12; the
+    Dashboard resource strip stacks below 900px while retaining 3-up at 1024.
+  - Army: phone plan heads give the title a full row and the Active tag its own
+    line; three fact cells become labeled rows; phases use rules instead of
+    nested cards. The loot/hour estimate remains with its measured basis.
+  - Edge states: Auto loot wraps at 320; wizard step names remain visible down
+    to 350px, then become dots with a gold active dot; plan names wrap; account
+    drawer actions stay sticky; the active account and clock stay in the top
+    bar at 1024.
+- Verified: `npx tsc --noEmit` PASS; `node --check web/public/wails-stub.js`
+  PASS; `./tools/verify.sh` -> `VERIFY PASSED (full)`; `make build-gui` built
+  `build/bin/ClashGO.app`; `npx impeccable detect` -> only deliberate
+  `overused-font` (Inter). Captured Dashboard, Army, Analytics, Accounts,
+  Config, Settings and the wizard in both themes at 320x720, 390x844, 768x1024,
+  1024x768, 1440x900, 1920x1080 and 2560x1080 with no horizontal overflow or
+  functional text under 11px; Add account drawer checked at 1440 and 390;
+  Start bot showed Farming and disabled Settings test tools with the visible
+  reason, Stop returned to Idle; console and network clean.
 - Commit: this commit
 - Next: F.1 dead-base detection.
