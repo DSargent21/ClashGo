@@ -704,3 +704,16 @@ Format:
   1440x900 and 1920x1246 in both themes, no horizontal overflow; checks green.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — UI: unify the 6px corner contract
+- Changed: `web/src/styles/design.css`, `web/src/styles/views.css`,
+  `docs/UI.md`.
+- Fixed: cards, fields, buttons, tabs, nested panels, modals, chips and tags
+  had 5/7/8/9/10/11/12/14/16px corners. They now all use the same 6px radius
+  as the `TUNED` config badge, so boxed edges line up across views. Semantic
+  circles (dots, avatars, switches, progress tracks) keep `--pill` or `50%`.
+- Verified: computed radii all 6px; 24-view capture at 1440x900 and 1920x1246
+  in both themes, no horizontal overflow; Config, Settings and Dashboard
+  checked. Checks green.
+- Commit: this commit
+- Next: F.1 dead-base detection.

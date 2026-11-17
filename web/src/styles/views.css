@@ -51,7 +51,7 @@
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: var(--accent-soft);
   color: var(--gold);
 }
@@ -144,7 +144,7 @@
   gap: 5px;
   height: 24px;
   padding: 0 8px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   color: var(--text-3);
   font-size: 10px;
@@ -177,7 +177,7 @@
   gap: 10px;
   margin: 0 -6px;
   padding: 3px 6px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
 }
 /* Only the appended line enters. Animating every buffered row made a tab
    switch re-fade the whole console. */
@@ -209,7 +209,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 .report-result {
   margin-bottom: 18px;
   padding: 18px 14px;
-  border-radius: 10px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--bg);
   text-align: center;
@@ -236,7 +236,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: var(--accent-soft);
   color: var(--gold);
 }
@@ -302,7 +302,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   height: 28px;
   padding: 0 9px;
   border: 1px solid var(--border);
-  border-radius: var(--pill);
+  border-radius: var(--r-xs);
   color: var(--text-2);
   font-size: 10.5px;
   font-weight: 500;
@@ -508,7 +508,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--raised);
   color: var(--text-2);
@@ -527,7 +527,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   gap: 7px;
   margin: 12px 20px 16px;
   padding: 9px 10px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text-3);
@@ -558,7 +558,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid rgba(227, 179, 65, .28);
   background: var(--accent-soft);
   color: var(--accent-ink);
@@ -586,7 +586,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--r-xs);
   border: 1px solid rgba(227, 179, 65, .26);
   background: var(--accent-soft);
   color: var(--accent-ink);
@@ -660,7 +660,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   align-items: center;
   gap: 6px;
   padding: 0 8px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text-2);
@@ -713,7 +713,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border-strong);
   background: var(--overlay);
   color: var(--text-2);
@@ -762,7 +762,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 .form-section {
   margin-top: 14px;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--bg);
 }
@@ -829,7 +829,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   margin-top: 10px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-xs);
   background: var(--surface);
 }
 .autotune-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; }
@@ -847,7 +847,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 .autotune-row .at-label { display: flex; align-items: center; gap: 6px; color: var(--text-2); }
 .autotune-row .at-gain {
   padding: 1px 5px;
-  border-radius: var(--pill);
+  border-radius: var(--r-xs);
   background: var(--green-soft);
   color: var(--green);
   font: 600 9px var(--mono);
@@ -891,7 +891,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   align-items: center;
   gap: 5px;
   padding: 0 10px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text-3);
@@ -963,7 +963,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: var(--accent-soft);
   color: var(--accent-ink);
   font: 600 10px var(--mono);
@@ -1084,7 +1084,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   gap: 6px;
   height: 28px;
   padding: 0 10px;
-  border-radius: var(--pill);
+  border-radius: var(--r-xs);
   border: 1px solid rgba(76, 195, 138, .3);
   background: var(--green-soft);
   color: var(--green);
@@ -1145,7 +1145,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   display: grid;
   place-items: center;
   margin: 0 auto 18px;
-  border-radius: 16px;
+  border-radius: var(--r-xs);
   border: 1px solid rgba(227, 179, 65, .4);
   background: var(--accent-soft);
   color: var(--accent);
@@ -1166,7 +1166,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   width: 100%;
   max-width: 440px;
   padding: 28px;
-  border-radius: 14px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border-strong);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
@@ -1178,7 +1178,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   display: grid;
   place-items: center;
   margin: 0 auto 14px;
-  border-radius: 12px;
+  border-radius: var(--r-xs);
   border: 1px solid rgba(229, 72, 77, .3);
   background: var(--red-soft);
   color: var(--red);
@@ -1285,7 +1285,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   height: min(690px, calc(100vh - 48px));
   overflow: hidden;
   border: 1px solid var(--border-strong);
-  border-radius: 16px;
+  border-radius: var(--r-xs);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
 }
@@ -1317,7 +1317,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   align-items: flex-start;
   gap: 10px;
   padding: 9px 8px;
-  border-radius: 8px;
+  border-radius: var(--r-xs);
   color: var(--text-3);
   text-align: left;
   transition:
@@ -1399,7 +1399,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   gap: 10px;
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-xs);
   background: var(--surface);
   color: var(--text);
   text-align: left;
@@ -1419,7 +1419,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: var(--overlay);
   color: var(--text-2);
 }
@@ -1487,7 +1487,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   width: 26px;
   height: 26px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
   background: transparent;
   color: var(--text-3);
   font: 500 10.5px var(--mono);
@@ -1509,7 +1509,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
    wall, so the block is transparent about what it refuses. */
 .launch-block.is-disabled { opacity: .45; }
 
-.launch-choices { display: grid; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.launch-choices { display: grid; border: 1px solid var(--border); border-radius: var(--r-xs); overflow: hidden; }
 .launch-choice {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
@@ -1569,7 +1569,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   height: 28px;
   padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   background: transparent;
   color: var(--text-3);
   font-size: 10.5px;
@@ -1631,7 +1631,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   align-items: center;
   padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-xs);
   background: var(--bg);
   transition:
     border-color var(--motion-fast) var(--ease-out),
@@ -1666,7 +1666,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   gap: 10px;
   padding: 13px 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-xs);
   background: var(--raised);
 }
 .launch-brief header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -1690,7 +1690,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 }
 .launch-foot-info { display: flex; align-items: center; gap: 6px; color: var(--text-faint); font-size: 10px; }
 .launch-foot-actions { display: flex; align-items: center; gap: 8px; }
-.launch-back { height: 34px; border-radius: 8px; font-size: 11.5px; }
+.launch-back { height: 34px; border-radius: var(--r-xs); font-size: 11.5px; }
 .launch-cta {
   display: inline-flex;
   align-items: center;
@@ -1700,7 +1700,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   max-width: 420px;
   padding: 0 13px;
   overflow: hidden;
-  border-radius: 8px;
+  border-radius: var(--r-xs);
   font-size: 11.5px;
   font-weight: 500;
   letter-spacing: 0;
@@ -1734,7 +1734,7 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
   .loadout-slots { flex-wrap: wrap; }
   .launch-foot-info { display: none; }
   .launch-brand { display: none; }
-  .launch-panel { border-radius: 12px; }
+  .launch-panel { border-radius: var(--r-xs); }
   .ln-copy { display: none; }
   .launch-nav-item { justify-content: center; }
 }

@@ -62,7 +62,7 @@ Defined on `:root` (dark) and `html:not(.dark)` (light).
 | `--on-accent` | `#14120B` | `#FFFFFF` | Text on accent fill |
 | `--gold` / `--elixir` / `--de` | `#E3B341` / `#C86BDD` / `#8F7FE8` | `#A9791C` / `#9C3FB4` / `#6351C9` | Resource series |
 | `--green` / `--red` / `--blue` | `#4CC38A` / `#E5484D` / `#5CB3F0` | `#1E8E5A` / `#C62F35` / `#2277B8` | Status |
-| `--r` / `--r-sm` / `--r-xs` | `12px` / `8px` / `6px` | same | Cards / controls / chips |
+| `--r` / `--r-sm` / `--r-xs` | `6px` / `6px` / `6px` | same | Every boxed surface |
 | `--sidebar-w` / `--rail-w` / `--topbar-h` | `232px` / `84px` / `56px` | same | Frame |
 | `--font` / `--mono` | Inter / JetBrains Mono | same | Typography |
 
@@ -184,9 +184,13 @@ optional when they are not.
   `<SwitchRow checked onChange label description />` when the label is the row.
 - Segments: `.seg` + `.seg-btn.active`.
 - Tables: `.table-wrap` > `.data-table`; stars via `.stars` + `Icon name="star"`.
+- Corners: one 6px contract for every boxed surface — cards, fields, buttons,
+  tabs, panels, modals, chips and tags all use `--r-xs`, so edges line up with
+  the `TUNED` config badge. `--pill` is reserved for semantic tracks and
+  switches; `50%` for dots, avatars and radios. Do not introduce a second
+  boxed radius.
 - Status: `.status-pill` with `running|warn|error|info|green`; `.tag` for
-  compact metadata. Status chips are controls and use the compact `--r-xs`
-  badge radius, not `--pill` capsules and not the 0px card-inner fallback.
+  compact metadata. Status chips use the same 6px radius, not capsules.
 - Settings rows share one 48px rhythm. `.settings-grid .switch-row` uses the
   same 10px vertical padding and divider as `.setting-row`; do not leave the
   appearance switches as unpadded flex rows.
