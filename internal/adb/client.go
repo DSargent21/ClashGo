@@ -537,16 +537,13 @@ const HumanTapFloor = 65 * time.Millisecond
 // the single place the floor is enforced.
 func (c *Client) paceTap() {
 	c.tapPaceMu.Lock()
-	if !c.lastTapAt.IsZero() {
-		if wait := HumanTapFloor - time.Since(c.lastTapAt); wait > 0 {
-			// Jitter the remainder too: waiting exactly to the floor would emit
-			// a run of precisely 65 ms gaps whenever two paths collide, which is
-			// its own machine cadence.
-			time.Sleep(wait + time.Duration(rand.Intn(12))*time.Millisecond)
-		}
+	defer c.tapPaceMu.Unlock()
+	if wait := HumanTapFloor - time.Since(c.lastTapAt); wait > 0 {
+		// Jitter the remainder: waiting exactly to the floor would emit a run
+		// of precisely 65 ms gaps whenever two paths collide.
+		time.Sleep(wait + time.Duration(rand.Intn(12))*time.Millisecond)
 	}
 	c.lastTapAt = time.Now()
-	c.tapPaceMu.Unlock()
 }
 
 // routeTap is the shared router for Tap/TapAsync/TapFast through either

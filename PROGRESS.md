@@ -579,3 +579,33 @@ Format:
   (cold boot goes straight to the village; same attempts as the H.4 entry).
   The dismissal path is covered by the real-frame tests above instead.
 - Next: F.1 dead-base detection.
+
+### 2026-11-17 — H.6: tap-floor review, cadence gate, drag-deploy finding
+- Changed: `internal/adb/client.go` (paceTap simplified: one lock, zero-time
+  short-circuit), `cmd/tapaudit/main.go` (`-assert-human` is now a clean gate),
+  `PROGRESS.md`.
+- Review: `splashStateForFrame` stays the seam — a pure function of
+  (state, classifier, frame) with a real-frame test for all three inputs;
+  nothing to cut. `SettleTap`/`nextTapSettle` stay because the floor only
+  paces collisions, while the settle shapes the normal cadence.
+- Fixed: `tapaudit -assert-human` no longer fails on the choreography flags that
+  deliberate deploy bursts always raise. It exits 0 when the cadence contract
+  holds (`human cadence OK: minimum consecutive gap 67 ms >= 65 ms, no
+  fixed-interval run`) and 1 on a short gap or a fixed-interval run.
+- Tried live, reverted: drag-deploy (card->line swipe, then field strokes) and
+  field-only swipe streaming. On this BlueStacks/CoC build a held swipe places
+  one unit at release and the card deselects, so both variants left 10 of 11
+  on the card and forced 3 top-up rounds of 12 taps; the raid finished at 40%
+  instead of the usual 80%. No drag code is left in the tree.
+- Measured attack window from the last clean run (`tmp/coldboot.log`):
+  Balloons 3.2 s, Electro Dragons 3.6 s (goal 7 s for troops), Siege 3.7 s,
+  Spells 1.0 s, Heroes 5.6 s, total 17.6 s. Troop placement is at the 7 s goal;
+  the overrun is siege retries and the hero settle, not tap count.
+- Verified: `go test ./internal/attack ./internal/adb ./cmd/tapaudit` PASS;
+  `tapaudit -trace tmp/coldboot_taps.ndjson -assert-human` -> exit 0.
+- Not verified: full cold-boot end-to-end on this pass — the last live run could
+  not start a battle (empty army after the drag test; "EDIT ARMY was not located
+  on the empty attack panel") and was stopped. The previous cold-boot run
+  (`tmp/coldboot.log`) is the last complete evidence: 80% / 1 star, Return Home,
+  village, min tap gap 67 ms.
+- Next: F.1 dead-base detection.

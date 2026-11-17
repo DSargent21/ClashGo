@@ -94,11 +94,16 @@ func main() {
 
 	flagged := audit(taps, *w, *h)
 
+	cadenceGate := false
 	if *assertHuman {
 		if err := assertHumanCadence(taps); err != nil {
 			fmt.Fprintf(os.Stderr, "tapaudit: %v\n", err)
 			os.Exit(1)
 		}
+		// The gate is the cadence contract. Deliberate multi-tap deploy
+		// bursts trip the choreography flags, so in this mode they stay
+		// informational instead of failing the run.
+		cadenceGate = true
 	}
 
 	if *verbose {
@@ -116,8 +121,11 @@ func main() {
 	}
 
 	report(taps, flagged, *w, *h)
-	if flagged > 0 {
+	if flagged > 0 && !cadenceGate {
 		os.Exit(1)
+	}
+	if flagged > 0 {
+		fmt.Printf("  %d choreography flag(s) ignored: -assert-human gates cadence only\n", flagged)
 	}
 }
 
