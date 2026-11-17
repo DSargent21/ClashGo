@@ -16,7 +16,7 @@ export interface LaunchUpgrades {
   enabled: boolean;
   mode: 'strategic_rush' | 'max';
   lab: boolean;
-  labMode: 'troops_first' | 'spells_first' | 'siege_first' | 'cheapest_first';
+  labMode: 'recommended' | 'troops_first' | 'spells_first' | 'siege_first' | 'cheapest_first';
   pets: boolean;
   heroes: boolean;
   army: boolean;
@@ -84,7 +84,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
   const [upgradesOn, setUpgradesOn] = React.useState(true);
   const [upgradeMode, setUpgradeMode] = React.useState<'strategic_rush' | 'max'>('strategic_rush');
   const [labOn, setLabOn] = React.useState(true);
-  const [labMode, setLabMode] = React.useState<'troops_first' | 'spells_first' | 'siege_first' | 'cheapest_first'>('troops_first');
+  const [labMode, setLabMode] = React.useState<'recommended' | 'troops_first' | 'spells_first' | 'siege_first' | 'cheapest_first'>('troops_first');
   const [petsOn, setPetsOn] = React.useState(true);
   const [categories, setCategories] = React.useState({
     heroes: true,
@@ -477,6 +477,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                           onChange={(event) => setLabMode(event.target.value as typeof labMode)}
                           aria-label="Laboratory research order"
                         >
+                          <option value="recommended">Recommended (TH19)</option>
                           <option value="troops_first">Troops first</option>
                           <option value="spells_first">Spells first</option>
                           <option value="siege_first">Siege first</option>

@@ -512,3 +512,49 @@ func TestSelectBuildingUpgradeStrategies(t *testing.T) {
 		t.Errorf("selected %+v, %v; want the 'other' row Builder Hut with all categories on", best.Name, ok)
 	}
 }
+
+func TestPickRecommendedLabItem(t *testing.T) {
+	cases := []struct {
+		name       string
+		candidates []UpgradeItem
+		want       string
+	}{
+		{
+			"army troop beats the generic queue",
+			[]UpgradeItem{{Name: "Wizard"}, {Name: "Archer"}, {Name: "Valkyrie"}, {Name: "Electro Dragon"}},
+			"Electro Dragon",
+		},
+		{
+			"valkyrie next once the e-drag is maxed",
+			[]UpgradeItem{{Name: "Archer"}, {Name: "Valkyrie"}, {Name: "Wizard"}},
+			"Valkyrie",
+		},
+		{
+			"army spell and siege join the front of the queue",
+			[]UpgradeItem{{Name: "Archer"}, {Name: "Stone Slammer"}, {Name: "Rage Spell"}},
+			"Rage Spell",
+		},
+		{
+			"ocr spacing and punctuation still match",
+			[]UpgradeItem{{Name: "Wizard"}, {Name: "ElectroDragon"}, {Name: "P.E.K.K.A."}},
+			"ElectroDragon",
+		},
+		{
+			"pekka ranks before wizard in the th19 tail",
+			[]UpgradeItem{{Name: "Wizard"}, {Name: "P.E.K.K.A."}},
+			"P.E.K.K.A.",
+		},
+		{
+			"unlisted rows keep the game's order",
+			[]UpgradeItem{{Name: "Cannon"}, {Name: "Builder Hut"}},
+			"Cannon",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pickRecommendedLabItem(tc.candidates); got.Name != tc.want {
+				t.Errorf("picked %q; want %q", got.Name, tc.want)
+			}
+		})
+	}
+}

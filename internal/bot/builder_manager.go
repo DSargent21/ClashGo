@@ -762,6 +762,11 @@ func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
 }
 
 func (bm *BuilderManager) ApplyLabInGameFilter(strategy string, k float64) {
+	if strategy == "recommended" {
+		// Mixed troops/spells/siege: the popup's Type row is single-select, so any
+		// category tap would hide rows the queue needs. Leave it as the user left it.
+		return
+	}
 	filterPt := image.Pt(int(554*k), int(32*k))
 	bm.logger.Info().Str("strategy", strategy).Msg("applying in-game filter for lab research")
 	bm.tap(filterPt.X, filterPt.Y)
@@ -786,6 +791,61 @@ func (bm *BuilderManager) ApplyLabInGameFilter(strategy string, k float64) {
 	// Dismiss filter popup by tapping backdrop ~(100, 300)
 	bm.tap(int(100*k), int(300*k))
 	bm.wait(500 * time.Millisecond)
+}
+
+// labRecommendedOrder is the Lab & Pets "Recommended" strategy. The troops,
+// spells and siege machine the two shipped armies field come first
+// (auto_edrag_rush: E-Drag, Balloon, Rage, Freeze, Stone Slammer; valk_spam:
+// Valkyrie, Earthquake, Stone Slammer), then a TH19 research queue weighted to
+// attack value, with Archer 15 early (Archer Hall) and Wizard 15 late. Rows
+// carry no level, so this is name-only: the first available row in this order
+// wins and the game's own next-level cap decides what is legal.
+var labRecommendedOrder = []string{
+	"Electro Dragon", "Valkyrie", "Balloon", "Rage Spell", "Ice Spell",
+	"Freeze Spell", "Earthquake Spell", "Stone Slammer",
+	"Archer", "Dragon", "Lava Hound", "Headhunter", "Healer",
+	"Poison Spell", "Root Rider", "Hog Rider", "Druid", "Healing Spell",
+	"Dragon Rider", "Yeti", "Electro Titan", "Thrower", "Lightning Spell",
+	"Haste Spell", "Bat Spell", "Flame Flinger", "Baby Dragon", "Miner",
+	"Golem", "Witch", "Bowler", "P.E.K.K.A", "Wizard", "Wall Breaker",
+	"Minion", "Giant", "Goblin", "Barbarian", "Totem Spell",
+	"Meteor Golem", "Ruin Witch",
+}
+
+// normalizeLabName strips case, spaces and punctuation so OCR variants like
+// "P.E.K.K.A" or "ElectroDragon" still match the queue.
+func normalizeLabName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func labRecommendationRank(name string) int {
+	n := normalizeLabName(name)
+	for i, want := range labRecommendedOrder {
+		if n == normalizeLabName(want) {
+			return i
+		}
+	}
+	return len(labRecommendedOrder)
+}
+
+// pickRecommendedLabItem returns the earliest-ranked available row. Unlisted
+// rows keep the game's Suggested order, so research still runs when nothing
+// in the queue is currently upgradable.
+func pickRecommendedLabItem(candidates []UpgradeItem) UpgradeItem {
+	best := candidates[0]
+	bestRank := labRecommendationRank(best.Name)
+	for _, it := range candidates[1:] {
+		if rank := labRecommendationRank(it.Name); rank < bestRank {
+			best, bestRank = it, rank
+		}
+	}
+	return best
 }
 
 func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float64) {
@@ -837,6 +897,9 @@ func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float6
 					break
 				}
 			}
+		case "recommended":
+			best = pickRecommendedLabItem(candidates)
+			bm.logger.Info().Str("item", best.Name).Int("rank", labRecommendationRank(best.Name)).Msg("prioritizing recommended research order")
 		case "cheapest_first":
 			for _, it := range candidates {
 				if it.Cost > 0 && (best.Cost == 0 || it.Cost < best.Cost) {

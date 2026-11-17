@@ -24,6 +24,7 @@ var (
 	labStrategies = map[string]bool{
 		"cheapest_first": true, "troops_first": true,
 		"spells_first": true, "siege_first": true,
+		"recommended": true,
 	}
 	wallResources = map[string]bool{"gold": true, "elixir": true, "both": true}
 	haltRules     = map[string]bool{"ANY": true, "ALL": true, "ALL_3": true}

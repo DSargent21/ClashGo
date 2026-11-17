@@ -376,7 +376,7 @@ type UpgradeConfig struct {
 	MaxElixirPerUpgrade  int      `json:"max_elixir_per_upgrade"`
 	MaxDEPerUpgrade      int      `json:"max_de_per_upgrade"`
 	AutoLab              bool     `json:"auto_lab"`
-	LabStrategy          string   `json:"lab_strategy"` // "troops_first", "spells_first", "siege_first", "cheapest_first"
+	LabStrategy          string   `json:"lab_strategy"` // "troops_first", "spells_first", "siege_first", "cheapest_first", "recommended"
 	LabAllowDE           bool     `json:"lab_allow_de"`
 	AutoPets             bool     `json:"auto_pets"`
 	PetPriorities        []string `json:"pet_priorities"`

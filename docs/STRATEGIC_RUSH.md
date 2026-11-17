@@ -97,7 +97,9 @@ Strategic rush also arms the other progression menus during setup:
 
 - **Laboratory**: research runs between builder upgrades. The setup default is
   `troops_first`, with spells, siege, or cheapest first available in the same
-  step or later in Config.
+  step or later in Config. `recommended` is an army-first TH19 queue: the
+  shipped E-Drag and Valkyrie armies' troops, spells and Stone Slammer come
+  first, then Archer 15, air/ground staples, and Wizard 15 near the end.
 - **Hero pets**: pet upgrades follow `pet_priorities`. The setup step shows
   the active order; reorder it in Config → Lab & Pets.
 

@@ -859,6 +859,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                         value={labStrategy}
                         onChange={(event) => setLabStrategy(event.target.value)}
                       >
+                        <option value="recommended">Recommended (TH19 army-first)</option>
                         <option value="cheapest_first">Cheapest first</option>
                         <option value="spells_first">Spells first</option>
                         <option value="troops_first">Troops first</option>

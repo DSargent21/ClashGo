@@ -113,7 +113,7 @@ def check_payload(name, args):
             "most_expensive_first", "balanced",
         ):
             return f"SetAutoUpgradeConfig strategy {args[2]!r}"
-        if args[12] not in ("cheapest_first", "troops_first", "spells_first", "siege_first"):
+        if args[12] not in ("cheapest_first", "troops_first", "spells_first", "siege_first", "recommended"):
             return f"SetAutoUpgradeConfig lab {args[12]!r}"
         if args[16] not in ("gold", "elixir", "both"):
             return f"SetAutoUpgradeConfig wall {args[16]!r}"

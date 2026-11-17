@@ -1053,7 +1053,7 @@ func (a *App) SaveUpgradeSetup(auto bool, mode string, heroes, army, defenses, r
 		return fmt.Errorf("unknown upgrade mode %q", mode)
 	}
 	switch labStrategy {
-	case "cheapest_first", "troops_first", "spells_first", "siege_first":
+	case "cheapest_first", "troops_first", "spells_first", "siege_first", "recommended":
 	default:
 		return fmt.Errorf("unknown lab strategy %q", labStrategy)
 	}
