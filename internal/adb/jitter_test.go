@@ -3,6 +3,7 @@ package adb
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 // The jitter offsets are drawn on every tap, several times a second, for the
@@ -79,5 +80,20 @@ func TestGaussianOffsetStaysCentredAndBounded(t *testing.T) {
 	// must actually vary rather than collapsing to a constant.
 	if maxAbs < 2 {
 		t.Errorf("offsets never exceeded %d px; the distribution is not spread", maxAbs)
+	}
+}
+
+// TestTapSettleStaysInsideHumanCadence pins the floor on the settle between the
+// taps of one dual/triple gesture: a Gaussian tail used to produce 34 ms gaps,
+// which is faster than a finger can tap twice and a trivial automation tell.
+func TestTapSettleStaysInsideHumanCadence(t *testing.T) {
+	for i := 0; i < 5000; i++ {
+		d := nextTapSettle()
+		if d < 65*time.Millisecond {
+			t.Fatalf("settle %v is below the 65ms human floor", d)
+		}
+		if d > 250*time.Millisecond {
+			t.Fatalf("settle %v is slower than the intended human cadence", d)
+		}
 	}
 }

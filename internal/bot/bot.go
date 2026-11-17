@@ -1288,6 +1288,18 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 			Msg("state detected")
 	}
 
+	// Splash signatures get first refusal on a frame. The reward-chest rule
+	// outranks TapToContinue and shares the loading-table artwork, and an
+	// unclassified frame used to run the generic self-heal (Back) before any
+	// splash probe was consulted — live 2026-11-16 the "Tap!" table was on
+	// screen while the heal branch owned the frame. Ask the classifier's own
+	// splash probes first; a hit is handed to the splash handler below.
+	if state == game.StateChestReward || state == game.StateUnknown {
+		if splash, ok := game.SplashStateOnFrame(b.classifier, screen); ok {
+			state = splash
+		}
+	}
+
 	if state == game.StateChestReward {
 		if b.cfg.Device.DisableChestDismissal {
 
@@ -1514,8 +1526,10 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	// Unknown state: classifier matched nothing. Previously no handler ran
 	// here, so the bot sat on e.g. an unlisted dialog until the 35s watchdog
 	// force-restarted the game (11x in one live session, all state=Unknown).
-	// Self-heal first: rate-limited Back + backdrop tap clears most modals
-	// without a cold restart; the watchdog still owns the final escalation.
+	// Self-heal first: a rate-limited Back clears most modals without a cold
+	// restart; the watchdog still owns the final escalation. Deliberately no
+	// blind tap — a backdrop tap on an unclassified frame can spend resources
+	// (see the goroutine below).
 	if state == game.StateUnknown {
 		// Personal Break is text on an unclassified screen. Detect it before
 		// the self-heal taps: Back and a backdrop tap do nothing to it, and the
@@ -1535,7 +1549,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		if b.unknownHealInFlight.CompareAndSwap(false, true) && time.Since(b.unknownHealLast) > 4*time.Second {
 			attempt := int(b.unknownHealAttempts.Add(1))
 			b.unknownHealLast = time.Now()
-			b.logger.Warn().Int("attempt", attempt).Msg("unclassified screen; attempting self-heal (back + backdrop tap)")
+			b.logger.Warn().Int("attempt", attempt).Msg("unclassified screen; attempting Back-only self-heal")
 			go func() {
 				defer b.unknownHealInFlight.Store(false)
 				// Back only. The backdrop tap that used to follow it was aimed at

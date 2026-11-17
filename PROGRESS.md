@@ -6,19 +6,17 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **H.3 humanization audit** (docs/HUMANIZATION.md).
-- Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`), or the
-  boot-splash classifier blocker above.
+- Last task: **H.4 splash-first dismissal + live misread + tap-floor pass**
+  (see the 2026-11-17 session log entry).
+- Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`).
 - Last green commit: see `git log -1`.
 - Verify gate: `./tools/verify.sh` (full) / `./tools/verify.sh --fast`.
 
 ## Blockers
 
-- Boot-splash variant gap (found live 2026-11-16): after a mid-battle network
-  drop the game returned to a loading screen with a "Tap!" prompt whose
-  background is the loading-table scene. The classifier reports `Unknown`, so
-  the splash dismissal never fires and the bot restart-loops on it. Pre-existing
-  and unrelated to the humanization pass; needs a classifier rule/template.
+- None open. The boot-splash variant gap is fixed (rules in `classifier.go`, own
+  live-frame test); only a fresh live re-offer of that screen is unproven — see
+  the 2026-11-17 entry.
 
 ## Session log
 
@@ -509,4 +507,44 @@ Format:
   focusable chevron. `./tools/verify.sh` -> VERIFY PASSED (full).
 - Not verified: real Wails IPC window (stub only, as scoped); 480px-wide layout
   is below the enforced 1024px minimum and was not restyled.
+- Next: F.1 dead-base detection.
+
+### 2026-11-17 — H.4: splash-first dismissal, live dialog misreads, tap floor
+- Changed: `internal/game/{classifier,dismiss,classifier_splash_test,dismiss_test}.go`,
+  `internal/bot/bot.go`, `internal/adb/{client,jitter_test}.go`,
+  `internal/attack/{executor,attack}.go`, `PROGRESS.md`.
+- Fixed:
+  - `SplashStateOnFrame` runs before the ChestReward and Unknown branches, so a
+    classified splash owns the frame and the Unknown self-heal only presses Back.
+  - 1024x768 signatures for the reconnect dialog (`ConnectionLost`, prio 99) and
+    the inactivity dialog (`Inactivity`, prio 99). Both used to satisfy the chest
+    rule (3/4) and classify `ChestReward 405`, which ran the chest flow's hammer
+    taps on a dialog. The inactivity title probe sits on a thick stroke interior
+    because the bot's raw screencap renders that text edge darker (179 vs 240)
+    than `adb exec-out screencap -p`.
+  - Dismissal candidates for both dialogs; `DismissOverlay` taps only the probe
+    that verifies on the frame about to be tapped (TRY AGAIN (293,455),
+    RELOAD GAME (290,460)).
+  - Tap floor: dual/triple settle 90±20 ms with a hard 65 ms floor (the Gaussian
+    tail produced 34 ms), and the four-sides sweep, batch gap and redeploy slot
+    taps go through `Client.SettleTap`. Pre-fix live trace had 8 gaps < 60 ms;
+    post-fix deploy gestures stayed at 65-150 ms.
+- Verified: `./tools/verify.sh --fast` -> PASS. Real-frame tests:
+  `TestDismissLoadingChestFromTheLiveFrame`,
+  `TestConnectionLostLiveFrameBeatsTheChestRule`,
+  `TestInactivityLiveFrameBeatsTheChestRule`,
+  `TestTapSettleStaysInsideHumanCadence`.
+- Live: the inactivity dialog was cleared by the bot's own tap
+  (`dismiss: tapping ... state=Inactivity x=290 y=460` -> village detected).
+  Acceptance run from the launcher (`tmp/accept_run4.log`, configured cold start,
+  one raid): match -> deploy -> 35% / 0 stars -> result parsed -> Return Home ->
+  village. Zero manual taps, zero recovery restarts, zero personal-break
+  warnings. Trace: 182 taps, deploy gestures 65-150 ms, 177/182 jittered, one
+  50 ms pair between concurrent paths (field tap then army-bar tap).
+- Not verified: the live game never re-offered the "Tap!" loading table
+  (force-stop + relaunch x5, HOME/resume, airplane-mode toggle, TRY AGAIN
+  reconnect, launch while idle; every boot went straight to the village).
+  Clearance is proven on the recorded live frame
+  (`TestDismissLoadingChestFromTheLiveFrame`: TapToContinue 610, tap (512,420)),
+  not on a fresh live boot.
 - Next: F.1 dead-base detection.

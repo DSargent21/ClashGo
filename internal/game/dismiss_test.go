@@ -287,13 +287,22 @@ func TestDismissOverlayConnectionLostPicksTheProbeThatIsLive(t *testing.T) {
 		// Paint every probe of the rule where its own anchor mapping puts it, the
 		// way the live dialog renders. The measured 720p probe lands on the TRY
 		// AGAIN label; the reference probe lands 34 px below it.
+		// Several geometry signatures carry this state; build the frame from the
+		// rule that actually declares the 720p TRY AGAIN probe, or the frame would
+		// be painted from another signature and the tap lands elsewhere.
 		rules := cl.GetRules()
 		var rule *StateRule
 		for i := range rules {
-			if rules[i].State == StateConnectionLost {
+			if rules[i].State != StateConnectionLost {
+				continue
+			}
+			if _, ok := rules[i].probeAt(image.Pt(303, 451)); ok {
 				rule = &rules[i]
 				break
 			}
+		}
+		if rule == nil {
+			t.Fatal("no ConnectionLost rule declares the 720p TRY AGAIN probe")
 		}
 		for _, chk := range rule.Checks {
 			sx, sy := cal.AnchorPoint(chk.X, chk.Y, rule.Anchor)

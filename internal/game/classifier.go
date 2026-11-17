@@ -183,6 +183,27 @@ func (c *Classifier) EvaluateRules(screen gocv.Mat, detail bool) []RuleVerdict {
 	return c.evaluateRules(screen, detail, false)
 }
 
+// SplashStateOnFrame asks the splash signatures directly whether one is on this
+// frame, independently of the winning state. Two branches used to beat them: the
+// reward-chest rule outranks TapToContinue and shares the loading-table artwork,
+// and an Unknown frame ran the generic Back-only self-heal. The capture loop asks
+// this first on those two states so the loading table is cleared by the splash
+// handler's own verified tap, never by the chest flow or a heal.
+func SplashStateOnFrame(cl *Classifier, frame gocv.Mat) (GameState, bool) {
+	if cl == nil || frame.Empty() {
+		return StateUnknown, false
+	}
+	for _, v := range cl.EvaluateRules(frame, false) {
+		if !v.Matched {
+			continue
+		}
+		if v.State == StateTapToContinue || v.State == StateNewsSplash {
+			return v.State, true
+		}
+	}
+	return StateUnknown, false
+}
+
 // evaluateRules scores the state rules against a frame, in rule order.
 //
 // ClassifyState and EvaluateRules both go through it, which is what keeps a
@@ -992,6 +1013,27 @@ func (c *Classifier) buildRules() {
 				{430, 390, 0x1A, 0x1C, 0x1E, 20}, // live (640,392) dimmed dialog panel
 			},
 		},
+		// StateInactivity, 1024x768 signature (this device, k=1.1334; measured live
+		// 2026-11-16). "Anyone there? / You have been disconnected due to
+		// inactivity" with its RELOAD GAME button. On this geometry the 720p
+		// probes above miss the panel and the frame classified ChestReward 405, so
+		// the bot would have hammered the chest ROI on a disconnect dialog. Probe
+		// points are the inverse centre map of the live glyphs (300,317) and
+		// (446,365) and the RELOAD GAME stroke (290,460); MinPass equals len(Checks)
+		// so a dark dimmed panel alone (which every modal has) cannot fire it.
+		{
+			State:    StateInactivity,
+			Priority: 99,
+			Weight:   98,
+			Desc:     "inactivity reconnect dialog (1024x768 RELOAD GAME)",
+			Anchor:   AnchorCenter,
+			MinPass:  3,
+			Checks: []PixelCheck{
+				{323, 295, 0xF0, 0xF0, 0xF3, 40}, // live (391,304) "Anyone there?" glyph interior
+				{372, 349, 0xF0, 0xF0, 0xF3, 40}, // live (446,365) body-text glyph
+				{234, 433, 0xCB, 0xE6, 0xFF, 40}, // live (290,460) RELOAD GAME glyph
+			},
+		},
 		{
 			State:    StateConnectionLost,
 			Priority: 98,
@@ -1038,6 +1080,30 @@ func (c *Classifier) buildRules() {
 				// panel) and the Star Bonus popup all stay below it.
 				{303, 451, 0xCB, 0xE6, 0xFF, 35}, // live (472,473) TRY AGAIN text
 				{354, 289, 0xF0, 0xF0, 0xF3, 35}, // live (541,258) connection-lost title
+			},
+		},
+		// StateConnectionLost, 1024x768 signature (this device, k=1.1334; measured
+		// live 2026-11-16). The reconnect dialog over a village satisfied 3 of the
+		// reward chest's 4 vault probes and classified ChestReward 405, which
+		// would have run the chest flow's hammer taps on a network dialog. This
+		// rule is the same state's measured signature at that scale, at priority
+		// 99 so it outranks the chest rule; MinPass equals len(Checks) because a
+		// partial match is exactly what produced the false positive (dark panel +
+		// a text stroke alone also appear on obstacle/result panels). Probes are
+		// the inverse centre map of the live pixels: TRY AGAIN glyph (293,455),
+		// body text (446,393), dimmed panel (700,400). The tap candidate reuses
+		// (237,429), so the dismissal lands on the measured glyph.
+		{
+			State:    StateConnectionLost,
+			Priority: 99,
+			Weight:   98,
+			Desc:     "connection lost dialog (1024x768 TRY AGAIN)",
+			Anchor:   AnchorCenter,
+			MinPass:  3,
+			Checks: []PixelCheck{
+				{237, 429, 0xCB, 0xE6, 0xFF, 40}, // live (293,455) TRY AGAIN glyph
+				{372, 374, 0xD8, 0xD8, 0xDB, 60}, // live (446,393) body-text stroke (raw screencap renders white text darker)
+				{596, 380, 0x1A, 0x1C, 0x1E, 20}, // live (700,400) dimmed panel
 			},
 		},
 		{

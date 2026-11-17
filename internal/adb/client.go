@@ -636,7 +636,7 @@ func (c *Client) TapDual(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 float6
 	if err1 != nil {
 		return err1
 	}
-	c.HumanSleep(85, 25)
+	time.Sleep(nextTapSettle())
 	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_dual_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	return err2
@@ -675,13 +675,13 @@ func (c *Client) TapTriple(x1, y1 int, stdDev1 float64, x2, y2 int, stdDev2 floa
 	if err1 != nil {
 		return err1
 	}
-	c.HumanSleep(85, 25)
+	time.Sleep(nextTapSettle())
 	err2 := c.routeTap("input tap", x2+ox2, y2+oy2, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_2", X: x2, Y: y2, ActualX: x2 + ox2, ActualY: y2 + oy2, StdDev: stdDev2, Error: errStr(err2)})
 	if err2 != nil {
 		return err2
 	}
-	c.HumanSleep(85, 25)
+	time.Sleep(nextTapSettle())
 	err3 := c.routeTap("input tap", x3+ox3, y3+oy3, false)
 	c.fireTapHook(TapEvent{Type: "tap_triple_3", X: x3, Y: y3, ActualX: x3 + ox3, ActualY: y3 + oy3, StdDev: stdDev3, Error: errStr(err3)})
 	return err3
@@ -781,6 +781,24 @@ func (c *Client) SwipeHuman(x1, y1, x2, y2, ms int) error {
 }
 
 // HumanSleep pauses execution for a duration based on a Gaussian distribution.
+// SettleTap waits one human inter-tap settle (65-250 ms, 90 ms mean).
+// Deploy loops use it instead of a raw HumanSleep so no code path can emit two
+// taps closer together than a finger can move.
+func (c *Client) SettleTap() { time.Sleep(nextTapSettle()) }
+
+// nextTapSettle is the wait between the taps of one dual/triple gesture. The
+// distribution is human (90 ms mean, 20 ms sigma) and the floor is 65 ms: a
+// Gaussian tail used to produce settles as low as 34 ms, which is faster than
+// a finger can move twice and reads as automation to any server-side cadence
+// check. Clash still registers two separate gestures at 65 ms.
+func nextTapSettle() time.Duration {
+	ms := 90 + int(rand.NormFloat64()*20)
+	if ms < 65 {
+		ms = 65
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 func (c *Client) HumanSleep(baseMs, stdDevMs int) {
 	ms := baseMs + int(rand.NormFloat64()*float64(stdDevMs))
 	if ms < 10 {

@@ -967,7 +967,7 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 			e.logger.Info().Int("x", slot.X).Str("category", slot.Category).Msg("re-deploying remaining slot")
 
 			e.client.TapFast(slot.X, slot.Y, 2.0)
-			e.client.HumanSleep(35, 10)
+			e.client.SettleTap()
 
 			var p1, p2 image.Point
 			if slot.Category == "Spell" {
@@ -1021,9 +1021,9 @@ func (e *Executor) DeployDynamic(s *strategy.DynamicStrategy, screen gocv.Mat) (
 				}
 
 				e.client.TapFast(slot.X, slot.Y, 2.0)
-				time.Sleep(50 * time.Millisecond)
+				e.client.SettleTap()
 			}
-			e.client.HumanSleep(35, 10)
+			e.client.SettleTap()
 		}
 	}
 

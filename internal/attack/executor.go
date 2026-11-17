@@ -755,9 +755,9 @@ func (t *TapExecutor) TapDeployFourSides(pCfg PrecisionConfig, targetEdge string
 			tx, ty := intLerp(e.p1, e.p2, pct)
 			j := t.addJitter(image.Pt(tx, ty), 6)
 			t.client.TapFast(j.X, j.Y, 3.0)
-			t.client.HumanSleep(45, 12)
+			t.client.SettleTap()
 		}
-		t.client.HumanSleep(60, 15)
+		t.client.SettleTap()
 	}
 	t.client.HumanSleep(100, 20)
 }
@@ -810,13 +810,14 @@ func (t *TapExecutor) WaitForSettle(duration time.Duration) {
 // longer branch removes the remaining regularity. Total cost is under two
 // seconds across a full army, well inside DeployGoal.
 func (t *TapExecutor) sleepBetweenBatches() {
-	sleepBase := 110
-	sleepDev := 35
+	// A finger settles between batches; the Gaussian tail on the old
+	// 110±35 ms draw could put two separate gestures 26 ms apart, which is
+	// not physically repeatable. SettleTap floors it at 65 ms; ~1 batch in
+	// 8 still gets the longer pause.
+	t.client.SettleTap()
 	if rand.Float64() < 0.12 {
-		sleepBase = 170
-		sleepDev = 45
+		t.client.HumanSleep(70, 20)
 	}
-	t.client.HumanSleep(sleepBase, sleepDev)
 }
 
 // HumanSleep wraps client HumanSleep.

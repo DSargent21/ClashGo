@@ -73,16 +73,19 @@ var overlayControlProbes = map[GameState][]image.Point{
 	// The orange Cancel face of the quit-confirm dialog. The green Okay face is
 	// a probe of the same rule and deliberately absent: it quits the game.
 	StateConfirmExit: {image.Pt(279, 429)},
-	// TRY AGAIN, twice. The dialog's panel is drawn at a fixed pixel size instead
-	// of scaling with the display, so the reference probe maps 34 px BELOW the
-	// button at 1280x720 (measured live; corpus/connection_lost_720p.png). The
-	// measured 720p probe is listed first and the reference probe second; at the
-	// reference geometry the first candidate reads as bare panel and loses, at
-	// 720p the second does.
-	StateConnectionLost: {image.Pt(303, 451), image.Pt(300, 478)},
+	// TRY AGAIN, three candidates, one per measured geometry. The dialog's panel
+	// is drawn at a fixed pixel size instead of scaling with the display, so no
+	// single point survives every scale: (237,429) is this 1024x768 device
+	// (k=1.1334, live tap 293,455), (303,451) is the 1280x720 measurement
+	// (corpus/connection_lost_720p.png), and (300,478) is the reference probe.
+	// The first candidate that still reads light-blue on the frame wins; the
+	// others are bare panel there and lose.
+	StateConnectionLost: {image.Pt(303, 451), image.Pt(237, 429), image.Pt(300, 478)},
 	// RELOAD GAME. The dialog's only control and the only way back into the game
-	// short of a restart; tapping it is the recovery, not a detour.
-	StateInactivity: {image.Pt(169, 423)},
+	// short of a restart; tapping it is the recovery, not a detour. First
+	// candidate is this 1024x768 device's measured glyph (live 290,460), second
+	// the 720p/reference probe; the one that reads light-blue on the frame wins.
+	StateInactivity: {image.Pt(234, 433), image.Pt(169, 423)},
 }
 
 // overlayBackStates are the overlays this path closes with the device's Back key,

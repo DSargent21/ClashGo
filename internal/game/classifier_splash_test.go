@@ -200,6 +200,92 @@ func TestDismissLoadingChestFromTheLiveFrame(t *testing.T) {
 		t.Fatalf("tapped %v, want the chest front %v", got, want)
 	}
 	t.Logf("live chest frame -> %s score=%d, tapped %v", state, score, dev.recorded[0])
+
+	// Direct query the capture loop uses before the chest/unknown branches.
+	if st, ok := SplashStateOnFrame(cl, frame); !ok || st != StateTapToContinue {
+		t.Fatalf("SplashStateOnFrame = %s,%v on the live chest frame, want TapToContinue,true", st, ok)
+	}
+}
+
+// TestConnectionLostLiveFrameBeatsTheChestRule pins the live 2026-11-16 misread:
+// a reconnect dialog over the village satisfied 3 of the reward chest's 4 vault
+// probes and classified ChestReward 405, so the bot would have run the chest
+// flow's hammer taps on a network dialog. The 1024x768 dialog probes outrank it
+// and the dismissal taps the measured TRY AGAIN glyph.
+func TestConnectionLostLiveFrameBeatsTheChestRule(t *testing.T) {
+	const path = "testdata/live/connection_lost_1024x768.png"
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("%s is not present (live captures are gitignored)", path)
+	}
+	frame := gocv.IMRead(path, gocv.IMReadColor)
+	if frame.Empty() {
+		t.Fatalf("could not read %s", path)
+	}
+	defer frame.Close()
+
+	cal := NewCalibration(frame.Cols(), frame.Rows())
+	cal.SetDisplayScale(1.1334)
+	cl := NewClassifier(cal, DefaultClassifierConfig(), zerolog.Nop())
+
+	state, score := cl.ClassifyState(frame)
+	if state != StateConnectionLost {
+		t.Fatalf("live reconnect dialog classified as %s (score %d), want ConnectionLost", state, score)
+	}
+
+	dev := newFrameDevice(frame.Clone())
+	defer dev.Close()
+	if acted := DismissOverlay(dev, cal, cl, StateConnectionLost, nil, zerolog.Nop()); !acted {
+		t.Fatal("dismissal refused the live reconnect dialog")
+	}
+	if len(dev.recorded) != 1 {
+		t.Fatalf("want exactly 1 tap, got %d (%v)", len(dev.recorded), dev.recorded)
+	}
+	if got, want := dev.recorded[0], image.Pt(293, 455); got != want {
+		t.Fatalf("tapped %v, want the measured TRY AGAIN glyph %v", got, want)
+	}
+	t.Logf("live reconnect dialog -> %s score=%d, tapped %v", state, score, dev.recorded[0])
+}
+
+// TestInactivityLiveFrameBeatsTheChestRule pins the live 2026-11-16 misread the
+// bot's own capture path produced: the inactivity dialog ("Anyone there?") over
+// the dimmed village satisfied the chest rule's vault probes and classified
+// ChestReward 405 for minutes, so the chest flow hammer-tapped its ROI on a
+// reconnect dialog. The frame was saved through the bot's raw screencap path,
+// which renders the title glyph edges darker than `adb exec-out screencap -p`
+// does, so the probe sits on a thick stroke interior that both paths render at
+// the expected colour.
+func TestInactivityLiveFrameBeatsTheChestRule(t *testing.T) {
+	const path = "testdata/live/inactivity_1024x768.png"
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("%s is not present (live captures are gitignored)", path)
+	}
+	frame := gocv.IMRead(path, gocv.IMReadColor)
+	if frame.Empty() {
+		t.Fatalf("could not read %s", path)
+	}
+	defer frame.Close()
+
+	cal := NewCalibration(frame.Cols(), frame.Rows())
+	cal.SetDisplayScale(1.1334)
+	cl := NewClassifier(cal, DefaultClassifierConfig(), zerolog.Nop())
+
+	state, score := cl.ClassifyState(frame)
+	if state != StateInactivity {
+		t.Fatalf("live inactivity dialog classified as %s (score %d), want Inactivity", state, score)
+	}
+
+	dev := newFrameDevice(frame.Clone())
+	defer dev.Close()
+	if acted := DismissOverlay(dev, cal, cl, StateInactivity, nil, zerolog.Nop()); !acted {
+		t.Fatal("dismissal refused the live inactivity dialog")
+	}
+	if len(dev.recorded) != 1 {
+		t.Fatalf("want exactly 1 tap, got %d (%v)", len(dev.recorded), dev.recorded)
+	}
+	if got, want := dev.recorded[0], image.Pt(290, 460); got != want {
+		t.Fatalf("tapped %v, want the measured RELOAD GAME glyph %v", got, want)
+	}
+	t.Logf("live inactivity dialog -> %s score=%d, tapped %v", state, score, dev.recorded[0])
 }
 
 // TestClassify_NewsSplash asserts the post-boot news/announcement splash
