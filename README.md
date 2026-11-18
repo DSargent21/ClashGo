@@ -143,8 +143,8 @@ Releases are built automatically via GitHub Actions:
 ```bash
 # 1. Update productVersion in wails.json
 # 2. Tag and push
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.1.1
+git push origin v1.1.1
 ```
 
 GitHub Actions compiles the universal Go binaries, packages the self-contained DMG (`ULMO` LZMA compression) and zip bundle, emits `latest.json`, and publishes the release assets automatically.

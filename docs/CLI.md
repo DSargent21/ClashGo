@@ -13,7 +13,7 @@ It runs the full bot engine without WebKit, web assets, or GUI overhead. Ideal f
 curl -fsSL https://raw.githubusercontent.com/DSargent21/ClashGo/main/tools/install.sh | bash -s -- --cli
 ```
 
-Installs the self-contained release (bundled OpenCV dylibs + `assets/`) and writes a launcher to `~/.local/bin/bot_cli`, so it runs from any directory without a source checkout or Homebrew. Override the locations with `--bin-dir <dir>` / `--data-dir <dir>`, install a specific tag with `--version v1.1.0`, and see `--help` for the rest. Updates keep your edited `assets/` tree unless `--force` is passed, and a broken archive rolls back to the previous binary.
+Installs the self-contained release (bundled OpenCV dylibs + `assets/`) and writes a launcher to `~/.local/bin/bot_cli`, so it runs from any directory without a source checkout or Homebrew. Override the locations with `--bin-dir <dir>` / `--data-dir <dir>`, install a specific tag with `--version v1.1.1`, and see `--help` for the rest. Updates keep your edited `assets/` tree unless `--force` is passed, and a broken archive rolls back to the previous binary.
 
 Downloads are verified against the release `SHA256SUMS` (fetched from the same GitHub release over HTTPS). That catches corrupted or mirror-swapped files; it is not a signature over the release.
 

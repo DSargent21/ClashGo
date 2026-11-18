@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-18
+
 ### Changed
 - **Staged updater prompts**: an available update now opens a download prompt, and the install/restart confirmation appears only after the bundle has downloaded and its SHA-256 has verified. The one-click download-and-install path is no longer the default.
 - **First-launch release notes**: after installing a new build, the app shows that version's release notes once (localStorage remembers the last version whose notes were acknowledged). The first-run setup wizard suppresses both the update and notes prompts until it closes.
