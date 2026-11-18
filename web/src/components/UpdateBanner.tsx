@@ -14,6 +14,9 @@ interface UpdateBannerProps {
   status: UpdateStatus | null;
   appVersion: string;
   isBotRunning: boolean;
+  // The first-run setup wizard is open. Do not stack the update or release
+  // notes over it; both will appear after the wizard closes.
+  setupOpen?: boolean;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   onCheckNow: () => void;
@@ -78,7 +81,7 @@ const stateIcon = (state: string): IconName => {
 const busyLabel = (busy: string): string => {
   switch (busy) {
     case 'oneclick':
-      return 'Downloading · verifying · installing…';
+      return 'Installing & restarting…';
     case 'download':
       return 'Downloading…';
     case 'apply':
@@ -98,6 +101,7 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   status,
   appVersion,
   isBotRunning,
+  setupOpen = false,
   isOpen,
   onOpenChange,
   onCheckNow,
@@ -118,6 +122,8 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   const [busy, setBusy] = React.useState<string | null>(null);
   const [lastError, setLastError] = React.useState<string | null>(null);
   const [mountedChecksumFlash, setMountedChecksumFlash] = React.useState(false);
+  const [whatsNewOpen, setWhatsNewOpen] = React.useState(false);
+  const seenRelease = React.useRef<string | null>(null);
   const closeButtonRef = React.useRef<HTMLButtonElement>(null);
   const busyRef = React.useRef(busy);
   const dismissRef = React.useRef(onDismiss);
@@ -155,27 +161,58 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
   // reopen a dialog the user already dismissed.
   const autoPoppedVersion = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!status || !status.available) return;
+    if (!status || !status.available || setupOpen) return;
     if (autoPoppedVersion.current === status.latest_version) return;
     autoPoppedVersion.current = status.latest_version;
     const timer = setTimeout(() => setOpen(true), 300);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status?.available, status?.latest_version]);
+  }, [status?.available, status?.latest_version, setupOpen]);
+
+  // The first launch of a version shows that version's release notes once.
+  // The updater has already fetched the manifest by the time it reports the
+  // same latest_version as the embedded appVersion, so notes are local here.
+  React.useEffect(() => {
+    if (!status || !appVersion || !status.notes || setupOpen) return;
+    if (status.latest_version !== appVersion) return;
+    if (seenRelease.current === appVersion) return;
+    try {
+      if (localStorage.getItem('clashgoSeenVersion') === appVersion) {
+        seenRelease.current = appVersion;
+        return;
+      }
+    } catch {
+      // Storage can be unavailable in hardened webviews; still show once.
+    }
+    seenRelease.current = appVersion;
+    const timer = setTimeout(() => setWhatsNewOpen(true), 500);
+    return () => clearTimeout(timer);
+  }, [appVersion, status?.latest_version, status?.notes, setupOpen]);
+
+  const closeWhatsNew = React.useCallback(() => {
+    setWhatsNewOpen(false);
+    try {
+      localStorage.setItem('clashgoSeenVersion', appVersion);
+    } catch {
+      // Nothing to persist; the modal still closes for this launch.
+    }
+  }, [appVersion]);
 
   if (!status) return null;
   if (status.state === 'restarting') return <RestartSplash status={status} />;
 
-  const visible =
+  const updateVisible =
     status.available ||
     status.state === 'error' ||
     status.state === 'ready' ||
     status.state === 'downloading';
-  if (!visible) return null;
+  if (!updateVisible && !whatsNewOpen) return null;
 
   const progressPct = Math.round((status.progress || 0) * 100);
   const showSkipped = status.skip_version && status.skip_version === status.latest_version;
-  const canOneClick = (status.available || status.state === 'ready') && status.state !== 'downloading';
+  const canDownload = status.available && status.state !== 'downloading' && status.state !== 'ready';
+  const canInstall = status.state === 'ready';
+  const canOneClick = canInstall;
 
   const guardedAction = async (key: string, fn: () => Promise<unknown>) => {
     setBusy(key);
@@ -191,6 +228,8 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
 
   const doOneClick = () => guardedAction('oneclick', onUpdateAndRestart);
   const doDownload = () => guardedAction('download', onDownload);
+  const primaryAction = canInstall ? doOneClick : doDownload;
+  const primaryDisabled = busy !== null || (!canInstall && !canDownload);
   const doApply = () => guardedAction('apply', onApply);
   const doSkip = async () => {
     await guardedAction('skip', onSkip);
@@ -202,29 +241,31 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
 
   const pillText =
     status.state === 'downloading' ? `Downloading ${progressPct}%`
-      : status.available ? `Update ${status.latest_version}`
-        : status.state === 'ready' ? `v${status.latest_version} · install`
+      : status.state === 'ready' ? `v${status.latest_version} · install`
+        : status.available ? `Update ${status.latest_version}`
           : status.state === 'error' ? 'Update failed'
             : stateLabel(status.state);
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className={`update-chip no-drag ${status.state === 'error' ? 'error' : ''}`.trim()}
-        title={`ClashGO v${appVersion || '0.0.0'} — ${stateLabel(status.state)}`}
-      >
-        <Icon
-          name={stateIcon(status.state)}
-          size={13}
-          className={status.state === 'downloading' ? 'spin' : undefined}
-        />
-        {pillText}
-        {status.available ? <span className="update-dot" /> : null}
-      </button>
+      {updateVisible ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className={`update-chip no-drag ${status.state === 'error' ? 'error' : ''}`.trim()}
+          title={`ClashGO v${appVersion || '0.0.0'} — ${stateLabel(status.state)}`}
+        >
+          <Icon
+            name={stateIcon(status.state)}
+            size={13}
+            className={status.state === 'downloading' ? 'spin' : undefined}
+          />
+          {pillText}
+          {status.available ? <span className="update-dot" /> : null}
+        </button>
+      ) : null}
 
-      {open ? createPortal((
+      {open && updateVisible ? createPortal((
         <div
           className="modal-scrim"
           role="presentation"
@@ -244,7 +285,9 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                   ClashGO update
                 </div>
                 <h2 id="update-banner-title">
-                  {status.available ? `${status.latest_version} is ready` : stateLabel(status.state)}
+                  {canInstall ? `${status.latest_version} is ready to install`
+                    : status.available ? `${status.latest_version} is available`
+                      : stateLabel(status.state)}
                 </h2>
                 <div className="modal-meta">
                   <span className="tag">Current v{appVersion || '0.0.0'}</span>
@@ -278,6 +321,13 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
                 <p className="update-note">No release notes were published for this version.</p>
               )}
 
+              {canDownload ? (
+                <p className="update-note" style={{ marginTop: 10 }}>
+                  Download the verified update first. Once it is ready, you will be asked to
+                  install it and restart ClashGO.
+                </p>
+              ) : null}
+
               {lastError && status.state !== 'error' ? (
                 <div className="error-banner" style={{ marginTop: 12 }}>
                   <Icon name="alert" size={13} />
@@ -296,44 +346,43 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
             <div className="modal-foot">
               <button
                 type="button"
-                onClick={doOneClick}
-                disabled={busy !== null || !canOneClick}
+                onClick={primaryAction}
+                disabled={primaryDisabled}
                 className="btn primary block"
                 style={{ height: 40 }}
               >
                 <Icon
-                  name={busy === 'oneclick' ? 'refresh' : 'download'}
+                  name={canInstall ? (busy === 'oneclick' ? 'refresh' : 'check') : 'download'}
                   size={14}
                   className={busy === 'oneclick' ? 'spin' : undefined}
                 />
-                {busy === 'oneclick'
-                  ? status.state === 'ready' ? 'Installing & restarting…'
-                    : progressPct > 0 ? `Downloading & installing (${progressPct}%)…`
-                      : 'Downloading & installing…'
-                  : status.state === 'ready' ? 'Install & restart'
-                    : `Update to v${status.latest_version}`}
+                {canInstall
+                  ? busy === 'oneclick' ? 'Installing & restarting…' : 'Install & restart'
+                  : busy === 'download' ? `Downloading (${progressPct}%)…` : 'Download update'}
               </button>
 
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  onClick={() => doDownload()}
-                  disabled={busy !== null || status.state === 'downloading' || !status.available}
-                  className="btn sm"
-                >
-                  <Icon name="download" size={12} />
-                  {status.state === 'ready' ? 'Re-download' : 'Download only'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => doApply()}
-                  disabled={busy !== null || status.state !== 'ready'}
-                  className="btn sm"
-                >
-                  <Icon name="external" size={12} />
-                  Open in Finder
-                </button>
-              </div>
+              {canInstall ? (
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    onClick={() => doDownload()}
+                    disabled={busy !== null}
+                    className="btn sm"
+                  >
+                    <Icon name="download" size={12} />
+                    Re-download
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => doApply()}
+                    disabled={busy !== null}
+                    className="btn sm"
+                  >
+                    <Icon name="external" size={12} />
+                    Open in Finder
+                  </button>
+                </div>
+              ) : null}
 
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingTop: 2 }}>
                 <button
@@ -388,8 +437,82 @@ const UpdateBanner: React.FC<UpdateBannerProps> = ({
           </div>
         </div>
       ), document.body) : null}
+
+      {whatsNewOpen ? (
+        <WhatsNewModal status={status} appVersion={appVersion} onClose={closeWhatsNew} />
+      ) : null}
     </>
   );
+};
+
+// Shown once per build version, before the update prompt if the user has
+// just installed it. Uses the manifest notes the updater already fetched.
+const WhatsNewModal: React.FC<{
+  status: UpdateStatus;
+  appVersion: string;
+  onClose: () => void;
+}> = ({ status, appVersion, onClose }) => {
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  React.useEffect(() => {
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return createPortal((
+    <div className="modal-scrim" role="presentation" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="whats-new-title"
+        className="modal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-head">
+          <div style={{ minWidth: 0 }}>
+            <div className="modal-kicker">
+              <Icon name="check" size={12} />
+              Release notes
+            </div>
+            <h2 id="whats-new-title">What&apos;s new in v{appVersion}</h2>
+            <div className="modal-meta">
+              <span className="tag">First launch of this version</span>
+            </div>
+          </div>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            className="icon-btn plain"
+            aria-label="Close release notes"
+          >
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div className="modal-body">
+          <pre className="update-notes">{status.notes}</pre>
+        </div>
+        <div className="modal-foot">
+          <button type="button" onClick={onClose} className="btn primary block" style={{ height: 40 }}>
+            Got it
+          </button>
+          {status.release_url ? (
+            <a
+              className="btn ghost sm"
+              href={status.release_url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View release on GitHub
+            </a>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  ), document.body);
 };
 
 const DownloadBody: React.FC<{

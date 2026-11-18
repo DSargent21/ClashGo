@@ -1090,6 +1090,7 @@ function App() {
               status={updateStatus}
               appVersion={appVersion}
               isBotRunning={isRunning}
+              setupOpen={launchOpen}
               isOpen={isUpdateModalOpen}
               onOpenChange={setIsUpdateModalOpen}
               onCheckNow={handleUpdaterCheck}

@@ -401,3 +401,39 @@ func TestUI_LootTargetControlsAreWired(t *testing.T) {
 		t.Error("browser stub does not persist the loot-target fields, so the dev UI would silently lose them")
 	}
 }
+
+// Updater UX: the repo has no React renderer harness in the gate, so this
+// pins the contract tsc cannot: download is a separate user action from install,
+// first launch can show the release notes once, and the setup wizard wins the
+// stacking order. Behaviour remains the updater service's existing tests.
+func TestUI_UpdaterIsStagedAndShowsReleaseNotes(t *testing.T) {
+	raw, err := os.ReadFile("web/src/components/UpdateBanner.tsx")
+	if err != nil {
+		t.Fatalf("read UpdateBanner: %v", err)
+	}
+	banner := string(raw)
+	for _, want := range []string{
+		"Download update",
+		"Install & restart",
+		"canDownload",
+		"canInstall",
+		"clashgoSeenVersion",
+		"WhatsNewModal",
+		"setupOpen?: boolean",
+	} {
+		if !strings.Contains(banner, want) {
+			t.Errorf("UpdateBanner.tsx is missing %q; staged download/install or release notes regressed", want)
+		}
+	}
+	if strings.Contains(banner, "Downloading · verifying · installing…") {
+		t.Error("UpdateBanner still advertises the old one-click download-and-install label")
+	}
+
+	appRaw, err := os.ReadFile("web/src/App.tsx")
+	if err != nil {
+		t.Fatalf("read App: %v", err)
+	}
+	if !strings.Contains(string(appRaw), "setupOpen={launchOpen}") {
+		t.Error("App does not tell UpdateBanner to defer prompts while setup is open")
+	}
+}

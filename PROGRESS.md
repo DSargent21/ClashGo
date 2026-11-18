@@ -6,7 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **v1.1.0 release** (version/docs, local DMG/zip/CLI build, tag).
+- Last task: **updater polish** (download prompt before install, first-launch
+  release notes, setup-first stacking).
 - Next task: **F.1 Dead-base / collector detection** — blocked on labelled
   outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
   fake-capture seam.
@@ -902,6 +903,20 @@ Format:
   `node --check web/public/wails-stub.js` PASS; `./tools/verify.sh` ->
   `VERIFY PASSED (full)`.
 - Commit: none (worktree change).
+
+### 2026-11-18 — updater polish
+- Changed: `web/src/components/UpdateBanner.tsx` now stages download and
+  install: the available modal asks to download, and the install/restart
+  confirmation appears only after SHA-256 verification. Added a once-per-
+  version release-notes modal; both update and notes prompts wait for the
+  first-run setup wizard. `web/src/App.tsx` passes the setup state.
+  `CHANGELOG.md` records the change under Unreleased;
+  `app_ui_contract_test.go` guards the wiring because the repo has no React
+  renderer harness in the gate.
+- Verified: `npx tsc --noEmit`; `npm run build`; targeted UI contract tests;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Commit: this change.
+- Next: release when requested.
 
 ### 2026-11-18 — v1.1.0 release
 - Changed: `wails.json`, `version.go`, `CHANGELOG.md`, `README.md`,
