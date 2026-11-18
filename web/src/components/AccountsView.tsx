@@ -7,6 +7,7 @@ import type {
   DetectedDevice,
   Rotation,
 } from '../types';
+import { MAX_ACCOUNT_SLOTS } from '../types';
 import { detectDevices } from '../accountsApi';
 import { compactNumber, relativeTime } from '../utils';
 import Icon from './ui/Icon';
@@ -29,6 +30,7 @@ const EMPTY_INPUT: AccountInput = {
   notes: '',
   device: { adb_host: '127.0.0.1', adb_port: 5037, device_id: 'localhost:5555' },
   enabled: true,
+  slot: 1,
   priority: 100,
   cooldown_minutes: 10,
   max_attacks_per_day: 0,
@@ -57,21 +59,36 @@ const STATUS_META: Record<AccountStatus, { label: string; tone: string }> = {
 };
 
 // Adding a village used to start with an invented name and an invented ADB
-// serial. Both are derivable: the fleet knows which ports are taken, so a new
-// account opens pre-bound to the next free instance.
+// serial. Both are derivable: the fleet knows which ports and Supercell ID
+// slots are taken, so a new account opens pre-bound to the next free pair.
 const nextFreeSerial = (accounts: AccountView[]): string => {
-  const taken = new Set(accounts.map((account) => account.device.device_id));
+  const taken = accounts.map((account) => account.device.device_id);
   for (let port = 5555; port <= 5565; port += 1) {
     const serial = `localhost:${port}`;
-    if (!taken.has(serial)) return serial;
+    if (taken.filter((id) => id === serial).length < MAX_ACCOUNT_SLOTS) return serial;
   }
-  return 'localhost:5555';
+  return accounts[0]?.device.device_id ?? 'localhost:5555';
+};
+
+// freeSlot is the first Supercell ID row not claimed on that serial, so the
+// common case (one instance, several villages) needs no manual pick at all.
+const freeSlot = (accounts: AccountView[], serial: string, exceptId?: string): number => {
+  const used = new Set(
+    accounts
+      .filter((account) => account.id !== exceptId && account.device.device_id === serial)
+      .map((account) => account.slot ?? 0),
+  );
+  for (let slot = 1; slot <= MAX_ACCOUNT_SLOTS; slot += 1) {
+    if (!used.has(slot)) return slot;
+  }
+  return 1;
 };
 
 const defaultInput = (accounts: AccountView[]): AccountInput => ({
   ...EMPTY_INPUT,
   name: `Village ${accounts.length + 1}`,
   device: { ...EMPTY_INPUT.device, device_id: nextFreeSerial(accounts) },
+  slot: freeSlot(accounts, nextFreeSerial(accounts)),
 });
 
 function toInput(account: AccountView | null, accounts: AccountView[]): AccountInput {
@@ -85,6 +102,7 @@ function toInput(account: AccountView | null, accounts: AccountView[]): AccountI
     notes: account.notes ?? '',
     device: { ...account.device },
     enabled: account.enabled,
+    slot: account.slot && account.slot > 0 ? account.slot : freeSlot(accounts, account.device.device_id, account.id),
     priority: account.priority,
     cooldown_minutes: account.cooldown_minutes,
     max_attacks_per_day: account.max_attacks_per_day,
@@ -105,6 +123,11 @@ const AccountForm: React.FC<{
   const [detecting, setDetecting] = React.useState(false);
   const [detectError, setDetectError] = React.useState<string | null>(null);
 
+  // accounts is a fresh array on every parent render; reading it through a ref
+  // keeps the scan callback stable (otherwise the effect below rescans in a loop).
+  const accountsRef = React.useRef(accounts);
+  accountsRef.current = accounts;
+
   const patch = (updates: Partial<AccountInput>) => setForm((prev) => ({ ...prev, ...updates }));
   const patchDevice = (updates: Partial<AccountInput['device']>) =>
     setForm((prev) => ({ ...prev, device: { ...prev.device, ...updates } }));
@@ -119,9 +142,13 @@ const AccountForm: React.FC<{
       const found = await detectDevices();
       setDevices(found);
       if (preferFree) {
-        const free = found.find((device) => !device.bound_to);
+        const free = found.find((device) => (device.used_slots?.length ?? 0) < MAX_ACCOUNT_SLOTS);
         if (free) {
-          setForm((prev) => ({ ...prev, device: { ...prev.device, device_id: free.serial } }));
+          setForm((prev) => ({
+            ...prev,
+            device: { ...prev.device, device_id: free.serial },
+            slot: freeSlot(accountsRef.current, free.serial, prev.id),
+          }));
         }
       }
     } catch (err) {
@@ -145,6 +172,22 @@ const AccountForm: React.FC<{
     }
     if (!form.device.device_id.trim()) {
       setError('ADB device serial is required (e.g. localhost:5556).');
+      return;
+    }
+    if (form.slot < 1 || form.slot > MAX_ACCOUNT_SLOTS) {
+      setError(`Supercell ID slot must be between 1 and ${MAX_ACCOUNT_SLOTS}.`);
+      return;
+    }
+    const clash = accounts.find(
+      (other) =>
+        other.id !== form.id &&
+        other.device.device_id === form.device.device_id.trim() &&
+        other.slot === form.slot,
+    );
+    if (clash) {
+      setError(
+        `Slot ${form.slot} on ${form.device.device_id.trim()} is already ${clash.name}. Pick another row, or that village will be farmed twice.`,
+      );
       return;
     }
     setSaving(true);
@@ -211,6 +254,24 @@ const AccountForm: React.FC<{
             onChange={(event) => patch({ town_hall: Number(event.target.value) || 0 })}
           />
         </div>
+        <div className="f-field">
+          <label className="label" htmlFor="acct-slot">Supercell ID slot</label>
+          <select
+            id="acct-slot"
+            className="field select"
+            value={form.slot}
+            onChange={(event) => patch({ slot: Number(event.target.value) || 1 })}
+          >
+            {Array.from({ length: MAX_ACCOUNT_SLOTS }, (_, index) => index + 1).map((slot) => (
+              <option key={slot} value={slot}>
+                Row {slot}
+              </option>
+            ))}
+          </select>
+          <span className="hint">
+            Which row this village sits in, in the game's Settings → Supercell ID list. Row 1 is the top.
+          </span>
+        </div>
         <div className="f-field full">
           <label className="label" htmlFor="acct-email">Login hint (never a password)</label>
           <input
@@ -260,7 +321,8 @@ const AccountForm: React.FC<{
           <div className="device-picker" role="radiogroup" aria-label="Running emulator instances">
             {devices.map((device) => {
               const selected = form.device.device_id === device.serial;
-              const taken = Boolean(device.bound_to) && !selected;
+              const used = device.used_slots?.length ?? 0;
+              const taken = used >= MAX_ACCOUNT_SLOTS && !selected;
               return (
                 <button
                   key={device.serial}
@@ -269,7 +331,13 @@ const AccountForm: React.FC<{
                   aria-checked={selected}
                   disabled={taken}
                   className={`device-option ${selected ? 'active' : ''}`.trim()}
-                  onClick={() => patchDevice({ device_id: device.serial })}
+                  onClick={() =>
+                    setForm((prev) => ({
+                      ...prev,
+                      device: { ...prev.device, device_id: device.serial },
+                      slot: freeSlot(accounts, device.serial, prev.id),
+                    }))
+                  }
                 >
                   <span className="device-dot" aria-hidden="true" />
                   <span className="device-copy">
@@ -280,7 +348,13 @@ const AccountForm: React.FC<{
                     </span>
                   </span>
                   <span className={`device-state${taken ? ' taken' : ''}`.trim()}>
-                    {taken ? `Used by ${device.bound_to}` : selected ? 'Selected' : 'Free'}
+                    {taken
+                      ? `All ${MAX_ACCOUNT_SLOTS} slots used`
+                      : selected
+                        ? `Selected · row ${form.slot}`
+                        : used > 0
+                          ? `${used}/${MAX_ACCOUNT_SLOTS} slots`
+                          : 'Free'}
                   </span>
                 </button>
               );
@@ -305,7 +379,8 @@ const AccountForm: React.FC<{
             {detecting ? 'Scanning…' : 'Scan again'}
           </button>
           <span className="hint">
-            Bound to <span className="mono">{form.device.device_id}</span> · applies on next start
+            <span className="mono">{form.device.device_id}</span> · Supercell ID row {form.slot} · the
+            switch taps there
           </span>
         </div>
 
@@ -539,7 +614,10 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
       <div className="page-head">
         <div>
           <h1>Accounts</h1>
-          <p>One emulator instance per village. Switching hands over the bot safely.</p>
+          <p>
+            Several villages can share one emulator: each keeps its own Supercell ID row. Switching taps
+            that row in-game, then checks who actually logged in.
+          </p>
         </div>
         <div className="page-side">
           <button type="button" className="btn sm" onClick={onRefresh} aria-label="Refresh accounts">
@@ -608,7 +686,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
         <div className="card empty">
           <span className="empty-ico"><Icon name="users" size={20} /></span>
           <b>No accounts yet</b>
-          <p>Add your first village and bind it to the emulator instance it is signed in to.</p>
+          <p>Add your first village, its emulator instance, and the Supercell ID row it occupies.</p>
           <button type="button" className="btn primary" onClick={() => setEditor({ account: null })}>
             <Icon name="plus" size={13} />
             Add account
@@ -641,6 +719,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
                     <div className="acct-meta">
                       {account.player_tag ? <span className="mono">{account.player_tag}</span> : null}
                       {account.town_hall ? <span>TH{account.town_hall}</span> : null}
+                      {account.slot && account.slot > 0 ? <span>Slot {account.slot}</span> : null}
                       <span className="mono">{account.device.device_id}</span>
                     </div>
                     <div className="acct-meta">Last used {relativeTime(account.last_used_at)}</div>

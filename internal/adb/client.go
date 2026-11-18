@@ -241,6 +241,23 @@ func (c *Client) EnsureConnected() error {
 	return c.connectTransport()
 }
 
+// ConnectConfigured registers the configured serial with the local adb server
+// (best-effort) and dials it, WITHOUT the auto-switch AutoDetectDevice does.
+//
+// Account switching needs this: the serial names one specific emulator, and
+// falling back to "whichever BlueStacks instance answers first" would drive a
+// different village's game and then verify an identity nobody asked for.
+func (c *Client) ConnectConfigured() error {
+	if strings.TrimSpace(c.DeviceID) == "" {
+		return errors.New("no ADB serial configured")
+	}
+	if strings.Contains(c.DeviceID, ":") {
+		// TCP endpoint: make sure the server knows it after a restart.
+		_ = exec.Command("adb", "connect", c.DeviceID).Run()
+	}
+	return c.EnsureConnected()
+}
+
 func (c *Client) Devices() ([]string, error) {
 	// Use empty device ID to talk to the ADB host directly for the device list
 	t, err := NewTransport("", c.host, c.port, c.timeout)

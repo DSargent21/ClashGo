@@ -324,6 +324,29 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     of the wizard and the account drawer.
   - Verified: see `PROGRESS.md` 2026-11-18 (real IPC values quoted there).
 
+- [x] **T.19 In-game Supercell ID switching (slot model)**
+  - Why: device-only binding meant one emulator per village. Supercell ID's fast
+    switcher already lists every signed-in village on one device, so a fleet can
+    share one instance if the switch taps the right row.
+  - Model: `account = (ADB serial, slot)`; `accounts.MaxSlot = 5`, slot 0 is a
+    legacy "unset" profile that cannot be switched in-game. Uniqueness is now
+    per (serial, slot) instead of per serial.
+  - Switch: stop bot -> flush stats -> tap player banner, Settings, Supercell ID,
+    slot row -> read the profile screen (player tag, else name) -> verify ->
+    select profile -> optional boot. A mismatch aborts before the registry
+    changes and taps the previous slot back.
+  - Templates: four PNGs (`acct_profile`, `acct_settings`, `acct_supercell`,
+    `acct_slot_list`) captured by `cmd/account_templates`; row pitch lives in
+    `assets/account_switch.json`. Missing templates fail with the exact names
+    and capture command.
+  - Acceptance: `TestSwitchAccountTapsProfileSettingsSupercellSlot`,
+    `TestSwitchAccountMismatchAbortsWithBothIdentities`,
+    `TestSwitchAccountMissingTemplatesIsActionable`,
+    `TestApp_SwitchIdentityMismatchKeepsPriorAccountAndStartsNothing`,
+    `TestApp_SwitchDrivesGameBeforeChangingActive`, slot uniqueness tests;
+    `./tools/verify.sh` green; helper proven against the live emulator.
+  - Verified: see `PROGRESS.md` 2026-11-18 (second entry).
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

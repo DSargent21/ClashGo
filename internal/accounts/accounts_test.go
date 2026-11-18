@@ -82,6 +82,7 @@ func TestCreateUpdateDelete(t *testing.T) {
 		PlayerTag: "#2P0Y8LQGR",
 		TownHall:  12,
 		Device:    Device{DeviceID: "localhost:5556"},
+		Slot:      1,
 		Enabled:   true,
 	})
 	if err != nil {
@@ -124,11 +125,46 @@ func TestCreateUpdateDelete(t *testing.T) {
 		t.Fatal("duplicate device binding accepted")
 	}
 
+	// A second village on the same emulator is the supported fleet layout —
+	// as long as it sits in a different Supercell ID row.
+	second, err := st.Create(Input{
+		Name:      "Second",
+		PlayerTag: "#8Y2QQ0RG",
+		Device:    Device{DeviceID: "localhost:5556"},
+		Slot:      2,
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatalf("same emulator, different slot rejected: %v", err)
+	}
+	if second.Slot != 2 {
+		t.Fatalf("slot = %d, want 2", second.Slot)
+	}
+	// The same row twice is the mis-attribution this guard exists for.
+	if _, err := st.Create(Input{
+		Name:    "Third",
+		Device:  Device{DeviceID: "localhost:5556"},
+		Slot:    2,
+		Enabled: true,
+	}); err == nil {
+		t.Fatal("duplicate slot on one emulator accepted")
+	}
+	// Out-of-range slots are refused by validation, with the range in the text.
+	if _, err := st.Create(Input{
+		Name:    "Fourth",
+		Device:  Device{DeviceID: "localhost:5557"},
+		Slot:    MaxSlot + 1,
+		Enabled: true,
+	}); err == nil {
+		t.Fatal("slot above the game's list accepted")
+	}
+
 	updated, err := st.Update(acct.ID, Input{
 		Name:                 "Mini II",
 		PlayerTag:            "#2P0Y8LQGR",
 		TownHall:             13,
 		Device:               Device{DeviceID: "localhost:5556"},
+		Slot:                 1,
 		Enabled:              false,
 		CooldownMinutes:      30,
 		MaxAttacksPerDay:     25,

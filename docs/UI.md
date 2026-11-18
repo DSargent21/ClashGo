@@ -178,12 +178,17 @@ optional when they are not.
   its window in the subtitle or label.
 - Start/Stop appears in the sidebar and, contextually, on the active account
   card. Ticket-style row actions stay inside their own view.
-- **Accounts bind to a detected emulator, not a typed serial.** The add-account
-  drawer scans the running instances (`DetectDevices`) and lists them with
-  model/resolution and the account that already owns each one; occupied rows
-  are disabled. A new account opens with a `Village N` name and the first free
-  serial, so adding a village is edit-nothing + confirm. Host, server port and
+- **Accounts bind to a detected emulator + Supercell ID row, not a typed
+  serial.** The add-account drawer scans the running instances
+  (`DetectDevices`), lists model/resolution and the rows already used on each,
+  and disables an instance only when all five rows are taken. A new account
+  opens with a `Village N` name, the first instance with a free row and that
+  row, so adding a village is pick-the-row + confirm. Host, server port and
   serial survive under `Enter the connection manually`.
+- **Switching shows what the game did.** `SwitchAccount` taps the in-game
+  Supercell ID list and refuses to start when the profile screen shows a
+  different village; the error (both villages named) renders in the Accounts
+  view's action banner, and the list re-reads the active account either way.
 - **A failed boot explains itself.** `bot_error` / `bot_init_failed` render a
   dismissable banner above the active view with the exact engine message,
   instead of silently flipping the sidebar back to START.

@@ -1,38 +1,66 @@
 # Multi-Account Switching
 
 ClashGO runs one bot session at a time. Multiple accounts are supported as a
-**fleet**: every village owns a profile and an emulator binding, and the
-switcher hands the active session from one account to the next without ever
-mixing their config, stats or history.
+**fleet**: every village owns a profile, an emulator binding and a Supercell ID
+slot on that emulator, and the switcher taps the game's own account list before
+handing the active session over — without ever mixing config, stats or history.
 
 This document covers the model, the competitor landscape that shaped it, the
 implemented feature set, and the deliberate limits.
 
 ---
 
-## 1. Why device-bound profiles
+## 1. The model: emulator + Supercell ID slot
 
 Supercell ID offers two ways to play several villages on one machine:
 
 1. **A separate game instance per village**, each signed in once and left
    signed in.
-2. **The in-game fast switcher** (Settings → arrows next to Supercell ID),
-   which works only after Supercell has already trusted the device.
+2. **The in-game fast switcher** (profile → Settings → Supercell ID), which
+   lists every village already signed in on that device and switches with one
+   row tap.
 
-Automating option 2 means driving the login form, storing Supercell
-credentials and replaying email verification. That is a security liability, a
-Terms-of-Service problem, and — because the login UI changes between game
-versions — the least reliable part of any bot. ClashGO therefore automates
-the *session hand-off*, never the login:
+ClashGO supports both and treats them as one identity:
 
-- An account is bound to one ADB serial (`localhost:5555`, `localhost:5556`, …).
-- The operator signs each emulator instance into its village once.
-- ClashGO switches by stopping the current bot, selecting that account's
-  profile and booting against the bound serial.
-- The `email` field is a **login hint**, not a credential. No password,
-  token or cookie is stored anywhere.
+```
+account = (ADB serial, slot)
+```
 
-This is the same topology used by the mature bots surveyed below.
+- **ADB serial** (`localhost:5555`) selects the emulator instance.
+- **Slot** is the 1-based row in that instance's Supercell ID list. Row 1 is
+  the top of the list.
+
+One emulator can host up to five villages, one per slot; one instance per
+village is still fully supported.
+
+### What a switch does
+
+1. Stop the running bot and flush its stats to the **old** profile.
+2. Tap the game UI: player banner (top left) → Settings → Supercell ID → the
+   row for the target slot.
+3. Read the profile screen and confirm the logged-in village is the expected
+   one (player tag, or the name when no tag is set).
+4. Only then select the new profile and boot the bot on the bound serial.
+
+No password, token or cookie is stored. The fast switcher only taps rows that
+are already signed in; enrolling a new village (email code, etc.) stays
+operator work. ClashGO stays out of the login form, which is the least reliable
+and most ToS-visible part of any bot.
+
+### If the wrong village logs in
+
+A row that lands on the wrong village must never be silent: the bot would farm
+somebody else's base and book the loot under the wrong account. So:
+
+- the switch aborts before the registry changes — the previous account stays
+  active and nothing starts;
+- the error names both villages (`slot 2 logged the game in as Somebody Else
+  (#9XYZ0000), but this account expects Fleet Two (#2P0Y8LQGR)`);
+- when the previous account lives on the same emulator, ClashGO taps its slot
+  back so the operator is not left on a stray village.
+
+This is the same sequential topology used by the mature bots surveyed below,
+with the row tap automated instead of manual.
 
 ---
 
@@ -75,6 +103,10 @@ village is this session farming".
 - Create, edit and archive accounts from **Accounts** in the sidebar.
 - Stable slug ID (immutable after creation), unique player tag validation.
 - Town hall, player tag, login hint, free-form notes.
+- **Supercell ID slot** (1-5): the row this village occupies in the game's
+  account list. Two accounts may share an emulator only with different slots.
+  A slot of `0` means "not set": the profile still works device-bound but
+  cannot be switched in-game until the row is entered.
 - Enable/disable an account without deleting it; disabled accounts are
   excluded from rotation but can still be switched to manually.
 - Delete moves the whole profile to `accounts/.trash/<id>-<timestamp>` so
@@ -102,13 +134,16 @@ output) became account-aware without a parallel code path.
 
 `SwitchAccount` is serialized and performs:
 
-1. Cancel a running bot or in-flight boot.
-2. Wait for teardown (bounded at 30 s; refuses the switch on timeout).
-3. Flush stats to the **old** profile.
-4. Select the new profile and mark it active.
-5. Load the new profile's stats/history into the UI cache.
-6. Re-apply the account's ADB host/port/serial.
-7. Optionally boot the bot.
+1. Refuse an account with no slot, naming the field to fix.
+2. Cancel a running bot or in-flight boot.
+3. Wait for teardown (bounded at 30 s; refuses the switch on timeout).
+4. Flush stats to the **old** profile.
+5. Drive the game UI to the target slot and verify the logged-in village
+   (abort + restore the previous slot on mismatch).
+6. Select the new profile and mark it active.
+7. Load the new profile's stats/history into the UI cache.
+8. Re-apply the account's ADB host/port/serial.
+9. Optionally boot the bot.
 
 The header, sidebar chip and Accounts page all converge through the
 `accounts_changed` event, so no view can show a stale active account.
@@ -177,6 +212,7 @@ the binding for an ad-hoc run.
         "adb_port": 5037,
         "device_id": "localhost:5556"
       },
+      "slot": 2,
       "enabled": true,
       "priority": 100,
       "cooldown_minutes": 10,
@@ -201,25 +237,69 @@ On first launch after upgrading, the legacy single-profile `config.json`,
 
 ## 5. Setting up a fleet
 
-1. Open the emulator's multi-instance manager and create one instance per
-   village.
-2. Start each instance. BlueStacks conventionally assigns `localhost:5555`,
-   `localhost:5556`, `localhost:5557`, …
-3. Sign each instance into its village once, with "remember me" enabled.
-4. Add an account in ClashGO. The drawer scans the running instances and lists
-   them with model, resolution and the account that already owns each one; pick
-   the instance this village is signed in to. A new account already carries a
-   `Village N` name and the first free serial, so the common case is confirm.
-   Nothing has to be typed unless the instance runs on a custom port
-   (`Enter the connection manually`).
-5. Use **Switch & start** to verify the pairing. If a boot error mentions a
-   timeout, the serial and the running instance do not match.
+1. Decide the topology: one emulator with several slots (lowest RAM), or one
+   instance per village. Both are supported at once.
+2. Sign each village into the game once, with "remember me" enabled, then open
+   **profile → Settings → Supercell ID** and note its row. Rows are numbered
+   from the top: row 1 is the first entry.
+3. Add an account in ClashGO. The drawer scans the running instances and lists
+   model, resolution and the slots already used on each one, and pre-fills a
+   `Village N` name, the first instance with a free row and its first free
+   slot. Pick the row that matches the game's list and save.
+4. Use **Switch & start** once per account. That is the verification: if the
+   profile screen shows a different village, the switch refuses and names both.
 
 Detection is read-only: it scans the emulator ADB port span (5555–5565) and
 asks each answering serial for its model, without running `adb connect` or
 restarting the adb server. The adb server's `emulator-NNNN` console entry is
-folded onto the same instance's TCP serial, so one emulator can never be bound
+folded onto the same instance's TCP serial, so one emulator cannot be counted
 twice under two names.
+
+### 5.1 Capturing the switch templates
+
+The switch is template-based, so a game update that moves a button needs one
+recapture, not a code change. Four PNGs are required, all in
+`assets/templates/`:
+
+| Template | Shows |
+|---|---|
+| `acct_profile.png` | player banner button, top left of the main village |
+| `acct_settings.png` | the gear that opens Settings, on the profile screen |
+| `acct_supercell.png` | the "Supercell ID" row in Settings |
+| `acct_slot_list.png` | the account-list panel that opens from it (its header is enough) |
+
+Capture them from a running emulator, on the right screen for each one:
+
+```bash
+# 1. screenshot the current screen; the tool prints the crop lines
+go run ./cmd/account_templates
+
+# 2. crop each region (physical pixels of the screenshot)
+go run ./cmd/account_templates -source output/account_templates/<ts>/screen.png \
+  -profile 18,24,150,110 -settings 1196,44,64,64 \
+  -supercell 900,318,320,74 -slot-list 640,170,520,80 \
+  -slot-row1-offset 0.16 -slot-row-spacing 0.075
+```
+
+Each crop is written to `<name>.png.tmp`, matched back against the frame, and
+only then renamed over the live file (previous version kept as `.bak`). A crop
+the matcher cannot find again fails instead of poisoning the switch.
+
+`-slot-row1-offset` and `-slot-row-spacing` describe the account rows as
+fractions of screen height, written to `assets/account_switch.json`:
+
+- `slot_row1_offset` — where row 1's centre sits below the list anchor.
+- `slot_row_spacing` — pitch between consecutive rows.
+
+Defaults are 0.16 and 0.075 (a 1280×720 BlueStacks instance). If a slot taps
+the neighbouring row, the identity check refuses the start and names the row it
+actually got — adjust the two fractions by the difference and re-run.
+
+The whole `assets/account_switch.json` is optional: missing values fall back to
+the defaults above, and a present-but-malformed file is reported, not ignored.
+
+`-source` crops a saved frame, so geometry can be tuned offline; omit it to
+capture live from the emulator on `config.json`'s device (or `-device`).
 
 Do not run ClashGO's GUI and CLI against the same config directory at the same
 time; each process assumes it owns the active profile.
@@ -233,7 +313,18 @@ Deliberate limits:
 - **Sequential, not parallel.** One bot loop and one device at a time. A
   parallel fleet would need per-device capture loops, per-account stats
   multiplexing and a much larger scheduler; it is not silently pretended.
-- **No credential automation.** Supercell ID login is operator work.
+- **No credential automation.** The fast switcher is driven; enrolling a new
+  village (email code) is still operator work, and no Supercell credential is
+  stored.
+- **Templates are per game UI.** Four PNGs must be captured once per game
+  version; a moved button fails with the template name instead of tapping
+  blind.
+- **Identity check needs the OCR helper.** Reading the player tag uses
+  `tools/ocr.swift` (macOS Vision). Without it the switch refuses to start
+  rather than hand over an unverified village.
+- **Start on the already-active account does not re-verify.** Pressing Start on
+  the active card boots the bot as before; use **Switch** (even to the same
+  account) when the game may have been left on another village by hand.
 - **No proxy/IP management per account.** Out of scope for a local emulator
   fleet.
 - **One process per config tree.** No cross-process locking yet.
@@ -245,9 +336,9 @@ Natural next steps, in order of value:
 2. Scheduled rotation windows (reuse `ScheduleConfig` per account).
 3. Parallel workers for hosts with enough RAM, gated behind a separate
    multi-engine app layer.
-4. Optional in-game fast-switcher support via a guided, operator-confirmed
-   template flow — never stored credentials.
-5. Export/import of the fleet registry (secrets are already absent).
+4. Export/import of the fleet registry (secrets are already absent).
+5. Per-game-version template packs, so a UI update is a download rather than a
+   recapture.
 
 ---
 
@@ -261,3 +352,8 @@ Natural next steps, in order of value:
 | Rotation never advances | All accounts on cooldown/cap, rotation disabled, or auto-start off | Check the Accounts header and rotation panel |
 | `daily_limit` but attacks remain | Daily counter is local to ClashGO and only resets at midnight or via **Reset usage** | Reset usage from the account card |
 | Stats look reset after upgrade | New `stats.json` for the `default` profile | Check `accounts/default/stats.json`; legacy files were copied, not moved |
+| `in-game account switching needs 4 template PNGs` | The switch templates were never captured | Run `go run ./cmd/account_templates`, then crop each rect (5.1) |
+| `could not find "acct_settings" on screen` | Game is not on the expected screen, or the button moved after an update | Put the game on the main village and recapture that template |
+| `slot N logged the game in as …` | Wrong row number, or the row order changed in-game | Check profile → Settings → Supercell ID and fix the account's slot |
+| `account "X" has no Supercell ID slot yet` | Legacy profile (slot 0), or the drawer was closed before saving | Edit the account, pick its row, save |
+| `slot N lands at y=…` | Row geometry does not match this emulator | Adjust `slot_row1_offset`/`slot_row_spacing` in `assets/account_switch.json` |

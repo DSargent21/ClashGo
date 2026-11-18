@@ -25,6 +25,7 @@ export namespace accounts {
 	    notes: string;
 	    device: Device;
 	    enabled: boolean;
+	    slot: number;
 	    priority: number;
 	    cooldown_minutes: number;
 	    max_attacks_per_day: number;
@@ -44,6 +45,7 @@ export namespace accounts {
 	        this.notes = source["notes"];
 	        this.device = this.convertValues(source["device"], Device);
 	        this.enabled = source["enabled"];
+	        this.slot = source["slot"];
 	        this.priority = source["priority"];
 	        this.cooldown_minutes = source["cooldown_minutes"];
 	        this.max_attacks_per_day = source["max_attacks_per_day"];
@@ -796,6 +798,7 @@ export namespace main {
 	    width: number;
 	    height: number;
 	    bound_to: string;
+	    used_slots: number[];
 	    active: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -809,6 +812,7 @@ export namespace main {
 	        this.width = source["width"];
 	        this.height = source["height"];
 	        this.bound_to = source["bound_to"];
+	        this.used_slots = source["used_slots"];
 	        this.active = source["active"];
 	    }
 	}
@@ -822,6 +826,7 @@ export namespace main {
 	    notes?: string;
 	    device: accounts.Device;
 	    enabled: boolean;
+	    slot?: number;
 	    priority: number;
 	    cooldown_minutes: number;
 	    max_attacks_per_day: number;

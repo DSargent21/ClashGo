@@ -74,6 +74,10 @@ type App struct {
 	// switchMu serializes manual switches and rotation so two owners can
 	// never swap the process-wide account profile concurrently.
 	switchMu sync.Mutex
+	// switchGameAccounts is the seam tests replace: it drives the game's own
+	// Supercell ID switcher to the target account's slot. Nil means "use the
+	// real ADB/template driver" (see app_accounts.go).
+	switchGameAccounts func(target accounts.Account) error
 	// rotateCh receives one notification when a bot ends its own session
 	// (attack cap or daily cap), which is the only moment rotation should
 	// hand the device to the next account.

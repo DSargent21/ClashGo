@@ -1,14 +1,15 @@
 // Package accounts owns the set of Clash of Clans accounts ClashGO can
-// operate. Each account is a device-bound profile: its own ADB serial, its
-// own config, stats and attack history under <configDir>/accounts/<id>.
+// operate. Each account is a profile — its own config, stats and attack
+// history under <configDir>/accounts/<id> — plus the emulator it runs on and
+// the Supercell ID slot it sits in on that emulator.
 //
-// Why device-bound rather than credential-bound: Supercell ID's only
-// supported way to run several villages is either a separate game instance
-// per village or its in-game fast switcher. Automating the login form would
-// mean storing Supercell credentials and replaying a flow with email
-// verification — a security and ToS liability for no reliability gain. An
-// emulator instance that is already signed in is deterministic, and the
-// switch is just "stop this bot, target that serial". See docs/ACCOUNTS.md.
+// Identity: a village is addressed as (ADB serial, slot). The serial says
+// which running game instance to drive; the slot says which row of that
+// instance's in-game switcher (profile → Settings → Supercell ID) holds the
+// village. Several accounts may share one emulator as long as their slots
+// differ, which is how a single BlueStacks instance farms a whole fleet.
+// No Supercell password, token or cookie is ever stored: the in-game fast
+// switcher only taps slots that are already signed in. See docs/ACCOUNTS.md.
 package accounts
 
 import (
@@ -39,6 +40,11 @@ const (
 	// DefaultAttacksPerAccount keeps rotation sessions finite. Without a
 	// cap a rotated account would never hand the emulator back.
 	DefaultAttacksPerAccount = 20
+	// MaxSlot is how many villages one emulator can hold in the game's
+	// Supercell ID switcher. Slot 1 is the top row; 0 means "not set" and is
+	// only legal for profiles created before slots existed (they keep working
+	// device-bound but cannot be switched in-game until a slot is entered).
+	MaxSlot = 5
 
 	OrderRoundRobin = "round_robin"
 	OrderPriority   = "priority"
@@ -94,6 +100,12 @@ type Account struct {
 	Device  Device `json:"device"`
 	Enabled bool   `json:"enabled"`
 
+	// Slot is the 1-based row this village occupies in the game's own
+	// Supercell ID account list (profile → Settings → Supercell ID). It is
+	// what makes two villages on one emulator distinguishable; 0 = unknown
+	// (legacy device-bound profile).
+	Slot int `json:"slot,omitempty"`
+
 	// Priority is used by the priority rotation order; higher wins.
 	Priority int `json:"priority"`
 	// CooldownMinutes is the minimum gap before rotation picks this
@@ -123,6 +135,7 @@ type Input struct {
 	Notes                string `json:"notes"`
 	Device               Device `json:"device"`
 	Enabled              bool   `json:"enabled"`
+	Slot                 int    `json:"slot"`
 	Priority             int    `json:"priority"`
 	CooldownMinutes      int    `json:"cooldown_minutes"`
 	MaxAttacksPerDay     int    `json:"max_attacks_per_day"`
@@ -252,7 +265,7 @@ func (s *Store) Create(in Input) (Account, error) {
 			return Account{}, err
 		}
 	}
-	if err := s.uniqueDeviceLocked(in.Device, ""); err != nil {
+	if err := s.uniqueBindingLocked(in.Device, in.Slot, ""); err != nil {
 		return Account{}, err
 	}
 
@@ -275,6 +288,7 @@ func (s *Store) Create(in Input) (Account, error) {
 		Notes:                strings.TrimSpace(in.Notes),
 		Device:               in.Device.Normalized(),
 		Enabled:              in.Enabled,
+		Slot:                 in.Slot,
 		Priority:             clamp(in.Priority, 0, 1000),
 		CooldownMinutes:      clamp(in.CooldownMinutes, 0, 1440),
 		MaxAttacksPerDay:     max0(in.MaxAttacksPerDay),
@@ -317,7 +331,7 @@ func (s *Store) Update(id string, in Input) (Account, error) {
 			return Account{}, err
 		}
 	}
-	if err := s.uniqueDeviceLocked(in.Device, id); err != nil {
+	if err := s.uniqueBindingLocked(in.Device, in.Slot, id); err != nil {
 		return Account{}, err
 	}
 
@@ -329,6 +343,7 @@ func (s *Store) Update(id string, in Input) (Account, error) {
 	a.Notes = strings.TrimSpace(in.Notes)
 	a.Device = in.Device.Normalized()
 	a.Enabled = in.Enabled
+	a.Slot = in.Slot
 	a.Priority = clamp(in.Priority, 0, 1000)
 	a.CooldownMinutes = clamp(in.CooldownMinutes, 0, 1440)
 	a.MaxAttacksPerDay = max0(in.MaxAttacksPerDay)
@@ -567,15 +582,28 @@ func (s *Store) uniqueTagLocked(tag, exceptID string) error {
 	return nil
 }
 
-// uniqueDeviceLocked enforces one account per emulator serial. Two accounts
-// claiming the same instance would farm whichever village happens to be
-// signed in while reporting it as the other account — the exact
-// mis-attribution this feature exists to prevent.
-func (s *Store) uniqueDeviceLocked(dev Device, exceptID string) error {
+// uniqueBindingLocked enforces one account per (emulator serial, Supercell ID
+// slot). Two accounts claiming the same slot of the same instance would tap
+// the same row and farm whichever village it holds while booking the loot as
+// the other account — the exact mis-attribution this feature exists to
+// prevent. Different slots on one instance are the supported fleet layout.
+//
+// A zero slot means "unknown" and is treated as greedy: it collides with any
+// account on that serial, so a legacy profile cannot silently be read as the
+// slot another account already claims.
+func (s *Store) uniqueBindingLocked(dev Device, slot int, exceptID string) error {
 	serial := dev.Normalized().DeviceID
 	for _, a := range s.reg.Accounts {
-		if a.ID != exceptID && a.Device.DeviceID == serial {
-			return fmt.Errorf("device %s is already bound to account %q; start another emulator instance and use its serial", serial, a.Name)
+		if a.ID == exceptID || a.Device.DeviceID != serial {
+			continue
+		}
+		switch {
+		case slot == 0:
+			return fmt.Errorf("device %s is already bound to account %q; enter this village's Supercell ID slot (1-%d) to share one emulator", serial, a.Name, MaxSlot)
+		case a.Slot == 0:
+			return fmt.Errorf("device %s already has account %q bound without a Supercell ID slot; set that account's slot first, then add this one", serial, a.Name)
+		case a.Slot == slot:
+			return fmt.Errorf("device %s slot %d is already bound to account %q; pick the row this village actually occupies in Settings → Supercell ID", serial, slot, a.Name)
 		}
 	}
 	return nil
@@ -626,10 +654,15 @@ func bootstrapRegistry(dir string) Registry {
 	}
 	now := time.Now()
 	a := Account{
-		ID:        DefaultAccountID,
-		Name:      "Main",
-		Device:    Device{ADBHost: cfg.Device.ADBHost, ADBPort: cfg.Device.ADBPort, DeviceID: cfg.Device.DeviceID}.Normalized(),
-		Enabled:   true,
+		ID:      DefaultAccountID,
+		Name:    "Main",
+		Device:  Device{ADBHost: cfg.Device.ADBHost, ADBPort: cfg.Device.ADBPort, DeviceID: cfg.Device.DeviceID}.Normalized(),
+		Enabled: true,
+		// A first-run install has exactly one village, and the in-game list
+		// shows it as row 1. Pre-filling the slot means the first account can be
+		// switched away from and back without hand-editing the registry; the
+		// identity check still validates the row before any bot starts.
+		Slot:      1,
 		Priority:  100,
 		CreatedAt: now,
 		Usage:     Usage{Date: day(now)},
@@ -696,6 +729,7 @@ func normalizeRegistry(r Registry, dir string) Registry {
 		}
 		a.PlayerTag = normalizeTag(a.PlayerTag)
 		a.Device = a.Device.Normalized()
+		a.Slot = clamp(a.Slot, 0, MaxSlot)
 		a.Priority = clamp(a.Priority, 0, 1000)
 		a.CooldownMinutes = clamp(a.CooldownMinutes, 0, 1440)
 		a.MaxAttacksPerDay = max0(a.MaxAttacksPerDay)
@@ -733,6 +767,9 @@ func validateInput(in Input) error {
 	}
 	if in.TownHall < 0 || in.TownHall > 18 {
 		return fmt.Errorf("town hall must be between 1 and 18 (0 = unknown)")
+	}
+	if in.Slot < 0 || in.Slot > MaxSlot {
+		return fmt.Errorf("Supercell ID slot must be between 1 and %d (0 = not set), got %d", MaxSlot, in.Slot)
 	}
 	if in.Priority < 0 || in.Priority > 1000 {
 		return fmt.Errorf("priority must be between 0 and 1000")

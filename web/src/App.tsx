@@ -730,9 +730,14 @@ function App() {
   // Errors intentionally propagate: AccountsView catches them and shows the
   // exact Go error instead of a generic toast.
   const handleSwitchAccount = async (id: string, start: boolean) => {
-    const res = await accountsApi.switchAccount(id, start);
-    setIsRunning(res.started || (await IsRunning()));
-    await loadAccounts(true);
+    try {
+      const res = await accountsApi.switchAccount(id, start);
+      setIsRunning(res.started || (await IsRunning()));
+    } finally {
+      // Even a refused switch changed the emulator (the game tapped through
+      // its own switcher), so the cards must re-read the real active account.
+      await loadAccounts(true);
+    }
   };
 
   const handleSaveAccount = async (id: string | null, input: AccountInput) => {

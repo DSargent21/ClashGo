@@ -2,6 +2,7 @@ import React from 'react';
 import { main } from '../../wailsjs/go/models';
 import { compactNumber } from '../utils';
 import type { DetectedDevice } from '../types';
+import { MAX_ACCOUNT_SLOTS } from '../types';
 import { detectDevices } from '../accountsApi';
 import Icon from './ui/Icon';
 import UnitIcon from './ui/UnitIcon';
@@ -183,9 +184,12 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, err
     void scanEmulator();
   }, [step, devices, scanEmulator]);
 
-  // Prefer an instance no account owns yet; fall back to the first reachable
-  // one so an existing single-village setup still reads as connected.
-  const emulator = devices?.find((device) => !device.bound_to) ?? devices?.[0] ?? null;
+  // Prefer an instance with a free Supercell ID row; fall back to the first
+  // reachable one so an existing setup still reads as connected.
+  const emulator =
+    devices?.find((device) => (device.used_slots?.length ?? 0) < MAX_ACCOUNT_SLOTS) ??
+    devices?.[0] ??
+    null;
 
   const loadout = selectedOption?.loadout;
   const petOrder = options?.pet_priorities?.length ? options.pet_priorities : DEFAULT_PET_ORDER;

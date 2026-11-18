@@ -29,6 +29,14 @@ func TestApp_AccountLifecycle(t *testing.T) {
 	if len(state.Accounts) != 1 || state.ActiveID != accounts.DefaultAccountID {
 		t.Fatalf("unexpected bootstrap state: %+v", state)
 	}
+	// A switch now taps the game's Supercell ID list; this test covers the
+	// registry half, so both accounts get a slot and the driver is faked.
+	if _, err := a.UpdateAccount(accounts.DefaultAccountID, accounts.Input{
+		Name: "Main", Device: accounts.Device{DeviceID: "localhost:5555"}, Slot: 1, Enabled: true,
+	}); err != nil {
+		t.Fatalf("set default slot: %v", err)
+	}
+	a.switchGameAccounts = func(accounts.Account) error { return nil }
 	// The React client reads flattened account fields plus active/running/
 	// stats. Assert the wire shape instead of trusting struct embedding.
 	raw, err := json.Marshal(state)
@@ -52,6 +60,7 @@ func TestApp_AccountLifecycle(t *testing.T) {
 		PlayerTag: "#2P0Y8LQGR",
 		Device:    accounts.Device{DeviceID: "localhost:5556"},
 		Enabled:   true,
+		Slot:      1,
 	})
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)

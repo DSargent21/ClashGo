@@ -120,8 +120,14 @@ export interface BotConfig {
 export type TabType = 'dashboard' | 'army' | 'accounts' | 'analytics' | 'config' | 'settings';
 
 // ---- Multi-account switcher --------------------------------------------
-// Shapes mirror internal/accounts (Go) and main.AccountView. An account is
-// bound to one emulator serial and owns its own config/stats/history tree.
+// Shapes mirror internal/accounts (Go) and main.AccountView. An account owns
+// its own config/stats/history tree, the emulator serial it runs on, and the
+// Supercell ID slot it occupies on that emulator. Several accounts may share
+// one serial as long as their slots differ.
+
+// MAX_ACCOUNT_SLOTS mirrors accounts.MaxSlot: how many villages one emulator's
+// in-game Supercell ID list holds.
+export const MAX_ACCOUNT_SLOTS = 5;
 
 export interface AccountDevice {
   adb_host: string;
@@ -144,6 +150,8 @@ export interface Account {
   notes?: string;
   device: AccountDevice;
   enabled: boolean;
+	// slot is the 1-based row in the game's Supercell ID list (0 = unset).
+	slot?: number;
   priority: number;
   cooldown_minutes: number;
   max_attacks_per_day: number;
@@ -185,6 +193,7 @@ export interface AccountInput {
   notes: string;
   device: AccountDevice;
   enabled: boolean;
+	slot: number;
   priority: number;
   cooldown_minutes: number;
   max_attacks_per_day: number;
@@ -198,14 +207,15 @@ export interface SwitchResult {
 }
 
 // One reachable emulator instance, from main.DetectDevices. bound_to names the
-// account that already owns the serial (empty when free); accounts are
-// one-per-device, so a bound instance cannot be picked twice.
+// first account already on the serial; used_slots lists the Supercell ID rows
+// taken, so the picker can suggest a free one.
 export interface DetectedDevice {
   serial: string;
   model: string;
   width: number;
   height: number;
   bound_to: string;
+  used_slots: number[];
   active: boolean;
 }
 

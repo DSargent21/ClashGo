@@ -10,9 +10,15 @@ package main
 // server. A switch is:
 //
 //  1. stop the running bot and flush its stats to the OLD profile,
-//  2. select the NEW profile (paths.SetProfile) and mark it active,
-//  3. load that profile's counters/history so the UI is immediately correct,
-//  4. optionally start a fresh bot on the account's bound device.
+//  2. drive the game's own switcher (profile → Settings → Supercell ID) to the
+//     account's slot and read back which village is actually logged in,
+//  3. select the NEW profile (paths.SetProfile) and mark it active,
+//  4. load that profile's counters/history so the UI is immediately correct,
+//  5. optionally start a fresh bot on the account's bound device.
+//
+// Step 2 is what makes several villages on one emulator safe: the slot is a
+// fact read back from the game, not an assumption. A mismatch aborts before the
+// registry changes, so the profile the bot would have farmed stays inactive.
 //
 // Every account owns <configDir>/accounts/<id>/{config,stats,attack_history},
 // so no subsystem needed to learn about accounts: config.Load, saveStats and
@@ -21,13 +27,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/accounts"
+	"github.com/Ducky705/ClashGO/internal/adb"
 	"github.com/Ducky705/ClashGO/internal/bot"
 	"github.com/Ducky705/ClashGO/internal/config"
+	"github.com/Ducky705/ClashGO/internal/game"
 	"github.com/Ducky705/ClashGO/internal/paths"
 	"github.com/rs/zerolog/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -209,6 +218,9 @@ func (a *App) SwitchAccount(id string, start bool) (SwitchResult, error) {
 	if !ok {
 		return SwitchResult{}, fmt.Errorf("account %q not found", id)
 	}
+	if acct.Slot < 1 {
+		return SwitchResult{}, fmt.Errorf("account %q has no Supercell ID slot yet: edit it, pick the row it occupies in Settings → Supercell ID (1-%d), and save", acct.Name, accounts.MaxSlot)
+	}
 
 	a.switchMu.Lock()
 	defer a.switchMu.Unlock()
@@ -226,7 +238,31 @@ func (a *App) SwitchAccount(id string, start bool) (SwitchResult, error) {
 		}, nil
 	}
 
+	prev, hadPrev := st.Active()
+
 	if err := a.stopForProfileSwitch(); err != nil {
+		return SwitchResult{}, err
+	}
+	if err := a.driveGameToAccount(acct); err != nil {
+		// A mismatch means the emulator is now showing some other village.
+		// Put the previous one back when it lives on the same instance, so
+		// the operator is not left staring at a village the registry does
+		// not consider active. Failures here are logged, never fatal: the
+		// switch already failed and nothing will be farmed.
+		var mismatch *game.IdentityMismatchError
+		if errors.As(err, &mismatch) && hadPrev && prev.ID != acct.ID &&
+			prev.Slot >= 1 && sameEmulator(prev, acct) {
+			if rerr := a.driveGameToAccount(prev); rerr != nil {
+				log.Warn().Err(rerr).Str("account", prev.ID).Msg("could not return the game to the previous village")
+			} else {
+				log.Info().Str("account", prev.ID).Msg("game returned to the previous village after the failed switch")
+			}
+		}
+		log.Error().Err(err).
+			Str("account", acct.ID).
+			Int("slot", acct.Slot).
+			Str("device", acct.Device.DeviceID).
+			Msg("in-game account switch failed; nothing was started")
 		return SwitchResult{}, err
 	}
 	if err := paths.SetProfile(id); err != nil {
@@ -257,6 +293,59 @@ func (a *App) SwitchAccount(id string, start bool) (SwitchResult, error) {
 
 	a.emitAccountsChanged()
 	return SwitchResult{Account: a.viewFor(st, acct), Started: started, Message: msg}, nil
+}
+
+// sameEmulator reports whether two accounts target the same ADB serial.
+func sameEmulator(a, b accounts.Account) bool {
+	return canonicalSerial(a.Device.DeviceID) == canonicalSerial(b.Device.DeviceID)
+}
+
+// driveGameToAccount is the single entry point for the in-game switch, so the
+// app and its tests drive the same path.
+func (a *App) driveGameToAccount(acct accounts.Account) error {
+	if a.switchGameAccounts != nil {
+		return a.switchGameAccounts(acct)
+	}
+	return a.switchGameAccount(acct)
+}
+
+// switchGameAccount taps through the game's own switcher to acct.Slot, then
+// verifies the logged-in village. Templates are checked before the ADB client
+// is built so a first run fails with the capture instructions instead of a
+// connect error.
+func (a *App) switchGameAccount(acct accounts.Account) error {
+	cfg, err := game.LoadSwitchConfig(paths.Resolve("account_switch.json"))
+	if err != nil {
+		log.Warn().Err(err).Msg("account_switch.json unreadable; using defaults")
+	}
+	templates, err := game.NewTemplateStore(cfg.TemplateDir)
+	if err != nil {
+		return fmt.Errorf("load account-switch templates: %w", err)
+	}
+	defer templates.Close()
+	if err := templates.LoadTemplates(); err != nil {
+		return fmt.Errorf("load account-switch templates: %w", err)
+	}
+
+	client := adb.NewClient(
+		adb.WithHost(acct.Device.ADBHost),
+		adb.WithPort(acct.Device.ADBPort),
+		adb.WithTimeout(30*time.Second),
+	)
+	client.DeviceID = acct.Device.DeviceID
+	defer func() { _ = client.Close() }()
+
+	switcher := game.NewAccountSwitcher(client, templates, cfg, log.Logger)
+	if err := switcher.CheckTemplates(); err != nil {
+		return err
+	}
+	// ConnectConfigured, not AutoDetectDevice: the switch must drive the
+	// account's own emulator, never whichever instance answers first.
+	if err := client.ConnectConfigured(); err != nil {
+		return fmt.Errorf("connect to %s for the account switch: %w", acct.Device.DeviceID, err)
+	}
+	_, err = switcher.Switch(acct.Slot, game.Identity{Name: acct.Name, Tag: acct.PlayerTag})
+	return err
 }
 
 // stopForProfileSwitch stops any running bot and waits for its teardown

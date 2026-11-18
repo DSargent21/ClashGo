@@ -1001,6 +1001,45 @@ Format:
 - Not verified: real Wails IPC window (stub only); a real create→boot cycle
   against BlueStacks (would start the bot; not requested).
 - Commit: this commit.
+
+## 2026-11-18 (second entry) — T.19 in-game Supercell ID switching
+
+- Task: replace device-only account binding with `(ADB serial, slot)` and drive
+  the game's own switcher: player banner → Settings → Supercell ID → slot row,
+  then verify the logged-in village before the bot loop starts.
+- Files: `internal/accounts/accounts.go` (Slot, MaxSlot, per-serial+slot
+  uniqueness, bootstrap default slot 1), `internal/game/accountswitch.go`
+  (template navigation, slot geometry, identity verification, actionable
+  missing-template error), `internal/game/templates.go` (`Dir()`),
+  `internal/adb/client.go` (`ConnectConfigured` — never auto-switch to another
+  emulator), `app_accounts.go` (drive-before-registry, mismatch restore),
+  `app.go` (`switchGameAccounts` test seam), `app_devices.go` (`used_slots`),
+  `cmd/account_templates/main.go` (new capture helper), web drawer/types/stub
+  (slot picker, used-slot hints, switch error refresh), `docs/ACCOUNTS.md`,
+  `docs/UI.md`.
+- Behaviour: `SwitchAccount` refuses an account with no slot, stops the bot,
+  taps the four switch steps, OCRs the profile screen (tag first, name
+  fallback) and aborts before `SetActive` on a mismatch, tapping the previous
+  slot back when it lives on the same emulator. `slot_row1_offset` (0.16) and
+  `slot_row_spacing` (0.075) come from `assets/account_switch.json`; a row
+  outside the frame names both keys.
+- Tests: `internal/game/accountswitch_test.go` (fixture frames: tap order and
+  row geometry, mismatch carries both identities, missing templates list all
+  four names + capture command, slot beyond screen names the tunables),
+  `app_account_switch_test.go` (game driven before the registry moves; mismatch
+  keeps the prior account and starts nothing; no-slot refusal), accounts tests
+  for same-serial-different-slot and duplicate-slot rejection.
+- Verified: `npx tsc --noEmit` PASS; `./tools/verify.sh` ->
+  `VERIFY PASSED (full)`; helper run against the live emulator
+  (`localhost:5555`, 1024x768) wrote a verified 130x90 `acct_profile.png` from
+  a real screenshot (to `/tmp`, not into `assets/templates`).
+- Not verified: the real in-game tap sequence. It needs the four templates
+  cropped from the live game UI and a Supercell ID list to tap; the template
+  files do not exist in the repo, so the packaged app will refuse a switch with
+  the capture instructions until they are captured. Manual Start on the
+  already-active account does not re-drive the switcher.
+- Next task: capture `acct_*` templates on a real device and run one switch
+  end-to-end; then per-account strategy presets (docs/ACCOUNTS.md roadmap 1).
 - Next: unchanged — F.1 (blocked: labelled frames), T.1 (blocked: capture
   seam).
 

@@ -240,6 +240,14 @@ func (ts *TemplateStore) Get(name string) (gocv.Mat, bool) {
 	return m, ok
 }
 
+// Dir is the folder LoadTemplates reads, exposed so a missing-template error
+// can name the exact path an operator has to drop the PNGs into.
+func (ts *TemplateStore) Dir() string {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.dir
+}
+
 func (ts *TemplateStore) Count() int {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()

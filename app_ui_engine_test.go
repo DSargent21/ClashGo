@@ -374,9 +374,19 @@ func TestEngine_AccountControlsReachStoreAndEngine(t *testing.T) {
 	if _, err := a.GetAccounts(); err != nil {
 		t.Fatalf("GetAccounts: %v", err)
 	}
+	// Switching now drives the game's own Supercell ID list, so every account
+	// carries a slot and the driver is faked here (a live tap sequence is
+	// covered by internal/game/accountswitch_test.go).
+	if _, err := a.UpdateAccount(accounts.DefaultAccountID, accounts.Input{
+		Name: "Main", Device: accounts.Device{DeviceID: "localhost:5555"}, Slot: 1, Enabled: true,
+	}); err != nil {
+		t.Fatalf("set default slot: %v", err)
+	}
+	a.switchGameAccounts = func(accounts.Account) error { return nil }
 	created, err := a.CreateAccount(accounts.Input{
 		Name:                 "Harness",
 		Device:               accounts.Device{DeviceID: "localhost:5599"},
+		Slot:                 1,
 		Enabled:              true,
 		Priority:             9,
 		MaxAttacksPerDay:     40,
@@ -389,6 +399,7 @@ func TestEngine_AccountControlsReachStoreAndEngine(t *testing.T) {
 	updated, err := a.UpdateAccount(created.ID, accounts.Input{
 		Name:                 "Harness Renamed",
 		Device:               accounts.Device{DeviceID: "localhost:5599"},
+		Slot:                 1,
 		Enabled:              true,
 		Priority:             3,
 		MaxAttacksPerDay:     25,

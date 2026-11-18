@@ -253,6 +253,7 @@
                 id: 'acc-main', name: 'Main village', player_tag: '#2P0Y8LQGR', town_hall: 13,
                 notes: 'Primary push account. Heroes down until Friday.',
                 device: { adb_host: '127.0.0.1', adb_port: 5555, device_id: 'localhost:5555' },
+                slot: 1,
                 enabled: true, priority: 100, cooldown_minutes: 10,
                 max_attacks_per_day: 0, max_attacks_per_session: 0,
                 created_at: minutesAgo(43200), last_used_at: minutesAgo(4),
@@ -270,6 +271,7 @@
                 id: 'acc-alt', name: 'Alt · TH11', player_tag: '#8QJ2L0PV', town_hall: 11,
                 notes: 'Farming base. Switch only after main hits its daily cap.',
                 device: { adb_host: '127.0.0.1', adb_port: 5557, device_id: 'localhost:5557' },
+                slot: 2,
                 enabled: true, priority: 60, cooldown_minutes: 25,
                 max_attacks_per_day: 40, max_attacks_per_session: 12,
                 created_at: minutesAgo(28800), last_used_at: minutesAgo(95),
@@ -456,16 +458,18 @@
                     // stub-created account updates the picker immediately.
                     DetectDevices: function () {
                         return Promise.resolve(['localhost:5555', 'localhost:5556', 'localhost:5557'].map(function (serial) {
-                            var owner = sampleAccounts.find(function (account) {
+                            var owners = sampleAccounts.filter(function (account) {
                                 return account.device && account.device.device_id === serial;
                             });
+                            var owner = owners[0];
                             return {
                                 serial: serial,
                                 model: 'BlueStacks 5',
                                 width: 1024,
                                 height: 768,
                                 bound_to: owner ? owner.name : '',
-                                active: Boolean(owner && owner.active),
+                                used_slots: owners.map(function (account) { return account.slot || 0; }).filter(Boolean),
+                                active: owners.some(function (account) { return account.active; }),
                             };
                         }));
                     },

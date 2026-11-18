@@ -6,7 +6,8 @@ package main
 //
 // Binding an account used to mean typing an ADB serial ("localhost:5556") from
 // memory. Detection turns that into one click: scan the ports an emulator
-// hands out, ask each one what it is, and report which account already owns it.
+// hands out, ask each one what it is, and report which accounts already live on
+// it (and in which Supercell ID slots).
 // Read-only on purpose (no `adb connect`, no server restart), so opening the
 // add-account drawer can never disturb a running emulator or a running bot.
 
@@ -28,10 +29,15 @@ type DetectedDevice struct {
 	Model  string `json:"model"`
 	Width  int    `json:"width"`
 	Height int    `json:"height"`
-	// BoundTo is the name of the account already using this serial ("" when
-	// free). Accounts are one-per-serial, so the picker must not offer an
-	// owned instance as if it were available.
+	// BoundTo is the name of the first account using this serial ("" when the
+	// instance has no account yet). One emulator can host several villages as
+	// long as their slots differ, so this is informational: the picker keeps the
+	// instance selectable until all MaxSlot rows are taken.
 	BoundTo string `json:"bound_to"`
+	// UsedSlots lists the Supercell ID rows already claimed on this instance.
+	// The add-account drawer uses it to suggest the first free row instead of
+	// letting the operator pick a duplicate and get a validation error.
+	UsedSlots []int `json:"used_slots"`
 	// Active marks the device of the active account.
 	Active bool `json:"active"`
 }
@@ -75,10 +81,17 @@ func (a *App) DetectDevices() ([]DetectedDevice, error) {
 			if canonicalSerial(acct.Device.DeviceID) != canonicalSerial(devices[i].Serial) {
 				continue
 			}
-			devices[i].BoundTo = acct.Name
-			devices[i].Active = acct.ID == activeID
-			break
+			if devices[i].BoundTo == "" {
+				devices[i].BoundTo = acct.Name
+			}
+			if acct.Slot > 0 {
+				devices[i].UsedSlots = append(devices[i].UsedSlots, acct.Slot)
+			}
+			if acct.ID == activeID {
+				devices[i].Active = true
+			}
 		}
+		sort.Ints(devices[i].UsedSlots)
 	}
 	return devices, nil
 }
