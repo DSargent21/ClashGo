@@ -20,6 +20,8 @@ export function CreateAccount(arg1:accounts.Input):Promise<main.AccountView>;
 
 export function DeleteAccount(arg1:string):Promise<void>;
 
+export function DetectDevices():Promise<Array<main.DetectedDevice>>;
+
 export function DownloadUpdate():Promise<string>;
 
 export function GetAccounts():Promise<main.AccountsState>;

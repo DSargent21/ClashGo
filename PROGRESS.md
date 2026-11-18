@@ -6,8 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **v1.1.1 release** (staged updater, first-launch release notes,
-  installer issue close, main fast-forward).
+- Last task: **T.17 setup ergonomics** (emulator discovery, one-click account,
+  wizard preflight + start, failed-boot banner).
 - Next task: **F.1 Dead-base / collector detection** — blocked on labelled
   outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
   fake-capture seam.
@@ -955,3 +955,51 @@ Format:
   and F.2's missing live-raid evidence.
 - Analysis only: no production, test or frontend code changed. Verification
   recorded in the audit and the session report.
+
+### 2026-11-18 — T.17: setup ergonomics (emulator discovery, one-click account)
+- Changed: `app_devices.go` (new: `DetectDevices`, port scan + adb device
+  list, model/resolution probe, owner annotation, console/TCP serial dedupe),
+  `app_devices_test.go` (new), `app_ui_contract_test.go` (coverage entry),
+  `web/src/components/AccountsView.tsx` (device picker, prefilled name/serial,
+  manual entry behind a disclosure), `web/src/components/LaunchSetup.tsx`
+  (emulator preflight on the last step), `web/src/App.tsx` (wizard Start boots
+  the bot; failed-boot banner from `bot_error`/`bot_init_failed`),
+  `web/src/accountsApi.ts`, `web/src/types.ts`, `web/wailsjs/go/main/App.{d.ts,js}`,
+  `web/wailsjs/go/models.ts`, `web/public/wails-stub.js` (DetectDevices +
+  real event bus + `window.__clashgoEmit`), `web/src/styles/views.css`,
+  `docs/UI.md`, `docs/ACCOUNTS.md`, `BUILD_PLAN.md`.
+- Fixed (setup pain found by tracing the first-run path):
+  - Adding a village required inventing an ADB serial; a wrong guess failed
+    with "device already bound to …". The drawer now detects running
+    instances (serial, model, resolution), disables the ones an account owns,
+    and opens with `Village N` + the first free serial: the common path is
+    confirm only.
+  - The live probe found one emulator listed twice (`emulator-5554` console
+    entry and `localhost:5555`), which would have let two accounts bind the
+    same instance under different serials. Console serials fold onto their TCP
+    serial before probing and when matching ownership.
+  - The first-run wizard never checked the emulator and its "Start with …"
+    button only wrote config. The summary now carries the preflight
+    (`serial · resolution`, `Check again`, or the multi-instance instruction)
+    and Start writes the setup and boots.
+  - A failed boot only flipped the sidebar back to START, so the most common
+    first-run failure looked like a dead button. `bot_error` /
+    `bot_init_failed` now render the engine message in a dismissable banner.
+- Verified offline: `go test -run 'TestUI_|TestApp_Account' .` PASS;
+  `TestDetectDevicesMergesConsoleSerials` PASS; `npx tsc --noEmit` PASS;
+  `node --check web/public/wails-stub.js` PASS; `./tools/verify.sh` -> see
+  below.
+- Verified live (read-only, no game taps): `probeDevices("127.0.0.1", 5037)`
+  returned exactly `localhost:5555 · SM-G998B · 1024×768` after the dedupe.
+  Vite stub sweep (`127.0.0.1:5199`): wizard step 3 rendered
+  `Emulator localhost:5556 · 1024×768` + "ClashGO will drive BlueStacks 5.";
+  add-account drawer prefilled `Village 3` / `localhost:5556` with 5555 and
+  5557 disabled as owned; submitting created the account and the card showed
+  the binding; a fourth add fell back to `localhost:5558`; editing kept its
+  own serial; firing `bot_error` through the stub event bus rendered the
+  banner and Dismiss cleared it. Zero console errors.
+- Not verified: real Wails IPC window (stub only); a real create→boot cycle
+  against BlueStacks (would start the bot; not requested).
+- Commit: this commit.
+- Next: unchanged — F.1 (blocked: labelled frames), T.1 (blocked: capture
+  seam).

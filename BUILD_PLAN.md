@@ -286,6 +286,24 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     their sessions; the per-task notes were not copied into this file at the
     time (audit §3.7). Titles are the commit subjects.
 
+- [x] **T.17 Setup ergonomics: emulator discovery + one-click account**
+  - Why: adding a village meant inventing an ADB serial, and the first-run
+    wizard never checked that anything was reachable, then only saved instead
+    of starting.
+  - Fixed: `DetectDevices` (read-only scan of the emulator port span plus the
+    adb device list, model/resolution, owner annotation, console/TCP serial
+    dedupe); the add-account drawer lists detected instances, disables owned
+    ones, and opens prefilled with `Village N` + the first free serial; the
+    wizard's last step shows the emulator preflight with `Check again`; the
+    wizard's Start boots the bot; a failed boot renders the engine message in
+    a dismissable banner. Browser dev stub now has a real event bus so
+    event-driven UI is visible in `vite dev`.
+  - Acceptance: `TestUI_DeviceDetectionBindsFreeSerials` (owner annotation,
+    free/owned flip after create, probe error surfaced),
+    `TestDetectDevicesMergesConsoleSerials` (one emulator, not two),
+    `./tools/verify.sh` green, stub sweep of the drawer + wizard step 3.
+  - Verified: see `PROGRESS.md` 2026-11-18.
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

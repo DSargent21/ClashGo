@@ -197,6 +197,18 @@ export interface SwitchResult {
   message: string;
 }
 
+// One reachable emulator instance, from main.DetectDevices. bound_to names the
+// account that already owns the serial (empty when free); accounts are
+// one-per-device, so a bound instance cannot be picked twice.
+export interface DetectedDevice {
+  serial: string;
+  model: string;
+  width: number;
+  height: number;
+  bound_to: string;
+  active: boolean;
+}
+
 export interface BotStatus {
   running: boolean;
   message: string;

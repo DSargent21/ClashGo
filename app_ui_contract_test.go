@@ -27,6 +27,7 @@ var uiBindingCoverage = map[string]string{
 	"ClearSkippedVersion":  "TestUI_UpdaterBindingsGuarded",
 	"CreateAccount":        "TestEngine_AccountControlsReachStoreAndEngine",
 	"DeleteAccount":        "TestApp_AccountLifecycle",
+	"DetectDevices":        "TestUI_DeviceDetectionBindsFreeSerials",
 	"DownloadUpdate":       "TestUI_UpdaterBindingsGuarded",
 	"GetAccounts":          "TestEngine_AccountControlsReachStoreAndEngine",
 	"GetAppVersion":        "TestUI_ReadBindingsReflectEngineState",

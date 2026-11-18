@@ -116,8 +116,14 @@ Wails rules: any new draggable region gets `draggable`; buttons inside it get
 
 `LaunchSetup.tsx` is the first-run wizard: army → builders → settings. It is a
 two-pane overlay, up to 1000×670, with a 228px orientation rail and one decision
-per step. Start lives on the last step and writes army, builders, and search floors
-together.
+per step. Start lives on the last step: it writes army, builders, and search
+floors together and then boots the bot, so a first run is one click.
+
+The last step also carries an **emulator preflight** in the summary: the running
+instance it will drive (`serial · resolution`), a `Check again` button, and —
+when nothing answers — the instruction to start an instance in the emulator's
+multi-instance manager. The preflight never blocks Start: the boot flow launches
+BlueStacks itself, so `Not detected` is information, not an error.
 
 - The active rail step is `--overlay` with neutral text; no accent bar, glow,
   or gradient. Completed steps use a small check.
@@ -161,6 +167,15 @@ optional when they are not.
   its window in the subtitle or label.
 - Start/Stop appears in the sidebar and, contextually, on the active account
   card. Ticket-style row actions stay inside their own view.
+- **Accounts bind to a detected emulator, not a typed serial.** The add-account
+  drawer scans the running instances (`DetectDevices`) and lists them with
+  model/resolution and the account that already owns each one; occupied rows
+  are disabled. A new account opens with a `Village N` name and the first free
+  serial, so adding a village is edit-nothing + confirm. Host, server port and
+  serial survive under `Enter the connection manually`.
+- **A failed boot explains itself.** `bot_error` / `bot_init_failed` render a
+  dismissable banner above the active view with the exact engine message,
+  instead of silently flipping the sidebar back to START.
 
 ## Component recipes
 

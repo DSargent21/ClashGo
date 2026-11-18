@@ -4,8 +4,10 @@ import type {
   AccountView,
   AccountsState,
   AccountStatus,
+  DetectedDevice,
   Rotation,
 } from '../types';
+import { detectDevices } from '../accountsApi';
 import { compactNumber, relativeTime } from '../utils';
 import Icon from './ui/Icon';
 import Drawer from './ui/Drawer';
@@ -54,8 +56,26 @@ const STATUS_META: Record<AccountStatus, { label: string; tone: string }> = {
   disabled: { label: 'Disabled', tone: 'error' },
 };
 
-function toInput(account: AccountView | null): AccountInput {
-  if (!account) return { ...EMPTY_INPUT, device: { ...EMPTY_INPUT.device } };
+// Adding a village used to start with an invented name and an invented ADB
+// serial. Both are derivable: the fleet knows which ports are taken, so a new
+// account opens pre-bound to the next free instance.
+const nextFreeSerial = (accounts: AccountView[]): string => {
+  const taken = new Set(accounts.map((account) => account.device.device_id));
+  for (let port = 5555; port <= 5565; port += 1) {
+    const serial = `localhost:${port}`;
+    if (!taken.has(serial)) return serial;
+  }
+  return 'localhost:5555';
+};
+
+const defaultInput = (accounts: AccountView[]): AccountInput => ({
+  ...EMPTY_INPUT,
+  name: `Village ${accounts.length + 1}`,
+  device: { ...EMPTY_INPUT.device, device_id: nextFreeSerial(accounts) },
+});
+
+function toInput(account: AccountView | null, accounts: AccountView[]): AccountInput {
+  if (!account) return defaultInput(accounts);
   return {
     id: account.id,
     name: account.name,
@@ -74,16 +94,47 @@ function toInput(account: AccountView | null): AccountInput {
 
 const AccountForm: React.FC<{
   account: AccountView | null;
+  accounts: AccountView[];
   onCancel: () => void;
   onSave: (input: AccountInput) => Promise<void>;
-}> = ({ account, onCancel, onSave }) => {
-  const [form, setForm] = React.useState<AccountInput>(() => toInput(account));
+}> = ({ account, accounts, onCancel, onSave }) => {
+  const [form, setForm] = React.useState<AccountInput>(() => toInput(account, accounts));
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [devices, setDevices] = React.useState<DetectedDevice[] | null>(null);
+  const [detecting, setDetecting] = React.useState(false);
+  const [detectError, setDetectError] = React.useState<string | null>(null);
 
   const patch = (updates: Partial<AccountInput>) => setForm((prev) => ({ ...prev, ...updates }));
   const patchDevice = (updates: Partial<AccountInput['device']>) =>
     setForm((prev) => ({ ...prev, device: { ...prev.device, ...updates } }));
+
+  // Scan when the drawer opens. A new account adopts the first free instance
+  // so "Add account" is name + confirm; an edit keeps the serial it already
+  // has, even if that instance is currently stopped.
+  const scan = React.useCallback(async (preferFree: boolean) => {
+    setDetecting(true);
+    setDetectError(null);
+    try {
+      const found = await detectDevices();
+      setDevices(found);
+      if (preferFree) {
+        const free = found.find((device) => !device.bound_to);
+        if (free) {
+          setForm((prev) => ({ ...prev, device: { ...prev.device, device_id: free.serial } }));
+        }
+      }
+    } catch (err) {
+      setDevices([]);
+      setDetectError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetecting(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void scan(!account);
+  }, [scan, account]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -200,45 +251,104 @@ const AccountForm: React.FC<{
       <div className="form-section">
         <div className="form-section-title">
           <Icon name="device" size={13} />
-          Emulator binding
+          Emulator instance
         </div>
-        <div className="form-grid">
-          <div className="f-field">
-            <label className="label" htmlFor="acct-host">ADB host</label>
-            <input
-              id="acct-host"
-              className="field mono"
-              value={form.device.adb_host}
-              onChange={(event) => patchDevice({ adb_host: event.target.value })}
-            />
+
+        {detecting && devices === null ? (
+          <p className="hint" role="status">Looking for a running emulator…</p>
+        ) : devices !== null && devices.length > 0 ? (
+          <div className="device-picker" role="radiogroup" aria-label="Running emulator instances">
+            {devices.map((device) => {
+              const selected = form.device.device_id === device.serial;
+              const taken = Boolean(device.bound_to) && !selected;
+              return (
+                <button
+                  key={device.serial}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={taken}
+                  className={`device-option ${selected ? 'active' : ''}`.trim()}
+                  onClick={() => patchDevice({ device_id: device.serial })}
+                >
+                  <span className="device-dot" aria-hidden="true" />
+                  <span className="device-copy">
+                    <b className="mono">{device.serial}</b>
+                    <span>
+                      {device.model}
+                      {device.width > 0 ? ` · ${device.width}×${device.height}` : ''}
+                    </span>
+                  </span>
+                  <span className={`device-state${taken ? ' taken' : ''}`.trim()}>
+                    {taken ? `Used by ${device.bound_to}` : selected ? 'Selected' : 'Free'}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          <div className="f-field">
-            <label className="label" htmlFor="acct-port">ADB server port</label>
-            <input
-              id="acct-port"
-              type="number"
-              min={1}
-              max={65535}
-              className="field mono"
-              value={form.device.adb_port}
-              onChange={(event) => patchDevice({ adb_port: Number(event.target.value) || 5037 })}
-            />
-          </div>
-          <div className="f-field full">
-            <label className="label" htmlFor="acct-serial">Device serial</label>
-            <input
-              id="acct-serial"
-              className="field mono"
-              value={form.device.device_id}
-              onChange={(event) => patchDevice({ device_id: event.target.value })}
-              placeholder="localhost:5556"
-            />
-          </div>
+        ) : (
+          <p className="hint" role="status">
+            {detectError
+              ? `Emulator scan failed: ${detectError}`
+              : 'No running emulator found. Start an instance in the BlueStacks multi-instance manager, then scan again.'}
+          </p>
+        )}
+
+        <div className="device-picker-foot">
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => void scan(!account)}
+            disabled={detecting}
+          >
+            <Icon name="refresh" size={12} className={detecting ? 'spin' : undefined} />
+            {detecting ? 'Scanning…' : 'Scan again'}
+          </button>
+          <span className="hint">
+            Bound to <span className="mono">{form.device.device_id}</span> · applies on next start
+          </span>
         </div>
-        <p className="hint">
-          BlueStacks exposes each instance on the next port (5555, 5556, 5557…). Match the serial
-          reported by <span className="mono">adb devices</span>. Device changes apply on next start.
-        </p>
+
+        <details className="device-manual">
+          <summary>Enter the connection manually</summary>
+          <div className="form-grid">
+            <div className="f-field">
+              <label className="label" htmlFor="acct-host">ADB host</label>
+              <input
+                id="acct-host"
+                className="field mono"
+                value={form.device.adb_host}
+                onChange={(event) => patchDevice({ adb_host: event.target.value })}
+              />
+            </div>
+            <div className="f-field">
+              <label className="label" htmlFor="acct-port">ADB server port</label>
+              <input
+                id="acct-port"
+                type="number"
+                min={1}
+                max={65535}
+                className="field mono"
+                value={form.device.adb_port}
+                onChange={(event) => patchDevice({ adb_port: Number(event.target.value) || 5037 })}
+              />
+            </div>
+            <div className="f-field full">
+              <label className="label" htmlFor="acct-serial">Device serial</label>
+              <input
+                id="acct-serial"
+                className="field mono"
+                value={form.device.device_id}
+                onChange={(event) => patchDevice({ device_id: event.target.value })}
+                placeholder="localhost:5556"
+              />
+            </div>
+          </div>
+          <p className="hint">
+            BlueStacks exposes each instance on the next port (5555, 5556, 5557…). Match the serial
+            reported by <span className="mono">adb devices</span>.
+          </p>
+        </details>
       </div>
 
       <div className="form-grid" style={{ marginTop: 14 }}>
@@ -661,6 +771,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
           <AccountForm
             key={editor.account?.id ?? 'new'}
             account={editor.account}
+            accounts={accounts}
             onCancel={() => setEditor(null)}
             onSave={async (input) => {
               await onSave(editor.account?.id ?? null, input);

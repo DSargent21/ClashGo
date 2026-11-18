@@ -790,6 +790,29 @@ export namespace config {
 
 export namespace main {
 	
+	export class DetectedDevice {
+	    serial: string;
+	    model: string;
+	    width: number;
+	    height: number;
+	    bound_to: string;
+	    active: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DetectedDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.serial = source["serial"];
+	        this.model = source["model"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.bound_to = source["bound_to"];
+	        this.active = source["active"];
+	    }
+	}
+	
 	export class AccountView {
 	    id: string;
 	    name: string;

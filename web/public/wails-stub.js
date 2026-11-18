@@ -122,7 +122,27 @@
         if (host !== 'localhost' && host !== '127.0.0.1') return skip('non-localhost host "' + host + '"');
 
         var resolve = function (v) { return function () { return Promise.resolve(v); }; };
-        var noopUnsubscribe = function () { return function () {}; };
+        // Event bus stand-in. A no-op EventsOn hid event-driven UI (bot_error,
+        // accounts_changed) from browser dev; with a real registry the stub can
+        // fire those events from the console via window.__clashgoEmit.
+        var eventHandlers = {};
+        var emitEvent = function (name, ...data) {
+            (eventHandlers[name] || []).slice().forEach(function (fn) {
+                try {
+                    fn.apply(null, data);
+                } catch (err) {
+                    // eslint-disable-next-line no-console
+                    console.error('[ClashGO dev] event handler for ' + name + ' threw:', err);
+                }
+            });
+        };
+        var onEvent = function (name, callback) {
+            eventHandlers[name] = eventHandlers[name] || [];
+            eventHandlers[name].push(callback);
+            return function () {
+                eventHandlers[name] = (eventHandlers[name] || []).filter(function (fn) { return fn !== callback; });
+            };
+        };
         var tagLog = function (level) {
             return function () {
                 var args = Array.prototype.slice.call(arguments);
@@ -430,6 +450,25 @@
                         stubRotation = rotation;
                         return Promise.resolve(null);
                     },
+                    // Three running instances, one more than the sample
+                    // fleet uses, so the add-account picker has a free slot.
+                    // Ownership is read from sampleAccounts, so binding a
+                    // stub-created account updates the picker immediately.
+                    DetectDevices: function () {
+                        return Promise.resolve(['localhost:5555', 'localhost:5556', 'localhost:5557'].map(function (serial) {
+                            var owner = sampleAccounts.find(function (account) {
+                                return account.device && account.device.device_id === serial;
+                            });
+                            return {
+                                serial: serial,
+                                model: 'BlueStacks 5',
+                                width: 1024,
+                                height: 768,
+                                bound_to: owner ? owner.name : '',
+                                active: Boolean(owner && owner.active),
+                            };
+                        }));
+                    },
                     SwitchAccount: resolve({ account: sampleAccounts[0], started: false, message: 'browser-stub' }),
                     // Account CRUD mutates the in-memory list so the editor,
                     // delete and reset-usage buttons all show a real result in
@@ -689,11 +728,12 @@
             },
         };
 
+        window.__clashgoEmit = emitEvent;
         window.runtime = {
-            EventsOnMultiple: noopUnsubscribe,
-            EventsOn: noopUnsubscribe,
-            EventsOff: function () {},
-            EventsEmit: function () {},
+            EventsOnMultiple: onEvent,
+            EventsOn: onEvent,
+            EventsOff: function (name) { delete eventHandlers[name]; },
+            EventsEmit: emitEvent,
             LogPrint: tagLog('log'),
             LogTrace: tagLog('log'),
             LogDebug: tagLog('debug'),

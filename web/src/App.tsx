@@ -242,6 +242,10 @@ function App() {
   const [launchOpen, setLaunchOpen] = useState(getInitialLaunchOpen);
   const [launchOptions, setLaunchOptions] = useState<main.LaunchOptions | null>(null);
   const [launchBusy, setLaunchBusy] = useState(false);
+  // A boot failure used to only flip the sidebar back to START, so the most
+  // common first-run problem (emulator not up) looked like the click did
+  // nothing. The message is kept here until dismissed or a start succeeds.
+  const [botError, setBotError] = useState<string | null>(null);
 
   // Multi-account switcher state. Kept at App level because the sidebar,
   // header and Accounts page all read the same active account.
@@ -501,11 +505,13 @@ function App() {
     // bot_init_failed — without listening, the sidebar stays on
     // "STOP BOT" forever and Stop becomes a confusing no-op (there's
     // no bot to stop). Flip the button back to START on either event.
-    const unsubBotError = safeEventsOn("bot_error", () => {
+    const unsubBotError = safeEventsOn("bot_error", (message: unknown) => {
       setIsRunning(false);
+      setBotError(typeof message === 'string' && message.trim() ? message : 'The bot could not start. See the log for details.');
     });
-    const unsubBotInitFailed = safeEventsOn("bot_init_failed", () => {
+    const unsubBotInitFailed = safeEventsOn("bot_init_failed", (data: { message?: string } | undefined) => {
       setIsRunning(false);
+      setBotError(data?.message || 'The bot could not start. See the log for details.');
     });
 
     // The Go side emits the full switcher document after every account
@@ -686,9 +692,12 @@ function App() {
     try {
       const res = await StartBot(goldThreshold, elixirThreshold, deThreshold, upgradeWalls, searchEnabled);
       setIsRunning(res.running);
+      if (res.running) setBotError(null);
+      else if (res.message) setBotError(res.message);
       await loadAccounts(true);
     } catch (err) {
       console.error('Start failed:', err);
+      setBotError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -912,6 +921,18 @@ function App() {
       setSearchEnabled(conf.search.enabled);
       await refreshArmyPlans().catch(() => undefined);
       await loadAutotune();
+      // The last step says "Start with …": write the setup AND boot, so a
+      // first run is one click instead of setup-then-find-the-Start-button.
+      setBotError(null);
+      const started = await StartBot(
+        tuning.minGold,
+        tuning.minElixir,
+        tuning.minDark,
+        upgrades.wallBuilder,
+        conf.search.enabled,
+      );
+      setIsRunning(started.running);
+      if (!started.running && started.message) setBotError(started.message);
       finishLaunch();
       setTab('dashboard');
     } catch (err) {
@@ -1106,6 +1127,19 @@ function App() {
         </header>
 
         <div className="content">
+          {botError ? (
+            <div className="error-banner app-alert" role="alert">
+              <Icon name="alert" size={14} />
+              <div className="app-alert-copy">
+                <b>The bot could not start</b>
+                <span>{botError}</span>
+              </div>
+              <button type="button" className="btn sm" onClick={() => setBotError(null)}>
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+
           {tab === 'dashboard' && (
             <Dashboard
               {...dashboardProps}

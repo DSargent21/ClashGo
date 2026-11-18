@@ -203,18 +203,23 @@ On first launch after upgrading, the legacy single-profile `config.json`,
 
 1. Open the emulator's multi-instance manager and create one instance per
    village.
-2. Start each instance and confirm the ADB port it exposes:
-
-   ```bash
-   adb devices -l
-   ```
-
-   BlueStacks conventionally assigns `localhost:5555`, `localhost:5556`,
-   `localhost:5557`, …
+2. Start each instance. BlueStacks conventionally assigns `localhost:5555`,
+   `localhost:5556`, `localhost:5557`, …
 3. Sign each instance into its village once, with "remember me" enabled.
-4. Add an account in ClashGO for each instance and enter its serial.
+4. Add an account in ClashGO. The drawer scans the running instances and lists
+   them with model, resolution and the account that already owns each one; pick
+   the instance this village is signed in to. A new account already carries a
+   `Village N` name and the first free serial, so the common case is confirm.
+   Nothing has to be typed unless the instance runs on a custom port
+   (`Enter the connection manually`).
 5. Use **Switch & start** to verify the pairing. If a boot error mentions a
    timeout, the serial and the running instance do not match.
+
+Detection is read-only: it scans the emulator ADB port span (5555–5565) and
+asks each answering serial for its model, without running `adb connect` or
+restarting the adb server. The adb server's `emulator-NNNN` console entry is
+folded onto the same instance's TCP serial, so one emulator can never be bound
+twice under two names.
 
 Do not run ClashGO's GUI and CLI against the same config directory at the same
 time; each process assumes it owns the active profile.

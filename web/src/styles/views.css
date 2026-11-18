@@ -779,6 +779,77 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
+/* Boot-failure banner. Spans the content area above the active view so a
+   failed Start explains itself instead of silently reverting to START. */
+.app-alert { margin-bottom: 16px; align-items: flex-start; }
+.app-alert-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.app-alert-copy b { font-size: 12.5px; }
+.app-alert-copy span { font-size: 11.5px; color: var(--text-2); overflow-wrap: anywhere; }
+
+/* Wizard summary footnote: the emulator preflight line under the brief grid. */
+.brief-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-3);
+  flex-wrap: wrap;
+}
+.brief-note > span { flex: 1; min-width: 200px; }
+
+/* Detected emulator instances. One row per running device: pick the instance
+   the village is signed in to instead of typing an ADB serial. */
+.device-picker { display: flex; flex-direction: column; gap: 6px; }
+.device-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out);
+}
+.device-option:hover:not(:disabled) { border-color: var(--border-strong); background: var(--overlay); }
+.device-option.active { border-color: rgba(227, 179, 65, .42); background: var(--overlay); }
+.device-option:disabled { cursor: not-allowed; opacity: .55; }
+.device-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.device-option.active .device-dot { background: var(--gold); }
+.device-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.device-copy b { font-size: 12.5px; font-weight: 600; }
+.device-copy span { font-size: 11px; color: var(--text-3); }
+.device-state { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+.device-state.taken { color: var(--text-3); }
+.device-picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.device-picker-foot .hint { margin: 0; }
+.device-manual { margin-top: 12px; }
+.device-manual > summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 11px;
+  padding: 4px 0;
+}
+.device-manual[open] > summary { margin-bottom: 8px; }
+
 /* ================================ CONFIG ============================= */
 .config-page { max-width: 1060px; margin: 0 auto; }
 .subnav {

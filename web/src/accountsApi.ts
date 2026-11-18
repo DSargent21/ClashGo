@@ -8,6 +8,7 @@ import type {
   AccountInput,
   AccountsState,
   AccountView,
+  DetectedDevice,
   Rotation,
   SwitchResult,
 } from './types';
@@ -50,3 +51,8 @@ export const setRotation = (rotation: Rotation) =>
 
 export const switchAccount = (id: string, start: boolean) =>
   call<SwitchResult>('SwitchAccount', id, start);
+
+// Live emulator discovery. Read-only: it scans the emulator ADB port span and
+// asks each instance for its model, and never touches the adb server or a
+// running bot. Slow by nature (~1s), so call it on demand, not on a poll.
+export const detectDevices = () => call<DetectedDevice[]>('DetectDevices');

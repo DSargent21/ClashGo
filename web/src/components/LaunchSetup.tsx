@@ -1,6 +1,8 @@
 import React from 'react';
 import { main } from '../../wailsjs/go/models';
 import { compactNumber } from '../utils';
+import type { DetectedDevice } from '../types';
+import { detectDevices } from '../accountsApi';
 import Icon from './ui/Icon';
 import UnitIcon from './ui/UnitIcon';
 import { Switch } from './ui/Switch';
@@ -94,6 +96,10 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
     traps: true,
   });
   const [wallBuilder, setWallBuilder] = React.useState(true);
+  // Emulator preflight on the last step: the summary is the wrong place to
+  // discover that nothing is running, and Start is one click away from here.
+  const [devices, setDevices] = React.useState<DetectedDevice[] | null>(null);
+  const [scanning, setScanning] = React.useState(false);
   const cardRefs = React.useRef<(HTMLButtonElement | null)[]>([]);
   const panelRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -152,6 +158,28 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
   React.useEffect(() => {
     if (selectedOption) setSlot(selectedOption.army_slot);
   }, [selectedOption]);
+
+  const scanEmulator = React.useCallback(async () => {
+    setScanning(true);
+    try {
+      setDevices(await detectDevices());
+    } catch {
+      // A failed scan reads as "not found": the bot's own boot launches
+      // BlueStacks, so this can never block the setup.
+      setDevices([]);
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (step !== 2 || devices !== null) return;
+    void scanEmulator();
+  }, [step, devices, scanEmulator]);
+
+  // Prefer an instance no account owns yet; fall back to the first reachable
+  // one so an existing single-village setup still reads as connected.
+  const emulator = devices?.find((device) => !device.bound_to) ?? devices?.[0] ?? null;
 
   const loadout = selectedOption?.loadout;
   const petOrder = options?.pet_priorities?.length ? options.pet_priorities : DEFAULT_PET_ORDER;
@@ -613,6 +641,33 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                         <span>Floors</span>
                         <b className="mono">G {compactNumber(minGold)} · E {compactNumber(minElixir)} · DE {compactNumber(minDark)}</b>
                       </div>
+                      <div>
+                        <span>Emulator</span>
+                        <b className="mono">
+                          {emulator
+                            ? `${emulator.serial}${emulator.width > 0 ? ` · ${emulator.width}×${emulator.height}` : ''}`
+                            : scanning
+                              ? 'Checking…'
+                              : 'Not detected'}
+                        </b>
+                      </div>
+                    </div>
+
+                    <div className="brief-note">
+                      <span>
+                        {emulator
+                          ? `ClashGO will drive ${emulator.model || 'this instance'}.`
+                          : 'No running emulator. Start an instance in the emulator\u2019s multi-instance manager, then check again — or start anyway and ClashGO launches BlueStacks itself.'}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn ghost sm"
+                        onClick={() => void scanEmulator()}
+                        disabled={scanning}
+                      >
+                        <Icon name="refresh" size={12} className={scanning ? 'spin' : undefined} />
+                        {scanning ? 'Checking…' : 'Check again'}
+                      </button>
                     </div>
                   </section>
                 </>
@@ -623,7 +678,7 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
           <footer className="launch-foot">
             <div className="launch-foot-info">
               <Icon name="shield" size={12} />
-              <span>{step === 2 ? 'Writes to config.json when you start' : step === 1 ? 'Builders, lab, and pets run between raids' : 'You can change all of this later'}</span>
+              <span>{step === 2 ? 'Saves this setup and starts the bot' : step === 1 ? 'Builders, lab, and pets run between raids' : 'You can change all of this later'}</span>
             </div>
             <div className="launch-foot-actions">
               {step > 0 ? (
