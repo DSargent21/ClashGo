@@ -60,6 +60,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Download Go modules
+        # tools/slim_build.sh needs the gocv module directory in the module
+        # cache before the release Makefile runs; a fresh runner has not
+        # downloaded it just because the Wails CLI was installed.
+        run: go mod download
+
       - name: Install OpenCV 4 (gocv build dependency)
         # Shared with verify.yml; see the action for why opencv@4 is pinned.
         uses: ./.github/actions/install-opencv4
