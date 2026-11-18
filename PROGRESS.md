@@ -6,8 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **T.17 setup ergonomics** (emulator discovery, one-click account,
-  wizard preflight + start, failed-boot banner).
+- Last task: **T.19 follow-up — one-command switch templates** (cold-start
+  `cmd/account_templates` install, self-verified crops + row geometry).
 - Next task: **F.1 Dead-base / collector detection** — blocked on labelled
   outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
   fake-capture seam.
@@ -1001,6 +1001,70 @@ Format:
 - Not verified: real Wails IPC window (stub only); a real create→boot cycle
   against BlueStacks (would start the bot; not requested).
 - Commit: this commit.
+
+## 2026-11-18 (third entry) — Cold-start switch templates in one command
+
+- Task: make in-game account switching work from a cold start with zero manual
+  image editing. `cmd/account_templates` used to screenshot into
+  `output/account_templates/<ts>/` and leave cropping to the operator, so the
+  switcher always refused with "missing templates".
+- Files: `internal/game/accountcapture.go` (new: frame capture/detection,
+  `InstallSwitchTemplates`, `VerifyInstalledSwitchTemplate`, geometry file
+  writer, `DetectBannerRegion`/`DetectSettingsRegion`/`DetectSupercellRegion`/
+  `DetectSlotListRegion`), `internal/game/accountswitch.go`
+  (`switchRuntimeTemplates` = settings/supercell/slot_list, `ProfileTapPoint`,
+  `MatchSwitchTemplateROI`, `waitIdentity` retry loop, one-command help text),
+  `cmd/account_templates/main.go` (drives profile corner → Settings *if the
+  build needs it* → Supercell ID, saves each frame incrementally, backtracks by
+  captured depth; `-source` replay), `internal/vision/matpool.go` (scaled
+  template cache key now includes the template's dimensions, so a recapture
+  with a new crop shape cannot reuse stale scaled mats), `app_accounts.go`
+  (Start on the already-active account re-drives the switcher first),
+  `app_account_switch_test.go`, `docs/ACCOUNTS.md` §5.1.
+- Why profile is not a template any more: the village banner shows the current
+  player's name, so an `acct_profile` crop from village A cannot match village
+  B. The switch taps the level badge by geometry (`ProfileTapPoint`, 4% W /
+  6.5% H) and `acct_profile.png` stays an installed artefact only.
+- Why the identity read retries: after the slot tap the game reloads; the
+  profile may still be drawing, so a failed OCR is "try again", not "fail",
+  until `timeout_ms`. A readable *wrong* tag fails immediately.
+- Verification/refusals in the installer: each PNG is re-matched inside the
+  exact region it was cropped from at the runtime threshold (a global search
+  would happily "find" flat background); flat crops (gray std < 8) are refused;
+  the Settings and Supercell ID crops must overlap those controls' detected
+  boxes; rows must sit on detected tag rows; the derived slot Y must be inside
+  the panel. Every failure names file + coordinate + tunable flag.
+- Tests: `internal/game/accountcapture_test.go` —
+  `TestInstalledTemplatesSatisfyTheRuntimeSwitch` (install → the runtime store
+  loads those files → `CheckTemplates()` passes → `Switch(2)` taps the derived
+  row), `TestInstallRejectsWrongRowGeometry` (names `slot_row_spacing`, y=416),
+  `TestInstallRejectsSupercellRectAwayFromTarget`, `TestInstallRejectsSettings-
+  CropOffTheControl`, `TestInstalledTemplateThatDoesNotMatchIsRejected` (names
+  the file, `-settings`, the runtime threshold), `TestDetectSlotListRegion-
+  NeedsTwoVillages`; `TestSwitchAccountTapsProfileSettingsSupercellSlot` now
+  expects the geometry tap first and only three templates.
+- Verified: `go test ./...` (with the OpenCV rpath) PASS; full
+  `./tools/verify.sh` PASS; a recorded helper run
+  `go run ./cmd/account_templates -source /tmp/clashgo-fixture -out
+  /tmp/clashgo-install/templates -config /tmp/clashgo-install/account_switch.json`
+  wrote all four PNGs + `slot_row1_offset=0`, `slot_row_spacing=0.1172`
+  (rows y=305/395/485), and a throwaway test loaded that directory through
+  `LoadSwitchConfig` + `NewTemplateStore` and passed `CheckTemplates()`.
+  Deliberate failures, both non-zero and nothing installed:
+  `-slot-row-spacing 0.02` → "slot 1 lands at y=428 but that row's player tag is
+  at y=305; adjust slot_row1_offset (0.160) or slot_row_spacing (0.020)";
+  `-settings 10,10,120,60` → "acct_settings.png at (10,10)-(120,60) does not
+  cover the Settings control at (765,105)-(895,165); adjust -settings".
+- Not verified live: the emulator (`localhost:5555`) could only ever show one
+  signed-in village and kept dropping to "You have been disconnected due to
+  inactivity", so the Supercell ID *list* (≥2 rows, which the installer
+  requires) was unreachable this session. The recorded run therefore used
+  `-source` fixture screens at 1024x768 laid out from the live measurements
+  (Settings tab, `SUPERCELL ID` + `OpEN` row, three tag rows 90px apart) —
+  stated plainly rather than claimed as a live capture.
+- Next: the first live run on a device with two signed-in villages should
+  confirm `tapProfile`'s 4%/6.5% corner on each build; if the badge sits
+  elsewhere, `ProfileTapPoint` is the single constant to adjust.
 
 ## 2026-11-18 (second entry) — T.19 in-game Supercell ID switching
 

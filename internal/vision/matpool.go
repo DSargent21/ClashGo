@@ -99,7 +99,12 @@ type ScaledTemplateCache struct {
 // tuning. A struct key replaces the fmt.Sprintf string it used to build here —
 // this key is computed for every template match, i.e. several times per frame.
 type templateScaleKey struct {
-	name     string
+	name string
+	// width/height are part of the key: the same template NAME is recaptured
+	// with a different crop size (cmd/account_templates, cmd/capture_template),
+	// and a cache hit from the old size would silently match nothing.
+	width    int
+	height   int
 	minScale float64
 	maxScale float64
 	steps    int
@@ -111,12 +116,12 @@ func NewScaledTemplateCache() *ScaledTemplateCache {
 	}
 }
 
-func scaleKey(name string, minScale, maxScale float64, steps int) templateScaleKey {
-	return templateScaleKey{name: name, minScale: minScale, maxScale: maxScale, steps: steps}
+func scaleKey(name string, width, height int, minScale, maxScale float64, steps int) templateScaleKey {
+	return templateScaleKey{name: name, width: width, height: height, minScale: minScale, maxScale: maxScale, steps: steps}
 }
 
 func (c *ScaledTemplateCache) GetOrBuild(name string, template gocv.Mat, minScale, maxScale float64, steps int) []gocv.Mat {
-	key := scaleKey(name, minScale, maxScale, steps)
+	key := scaleKey(name, template.Cols(), template.Rows(), minScale, maxScale, steps)
 	c.mu.RLock()
 	cached, ok := c.cache[key]
 	c.mu.RUnlock()

@@ -345,7 +345,15 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     `TestApp_SwitchIdentityMismatchKeepsPriorAccountAndStartsNothing`,
     `TestApp_SwitchDrivesGameBeforeChangingActive`, slot uniqueness tests;
     `./tools/verify.sh` green; helper proven against the live emulator.
-  - Verified: see `PROGRESS.md` 2026-11-18 (second entry).
+  - Follow-up (2026-11-18, third entry): cold start no longer needs hand
+    cropping. `cmd/account_templates` installs all four PNGs plus the row
+    geometry into `<assets>/templates` + `<assets>/account_switch.json` in one
+    run, verifying every crop in place and refusing flat crops, crops that miss
+    their control, and row geometry that lands between rows. The switch taps the
+    profile corner by geometry (the banner text is account-specific), requires
+    only `acct_settings`/`acct_supercell`/`acct_slot_list`, and retries the
+    identity OCR while the village reloads.
+  - Verified: see `PROGRESS.md` 2026-11-18 (second and third entries).
 
 ---
 

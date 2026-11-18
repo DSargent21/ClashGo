@@ -24,7 +24,6 @@ import (
 	"image"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -45,6 +44,19 @@ const (
 	AcctSlotListTemplate  = "acct_slot_list"
 )
 
+// SwitchSlotMax is how many villages one emulator's Supercell ID list holds.
+// accounts.MaxSlot mirrors it; the switch rejects anything outside 1..SwitchSlotMax.
+const SwitchSlotMax = 5
+
+// Template matching settings shared by the runtime switch and the capture
+// helper, so "verified at the runtime threshold" means the same matcher with
+// the same scale ladder — not a looser check in the helper.
+const (
+	switchScaleMin   = 0.85
+	switchScaleMax   = 1.15
+	switchScaleSteps = 7
+)
+
 // switchTemplateHelp is what each missing PNG has to show, in operator words.
 var switchTemplateHelp = []struct {
 	Name string
@@ -56,13 +68,18 @@ var switchTemplateHelp = []struct {
 	{AcctSlotListTemplate, "the account list panel that opens from that row (its header is enough)"},
 }
 
-var accountSwitchTemplateNames = func() []string {
-	names := make([]string, 0, len(switchTemplateHelp))
-	for _, h := range switchTemplateHelp {
-		names = append(names, h.Name)
-	}
-	return names
-}()
+// switchRuntimeTemplates are the templates the switch taps. acct_profile is
+// installed too (it records the village HUD at capture time) but is not a tap
+// target: the banner carries the player's name, which changes with the account.
+// The HUD corner is addressed by geometry instead — see ProfileTapPoint.
+var switchRuntimeTemplates = []string{AcctSettingsTemplate, AcctSupercellTemplate, AcctSlotListTemplate}
+
+// ProfileTapPoint is where the switch taps to open the profile: the level badge
+// in the top-left HUD corner. It is geometry, not a template, because the
+// banner's pixels contain the current village's name.
+func ProfileTapPoint(width, height int) image.Point {
+	return image.Pt(int(math.Round(0.040*float64(width))), int(math.Round(0.065*float64(height))))
+}
 
 // SwitchConfig tunes the navigation. Defaults work for a 1280x720 BlueStacks
 // instance; every value is overridable because slot geometry is the one thing
@@ -117,7 +134,9 @@ func (c *SwitchConfig) normalize() {
 	if c.TemplateDir == "" {
 		c.TemplateDir = paths.Resolve("templates")
 	}
-	if c.SlotRow1Offset <= 0 || c.SlotRow1Offset >= 1 {
+	// 0 is legal: the capture helper anchors on account row 1 itself, so the
+	// first row sits exactly at the anchor's centre.
+	if c.SlotRow1Offset < 0 || c.SlotRow1Offset >= 1 {
 		c.SlotRow1Offset = DefaultSwitchConfig().SlotRow1Offset
 	}
 	if c.SlotRowSpacing <= 0 || c.SlotRowSpacing >= 1 {
@@ -173,7 +192,7 @@ type MissingTemplatesError struct {
 func (e *MissingTemplatesError) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "in-game account switching needs %d template PNGs and %d are missing from %s:\n",
-		len(switchTemplateHelp), len(e.Missing), e.Dir)
+		len(switchRuntimeTemplates), len(e.Missing), e.Dir)
 	missing := make(map[string]bool, len(e.Missing))
 	for _, name := range e.Missing {
 		missing[name] = true
@@ -183,12 +202,10 @@ func (e *MissingTemplatesError) Error() string {
 			fmt.Fprintf(&b, "  %-16s — %s\n", h.Name, h.What)
 		}
 	}
-	b.WriteString("capture them once from a running emulator, in this order:\n")
-	b.WriteString("  1. village screen:            go run ./cmd/account_templates\n")
-	b.WriteString("     (saves the screenshot and prints the exact crop commands)\n")
-	b.WriteString("  2. crop each template:        go run ./cmd/account_templates -profile x1,y1,x2,y2 -settings x1,y1,x2,y2 \\\n")
-	b.WriteString("                                   -supercell x1,y1,x2,y2 -slot-list x1,y1,x2,y2\n")
-	b.WriteString("  3. verify:                    re-run the switch; a wrong row aborts with the actual village")
+	b.WriteString("install them in one command against the running emulator:\n")
+	b.WriteString("  go run ./cmd/account_templates\n")
+	b.WriteString("It drives profile → Settings → Supercell ID itself, verifies every crop,\n")
+	b.WriteString("derives the row geometry, and refuses anything that would fail later.")
 	return b.String()
 }
 
@@ -242,10 +259,10 @@ func (s *AccountSwitcher) Config() SwitchConfig { return s.cfg }
 // CheckTemplates reports the missing capture PNGs, if any.
 func (s *AccountSwitcher) CheckTemplates() error {
 	if s.templates == nil {
-		return &MissingTemplatesError{Dir: s.cfg.TemplateDir, Missing: accountSwitchTemplateNames}
+		return &MissingTemplatesError{Dir: s.cfg.TemplateDir, Missing: switchRuntimeTemplates}
 	}
 	var missing []string
-	for _, name := range accountSwitchTemplateNames {
+	for _, name := range switchRuntimeTemplates {
 		if _, ok := s.templates.Get(name); !ok {
 			missing = append(missing, name)
 		}
@@ -261,8 +278,8 @@ func (s *AccountSwitcher) CheckTemplates() error {
 // village (the caller decides whether to switch back) and the error carries
 // both identities.
 func (s *AccountSwitcher) Switch(slot int, expect Identity) (Identity, error) {
-	if slot < 1 || slot > 5 {
-		return Identity{}, fmt.Errorf("Supercell ID slot must be 1-5, got %d", slot)
+	if slot < 1 || slot > SwitchSlotMax {
+		return Identity{}, fmt.Errorf("Supercell ID slot must be 1-%d, got %d", SwitchSlotMax, slot)
 	}
 	if err := s.CheckTemplates(); err != nil {
 		return Identity{}, err
@@ -271,7 +288,7 @@ func (s *AccountSwitcher) Switch(slot int, expect Identity) (Identity, error) {
 		return Identity{}, fmt.Errorf("account has neither a player tag nor a name, so the switch cannot verify which village is logged in — set either on the account")
 	}
 
-	if err := s.tapTemplate(AcctProfileTemplate, "player profile"); err != nil {
+	if err := s.tapProfile("open the profile"); err != nil {
 		return Identity{}, err
 	}
 	if err := s.tapTemplate(AcctSettingsTemplate, "Settings"); err != nil {
@@ -284,40 +301,15 @@ func (s *AccountSwitcher) Switch(slot int, expect Identity) (Identity, error) {
 		return Identity{}, err
 	}
 
-	// The game reloads the village after a slot tap. Waiting for the player
-	// banner is how we know the switch finished rather than merely started.
-	if _, err := s.waitFor(AcctProfileTemplate, "village after the slot tap"); err != nil {
-		return Identity{}, fmt.Errorf("slot %d was tapped but the game did not return to a village: %w", slot, err)
-	}
-	if err := s.tapTemplate(AcctProfileTemplate, "player profile"); err != nil {
-		return Identity{}, err
-	}
-	screen, err := s.dev.CaptureToMat()
+	// The game reloads the village after a slot tap and the profile panel can
+	// take a while to draw, so the identity read is retried: tap the banner,
+	// OCR the profile, and only then decide. A readable tag that is not the
+	// expected one is a mismatch immediately; an unreadable screen means "still
+	// loading" and is retried until the timeout.
+	observed, err := s.waitIdentity(slot, expect)
 	if err != nil {
-		return Identity{}, fmt.Errorf("capture profile screen: %w", err)
-	}
-	defer screen.Close()
-
-	reader := s.readIdentity
-	if reader == nil {
-		reader = readIdentityFromScreen
-	}
-	observed, err := reader(screen)
-	_ = s.dev.Back() // close the profile; the bot wants the village
-	if err != nil {
-		return Identity{}, fmt.Errorf("could not read which village is logged in: %w", err)
-	}
-	if err := verifyIdentity(expect, observed); err != nil {
-		var mismatch *IdentityMismatchError
-		if errors.As(err, &mismatch) {
-			mismatch.Slot = slot
-		}
 		return observed, err
 	}
-	s.log.Info().
-		Int("slot", slot).
-		Str("village", observed.String()).
-		Msg("game switched to the expected village")
 	return observed, nil
 }
 
@@ -335,6 +327,68 @@ func (s *AccountSwitcher) tapTemplate(name, what string) error {
 	return nil
 }
 
+// tapProfile opens the profile by tapping the level badge, which is the same
+// control in every village (the banner's text is not).
+func (s *AccountSwitcher) tapProfile(what string) error {
+	screen, err := s.dev.CaptureToMat()
+	if err != nil {
+		return fmt.Errorf("capture screen before opening the profile: %w", err)
+	}
+	w, h := screen.Cols(), screen.Rows()
+	screen.Close()
+	point := ProfileTapPoint(w, h)
+	if err := s.dev.TapRandomized(point.X, point.Y); err != nil {
+		return fmt.Errorf("tap %s at (%d,%d): %w", what, point.X, point.Y, err)
+	}
+	s.log.Info().Str("step", what).Int("x", point.X).Int("y", point.Y).Msg("account switch: tapped profile corner")
+	s.sleep(s.cfg.settle())
+	return nil
+}
+
+// waitIdentity taps the banner and OCRs the profile until the village says who
+// it is, or the timeout expires.
+func (s *AccountSwitcher) waitIdentity(slot int, expect Identity) (Identity, error) {
+	reader := s.readIdentity
+	if reader == nil {
+		reader = readIdentityFromScreen
+	}
+	deadline := time.Now().Add(s.cfg.timeout())
+	var lastErr error
+	for {
+		if err := s.tapProfile("read the logged-in village"); err != nil {
+			return Identity{}, err
+		}
+		screen, err := s.dev.CaptureToMat()
+		if err != nil {
+			lastErr = err
+		} else {
+			observed, rerr := reader(screen)
+			screen.Close()
+			if rerr == nil {
+				_ = s.dev.Back() // close the profile; the bot wants the village
+				if verr := verifyIdentity(expect, observed); verr != nil {
+					var mismatch *IdentityMismatchError
+					if errors.As(verr, &mismatch) {
+						mismatch.Slot = slot
+					}
+					return observed, verr
+				}
+				s.log.Info().
+					Int("slot", slot).
+					Str("village", observed.String()).
+					Msg("game switched to the expected village")
+				return observed, nil
+			}
+			lastErr = rerr
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		s.sleep(s.cfg.poll())
+	}
+	return Identity{}, fmt.Errorf("slot %d was tapped but the profile never showed a readable village within %s (last read error: %v)", slot, s.cfg.timeout(), lastErr)
+}
+
 // tapSlot taps the account row for slot, derived from the account-list anchor:
 // rows are laid out at a fixed pitch, so one anchor plus two fractions covers
 // all five without needing five near-identical templates that the matcher
@@ -344,7 +398,7 @@ func (s *AccountSwitcher) tapSlot(slot int) error {
 	if err != nil {
 		return err
 	}
-	y := anchor.Point.Y + int(math.Round((s.cfg.SlotRow1Offset+float64(slot-1)*s.cfg.SlotRowSpacing)*float64(anchor.Height)))
+	y := SlotRowY(anchor.Point.Y, anchor.Height, slot, s.cfg)
 	if y < 0 || y >= anchor.Height {
 		return fmt.Errorf("slot %d lands at y=%d, outside the %dx%d screen: adjust slot_row1_offset/slot_row_spacing in account_switch.json (currently %.3f/%.3f)",
 			slot, y, anchor.Width, anchor.Height, s.cfg.SlotRow1Offset, s.cfg.SlotRowSpacing)
@@ -398,13 +452,48 @@ func (s *AccountSwitcher) findTemplate(name string) (switchHit, bool, error) {
 	}
 	defer screen.Close()
 
-	matches, err := vision.MatchMultiScaleROICached(screen, tpl, name, 0.85, 1.15, 7, float32(s.cfg.Threshold),
-		image.Rect(0, 0, screen.Cols(), screen.Rows()))
-	if err != nil || len(matches) == 0 {
+	point, conf, found, err := MatchSwitchTemplate(screen, tpl, name, s.cfg)
+	if err != nil || !found {
 		return switchHit{}, false, err
 	}
-	best := matches[0]
-	return switchHit{Point: best.Point, Conf: best.Confidence, Width: screen.Cols(), Height: screen.Rows()}, true, nil
+	return switchHit{Point: point, Conf: conf, Width: screen.Cols(), Height: screen.Rows()}, true, nil
+}
+
+// MatchSwitchTemplate runs the switch's matcher: the same scale ladder and
+// threshold the runtime uses. The capture helper (accountcapture.go) calls it
+// too, so "verified at the runtime threshold" cannot drift from the switch.
+func MatchSwitchTemplate(screen, tpl gocv.Mat, name string, cfg SwitchConfig) (image.Point, float64, bool, error) {
+	return MatchSwitchTemplateROI(screen, tpl, name, cfg, image.Rect(0, 0, screen.Cols(), screen.Rows()))
+}
+
+// MatchSwitchTemplateROI is MatchSwitchTemplate inside roi. Template capture
+// verification searches around the crop it just took: TM_CCOEFF_NORMED reports
+// near-1.0 scores on flat areas (zero variance), so a global search can prefer
+// an empty patch over the real target.
+func MatchSwitchTemplateROI(screen, tpl gocv.Mat, name string, cfg SwitchConfig, roi image.Rectangle) (image.Point, float64, bool, error) {
+	if screen.Cols() < 1 || screen.Rows() < 1 || tpl.Cols() < 1 || tpl.Rows() < 1 {
+		return image.Point{}, 0, false, fmt.Errorf("empty screen or template")
+	}
+	matches, err := vision.MatchMultiScaleROICached(screen, tpl, name, switchScaleMin, switchScaleMax, switchScaleSteps,
+		float32(cfg.Threshold), roi)
+	if err != nil {
+		return image.Point{}, 0, false, err
+	}
+	if len(matches) == 0 {
+		return image.Point{}, 0, false, nil
+	}
+	return matches[0].Point, matches[0].Confidence, true, nil
+}
+
+// SlotRowY is the y the switch taps for slot: the account-list anchor's centre
+// plus slot_row1_offset plus (slot-1) * slot_row_spacing, in physical pixels.
+// The capture helper derives those fractions from the live panel and validates
+// the resulting rows with this same function.
+func SlotRowY(anchorCentreY, screenHeight, slot int, cfg SwitchConfig) int {
+	if screenHeight <= 0 {
+		return anchorCentreY
+	}
+	return anchorCentreY + int(math.Round((cfg.SlotRow1Offset+float64(slot-1)*cfg.SlotRowSpacing)*float64(screenHeight)))
 }
 
 func (s *AccountSwitcher) sleep(d time.Duration) {
@@ -451,13 +540,7 @@ func readIdentityFromScreen(screen gocv.Mat) (Identity, error) {
 	if screen.Empty() {
 		return Identity{}, fmt.Errorf("empty profile screenshot")
 	}
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("clashgo_switch_%d.png", time.Now().UnixNano()))
-	if !gocv.IMWrite(path, screen) {
-		return Identity{}, fmt.Errorf("write profile screenshot to %s", path)
-	}
-	defer func() { _ = os.Remove(path) }()
-
-	regions, err := vision.OCRTextRegions(path)
+	regions, err := OCRSwitchText(screen)
 	if err != nil {
 		return Identity{}, fmt.Errorf("OCR helper unavailable (%v) — it needs tools/ocr.swift and Xcode command line tools", err)
 	}

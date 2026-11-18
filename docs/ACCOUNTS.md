@@ -36,7 +36,7 @@ village is still fully supported.
 ### What a switch does
 
 1. Stop the running bot and flush its stats to the **old** profile.
-2. Tap the game UI: player banner (top left) → Settings → Supercell ID → the
+2. Tap the game UI: profile corner (top left) → Settings (if shown) → Supercell ID → the
    row for the target slot.
 3. Read the profile screen and confirm the logged-in village is the expected
    one (player tag, or the name when no tag is set).
@@ -258,48 +258,70 @@ twice under two names.
 ### 5.1 Capturing the switch templates
 
 The switch is template-based, so a game update that moves a button needs one
-recapture, not a code change. Four PNGs are required, all in
-`assets/templates/`:
-
-| Template | Shows |
-|---|---|
-| `acct_profile.png` | player banner button, top left of the main village |
-| `acct_settings.png` | the gear that opens Settings, on the profile screen |
-| `acct_supercell.png` | the "Supercell ID" row in Settings |
-| `acct_slot_list.png` | the account-list panel that opens from it (its header is enough) |
-
-Capture them from a running emulator, on the right screen for each one:
+recapture, not a code change. Put the game on the main village of any signed-in
+village and run one command:
 
 ```bash
-# 1. screenshot the current screen; the tool prints the crop lines
 go run ./cmd/account_templates
-
-# 2. crop each region (physical pixels of the screenshot)
-go run ./cmd/account_templates -source output/account_templates/<ts>/screen.png \
-  -profile 18,24,150,110 -settings 1196,44,64,64 \
-  -supercell 900,318,320,74 -slot-list 640,170,520,80 \
-  -slot-row1-offset 0.16 -slot-row-spacing 0.075
 ```
 
-Each crop is written to `<name>.png.tmp`, matched back against the frame, and
-only then renamed over the live file (previous version kept as `.bak`). A crop
-the matcher cannot find again fails instead of poisoning the switch.
+That is the whole setup. It taps the profile corner itself, opens Settings or
+Supercell ID depending on what the build shows, captures each screen, and writes
+everything the switch needs into the directory the runtime reads
+(`<assets>/templates` + `<assets>/account_switch.json`):
 
-`-slot-row1-offset` and `-slot-row-spacing` describe the account rows as
-fractions of screen height, written to `assets/account_switch.json`:
+| File | Shows |
+|---|---|
+| `acct_profile.png` | the village HUD corner the switch taps to open the profile |
+| `acct_settings.png` | the Settings tab/gear on the profile screen |
+| `acct_supercell.png` | the "Supercell ID" row (or its Open button) |
+| `acct_slot_list.png` | the first account row, which anchors the slot list |
 
-- `slot_row1_offset` — where row 1's centre sits below the list anchor.
+Nothing is cropped by hand, and nothing is installed unverified:
+
+- each PNG is matched back against the screenshot it came from, in that screen
+  region, at the runtime's threshold;
+- a flat crop (empty background) is refused, because it would match itself and
+  then nothing else;
+- the Settings and Supercell ID crops must actually cover those controls;
+- the derived rows (anchor + `slot_row1_offset` + `slot_row_spacing`) must land
+  on the account-list rows, not between them.
+
+Anything that would fail later fails now, naming the file, the coordinate and
+the flag to adjust (`-profile`, `-settings`, `-supercell`, `-slot-list`,
+`-slot-row1-offset`, `-slot-row-spacing`). Screens are saved under
+`output/account_templates/<ts>/` so a refusal can be replayed offline:
+
+```bash
+go run ./cmd/account_templates -source output/account_templates/<ts> -slot-row-spacing 0.1172
+```
+
+`-source DIR` reads `village.png`, `profile.png`, `settings.png`, `panel.png`
+and an optional `text.json` (OCR boxes, so a machine without the game can
+reproduce a run). Omit it to capture live from `config.json`'s device or
+`-device`.
+
+Then press **Switch** (or **Switch & start**) on the account. The switch taps
+through the in-game list, reads the profile's player tag and refuses with both
+identities if the wrong village logged in.
+
+Most builds show Supercell ID directly on the profile screen; if the game hides
+it behind a Settings tab, the helper taps that tab itself, using its text when
+it is visible and the top-right HUD corner when the build is icon-only.
+
+`assets/account_switch.json` holds the two row fractions as fractions of screen
+height:
+
+- `slot_row1_offset` — where row 1's centre sits below the list anchor (0 is
+  normal: the anchor is row 1);
 - `slot_row_spacing` — pitch between consecutive rows.
 
-Defaults are 0.16 and 0.075 (a 1280×720 BlueStacks instance). If a slot taps
-the neighbouring row, the identity check refuses the start and names the row it
-actually got — adjust the two fractions by the difference and re-run.
+If a slot taps the neighbouring row, the identity check refuses the start and
+names the village it actually got; re-run the helper (it re-derives both) or
+adjust the fractions by the difference.
 
-The whole `assets/account_switch.json` is optional: missing values fall back to
-the defaults above, and a present-but-malformed file is reported, not ignored.
-
-`-source` crops a saved frame, so geometry can be tuned offline; omit it to
-capture live from the emulator on `config.json`'s device (or `-device`).
+The file is optional: missing values fall back to the defaults, and a
+present-but-malformed file is reported, not ignored.
 
 Do not run ClashGO's GUI and CLI against the same config directory at the same
 time; each process assumes it owns the active profile.
@@ -352,8 +374,8 @@ Natural next steps, in order of value:
 | Rotation never advances | All accounts on cooldown/cap, rotation disabled, or auto-start off | Check the Accounts header and rotation panel |
 | `daily_limit` but attacks remain | Daily counter is local to ClashGO and only resets at midnight or via **Reset usage** | Reset usage from the account card |
 | Stats look reset after upgrade | New `stats.json` for the `default` profile | Check `accounts/default/stats.json`; legacy files were copied, not moved |
-| `in-game account switching needs 4 template PNGs` | The switch templates were never captured | Run `go run ./cmd/account_templates`, then crop each rect (5.1) |
-| `could not find "acct_settings" on screen` | Game is not on the expected screen, or the button moved after an update | Put the game on the main village and recapture that template |
+| `in-game account switching needs 3 template PNGs` | The switch templates were never captured | Run `go run ./cmd/account_templates` once (5.1) |
+| `could not find "acct_settings"` / `"acct_supercell"` on screen | Game is not on the expected screen, or the button moved after an update | Put the game on the main village and re-run `go run ./cmd/account_templates` |
 | `slot N logged the game in as …` | Wrong row number, or the row order changed in-game | Check profile → Settings → Supercell ID and fix the account's slot |
 | `account "X" has no Supercell ID slot yet` | Legacy profile (slot 0), or the drawer was closed before saving | Edit the account, pick its row, save |
 | `slot N lands at y=…` | Row geometry does not match this emulator | Adjust `slot_row1_offset`/`slot_row_spacing` in `assets/account_switch.json` |

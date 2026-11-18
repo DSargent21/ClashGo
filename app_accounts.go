@@ -227,6 +227,18 @@ func (a *App) SwitchAccount(id string, start bool) (SwitchResult, error) {
 
 	if st.ActiveID() == id {
 		if start && !a.IsRunning() {
+			// Starting the already-active account still re-drives the in-game
+			// switcher: the operator may have changed villages by hand since
+			// the last session, and booting without checking would farm the
+			// village that happens to be on screen.
+			if err := a.driveGameToAccount(acct); err != nil {
+				log.Error().Err(err).
+					Str("account", acct.ID).
+					Int("slot", acct.Slot).
+					Str("device", acct.Device.DeviceID).
+					Msg("in-game verification failed; nothing was started")
+				return SwitchResult{}, err
+			}
 			res := a.startBotWithConfig(config.LoadOrDefault("config.json"))
 			a.emitAccountsChanged()
 			return SwitchResult{Account: a.viewFor(st, acct), Started: res.Running, Message: res.Message}, nil

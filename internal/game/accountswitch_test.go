@@ -116,7 +116,7 @@ func (f *switchFixture) store(t *testing.T) *TemplateStore {
 // fakeSwitchDevice replays fixture frames in step order and records input.
 type fakeSwitchDevice struct {
 	mu      sync.Mutex
-	fixture *switchFixture
+	screens []gocv.Mat
 	taps    []image.Point
 	backs   int
 }
@@ -125,10 +125,10 @@ func (d *fakeSwitchDevice) frame() gocv.Mat {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	idx := len(d.taps)
-	if idx >= len(d.fixture.screens) {
-		idx = len(d.fixture.screens) - 1
+	if idx >= len(d.screens) {
+		idx = len(d.screens) - 1
 	}
-	return d.fixture.screens[idx].Clone()
+	return d.screens[idx].Clone()
 }
 
 func (d *fakeSwitchDevice) Tap(x, y int) error { return d.TapRandomized(x, y) }
@@ -172,7 +172,7 @@ func testSwitchConfig() SwitchConfig {
 func TestSwitchAccountTapsProfileSettingsSupercellSlot(t *testing.T) {
 	anchor := image.Rect(240, 120, 390, 150) // centre (315,135)
 	fixture := newSwitchFixture(t, testScreenH, anchor)
-	dev := &fakeSwitchDevice{fixture: fixture}
+	dev := &fakeSwitchDevice{screens: fixture.screens}
 	sw := NewAccountSwitcher(dev, fixture.store(t), testSwitchConfig(), zerolog.Nop())
 	sw.SetIdentityReader(func(gocv.Mat) (Identity, error) {
 		return Identity{Name: "Fleet Two", Tag: "#2P0Y8LQGR"}, nil
@@ -193,11 +193,11 @@ func TestSwitchAccountTapsProfileSettingsSupercellSlot(t *testing.T) {
 		return image.Pt(r.Min.X+r.Dx()/2, r.Min.Y+r.Dy()/2)
 	}
 	want := []image.Point{
-		centre(fixture.profileAt),                      // player banner
-		centre(fixture.settingsAt),                     // Settings gear
+		ProfileTapPoint(testScreenW, testScreenH),      // profile corner, not a template
+		centre(fixture.settingsAt),                     // Settings tab
 		centre(fixture.supercellAt),                    // Supercell ID row
 		image.Pt(anchor.Min.X+anchor.Dx()/2, wantRowY), // slot 2 row
-		centre(fixture.profileAt),                      // banner again, to read the profile
+		ProfileTapPoint(testScreenW, testScreenH),      // profile again, for the identity read
 	}
 	if len(dev.taps) != len(want) {
 		t.Fatalf("taps = %v, want %d taps %v", dev.taps, len(want), want)
@@ -216,7 +216,7 @@ func TestSwitchAccountTapsProfileSettingsSupercellSlot(t *testing.T) {
 // the wrong village fails instead of returning success.
 func TestSwitchAccountMismatchAbortsWithBothIdentities(t *testing.T) {
 	fixture := newSwitchFixture(t, testScreenH, image.Rect(240, 120, 390, 150))
-	dev := &fakeSwitchDevice{fixture: fixture}
+	dev := &fakeSwitchDevice{screens: fixture.screens}
 	sw := NewAccountSwitcher(dev, fixture.store(t), testSwitchConfig(), zerolog.Nop())
 	sw.SetIdentityReader(func(gocv.Mat) (Identity, error) {
 		return Identity{Name: "Somebody Else", Tag: "#9XYZ0000"}, nil
@@ -245,7 +245,7 @@ func TestSwitchAccountMismatchAbortsWithBothIdentities(t *testing.T) {
 // must name every PNG and the capture command.
 func TestSwitchAccountMissingTemplatesIsActionable(t *testing.T) {
 	fixture := newSwitchFixture(t, testScreenH, image.Rect(240, 120, 390, 150))
-	dev := &fakeSwitchDevice{fixture: fixture}
+	dev := &fakeSwitchDevice{screens: fixture.screens}
 	sw := NewAccountSwitcher(dev, NewEmptyTemplateStore(), testSwitchConfig(), zerolog.Nop())
 
 	_, err := sw.Switch(1, Identity{Name: "Main", Tag: "#2P0Y8LQGR"})
@@ -258,7 +258,7 @@ func TestSwitchAccountMissingTemplatesIsActionable(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, needle := range []string{
-		AcctProfileTemplate, AcctSettingsTemplate, AcctSupercellTemplate, AcctSlotListTemplate,
+		AcctSettingsTemplate, AcctSupercellTemplate, AcctSlotListTemplate,
 		"go run ./cmd/account_templates",
 	} {
 		if !strings.Contains(msg, needle) {
@@ -274,7 +274,7 @@ func TestSwitchAccountMissingTemplatesIsActionable(t *testing.T) {
 // debuggable: the error has to name the config keys, not just "failed".
 func TestSwitchAccountSlotBeyondScreenNamesTheTunable(t *testing.T) {
 	fixture := newSwitchFixture(t, 200, image.Rect(240, 125, 390, 155)) // centre y=140
-	dev := &fakeSwitchDevice{fixture: fixture}
+	dev := &fakeSwitchDevice{screens: fixture.screens}
 	sw := NewAccountSwitcher(dev, fixture.store(t), testSwitchConfig(), zerolog.Nop())
 	sw.SetIdentityReader(func(gocv.Mat) (Identity, error) { return Identity{Tag: "#2P0Y8LQGR"}, nil })
 

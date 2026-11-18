@@ -184,3 +184,32 @@ func TestApp_SwitchRefusesAccountWithoutSlot(t *testing.T) {
 		t.Fatalf("profile changed to %q", paths.Profile())
 	}
 }
+
+// TestApp_StartOnActiveAccountReDrivesVerification closes the last hole: the
+// operator may have switched villages by hand, so Start on the already-active
+// account must also tap the switcher and check who logged in before booting.
+func TestApp_StartOnActiveAccountReDrivesVerification(t *testing.T) {
+	a := newSwitchTestApp(t)
+	drove := 0
+	a.switchGameAccounts = func(acct accounts.Account) error {
+		drove++
+		return &game.IdentityMismatchError{
+			Slot:     acct.Slot,
+			Expected: game.Identity{Name: acct.Name, Tag: acct.PlayerTag},
+			Observed: game.Identity{Name: "Somebody Else", Tag: "#9XYZ0000"},
+		}
+	}
+
+	if _, err := a.SwitchAccount(accounts.DefaultAccountID, true); err == nil {
+		t.Fatal("Start on the active account ignored the identity mismatch")
+	}
+	if drove != 1 {
+		t.Fatalf("switch driver ran %d times, want 1", drove)
+	}
+	a.mu.Lock()
+	running := a.bot != nil || a.cancel != nil
+	a.mu.Unlock()
+	if running {
+		t.Fatal("a bot was started despite the mismatch")
+	}
+}
