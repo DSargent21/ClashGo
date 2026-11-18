@@ -118,6 +118,8 @@ logs/
 **/*.tiff
 !**/assets/templates/**/*.png
 !internal/game/testdata/screen_defeat.png
+# Small, reviewed wall-upgrade fixtures: no names, no full-screen captures.
+!internal/bot/testdata/*.png
 !web/src/assets/images/clashgo-logo.png
 !build/appicon.png
 !docs/media/**

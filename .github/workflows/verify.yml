@@ -36,6 +36,20 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend for go:embed
+        # main.go embeds all:web/dist; a clean checkout has no dist, so
+        # `go build ./...` and the root-package tests need this first.
+        run: |
+          npm ci --prefix web
+          npm run build --prefix web
+
       - name: Install OpenCV 4 (gocv build dependency)
         uses: ./.github/actions/install-opencv4
 
