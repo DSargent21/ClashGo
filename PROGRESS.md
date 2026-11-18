@@ -1003,3 +1003,67 @@ Format:
 - Commit: this commit.
 - Next: unchanged — F.1 (blocked: labelled frames), T.1 (blocked: capture
   seam).
+
+## 2026-11-18 — Setup ergonomics verified in the packaged app (T.18)
+
+- Scope: prove T.17 in the real Wails window (`make build-gui` ->
+  `build/bin/ClashGO.app`, `wails://wails/`, no stub), not in `vite dev`. A
+  WKWebView has no display automation, so the walk is driven from inside the
+  window: `app_selftest.go` injects `CLASHGO_SELFTEST_JS` from `OnDomReady`
+  (six attempts, 2 s apart, because `OnDomReady` does not fire again after a
+  reload), and the driver reports to a loopback sink with
+  `navigator.sendBeacon` instead of through the Go bindings — those can block
+  while a bot boots or tears down, and every stalled run in this session was a
+  lost report, not a stuck UI.
+- Fixed (found by running the real path): the wizard's Start saves army,
+  builders and floors before booting, and any rejected write was only a
+  `console.error`. In the packaged app there is no console, so Start looked
+  dead; the stub hid it because its bindings accept any value. `LaunchSetup`
+  now takes an `error` prop and renders it as an alert in the dialog, App sets
+  it from the failed attempt, and the floor inputs clamp to `MAX_LOOT_FLOOR`
+  (10 000 000) so the form cannot build a value `ValidateLootFloors` rejects.
+  Guard: `app_ui_wizard_test.go::TestUI_WizardSurfacesSaveErrors` (parses the
+  TS clamp and compares it to `config.MaxLootFloor`).
+- Observed in the real window (fresh config dir, `DetectDevices` over real IPC):
+  - First run: `launchSetupDone` absent, wizard opened by itself —
+    `Step 1 of 3 / Choose your raid` with `Auto EDrag Rush 5.8M` and
+    `Valkyrie Earthquake Spam 4.9M`; step 2 `Put builders to work`; step 3
+    `Set the search rules`; CTAs `Continue to builders`, `Continue to
+    settings`, `Start with Auto EDrag Rush`.
+  - Detection: `DetectDevices()` -> `localhost:5555 | SM-G998B | 1024x768 |
+    bound_to=Main`, one row, while `adb devices` lists `emulator-5554` and
+    `localhost:5555` — the console serial folded onto the TCP serial.
+  - Preflight on step 3: `Emulator localhost:5555 · 1024×768`, note
+    `ClashGO will drive SM-G998B.`, and `Check again` re-ran the scan.
+  - Wizard Start booted for real: wizard closed, `running:true`, and the bot's
+    own log reached `pinpoint match, clicking...` then
+    `base found, reading loot... {gold:640118, elixir:587049, de:6738}` ->
+    `loot too low, skipping base` (test floors 9.9M; `attacks_completed: 0`,
+    0 deploys — the army was never spent).
+  - Account drawer, real `GetAccounts` after each save: first add prefilled
+    `Village 3` / `localhost:5556` with the one detected row
+    `localhost:5555 SM-G998B · 1024×768 Used by Main` disabled, saved as
+    `Village 3@localhost:5556`; second add pulled `localhost:5557` ->
+    `Village 4@localhost:5557`; retyping `localhost:5555` in the manual field
+    was rejected with `device localhost:5555 is already bound to account
+    "Main"; start another emulator instance and use its serial`, the form
+    stayed open, and the account count did not move (6 -> 6).
+  - Forced boot failure (`device.adb_port 5399`, nothing listening, wizard
+    replayed from Settings -> `Open wizard`): banner rendered
+    `The bot could not start` +
+    `boot failed in 1m31.405s: auto-detect: list devices: adb dial
+    127.0.0.1:5399 (after start-server): dial tcp 127.0.0.1:5399: connect:
+    connection refused (2 steps, 1 recovery): adb connect: ...`, the wizard was
+    closed, `IsRunning` was `false`, and Dismiss removed the banner
+    (`alertGone:true`). This proves `bot_error`/`bot_init_failed` reach the
+    window through the real Wails event bus.
+- Verified offline: `TestUI_WizardSurfacesSaveErrors` PASS (fails when the
+  clamp or the error prop is removed); `npx tsc --noEmit` PASS;
+  `make build-gui` PASS; `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Real-environment limits: one emulator instance is running (`localhost:5555`,
+  bound to `Main`), so the drawer's multi-instance rows and the
+  "start another instance" path could only be proven as the *disabled owned*
+  row plus the rejected duplicate; `screencapture` returns an all-black frame
+  on this host, so nothing was judged visually — all of the above is DOM text
+  and IPC data read from the live window.
+- Commit: this commit.

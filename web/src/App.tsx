@@ -242,6 +242,10 @@ function App() {
   const [launchOpen, setLaunchOpen] = useState(getInitialLaunchOpen);
   const [launchOptions, setLaunchOptions] = useState<main.LaunchOptions | null>(null);
   const [launchBusy, setLaunchBusy] = useState(false);
+  // A rejected wizard save (invalid floor, strategy gone, start refused) used
+  // to be a console.error behind a modal: nothing on screen changed. The
+  // reason now renders inside the wizard.
+  const [launchError, setLaunchError] = useState<string | null>(null);
   // A boot failure used to only flip the sidebar back to START, so the most
   // common first-run problem (emulator not up) looked like the click did
   // nothing. The message is kept here until dismissed or a start succeeds.
@@ -883,6 +887,7 @@ function App() {
 
   const handleChooseArmy = useCallback(async (file: string, armySlot: number, upgrades: LaunchUpgrades, tuning: LaunchTuning) => {
     setLaunchBusy(true);
+    setLaunchError(null);
     try {
       await ChooseArmy(file, tuning.adaptive, armySlot);
       await SaveUpgradeSetup(
@@ -937,6 +942,7 @@ function App() {
       setTab('dashboard');
     } catch (err) {
       console.error('ChooseArmy failed:', err);
+      setLaunchError(err instanceof Error ? err.message : String(err));
     } finally {
       setLaunchBusy(false);
     }
@@ -1211,6 +1217,7 @@ function App() {
         <LaunchSetup
           options={launchOptions}
           busy={launchBusy}
+          error={launchError}
           onChoose={(file, slot, upgrades, tuning) => void handleChooseArmy(file, slot, upgrades, tuning)}
           onManual={handleManualSetup}
         />

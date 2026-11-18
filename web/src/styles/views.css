@@ -779,6 +779,10 @@ mark { padding: 0 2px; border-radius: 3px; background: rgba(245, 158, 11, .28); 
 }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
+/* Wizard save/start refusal: the packaged app has no visible console, so this
+   is the only place the reason can appear. */
+.launch-error { margin: 0 28px 14px; }
+
 /* Boot-failure banner. Spans the content area above the active view so a
    failed Start explains itself instead of silently reverting to START. */
 .app-alert { margin-bottom: 16px; align-items: flex-start; }

@@ -31,6 +31,10 @@ export interface LaunchUpgrades {
 interface LaunchSetupProps {
   options: main.LaunchOptions | null;
   busy: boolean;
+  // Reason a save/start attempt was refused. It renders inside the dialog:
+  // the packaged app has no visible console, so a swallowed error left the
+  // user staring at an unchanged wizard.
+  error?: string | null;
   onChoose: (file: string, armySlot: number, upgrades: LaunchUpgrades, tuning: LaunchTuning) => void;
   onManual: () => void;
 }
@@ -75,7 +79,9 @@ const DEFAULT_PET_ORDER = [
  * The rail is orientation only; the content pane carries one decision per
  * step. Start lives on the last step and writes all three together.
  */
-const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onChoose, onManual }) => {
+const MAX_LOOT_FLOOR = 10_000_000; // config.MaxLootFloor
+
+const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, error, onChoose, onManual }) => {
   const [step, setStep] = React.useState(0);
   const [selected, setSelected] = React.useState('');
   const [adaptive, setAdaptive] = React.useState(true);
@@ -277,6 +283,16 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
             <h1 id="launch-title">{stepInfo.title}</h1>
             <p id="launch-desc">{stepInfo.blurb}</p>
           </header>
+
+          {error ? (
+            <div className="error-banner launch-error" role="alert">
+              <Icon name="alert" size={14} />
+              <div style={{ flex: 1 }}>
+                <b>Could not apply this setup</b>
+                <div style={{ marginTop: 2 }}>{error}</div>
+              </div>
+            </div>
+          ) : null}
 
           {!options ? (
             <div className="launch-body">
@@ -552,12 +568,13 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                           <input
                             type="number"
                             min={0}
+                            max={MAX_LOOT_FLOOR}
                             step={100000}
                             className="mono"
                             aria-label="Minimum gold loot"
                             disabled={adaptive}
                             value={minGold}
-                            onChange={(event) => setMinGold(Math.max(0, parseInt(event.target.value, 10) || 0))}
+                            onChange={(event) => setMinGold(Math.min(MAX_LOOT_FLOOR, Math.max(0, parseInt(event.target.value, 10) || 0)))}
                           />
                         </span>
                       </label>
@@ -571,12 +588,13 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                           <input
                             type="number"
                             min={0}
+                            max={MAX_LOOT_FLOOR}
                             step={100000}
                             className="mono"
                             aria-label="Minimum elixir loot"
                             disabled={adaptive}
                             value={minElixir}
-                            onChange={(event) => setMinElixir(Math.max(0, parseInt(event.target.value, 10) || 0))}
+                            onChange={(event) => setMinElixir(Math.min(MAX_LOOT_FLOOR, Math.max(0, parseInt(event.target.value, 10) || 0)))}
                           />
                         </span>
                       </label>
@@ -590,12 +608,13 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, onC
                           <input
                             type="number"
                             min={0}
+                            max={MAX_LOOT_FLOOR}
                             step={1000}
                             className="mono"
                             aria-label="Minimum dark elixir loot"
                             disabled={adaptive}
                             value={minDark}
-                            onChange={(event) => setMinDark(Math.max(0, parseInt(event.target.value, 10) || 0))}
+                            onChange={(event) => setMinDark(Math.min(MAX_LOOT_FLOOR, Math.max(0, parseInt(event.target.value, 10) || 0)))}
                           />
                         </span>
                       </label>

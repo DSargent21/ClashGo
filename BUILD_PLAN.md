@@ -304,6 +304,26 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     `./tools/verify.sh` green, stub sweep of the drawer + wizard step 3.
   - Verified: see `PROGRESS.md` 2026-11-18.
 
+- [x] **T.18 Setup ergonomics, proven in the packaged app**
+  - Why: T.17 was only exercised against the browser dev stub. The packaged Wails
+    window is the product, and a stub binding accepts values the Go binding
+    rejects — exactly where a first-run click can look dead.
+  - Fixed: the wizard carried no way to report a refused save. `LaunchSetup` now
+    takes an `error` prop and renders it as an alert inside the dialog; App fills
+    it from the failed attempt and clears it per attempt. Floor inputs clamp to
+    `MAX_LOOT_FLOOR` (10 000 000, tied to `config.MaxLootFloor` by test) so the
+    form cannot produce a value `ValidateLootFloors` rejects.
+  - Harness: `app_selftest.go` (build tag `!cli`, inert unless
+    `CLASHGO_SELFTEST_JS` names a script) injects a driver into the real window
+    from `OnDomReady`, retrying 6× every 2 s because `OnDomReady` does not fire
+    again after the page reloads. Drivers report out of band to a loopback sink
+    (`navigator.sendBeacon`) — the Wails bindings can block while a bot boots or
+    tears down, and a report that needs them can be lost.
+  - Acceptance: `TestUI_WizardSurfacesSaveErrors` (props, alert, clamp parsed
+    against the Go constant), `./tools/verify.sh` green, and a real-window walk
+    of the wizard and the account drawer.
+  - Verified: see `PROGRESS.md` 2026-11-18 (real IPC values quoted there).
+
 ---
 
 ## Phase 3 — Backlog (plan before starting)

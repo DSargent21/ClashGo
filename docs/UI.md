@@ -125,6 +125,17 @@ when nothing answers — the instruction to start an instance in the emulator's
 multi-instance manager. The preflight never blocks Start: the boot flow launches
 BlueStacks itself, so `Not detected` is information, not an error.
 
+**A refused Start is visible.** The wizard's Start saves army, builders, and
+floors before booting; when any of those writes is rejected (a floor above
+`config.MaxLootFloor`, a strategy file that moved, a refused start) the reason
+renders as an alert inside the dialog. It used to be a `console.error` only,
+which in the packaged app means the click looks dead — the browser dev stub
+never showed it because its bindings accept anything. The three floor inputs
+clamp to `MAX_LOOT_FLOOR` (`10_000_000`, mirroring the Go limit) so the form
+cannot build a value its own save rejects; `TestUI_WizardSurfacesSaveErrors`
+keeps both halves wired. A boot that fails *after* Start is a different case:
+the wizard closes and the dashboard shows the dismissable banner below.
+
 - The active rail step is `--overlay` with neutral text; no accent bar, glow,
   or gradient. Completed steps use a small check.
 - Sections are separated by rules and whitespace, not nested cards. Only plan

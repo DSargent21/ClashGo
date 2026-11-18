@@ -46,6 +46,7 @@ func main() {
 				go app.runLiveSmoke(ctx)
 			}
 		},
+		OnDomReady: app.runSelfTestIfRequested,
 		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,
