@@ -86,6 +86,14 @@ func ValidateAttack(a AttackConfig) error {
 	if a.WardenUseAtPct < 0 || a.WardenUseAtPct > 100 {
 		return fmt.Errorf("warden use percent must be between 0 and 100, got %d", a.WardenUseAtPct)
 	}
+	if a.EndOnLootTarget {
+		if err := ValidateLootFloors(a.LootTargetGold, a.LootTargetElixir, a.LootTargetDE); err != nil {
+			return fmt.Errorf("loot target: %w", err)
+		}
+		if a.LootTargetGold == 0 && a.LootTargetElixir == 0 && a.LootTargetDE == 0 {
+			return fmt.Errorf("end_on_loot_target needs at least one non-zero loot target")
+		}
+	}
 	for name, slot := range a.StrategySlots {
 		if slot < 1 || slot > MaxArmySlot {
 			return fmt.Errorf("army slot for %q must be between 1 and %d, got %d", name, MaxArmySlot, slot)

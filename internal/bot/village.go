@@ -57,7 +57,7 @@ func resolveVillageFacts(cfg *config.BotConfig, logger zerolog.Logger) (townHall
 // false when the level is unknown or the feature is off, which leaves the
 // configured values in charge.
 func (b *Bot) suggestedFloors() (gold, elixir, dark int, ok bool) {
-	if !b.cfg.Search.UseSuggestedFloors || b.villageTH <= 0 {
+	if !b.cfg().Search.UseSuggestedFloors || b.villageTH <= 0 {
 		return 0, 0, 0, false
 	}
 	g, e, d := village.SuggestedFloors(b.villageTH)

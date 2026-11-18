@@ -1,7 +1,6 @@
 package game
 
 import (
-	"image"
 	"os"
 	"testing"
 
@@ -38,30 +37,19 @@ func loadHammerTemplate(t *testing.T, c *Classifier) {
 }
 
 // TestClassify_ChestDetectedOnChestFrame asserts that StateChestReward
-// fires when the vault room signature and hammer template are present.
+// fires from the vault room signature alone. The rule no longer searches
+// the `hammer` template, so a template store must not be required.
 func TestClassify_ChestDetectedOnChestFrame(t *testing.T) {
 	c := newChestClassifier(t)
-	loadHammerTemplate(t, c)
 
 	m := gocv.NewMatWithSize(RefHeight, RefWidth, gocv.MatTypeCV8UC3)
 	defer m.Close()
-	// Fill with a dark neutral background so the hammer stands out.
+	// Fill with a dark neutral background: the three wall probes pass, the
+	// warm floor probe fails, so the detection is 3 of 4 with no template.
 	m.SetTo(gocv.NewScalar(30, 30, 30, 0))
 
 	// Paint the bright arched window beam at top center
 	setRGB(m, 430, 122, 0xF0, 0xEB, 0xCD)
-
-	hammer := gocv.IMRead("../../assets/templates/hammer.png", gocv.IMReadColor)
-	defer hammer.Close()
-	if hammer.Empty() {
-		t.Fatal("hammer.png could not be loaded")
-	}
-	// Paste the hammer into the frame at the location where it appears
-	// on a real chest screen (~center of the "TAP TO OPEN" band).
-	r := image.Rect(344, 506, 504, 547)
-	roi := m.Region(r)
-	hammer.CopyTo(&roi)
-	roi.Close()
 
 	state, _ := c.ClassifyState(m)
 	if state != StateChestReward {

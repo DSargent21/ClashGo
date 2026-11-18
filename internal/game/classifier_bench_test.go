@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"gocv.io/x/gocv"
 )
 
@@ -26,6 +27,37 @@ import (
 // top-priority state claims immediately.
 func BenchmarkClassifyStateEarlyExit(b *testing.B) { benchmarkClassify(b, true) }
 func BenchmarkEvaluateRulesFull(b *testing.B)      { benchmarkClassify(b, false) }
+
+// BenchmarkSplashStateOnFrameChest measures the second classifier pass the
+// capture loop runs on Unknown/Loading/ChestReward frames. The answer only
+// ever names a splash state, so the bench fixture is a chest frame — the case
+// where the old implementation evaluated the whole rule list to find nothing.
+func BenchmarkSplashStateOnFrameChest(b *testing.B) {
+	path := filepath.Join("testdata", "chest_test_frames", "chest_reward.png")
+	img := gocv.IMRead(path, gocv.IMReadColor)
+	if img.Empty() {
+		b.Skipf("chest fixture %s missing", path)
+	}
+	b.Cleanup(func() { img.Close() })
+
+	cal := NewCalibration(1280, 720)
+	c := NewClassifier(cal, DefaultClassifierConfig(), zerolog.Nop())
+	ts, err := NewTemplateStore(filepath.Join("..", "..", "assets", "templates"))
+	if err != nil {
+		b.Fatalf("template store: %v", err)
+	}
+	b.Cleanup(ts.Close)
+	if err := ts.LoadTemplates(); err != nil {
+		b.Fatalf("load templates: %v", err)
+	}
+	c.SetTemplates(ts)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SplashStateOnFrame(c, img)
+	}
+}
 
 func benchmarkClassify(b *testing.B, early bool) {
 	frames := benchCorpusFrames(b)

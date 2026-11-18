@@ -9,7 +9,9 @@ import (
 )
 
 func newGateTestBot(cfg *config.BotConfig) *Bot {
-	return &Bot{cfg: cfg, logger: zerolog.Nop()}
+	b := &Bot{logger: zerolog.Nop()}
+	b.cfgPtr.Store(cfg)
+	return b
 }
 
 func TestTrainingDueThrottle(t *testing.T) {
@@ -117,11 +119,13 @@ func TestSchedulerCountersSurviveRestart(t *testing.T) {
 	first.RecordAttack(now)
 	first.RecordAttack(now)
 
-	botA := &Bot{cfg: config.DefaultConfig(), scheduler: first, logger: zerolog.Nop()}
+	botA := &Bot{scheduler: first, logger: zerolog.Nop()}
+	botA.cfgPtr.Store(config.DefaultConfig())
 	botA.persistSchedulerCounters()
 
 	second := NewScheduler(schedCfg, zerolog.Nop())
-	botB := &Bot{cfg: config.DefaultConfig(), scheduler: second, logger: zerolog.Nop()}
+	botB := &Bot{scheduler: second, logger: zerolog.Nop()}
+	botB.cfgPtr.Store(config.DefaultConfig())
 	botB.restoreSchedulerCounters()
 
 	today, cap := second.AttacksToday()
@@ -200,7 +204,9 @@ func TestTownHallIsNeverInferred(t *testing.T) {
 		t.Fatalf("max strategy picked %q (ok=%v); the Town Hall must be skipped", best.Name, ok)
 	}
 
-	bm.cfg.AllowTownHall = true
+	cfg := bm.settings()
+	cfg.AllowTownHall = true
+	bm.SetConfig(cfg)
 	if !bm.isCategoryAllowed("townhall") {
 		t.Fatal("the explicit switch must enable Town Hall upgrades")
 	}

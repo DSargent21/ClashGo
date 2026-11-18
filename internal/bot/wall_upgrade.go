@@ -261,7 +261,7 @@ func (h *WallUpgradeHooks) sleep(d time.Duration) {
 // Bot's dependencies. The diagnostic tool at cmd/test_wall_upgrade
 // calls runWallUpgradeLoop directly with a hand-built hooks struct.
 func (b *Bot) UpgradeWalls(gc *game.GameContext) {
-	resource := b.cfg.Upgrade.WallResource
+	resource := b.cfg().Upgrade.WallResource
 	if resource == "" {
 		resource = "both"
 	}
@@ -461,7 +461,7 @@ func RunWallUpgradeLoop(h *WallUpgradeHooks) {
 		}
 		h.step("menu_roi_loaded", map[string]any{"roi": menuROI})
 
-		bx, by := int(835 * h.Cal.DisplayScale()), int(540 * h.Cal.DisplayScale())
+		bx, by := int(835*h.Cal.DisplayScale()), int(540*h.Cal.DisplayScale())
 		builderSource := "authored-reference"
 		if hasBuilderButton {
 			bx, by = builderX, builderY
@@ -1610,7 +1610,6 @@ func waitForMainVillage(h *WallUpgradeHooks, timeout time.Duration) bool {
 	return false
 }
 
-
 // dismissInterruptionsFor clears an interruption dialog seen on the
 // waitForMainVillage loop's frames. It delegates to game.DismissOverlay, which is
 // the same evidence-gated path the bot's capture loop uses (game/dismiss.go), so
@@ -2117,7 +2116,9 @@ type wallTrayGate struct {
 }
 
 // Present reports whether an upgrade chip is on screen as a painted face.
-func (g wallTrayGate) Present() bool { return g.GoldFound || g.ElixirFound || (g.GoldFacePx > 1000 && g.ElixirFacePx > 1000) }
+func (g wallTrayGate) Present() bool {
+	return g.GoldFound || g.ElixirFound || (g.GoldFacePx > 1000 && g.ElixirFacePx > 1000)
+}
 
 // Data renders the gate's evidence for an OnStep payload. No *gocv.Mat here, so
 // the payload stays loggable — stepScreen is what carries frames.

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/adb"
@@ -26,10 +27,21 @@ import (
 	"gocv.io/x/gocv"
 )
 
+// battleWaitHooks are test seams for WaitForBattleEndCtx. Only the fields a
+// test sets are used; everything else keeps its production implementation.
+type battleWaitHooks struct {
+	now           func() time.Time
+	tick          <-chan time.Time
+	capture       func() (gocv.Mat, error)
+	buttonVisible func(gocv.Mat, StallConfig) bool
+	readLootHUD   func(gocv.Mat) (game.Resources, error)
+}
+
 type Executor struct {
-	client        *adb.Client
-	cal           *game.Calibration
-	cfg           *config.AttackConfig
+	client *adb.Client
+	cal    *game.Calibration
+	// cfgPtr is published by UpdateConfig; read it through cfg().
+	cfgPtr        atomic.Pointer[config.AttackConfig]
 	logger        zerolog.Logger
 	classify      func(gocv.Mat) (game.GameState, int)
 	tappedSiegeXs map[int]bool
@@ -52,6 +64,11 @@ type Executor struct {
 	// zone is unconfigured (TH state unknown).
 	thDestroyed bool
 
+	// battleEndReason names why the battle wait called EndBattle (empty when
+	// it ended naturally or on the deadline). Read by the bot when it records
+	// the attack history row.
+	battleEndReason string
+
 	OnPhaseStart func(phase string, edge string)
 	OnUnitDeploy func(unit string, slotX int, slotY int)
 
@@ -67,12 +84,24 @@ type Executor struct {
 	// runtimeCtx is the bot lifecycle context (nil for standalone tools).
 	runtimeCtx context.Context
 
+	// waitHooks overrides clock, ticks, capture and the two pixel decisions in
+	// WaitForBattleEndCtx. Nil in production; tests use it to drive every tick
+	// path without sleeping or a device.
+	waitHooks *battleWaitHooks
+
 	// fullArmyRequired honors TrainingConfig.FullArmyBeforeAttack: when set,
 	// deployment refuses to start on POSITIVE evidence of an incomplete army
 	// (a strategy troop/spell card measurably reading zero). Absent counts
 	// never block — there is no full-army detector, so only proven gaps gate.
 	// False for standalone tools and tests (no config wiring).
 	fullArmyRequired bool
+
+	// templateStore is the bot's already-loaded template store. The battle
+	// wait needs only the digit templates the loot recogniser reads, but
+	// rebuilding a store there decoded every template in assets/templates once
+	// per battle. Nil for standalone tools/tests, which fall back to loading
+	// their own store and closing it after the wait.
+	templateStore *game.TemplateStore
 
 	// perfMode is the CLI -perf switch (PerformanceConfig.PerfMode): the lean
 	// attack path — one troop-bar frame instead of three before the first drop,
@@ -158,6 +187,11 @@ type ManualEdge struct {
 	P2 image.Point `json:"p2"`
 }
 
+// SetTemplateStore hands the executor the bot's loaded template store so the
+// battle wait does not decode the whole template directory per battle. The
+// store must outlive the executor (the bot owns it for the session).
+func (e *Executor) SetTemplateStore(ts *game.TemplateStore) { e.templateStore = ts }
+
 func NewExecutor(client *adb.Client, cal *game.Calibration, cfg *config.AttackConfig, logger zerolog.Logger) *Executor {
 
 	classifier := game.NewClassifier(cal, game.ClassifierConfig{
@@ -168,12 +202,12 @@ func NewExecutor(client *adb.Client, cal *game.Calibration, cfg *config.AttackCo
 	exec := &Executor{
 		client:        client,
 		cal:           cal,
-		cfg:           cfg,
 		logger:        logger.With().Str("component", "attack_executor").Logger(),
 		classify:      classifier.ClassifyState,
 		tappedSiegeXs: make(map[int]bool),
 		templates:     make(map[string]gocv.Mat),
 	}
+	exec.cfgPtr.Store(cfg)
 	exec.loadTemplates()
 	return exec
 }
@@ -315,8 +349,12 @@ func (e *Executor) SetActiveStrategy(s *strategy.DynamicStrategy) {
 	e.activeStrategy = s
 }
 
+// cfg returns the attack configuration published by UpdateConfig. The
+// returned value is immutable.
+func (e *Executor) cfg() *config.AttackConfig { return e.cfgPtr.Load() }
+
 func (e *Executor) UpdateConfig(cfg *config.AttackConfig) {
-	e.cfg = cfg
+	e.cfgPtr.Store(cfg)
 }
 
 // Validate ensures all required templates for the strategy exist or are covered by manual labels
@@ -1784,6 +1822,33 @@ func endAtPercentReached(endAtPct, currentPct int) bool {
 	return endAtPct > 0 && currentPct >= endAtPct
 }
 
+// lootTargetReached reports whether this raid has already banked enough loot
+// to stop. start and now are the top-right HUD counters read at battle start
+// and on the current tick; only gains count. A zero target disables that
+// resource, and the whole feature is off unless EndOnLootTarget is set, so the
+// shipped default never ends a raid early.
+func lootTargetReached(cfg *config.AttackConfig, start, now game.Resources) bool {
+	if cfg == nil || !cfg.EndOnLootTarget {
+		return false
+	}
+	gained := func(start, now int) int {
+		if now < start {
+			return 0 // HUD redraw/OCR jitter, not a negative raid
+		}
+		return now - start
+	}
+	if cfg.LootTargetGold > 0 && gained(start.Gold, now.Gold) >= cfg.LootTargetGold {
+		return true
+	}
+	if cfg.LootTargetElixir > 0 && gained(start.Elixir, now.Elixir) >= cfg.LootTargetElixir {
+		return true
+	}
+	if cfg.LootTargetDE > 0 && gained(start.DarkElixir, now.DarkElixir) >= cfg.LootTargetDE {
+		return true
+	}
+	return false
+}
+
 // validDestructionRead reports whether a stall-ROI OCR read is a
 // plausible enemy destruction percentage. Destruction in CoC is capped at
 // 100; reads above that are digit-OCR garbage of whatever counter sits
@@ -1939,22 +2004,37 @@ func (e *Executor) endButtonVisible(screen gocv.Mat, sCfg StallConfig) bool {
 	return reds >= minRed
 }
 
+// BattleEndReason returns why the last battle-wait auto-ended the battle
+// ("loot target" for the F.2 surrender), or "" when it ended naturally.
+func (e *Executor) BattleEndReason() string { return e.battleEndReason }
+
 func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(1000 * time.Millisecond)
-	defer ticker.Stop()
+	now := time.Now
+	tick := (<-chan time.Time)(nil)
+	if e.waitHooks != nil && e.waitHooks.now != nil {
+		now = e.waitHooks.now
+	}
+	if e.waitHooks != nil && e.waitHooks.tick != nil {
+		tick = e.waitHooks.tick
+	} else {
+		ticker := time.NewTicker(1000 * time.Millisecond)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
+	deadline := now().Add(timeout)
 
 	// Per-battle outcome reset. lastDestructionPct / thDestroyed are
 	// executor-scoped and would otherwise carry a previous battle's reads
 	// into this one's star computation (see ResetBattleOutcome).
 	e.ResetBattleOutcome()
+	e.battleEndReason = ""
 
 	lastPct := 0
-	lastPctTime := time.Now()
-	battleWaitStart := time.Now()
+	lastPctTime := now()
+	battleWaitStart := now()
 	speedUpTaps := 0
 	var lastSpeedUpTap time.Time
-	stallSec := resolveStallTimerSeconds(e.cfg, e.activeStrategy)
+	stallSec := resolveStallTimerSeconds(e.cfg(), e.activeStrategy)
 	stallLimit := time.Duration(stallSec) * time.Second
 	// Consecutive no-progress stalls in this battle, used to throttle the
 	// "keeping battle alive" log to one Warn per stall episode.
@@ -1966,14 +2046,44 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 		hasStallROI = !sCfg.PercentROI.Empty()
 	}
 
-	tStore, err := game.NewTemplateStore(paths.Resolve("templates"))
-	if err != nil {
-		e.logger.Error().Err(err).Msg("failed to create template store for stall detection")
-		return false
+	tStore := e.templateStore
+	if tStore == nil {
+		var err error
+		tStore, err = game.NewTemplateStore(paths.Resolve("templates"))
+		if err != nil {
+			e.logger.Error().Err(err).Msg("failed to create template store for stall detection")
+			return false
+		}
+		defer tStore.Close()
 	}
-	tStore.LoadTemplates()
+	if tStore.Count() == 0 {
+		tStore.LoadTemplates()
+	}
 	lootRec := game.NewLootRecognizer(e.cal, tStore, e.logger)
 	defer lootRec.Close()
+
+	// F.2: end once this raid has banked the configured loot. The first
+	// readable HUD frame is the baseline; only later gains count. Off by
+	// default and skipped entirely when every target is zero.
+	lootEndEnabled := e.cfg() != nil && e.cfg().EndOnLootTarget &&
+		(e.cfg().LootTargetGold > 0 || e.cfg().LootTargetElixir > 0 || e.cfg().LootTargetDE > 0)
+	var lootStart game.Resources
+	lootStartSet := false
+
+	capture := func() (gocv.Mat, error) { return e.client.CaptureToMat() }
+	buttonVisible := func(screen gocv.Mat, cfg StallConfig) bool { return e.endButtonVisible(screen, cfg) }
+	readHUD := func(screen gocv.Mat) (game.Resources, error) { return lootRec.ReadBattleLootHUD(screen) }
+	if e.waitHooks != nil {
+		if e.waitHooks.capture != nil {
+			capture = e.waitHooks.capture
+		}
+		if e.waitHooks.buttonVisible != nil {
+			buttonVisible = e.waitHooks.buttonVisible
+		}
+		if e.waitHooks.readLootHUD != nil {
+			readHUD = e.waitHooks.readLootHUD
+		}
+	}
 
 	var pRoi image.Rectangle
 	if hasStallROI {
@@ -2006,15 +2116,15 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 		case <-ctx.Done():
 			e.logger.Info().Msg("battle end wait cancelled (bot stopping)")
 			return false
-		case <-ticker.C:
-			if time.Now().After(deadline) {
+		case <-tick:
+			if now().After(deadline) {
 				// Deadline is a safety bound, not a surrender: if the End
 				// Battle button is on screen the army is spent, so end the
 				// fight properly and let the caller read the result. Only
 				// restart when there is no button to tap (genuinely stuck).
-				screen, err := e.client.CaptureToMat()
+				screen, err := capture()
 				if err == nil && !screen.Empty() {
-					visible := e.endButtonVisible(screen, sCfg)
+					visible := buttonVisible(screen, sCfg)
 					screen.Close()
 					if visible {
 						e.logger.Warn().Msg("battle end wait reached deadline; ending battle via End Battle button instead of restarting")
@@ -2026,7 +2136,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 				return false
 			}
 
-			screen, err := e.client.CaptureToMat()
+			screen, err := capture()
 			if err != nil {
 				e.logger.Warn().Err(err).Msg("battle-end wait capture failed; retrying next tick")
 				continue
@@ -2049,6 +2159,30 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			// the watch costs no extra captures. See hero_hp.go.
 			e.pollHeroWatch(screen)
 
+			if lootEndEnabled {
+				if hud, err := readHUD(screen); err == nil {
+					if !lootStartSet {
+						lootStart = hud
+						lootStartSet = true
+						e.logger.Info().Interface("start", hud).Msg("battle loot target: baselined HUD counters")
+					} else if lootTargetReached(e.cfg(), lootStart, hud) {
+						if buttonVisible(screen, sCfg) {
+							e.logger.Info().
+								Interface("start", lootStart).
+								Interface("now", hud).
+								Msg("raid loot target reached, ending battle!")
+							e.battleEndReason = "loot target"
+							screen.Close()
+							e.EndBattle()
+							return true
+						}
+						e.logger.Debug().Msg("loot target reached but End Battle button not visible; keeping battle alive")
+					}
+				} else if !lootStartSet {
+					e.logger.Debug().Err(err).Msg("loot target: HUD counters unreadable; early end disabled for this tick")
+				}
+			}
+
 			// 4x Speed-Up Button: appears after 2 minutes of battle (120s from battle start, or ~110s into battle-wait).
 			// Tapping it accelerates battle playback to 4x speed.
 			if time.Since(battleWaitStart) >= 110*time.Second && (lastSpeedUpTap.IsZero() || time.Since(lastSpeedUpTap) >= 3*time.Second) {
@@ -2060,11 +2194,11 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 				e.logger.Info().Interface("pt", pt).Int("tap", speedUpTaps+1).Msg("tapping 4x speed-up button to fast-forward remaining battle")
 				e.client.TapFast(pt.X, pt.Y, 2.0)
 				speedUpTaps++
-				lastSpeedUpTap = time.Now()
+				lastSpeedUpTap = now()
 			}
 
 			// Per-strategy auto-end threshold from end_at_percent (0 = off).
-			endAtPct := resolveEndAtPercent(e.cfg, e.activeStrategy)
+			endAtPct := resolveEndAtPercent(e.cfg(), e.activeStrategy)
 
 			// Destruction-percent reads serve two purposes: the stall
 			// timer and the strategy's end_at_percent auto-end. When a
@@ -2087,9 +2221,9 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 					e.logger.Debug().
 						Int("raw_pct", currentPct).
 						Msg("stall ROI misread outside 0-100; ignoring tick")
-					lastPctTime = time.Now()
+					lastPctTime = now()
 					screen.Close()
-					if time.Now().After(deadline) {
+					if now().After(deadline) {
 						return false
 					}
 					continue
@@ -2138,7 +2272,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 					// End only when the red End Battle button is actually on
 					// screen (army fully spent). A misread percent must not
 					// tap the map mid-fight.
-					if !e.endButtonVisible(screen, sCfg) {
+					if !buttonVisible(screen, sCfg) {
 						e.logger.Debug().Int("percent", e.lastDestructionPct).Msg("threshold reached but End Battle button not visible; keeping battle alive")
 					} else {
 						e.logger.Info().Int("percent", e.lastDestructionPct).Int("threshold", endAtPct).Msg("destruction reached strategy threshold, ending battle!")
@@ -2151,7 +2285,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 				if stallSec > 0 && endAtPct == 0 {
 					if currentPct > lastPct {
 						lastPct = currentPct
-						lastPctTime = time.Now()
+						lastPctTime = now()
 						stallEpisodes = 0
 						e.logger.Info().Int("percent", currentPct).Msg("destruction increased, resetting stall timer")
 					} else {
@@ -2161,7 +2295,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 							// screen. If it is not, troops are still fighting —
 							// ending blind would tap the map, and the "stall" may
 							// be a HUD/OCR artifact rather than a dead army.
-							if !e.endButtonVisible(screen, sCfg) {
+							if !buttonVisible(screen, sCfg) {
 								// Log once per stall episode, then drop to Debug. A
 								// battle whose result overlay the classifier cannot
 								// read yet (or a destruction ROI that reads a stuck
@@ -2174,7 +2308,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 								} else {
 									e.logger.Debug().Int("last_pct", lastPct).Int("episode", stallEpisodes).Msg("stall repeated; End Battle button still not visible")
 								}
-								lastPctTime = time.Now()
+								lastPctTime = now()
 							} else {
 								e.logger.Warn().Int("last_pct", lastPct).Dur("elapsed", elapsed).Msg("stall detected, ending battle!")
 								screen.Close()
@@ -2187,7 +2321,7 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 			}
 
 			screen.Close()
-			if time.Now().After(deadline) {
+			if now().After(deadline) {
 				return false
 			}
 		}

@@ -56,15 +56,15 @@ func (b *Bot) maybeTrainArmy() bool {
 	if !b.armyEmpty.Load() {
 		return false
 	}
-	if !b.cfg.Training.Enabled || !b.cfg.Training.TrainDeadTroops {
+	if !b.cfg().Training.Enabled || !b.cfg().Training.TrainDeadTroops {
 		// Say it out loud. A disabled training loop plus an empty army is the
 		// one halt the bot cannot recover from on its own: nothing refills the
 		// camps, so a 24/7 run quietly turns into a 24/7 idle village.
 		if trainingDue(b.trainingLast, time.Now(), trainingRetryInterval) {
 			b.trainingLast = time.Now()
 			b.logger.Warn().
-				Bool("training_enabled", b.cfg.Training.Enabled).
-				Bool("train_dead_troops", b.cfg.Training.TrainDeadTroops).
+				Bool("training_enabled", b.cfg().Training.Enabled).
+				Bool("train_dead_troops", b.cfg().Training.TrainDeadTroops).
 				Msg("army is empty and the training loop is off (training.enabled and training.train_dead_troops both must be true): the bot waits instead of training, and nothing will refill the camps")
 		}
 		return false
@@ -152,7 +152,7 @@ func (b *Bot) trainArmy() {
 	// Arm the configured saved recipe. Slot 1 is the active army and needs no
 	// card selection; selectArmySlot already handles both shapes.
 	if !b.armyRecipeSelected() {
-		b.logger.Warn().Int("army_slot", b.armySlot).Msg("training: saved recipe card was not confirmed; leaving the editor untouched")
+		b.logger.Warn().Int("army_slot", int(b.armySlot.Load())).Msg("training: saved recipe card was not confirmed; leaving the editor untouched")
 		_ = b.client.Back()
 		return
 	}
@@ -166,7 +166,7 @@ func (b *Bot) trainArmy() {
 	_ = b.client.Back()
 	b.client.JitteredSleep(600 * time.Millisecond)
 
-	if d := b.cfg.Training.SleepAfterTrain.Duration; d > 0 {
+	if d := b.cfg().Training.SleepAfterTrain.Duration; d > 0 {
 		sleepCtx(b.ctx, d)
 	}
 	b.recordActivity()
@@ -176,7 +176,7 @@ func (b *Bot) trainArmy() {
 // armyRecipeSelected wraps selectArmySlot so the training path can record its
 // own outcome without changing the pre-attack behaviour.
 func (b *Bot) armyRecipeSelected() bool {
-	if b.armySlot <= 1 {
+	if b.armySlot.Load() <= 1 {
 		// Active army: the editor already shows it. Nothing to select.
 		return true
 	}

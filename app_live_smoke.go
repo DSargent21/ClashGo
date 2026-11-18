@@ -1,3 +1,5 @@
+//go:build !cli
+
 package main
 
 // Live smoke mode for the packaged app. It is opt-in via --live-smoke (or

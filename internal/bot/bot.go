@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,7 +37,11 @@ type Bot struct {
 	graph      *game.StateGraph
 	templates  *game.TemplateStore
 	recognizer *game.Recognizer
-	cfg        *config.BotConfig
+	// cfgPtr is the live configuration. Readers take a pointer via cfg();
+	// UpdateConfig publishes a whole new value atomically, so a settings save
+	// can never race the capture loop, the attack goroutine or the UI poll.
+	// The value behind the pointer is immutable.
+	cfgPtr atomic.Pointer[config.BotConfig]
 
 	// samples is the loot log behind search.auto_loot (internal/autotune).
 	// Every searched base appends one line; the gate reads the recommendation
@@ -143,8 +148,8 @@ type Bot struct {
 	// armySlot is the 1-based saved-army recipe the strategy wants armed
 	// before attacking (strategy YAML army_slot; default 1). Loaded once
 	// at construction so clickSequence can select it before the strategy
-	// phases run.
-	armySlot int
+	// phases run; re-resolved by UpdateConfig, so it is atomic like cfg.
+	armySlot atomic.Int32
 
 	historyCache []AttackReport
 
@@ -510,6 +515,10 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		templates.LoadTemplates()
 		log.Info().Int("templates", templates.Count()).Msg("templates loaded")
 	}
+	// The battle wait reads the destruction percentage from the same digit
+	// templates; sharing this loaded store avoids decoding assets/templates
+	// again for every battle.
+	attackExec.SetTemplateStore(templates)
 
 	recognizer := game.NewRecognizer()
 	// Derive the bot's runtime context from the caller's context so a
@@ -524,7 +533,6 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		graph:             graph,
 		templates:         templates,
 		recognizer:        recognizer,
-		cfg:               cfg,
 		samples:           autotune.Open(paths.ResolveConfig("search_samples.jsonl")),
 		attackExec:        attackExec,
 		ctx:               ctx,
@@ -541,6 +549,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		tapTrace:          tapTrace,
 		classifyGate:      newClassifyGate(cfg.Performance),
 	}
+	b.cfgPtr.Store(cfg)
 
 	b.scheduler = NewScheduler(cfg.Schedule, b.logger)
 	if cfg.Schedule.ForceStopOnBreak {
@@ -575,14 +584,14 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 	// Resolve the strategy's declared army slot once at boot so the
 	// pre-battle click sequence can arm the right saved recipe.
 	// Config override takes precedence, then strategy YAML army_slot, fallback 1.
-	b.armySlot = resolveArmySlot(cfg)
-	b.logger.Info().Int("army_slot", b.armySlot).Str("strategy", cfg.Attack.StrategyFile).Msg("resolved strategy army slot")
+	b.armySlot.Store(int32(resolveArmySlot(cfg)))
+	b.logger.Info().Int("army_slot", int(b.armySlot.Load())).Str("strategy", cfg.Attack.StrategyFile).Msg("resolved strategy army slot")
 	// Warn when the config override disagrees with the strategy YAML:
 	// it silently fights with the wrong saved recipe (valk_spam declares
 	// 4, a default config of 1 armed EDrag's slot).
 	if strat, err := strategy.ParseYAML(resolveStrategyPath(cfg.Attack.StrategyFile)); err == nil {
-		if yamlSlot := strat.SelectedArmySlot(); yamlSlot != b.armySlot {
-			b.logger.Warn().Int("config_slot", b.armySlot).Int("yaml_slot", yamlSlot).Msg("army slot: config override disagrees with strategy YAML; using config value — change it in Config if wrong")
+		if yamlSlot := strat.SelectedArmySlot(); int32(yamlSlot) != b.armySlot.Load() {
+			b.logger.Warn().Int("config_slot", int(b.armySlot.Load())).Int("yaml_slot", yamlSlot).Msg("army slot: config override disagrees with strategy YAML; using config value — change it in Config if wrong")
 		}
 	}
 
@@ -634,7 +643,7 @@ func NewBotWithContext(bootCtx context.Context, cfg *config.BotConfig) (b *Bot, 
 		b.navigator.SetTemplates(b.templates)
 	}
 
-	b.navigator.SetDisableChestDismissal(b.cfg.Device.DisableChestDismissal)
+	b.navigator.SetDisableChestDismissal(b.cfg().Device.DisableChestDismissal)
 
 	b.attackExec.SetClassifier(b.classify)
 
@@ -651,7 +660,7 @@ func (b *Bot) Start() error {
 		b.logger.Warn().Err(err).Msg("could not get screen size")
 	} else {
 		b.logger.Info().
-			Str("device", b.cfg.Device.DeviceID).
+			Str("device", b.cfg().Device.DeviceID).
 			Str("resolution", fmt.Sprintf("%dx%d", sw, sh)).
 			Str("scale", fmt.Sprintf("%.3fx%.3f", b.cal.ScaleX, b.cal.ScaleY)).
 			Msg("connected")
@@ -665,6 +674,10 @@ func (b *Bot) Start() error {
 	// frame and dismisses whatever is actually there (see dismissInterruptions),
 	// which is the same job with evidence behind it.
 	b.logger.Info().Msg("startup: no input fired; the capture loop dismisses what the first frame shows")
+
+	// Re-arm the state writer a previous Stop closed. Without this a second
+	// session's stats/history writes would run through the idle fallback.
+	globalAsyncWriter.Start()
 
 	go b.captureLoop()
 	return nil
@@ -820,7 +833,7 @@ func (b *Bot) captureLoop() {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						b.logger.Error().Interface("panic", r).Msg("recovered panic in frame processing; continuing capture loop")
+						b.logger.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic in frame processing; continuing capture loop")
 						if !f.mat.Empty() {
 							f.mat.Close()
 						}
@@ -1100,7 +1113,7 @@ func (b *Bot) releaseReturnHome() {
 }
 
 func (b *Bot) restartGame() {
-	pkg := b.cfg.Device.PackageName
+	pkg := b.cfg().Device.PackageName
 	if pkg == "" {
 		pkg = "com.supercell.clashofclans"
 	}
@@ -1179,7 +1192,7 @@ func (b *Bot) recoverEmulator() {
 	b.notifyEvent("halt", "Emulator unreachable",
 		"ADB transport and adb-server were reset without a response; relaunching BlueStacks.",
 		"If the farm stays down, the emulator needs a human.")
-	if err := b.client.EnsureBlueStacksMac(b.cfg.Device.Width, b.cfg.Device.Height, b.cfg.Device.DPI); err != nil {
+	if err := b.client.EnsureBlueStacksMac(b.cfg().Device.Width, b.cfg().Device.Height, b.cfg().Device.DPI); err != nil {
 		b.logger.Error().Err(err).Msg("BlueStacks relaunch failed; will retry on next stuck check")
 	}
 	// Give the freshly-relaunched emulator up to 2 minutes to expose
@@ -1316,7 +1329,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 	state = splashStateForFrame(state, b.classifier, screen)
 
 	if state == game.StateChestReward {
-		if b.cfg.Device.DisableChestDismissal {
+		if b.cfg().Device.DisableChestDismissal {
 
 			b.logger.Debug().Msg("chest detected but dismissal disabled by config; deferring to stuck-watchdog")
 			return
@@ -1607,7 +1620,7 @@ func (b *Bot) processFrame(gc *game.GameContext, screen gocv.Mat, err error, cap
 		return
 	}
 
-	if b.cfg.Attack.MaxAttackPerSession > 0 && b.attackCount.Load() >= int32(b.cfg.Attack.MaxAttackPerSession) {
+	if b.cfg().Attack.MaxAttackPerSession > 0 && b.attackCount.Load() >= int32(b.cfg().Attack.MaxAttackPerSession) {
 		return
 	}
 
@@ -2021,7 +2034,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// decides the next move.
 	defer func() {
 		if r := recover(); r != nil {
-			b.logger.Error().Interface("panic", r).Msg("recovered panic in attack sequence; abandoning sequence and continuing")
+			b.logger.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic in attack sequence; abandoning sequence and continuing")
 			b.recordActivity()
 		}
 	}()
@@ -2030,12 +2043,12 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	}
 	defer b.seqRunning.Store(false)
 
-	if b.cfg.Debug.UseShellPipe {
-		b.client.EnablePersistentShell(b.cfg.Debug.ShellPipeSyncFlush)
+	if b.cfg().Debug.UseShellPipe {
+		b.client.EnablePersistentShell(b.cfg().Debug.ShellPipeSyncFlush)
 		defer b.client.ClosePersistentShell()
 	}
 
-	if sessionCapReached(b.cfg.Attack.MaxAttackPerSession, b.attackCount.Load()) {
+	if sessionCapReached(b.cfg().Attack.MaxAttackPerSession, b.attackCount.Load()) {
 		return
 	}
 
@@ -2048,12 +2061,12 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// The configured minimum is the floor of a distribution, not a metronome.
 	// Every raid of a 50-raid day starting on the same 30 s beat is a play
 	// pattern no human produces; humanizedAttackGap adds ±22% and a long tail.
-	gap := humanizedAttackGap(time.Duration(b.cfg.Attack.MinSecondsBetweenAttacks) * time.Second)
+	gap := humanizedAttackGap(time.Duration(b.cfg().Attack.MinSecondsBetweenAttacks) * time.Second)
 	if gap > 0 && !b.lastAttackEnd.IsZero() {
 		if wait := gap - time.Since(b.lastAttackEnd); wait > 0 {
 			b.logger.Info().
 				Dur("wait", wait).
-				Int("min_gap_s", b.cfg.Attack.MinSecondsBetweenAttacks).
+				Int("min_gap_s", b.cfg().Attack.MinSecondsBetweenAttacks).
 				Msg("waiting out inter-attack cooldown before next search")
 			select {
 			case <-time.After(wait):
@@ -2172,7 +2185,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		}
 
 		var meetsReq bool
-		if !b.cfg.Search.Enabled {
+		if !b.cfg().Search.Enabled {
 			b.logger.Info().Msg("search filters disabled, attacking base immediately")
 			meetsReq = true
 		} else {
@@ -2219,10 +2232,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				loot.Elixir >= minElixir &&
 				loot.DarkElixir >= minDE
 
-			if !meetsReq && b.cfg.Search.AttackIfDarkElixirGT > 0 && loot.DarkElixir >= b.cfg.Search.AttackIfDarkElixirGT {
+			if !meetsReq && b.cfg().Search.AttackIfDarkElixirGT > 0 && loot.DarkElixir >= b.cfg().Search.AttackIfDarkElixirGT {
 				b.logger.Info().
 					Int("de", loot.DarkElixir).
-					Int("threshold", b.cfg.Search.AttackIfDarkElixirGT).
+					Int("threshold", b.cfg().Search.AttackIfDarkElixirGT).
 					Msg("Dark Elixir threshold met; attacking base")
 				meetsReq = true
 			}
@@ -2238,7 +2251,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 
 		if meetsReq {
 			b.logger.Info().Msg("loot requirements met, starting attack!")
-			stratPath := resolveStrategyPath(b.cfg.Attack.StrategyFile)
+			stratPath := resolveStrategyPath(b.cfg().Attack.StrategyFile)
 			if strat, err := strategy.ParseYAML(stratPath); err == nil {
 				stratName = strat.Name
 				targetEdge = strat.TargetEdge
@@ -2274,7 +2287,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			b.OnStatsUpdate()
 		}
 
-		maxSkips := b.cfg.Search.MaxSearchSkips
+		maxSkips := b.cfg().Search.MaxSearchSkips
 		if maxSkips > 0 && searchSkips >= maxSkips {
 			b.logger.Warn().
 				Int("skips", searchSkips).
@@ -2407,6 +2420,13 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		var parsedResult game.BattleResult
 		parsedOK := false
 		settle := newResultSettle(b.logger)
+		// One recogniser for the whole settle window: each read used to build
+		// a new one, re-cloning and canonicalising all ten digit templates and
+		// re-reading the result-layout JSON on every attempt (up to
+		// resultSettleAttempts reads). Its layout cache is per-recogniser, so a
+		// later battle still picks up an edited ROI file.
+		lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
+		defer lootRec.Close()
 		for attempt := 0; attempt < resultSettleAttempts && !parsedOK; attempt++ {
 			resultScreen, err := b.client.CaptureToMat()
 			if err != nil {
@@ -2415,7 +2435,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 				continue
 			}
 
-			lootRec := game.NewLootRecognizer(b.cal, b.templates, b.logger)
 			res, rerr := lootRec.ReadBattleResult(resultScreen)
 			hash := resultPanelHash(resultScreen, b.cal)
 
@@ -2436,7 +2455,6 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 			}
 
 			resultScreen.Close()
-			lootRec.Close()
 
 			if rerr != nil {
 				b.logger.Warn().Err(rerr).Msg("battle result parse error; retrying")
@@ -2607,6 +2625,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 		BonusElixir:      bonusElixir,
 		BonusDE:          bonusDE,
 		TotalAttacks:     b.attackCount.Load(),
+		EndReason:        b.attackExec.BattleEndReason(),
 	}
 
 	b.recordAttackReport(rep)
@@ -2665,12 +2684,12 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// default; a configured run that is not due costs one log line.
 	b.maybeRunBuilderBase(b.logger)
 
-	if b.cfg.Upgrade.UpgradeWalls {
+	if b.cfg().Upgrade.UpgradeWalls {
 		b.UpgradeWalls(gc)
 	}
 
 	// Auto upgrades (Builders, Lab, Pets) via modern Build Menu 2.0
-	if b.builderManager != nil && (b.cfg.Upgrade.AutoBuilders || b.cfg.Upgrade.AutoLab || b.cfg.Upgrade.AutoPets) {
+	if b.builderManager != nil && (b.cfg().Upgrade.AutoBuilders || b.cfg().Upgrade.AutoLab || b.cfg().Upgrade.AutoPets) {
 		if err := b.builderManager.PerformAutoUpgrades(); err != nil {
 			b.logger.Warn().Err(err).Msg("auto upgrades encountered error")
 		}
@@ -2679,10 +2698,10 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// Cap check stays after wall upgrades so the graceful shutdown (2s
 	// grace then cancel) never interrupts an in-progress wall loop; the
 	// count itself was already incremented when the report was recorded.
-	if sessionCapReached(b.cfg.Attack.MaxAttackPerSession, b.attackCount.Load()) {
+	if sessionCapReached(b.cfg().Attack.MaxAttackPerSession, b.attackCount.Load()) {
 		b.logger.Info().
 			Int32("attacks", b.attackCount.Load()).
-			Int("cap", b.cfg.Attack.MaxAttackPerSession).
+			Int("cap", b.cfg().Attack.MaxAttackPerSession).
 			Msg("attack cap reached, scheduling graceful shutdown...")
 		go func() {
 
@@ -2726,7 +2745,7 @@ func (b *Bot) executeAttackSequence(gc *game.GameContext) {
 	// is fixed HUD chrome and works at any zoom level, whereas wall upgrading
 	// needs building map coordinates. Skipping redundant zoom-outs saves ~18s
 	// per battle and avoids accidental pinches touching village buildings.
-	if b.cfg.Upgrade.UpgradeWalls {
+	if b.cfg().Upgrade.UpgradeWalls {
 		b.zoomedOut.Store(false)
 	}
 }
@@ -2837,14 +2856,14 @@ func (b *Bot) clickSequence() bool {
 		// The army sheet is already open on MY ARMY (the active army). When the
 		// strategy asked for a saved recipe it has to be armed first; only then
 		// does the sheet's own action button start the search.
-		if b.armySlot >= 1 {
+		if b.armySlot.Load() >= 1 {
 			if !b.selectArmySlot() {
 				if screen, err := b.client.CaptureToMat(); err == nil {
-					b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": b.armySlot})
+					b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": int(b.armySlot.Load())})
 					screen.Close()
 				}
 				b.logger.Error().
-					Int("army_slot", b.armySlot).
+					Int("army_slot", int(b.armySlot.Load())).
 					Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
 				return false
 			}
@@ -2917,10 +2936,10 @@ func (b *Bot) clickSequence() bool {
 	}
 	if !armyClicked {
 		if screen, err := b.client.CaptureToMat(); err == nil {
-			b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": b.armySlot})
+			b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": int(b.armySlot.Load())})
 			screen.Close()
 		}
-		if b.armySlot > 1 {
+		if b.armySlot.Load() > 1 {
 			// Fail closed: an explicitly requested saved recipe (slot > 1)
 			// that never selected means the battle would run with whatever
 			// army is currently active — silently wrong composition, a
@@ -2928,11 +2947,11 @@ func (b *Bot) clickSequence() bool {
 			// check (the toast is transient and unmapped), so a tap that
 			// did not land after 3 attempts is enough to refuse.
 			b.logger.Error().
-				Int("army_slot", b.armySlot).
+				Int("army_slot", int(b.armySlot.Load())).
 				Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
 			return false
 		}
-		b.logger.Warn().Int("army_slot", b.armySlot).Msg("army recipe card did not appear, continuing anyway")
+		b.logger.Warn().Int("army_slot", int(b.armySlot.Load())).Msg("army recipe card did not appear, continuing anyway")
 	}
 	b.client.JitteredSleep(500 * time.Millisecond)
 
@@ -3060,7 +3079,7 @@ var sheetActionRegion = [4]float64{0.5, 0.5, 1.0, 1.0}
 // legacy template path (btn_army_1) for backward compatibility with
 // older game layouts; slots 2+ use the measured card geometry.
 func (b *Bot) selectArmySlot() bool {
-	slot := b.armySlot
+	slot := int(b.armySlot.Load())
 	if slot <= 1 {
 		// Slot 1 is the default active army ("MY ARMY") already displayed when
 		// the army sheet opens. No dropdown selection needed.
@@ -3303,7 +3322,7 @@ func (b *Bot) findAndClick(templateName, stepName string, maxRetries int) bool {
 			Int("x", px).Int("y", py).
 			Msg("clicking (fallback match)")
 
-		if b.cfg.Debug.SaveScreenshots {
+		if b.cfg().Debug.SaveScreenshots {
 			gocv.IMWrite(paths.ResolveConfig(fmt.Sprintf("diag_fallback_%s.png", templateName)), screen)
 		}
 
@@ -3587,7 +3606,7 @@ func (b *Bot) waitForBattleState(timeout time.Duration) bool {
 }
 
 func (b *Bot) deployTroops(screen gocv.Mat) (int, error) {
-	stratPath := resolveStrategyPath(b.cfg.Attack.StrategyFile)
+	stratPath := resolveStrategyPath(b.cfg().Attack.StrategyFile)
 	strat, err := strategy.ParseYAML(stratPath)
 	if err != nil {
 		b.logger.Warn().Err(err).Str("path", stratPath).Msg("could not load strategy")
@@ -3700,9 +3719,21 @@ func (b *Bot) Health() game.SystemHealth {
 	}
 }
 
+// cfg returns the configuration the loop currently reads. UpdateConfig
+// publishes a new pointer atomically, so no reader can observe a half-written
+// config or race the save. The returned value is immutable: never modify it.
+func (b *Bot) cfg() *config.BotConfig { return b.cfgPtr.Load() }
+
+// UpdateConfig applies a live settings save. It replaces the published
+// configuration atomically and hands each sub-manager a copy under its own
+// lock, so a save from the UI goroutine cannot race the capture loop, the
+// attack sequence or the stats poll.
 func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
-	b.cfg = cfg
-	b.armySlot = resolveArmySlot(cfg)
+	if cfg == nil {
+		return
+	}
+	b.cfgPtr.Store(cfg)
+	b.armySlot.Store(int32(resolveArmySlot(cfg)))
 	if b.attackExec != nil {
 		b.attackExec.UpdateConfig(&cfg.Attack)
 	}
@@ -3711,12 +3742,12 @@ func (b *Bot) UpdateConfig(cfg *config.BotConfig) {
 		b.navigator.SetDisableChestDismissal(cfg.Device.DisableChestDismissal)
 	}
 	if b.scheduler != nil {
-		b.scheduler.cfg = cfg.Schedule
+		b.scheduler.SetConfig(cfg.Schedule)
 	}
 	if b.builderManager != nil {
-		b.builderManager.cfg = cfg.Upgrade
+		b.builderManager.SetConfig(cfg.Upgrade)
 	}
-	b.logger.Info().Int("army_slot", b.armySlot).Msg("bot configuration updated in real-time")
+	b.logger.Info().Int("army_slot", int(b.armySlot.Load())).Msg("bot configuration updated in real-time")
 }
 
 // resolveArmySlot determines the saved army recipe slot (1..4) to use.
@@ -3768,13 +3799,13 @@ func resolveStrategyPath(raw string) string {
 
 // applyAutoEndSetting synchronizes the strategy's EndAtPercent with cfg.Attack.StrategyAutoEnd.
 func (b *Bot) applyAutoEndSetting(strat *strategy.DynamicStrategy) {
-	if strat == nil || b.cfg == nil {
+	if strat == nil || b.cfg() == nil {
 		return
 	}
-	base := filepath.Base(filepath.ToSlash(b.cfg.Attack.StrategyFile))
+	base := filepath.Base(filepath.ToSlash(b.cfg().Attack.StrategyFile))
 	stratName := strat.Name
 	yamlEndAt := strat.EndAtPercent
-	autoEnd := resolveAutoEndSetting(b.cfg.Attack.StrategyAutoEnd, base, stratName, yamlEndAt)
+	autoEnd := resolveAutoEndSetting(b.cfg().Attack.StrategyAutoEnd, base, stratName, yamlEndAt)
 	if autoEnd {
 		if strat.EndAtPercent <= 0 {
 			strat.EndAtPercent = 50
@@ -3856,7 +3887,7 @@ func (b *Bot) Stats() BotStats {
 		s.ClassifyGateEnabled = gs.Enabled
 		s.ClassifyThresholdPct = gs.Threshold
 	}
-	s.ScheduleEnabled = b.cfg.Schedule.Enabled
+	s.ScheduleEnabled = b.cfg().Schedule.Enabled
 	s.HaltedReason = string(b.HaltedReason())
 	if b.scheduler != nil {
 		s.ScheduleState = string(b.scheduler.State())
@@ -3973,6 +4004,7 @@ type AttackReport struct {
 	BonusElixir      int    `json:"bonus_elixir"`
 	BonusDE          int    `json:"bonus_de"`
 	TotalAttacks     int32  `json:"total_attacks_session"`
+	EndReason        string `json:"end_reason,omitempty"`
 }
 
 type adbLogAdapter struct {
@@ -4009,13 +4041,13 @@ func init() {
 // Whatever wins is then capped at what a base can physically offer: a floor
 // above that is a config typo, and its only symptom is an endless search.
 func (b *Bot) searchThresholds() (gold, elixir, de int) {
-	gold, elixir, de = b.cfg.Search.MinLootGold, b.cfg.Search.MinLootElixir, b.cfg.Search.MinLootDarkElixir
+	gold, elixir, de = b.cfg().Search.MinLootGold, b.cfg().Search.MinLootElixir, b.cfg().Search.MinLootDarkElixir
 
 	if g, e, d, ok := b.suggestedFloors(); ok {
 		gold, elixir, de = g, e, d
 	}
 
-	if b.cfg.Search.AutoLoot && b.samples != nil {
+	if b.cfg().Search.AutoLoot && b.samples != nil {
 		rec := autotune.Recommend(b.samples.Samples(),
 			autotune.Thresholds{Gold: gold, Elixir: elixir, DE: de},
 			autotune.DefaultOptions())

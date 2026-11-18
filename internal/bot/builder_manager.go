@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/adb"
@@ -25,6 +26,8 @@ import (
 type BuilderManager struct {
 	client *adb.Client
 	cal    *game.Calibration
+	// cfg is replaced wholesale by SetConfig; read it through settings().
+	mu     sync.RWMutex
 	cfg    config.UpgradeConfig
 	logger zerolog.Logger
 }
@@ -36,6 +39,21 @@ func NewBuilderManager(client *adb.Client, cal *game.Calibration, cfg config.Upg
 		cfg:    cfg,
 		logger: logger.With().Str("component", "builder_manager").Logger(),
 	}
+}
+
+// SetConfig replaces the upgrade policy under the lock readers take.
+func (bm *BuilderManager) SetConfig(cfg config.UpgradeConfig) {
+	bm.mu.Lock()
+	bm.cfg = cfg
+	bm.mu.Unlock()
+}
+
+// settings returns a snapshot of the policy. Callers read fields from the
+// snapshot, so a live Save cannot change half of a decision mid-way.
+func (bm *BuilderManager) settings() config.UpgradeConfig {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	return bm.cfg
 }
 
 // tap sends one human-shaped tap. Every upgrade action goes through here so the
@@ -125,7 +143,8 @@ type UpgradeItem struct {
 // PerformAutoUpgrades inspects the builder overview, checks builder availability,
 // and starts eligible building, laboratory, or pet upgrades according to user priorities.
 func (bm *BuilderManager) PerformAutoUpgrades() error {
-	if !bm.cfg.AutoBuilders && !bm.cfg.AutoLab && !bm.cfg.AutoPets {
+	cfg := bm.settings()
+	if !cfg.AutoBuilders && !cfg.AutoLab && !cfg.AutoPets {
 		return nil
 	}
 
@@ -141,7 +160,7 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 
 	// Align the game's own filter popup with the configured categories before
 	// reading rows: the menu otherwise shows whatever the user left selected.
-	if bm.cfg.AutoBuilders {
+	if cfg.AutoBuilders {
 		if err := bm.ApplyBuildingInGameFilter(); err != nil {
 			bm.logger.Warn().Err(err).Msg("could not set build menu filters; using the menu as-is")
 		}
@@ -152,17 +171,17 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 	stats := bm.inspectMenuFrame()
 
 	// 1. Check Builders tab if auto builders enabled
-	if bm.cfg.AutoBuilders {
+	if cfg.AutoBuilders {
 		bm.logger.Info().
 			Int("free_builders", stats.FreeBuilders).
 			Int("total_builders", stats.TotalBuilders).
-			Int("reserve_builders", bm.cfg.ReserveBuilders).
+			Int("reserve_builders", cfg.ReserveBuilders).
 			Msg("evaluating builder capacity")
 
-		if stats.FreeBuilders <= 0 || (stats.TotalBuilders > 0 && stats.FreeBuilders <= bm.cfg.ReserveBuilders) {
+		if stats.FreeBuilders <= 0 || (stats.TotalBuilders > 0 && stats.FreeBuilders <= cfg.ReserveBuilders) {
 			bm.logger.Info().
 				Int("free", stats.FreeBuilders).
-				Int("reserve", bm.cfg.ReserveBuilders).
+				Int("reserve", cfg.ReserveBuilders).
 				Msg("no free builders or builders at/below reserve limit; skipping building upgrades")
 		} else {
 			first := bm.resetBuilderListTop()
@@ -174,7 +193,7 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 	}
 
 	// 2. Check Lab tab if auto lab enabled
-	if bm.cfg.AutoLab {
+	if cfg.AutoLab {
 		labTabPt := image.Pt(int(650*k), int(638*k))
 		bm.logger.Info().Msg("switching to laboratory upgrades tab")
 		bm.tap(labTabPt.X, labTabPt.Y)
@@ -189,7 +208,7 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 	}
 
 	// 3. Check Pets tab if auto pets enabled
-	if bm.cfg.AutoPets {
+	if cfg.AutoPets {
 		petsTabPt := image.Pt(int(840*k), int(638*k))
 		bm.logger.Info().Msg("switching to hero pets tab")
 		bm.tap(petsTabPt.X, petsTabPt.Y)
@@ -210,18 +229,19 @@ func (bm *BuilderManager) PerformAutoUpgrades() error {
 // caps, then orders the survivors by the configured strategy. Split out from
 // the tap sequence so the menu filters can be tested without a device.
 func (bm *BuilderManager) selectBuildingUpgrade(items []UpgradeItem) (UpgradeItem, bool) {
+	cfg := bm.settings()
 	eligible := make([]UpgradeItem, 0, len(items))
 	for _, it := range items {
 		if !bm.isCategoryAllowed(it.Category) {
 			continue
 		}
-		if it.Currency == "gold" && bm.cfg.MaxGoldPerUpgrade > 0 && it.Cost > bm.cfg.MaxGoldPerUpgrade {
+		if it.Currency == "gold" && cfg.MaxGoldPerUpgrade > 0 && it.Cost > cfg.MaxGoldPerUpgrade {
 			continue
 		}
-		if it.Currency == "elixir" && bm.cfg.MaxElixirPerUpgrade > 0 && it.Cost > bm.cfg.MaxElixirPerUpgrade {
+		if it.Currency == "elixir" && cfg.MaxElixirPerUpgrade > 0 && it.Cost > cfg.MaxElixirPerUpgrade {
 			continue
 		}
-		if it.Currency == "dark_elixir" && bm.cfg.MaxDEPerUpgrade > 0 && it.Cost > bm.cfg.MaxDEPerUpgrade {
+		if it.Currency == "dark_elixir" && cfg.MaxDEPerUpgrade > 0 && it.Cost > cfg.MaxDEPerUpgrade {
 			continue
 		}
 		eligible = append(eligible, it)
@@ -231,14 +251,14 @@ func (bm *BuilderManager) selectBuildingUpgrade(items []UpgradeItem) (UpgradeIte
 	}
 
 	best := eligible[0]
-	switch bm.cfg.UpgradeStrategy {
+	switch cfg.UpgradeStrategy {
 	case "strategic_rush":
 		// Guidance: offense before defense, new capability before existing
 		// levels. The menu has no "new building" flag, so the rank follows
 		// the guide's per-TH order as closely as the OCR row allows.
-		bestRank := strategicRushRank(best, bm.cfg.HeroPriorities)
+		bestRank := strategicRushRank(best, cfg.HeroPriorities)
 		for _, it := range eligible[1:] {
-			if rank := strategicRushRank(it, bm.cfg.HeroPriorities); rank < bestRank {
+			if rank := strategicRushRank(it, cfg.HeroPriorities); rank < bestRank {
 				best, bestRank = it, rank
 			}
 		}
@@ -445,7 +465,8 @@ func (bm *BuilderManager) findItemOnCurrentPage(target UpgradeItem) (UpgradeItem
 }
 
 func (bm *BuilderManager) executeBuildingUpgrade(pages []BuilderOverviewStats, k float64) {
-	bm.logger.Info().Str("strategy", bm.cfg.UpgradeStrategy).Msg("selecting best building upgrade")
+	cfg := bm.settings()
+	bm.logger.Info().Str("strategy", cfg.UpgradeStrategy).Msg("selecting best building upgrade")
 
 	items := make([]UpgradeItem, 0)
 	for _, page := range pages {
@@ -493,6 +514,7 @@ func (bm *BuilderManager) executeBuildingUpgrade(pages []BuilderOverviewStats, k
 }
 
 func (bm *BuilderManager) confirmBuildingUpgrade(best UpgradeItem, k float64) {
+	cfg := bm.settings()
 	if best.Region.W <= 0 || best.Region.H <= 0 {
 		bm.logger.Warn().Str("item", best.Name).Msg("parsed upgrade item has no tap region; skipping instead of tapping")
 		return
@@ -504,7 +526,7 @@ func (bm *BuilderManager) confirmBuildingUpgrade(best UpgradeItem, k float64) {
 	bm.tap(tapPt.X, tapPt.Y)
 	bm.wait(1400 * time.Millisecond)
 
-	if bm.cfg.DryRun {
+	if cfg.DryRun {
 		bm.logger.Info().Str("item", selectedName).Msg("dry run: upgrade modal inspected; dismissing safely without confirming")
 		_ = bm.CloseModalDialog()
 		bm.wait(500 * time.Millisecond)
@@ -635,6 +657,7 @@ func filterPopupOpen(m gocv.Mat, cal *game.Calibration) bool {
 // toggles, currency filters are cleared (a selected currency ANDs with Type and
 // hid every row in a live run), and Sorting follows the priority where it maps.
 func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
+	cfg := bm.settings()
 	if bm.cal == nil || bm.client == nil {
 		return errors.New("uninitialized calibration or adb client")
 	}
@@ -671,13 +694,13 @@ func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
 	// rows the bot asked for.
 	want := ""
 	switch {
-	case bm.cfg.UpgradeArmy && !bm.cfg.UpgradeDefenses && !bm.cfg.UpgradeTraps && !bm.cfg.UpgradeHeroes && !bm.cfg.UpgradeResources:
+	case cfg.UpgradeArmy && !cfg.UpgradeDefenses && !cfg.UpgradeTraps && !cfg.UpgradeHeroes && !cfg.UpgradeResources:
 		want = "army"
-	case (bm.cfg.UpgradeDefenses || bm.cfg.UpgradeTraps) && !bm.cfg.UpgradeArmy && !bm.cfg.UpgradeHeroes && !bm.cfg.UpgradeResources:
+	case (cfg.UpgradeDefenses || cfg.UpgradeTraps) && !cfg.UpgradeArmy && !cfg.UpgradeHeroes && !cfg.UpgradeResources:
 		want = "defense"
-	case bm.cfg.UpgradeHeroes && !bm.cfg.UpgradeArmy && !bm.cfg.UpgradeDefenses && !bm.cfg.UpgradeTraps && !bm.cfg.UpgradeResources:
+	case cfg.UpgradeHeroes && !cfg.UpgradeArmy && !cfg.UpgradeDefenses && !cfg.UpgradeTraps && !cfg.UpgradeResources:
 		want = "hero"
-	case bm.cfg.UpgradeResources && !bm.cfg.UpgradeArmy && !bm.cfg.UpgradeDefenses && !bm.cfg.UpgradeTraps && !bm.cfg.UpgradeHeroes:
+	case cfg.UpgradeResources && !cfg.UpgradeArmy && !cfg.UpgradeDefenses && !cfg.UpgradeTraps && !cfg.UpgradeHeroes:
 		want = "resource"
 	}
 	types := []struct {
@@ -732,7 +755,7 @@ func (bm *BuilderManager) ApplyBuildingInGameFilter() error {
 	// previous sort is cleared when the strategy does not ask for one.
 	costMax := filterPopupPoint(bm.cal, 0.253, 0.552)
 	costMin := filterPopupPoint(bm.cal, 0.420, 0.552)
-	switch bm.cfg.UpgradeStrategy {
+	switch cfg.UpgradeStrategy {
 	case "cheapest_first":
 		if !menuButtonSelected(screen, costMin.X, costMin.Y) {
 			bm.logger.Info().Msg("setting build menu sorting to cost min")
@@ -849,11 +872,12 @@ func pickRecommendedLabItem(candidates []UpgradeItem) UpgradeItem {
 }
 
 func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float64) {
-	bm.logger.Info().Str("strategy", bm.cfg.LabStrategy).Bool("allow_de", bm.cfg.LabAllowDE).Msg("selecting lab research")
+	cfg := bm.settings()
+	bm.logger.Info().Str("strategy", cfg.LabStrategy).Bool("allow_de", cfg.LabAllowDE).Msg("selecting lab research")
 
 	// Apply in-game filter first to align menu items to strategy
-	if bm.cfg.LabStrategy != "" {
-		bm.ApplyLabInGameFilter(bm.cfg.LabStrategy, k)
+	if cfg.LabStrategy != "" {
+		bm.ApplyLabInGameFilter(cfg.LabStrategy, k)
 		// Re-inspect items after filter application
 		stats = bm.inspectMenuFrame()
 	}
@@ -864,7 +888,7 @@ func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float6
 
 	var candidates []UpgradeItem
 	for _, it := range stats.Items {
-		if !bm.cfg.LabAllowDE && it.Currency == "dark_elixir" {
+		if !cfg.LabAllowDE && it.Currency == "dark_elixir" {
 			continue
 		}
 		candidates = append(candidates, it)
@@ -872,7 +896,7 @@ func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float6
 
 	if len(candidates) > 0 {
 		best := candidates[0]
-		switch bm.cfg.LabStrategy {
+		switch cfg.LabStrategy {
 		case "spells_first":
 			for _, it := range candidates {
 				if it.Category == "spells" {
@@ -918,7 +942,7 @@ func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float6
 	bm.tap(tapPt.X, tapPt.Y)
 	bm.wait(1400 * time.Millisecond)
 
-	if bm.cfg.DryRun {
+	if cfg.DryRun {
 		bm.logger.Info().Str("item", selectedName).Msg("dry run: lab research modal inspected; dismissing safely without confirming")
 		_ = bm.CloseModalDialog()
 		bm.wait(500 * time.Millisecond)
@@ -933,13 +957,14 @@ func (bm *BuilderManager) executeLabUpgrade(stats BuilderOverviewStats, k float6
 	_ = bm.CloseModalDialog()
 	bm.wait(500 * time.Millisecond)
 
-	if bm.cfg.AutoPets {
+	if cfg.AutoPets {
 		_ = bm.OpenMenu()
 	}
 }
 
 func (bm *BuilderManager) executePetUpgrade(stats BuilderOverviewStats, k float64) {
-	bm.logger.Info().Interface("priorities", bm.cfg.PetPriorities).Msg("selecting hero pet upgrade")
+	cfg := bm.settings()
+	bm.logger.Info().Interface("priorities", cfg.PetPriorities).Msg("selecting hero pet upgrade")
 
 	tapPt := image.Pt(int(680*k), int(150*k))
 
@@ -947,7 +972,7 @@ func (bm *BuilderManager) executePetUpgrade(stats BuilderOverviewStats, k float6
 	// nothing the user asked for: tapping the fallback row would spend dark
 	// elixir on a pet the priority list never selected.
 	matched := false
-	for _, priorityPet := range bm.cfg.PetPriorities {
+	for _, priorityPet := range cfg.PetPriorities {
 		for _, it := range stats.Items {
 			if strings.Contains(strings.ToLower(it.Name), strings.ToLower(priorityPet)) {
 				tapPt = it.Region.Center()
@@ -969,7 +994,7 @@ func (bm *BuilderManager) executePetUpgrade(stats BuilderOverviewStats, k float6
 	bm.tap(tapPt.X, tapPt.Y)
 	bm.wait(1400 * time.Millisecond)
 
-	if bm.cfg.DryRun {
+	if cfg.DryRun {
 		bm.logger.Info().Msg("dry run: pet upgrade modal inspected; dismissing safely without confirming")
 		_ = bm.CloseModalDialog()
 		bm.wait(500 * time.Millisecond)
@@ -986,27 +1011,28 @@ func (bm *BuilderManager) executePetUpgrade(stats BuilderOverviewStats, k float6
 }
 
 func (bm *BuilderManager) isCategoryAllowed(cat string) bool {
+	cfg := bm.settings()
 	switch cat {
 	case "heroes":
-		return bm.cfg.UpgradeHeroes
+		return cfg.UpgradeHeroes
 	case "defenses":
-		return bm.cfg.UpgradeDefenses
+		return cfg.UpgradeDefenses
 	case "resources":
-		return bm.cfg.UpgradeResources
+		return cfg.UpgradeResources
 	case "army":
-		return bm.cfg.UpgradeArmy
+		return cfg.UpgradeArmy
 	case "traps":
-		return bm.cfg.UpgradeTraps
+		return cfg.UpgradeTraps
 	case "townhall":
 		// Never inferred: a Town Hall upgrade changes the match pool and hides
 		// loot for days, so it needs its own explicit switch.
-		return bm.cfg.AllowTownHall
+		return cfg.AllowTownHall
 	default:
 		// Names the toggles do not cover (unrecognised OCR, or a lab category
 		// leaking into the menu) follow the menu only while the user has every
 		// category enabled; once they filter, nothing sneaks past the filters.
-		return bm.cfg.UpgradeHeroes && bm.cfg.UpgradeDefenses && bm.cfg.UpgradeResources &&
-			bm.cfg.UpgradeArmy && bm.cfg.UpgradeTraps
+		return cfg.UpgradeHeroes && cfg.UpgradeDefenses && cfg.UpgradeResources &&
+			cfg.UpgradeArmy && cfg.UpgradeTraps
 	}
 }
 

@@ -497,3 +497,34 @@ func ResolveConfig(subpath string) string {
 	}
 	return filepath.Join(GetConfigDir(), subpath)
 }
+
+// WriteFileAtomic replaces path with data in one step: the bytes go to a
+// synced temp file in the same directory, then a rename swaps it in. A crash
+// or a full disk leaves the previous file untouched instead of a truncated
+// one — the failure mode that let a half-written config.json silently reset
+// every setting on the next load (docs/AUDIT.md, S2).
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".clashgo-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}

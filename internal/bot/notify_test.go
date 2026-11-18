@@ -31,9 +31,11 @@ func (r *recordingSender) all() []notify.Message {
 // writes attack_history.json is invisible until someone opens the app.
 func TestRecordAttackReportNotifies(t *testing.T) {
 	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	drainGlobalWrites(t)
 
 	rec := &recordingSender{}
-	b := &Bot{cfg: config.DefaultConfig(), logger: zerolog.Nop(), notifier: rec}
+	b := &Bot{logger: zerolog.Nop(), notifier: rec}
+	b.cfgPtr.Store(config.DefaultConfig())
 
 	b.recordAttackReport(AttackReport{
 		Strategy:         "Auto EDrag Rush",
@@ -70,7 +72,8 @@ func TestRecordAttackReportNotifies(t *testing.T) {
 // bot never measured, and an operator reading it would think the raid failed.
 func TestAttackNotificationSaysWhenLootIsUnknown(t *testing.T) {
 	rec := &recordingSender{}
-	b := &Bot{cfg: config.DefaultConfig(), logger: zerolog.Nop(), notifier: rec}
+	b := &Bot{logger: zerolog.Nop(), notifier: rec}
+	b.cfgPtr.Store(config.DefaultConfig())
 
 	b.notifyAttackResult(AttackReport{Strategy: "Valkyrie Earthquake Spam", Stars: 1, ParsedResults: false, DeploySuccess: true})
 
@@ -91,7 +94,9 @@ func TestAttackNotificationSaysWhenLootIsUnknown(t *testing.T) {
 // notifier on every path that can fire during a battle.
 func TestNotifyIsNilSafe(t *testing.T) {
 	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
-	b := &Bot{cfg: config.DefaultConfig(), logger: zerolog.Nop()}
+	drainGlobalWrites(t)
+	b := &Bot{logger: zerolog.Nop()}
+	b.cfgPtr.Store(config.DefaultConfig())
 
 	b.notifyEvent("halt", "nothing configured")
 	b.notifyAttackResult(AttackReport{Stars: 3, DeploySuccess: true})

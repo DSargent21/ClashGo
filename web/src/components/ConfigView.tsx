@@ -17,6 +17,14 @@ interface ConfigViewProps {
   setUpgradeWalls: (v: boolean) => void;
   stallTimer: number;
   setStallTimer: (v: number) => void;
+  endOnLootTarget: boolean;
+  setEndOnLootTarget: (v: boolean) => void;
+  lootTargetGold: number;
+  setLootTargetGold: (v: number) => void;
+  lootTargetElixir: number;
+  setLootTargetElixir: (v: number) => void;
+  lootTargetDE: number;
+  setLootTargetDE: (v: number) => void;
   autoLoot: main.AutotuneStatus | null;
   autoLootBusy: boolean;
   onToggleAutoLoot: (enabled: boolean) => void;
@@ -126,6 +134,10 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   searchEnabled, setSearchEnabled,
   upgradeWalls, setUpgradeWalls,
   stallTimer, setStallTimer,
+  endOnLootTarget, setEndOnLootTarget,
+  lootTargetGold, setLootTargetGold,
+  lootTargetElixir, setLootTargetElixir,
+  lootTargetDE, setLootTargetDE,
   autoLoot, autoLootBusy, onToggleAutoLoot, onApplyAutoLoot, onResetAutoLoot,
   haltGold, setHaltGold,
   haltElixir, setHaltElixir,
@@ -249,7 +261,12 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   // The engine accepts 0 (disabled) or 10–600; 1–9 would abort instantly.
   const stallInvalid = !Number.isFinite(stallTimer) || stallTimer < 0 || stallTimer > STALL_MAX
     || (stallTimer > 0 && stallTimer < 10);
-  const anyInvalid = stallInvalid || thresholdItems.some((item) => invalid(item.value, THRESHOLD_MAX));
+  const lootTargetsInvalid = invalid(lootTargetGold, THRESHOLD_MAX)
+    || invalid(lootTargetElixir, THRESHOLD_MAX)
+    || invalid(lootTargetDE, THRESHOLD_MAX)
+    || (endOnLootTarget && lootTargetGold === 0 && lootTargetElixir === 0 && lootTargetDE === 0);
+  const anyInvalid = stallInvalid || thresholdItems.some((item) => invalid(item.value, THRESHOLD_MAX))
+    || lootTargetsInvalid;
   const disabled = saveStatus === 'saving' || anyInvalid;
 
   const tabs: { id: ConfigSubTab; label: string }[] = [
@@ -430,6 +447,52 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   </div>
                 </div>
                 {stallInvalid ? <p className="hint error" role="alert">Use 0 or 10–{STALL_MAX}s</p> : null}
+
+                <div className="set-row">
+                  <div className="set-label">
+                    <b>End raid on loot target</b>
+                    <span>Stop once this raid has banked the configured gain. 0 disables a resource; off by default.</span>
+                  </div>
+                  <div className="set-ctl">
+                    <Switch
+                      checked={endOnLootTarget}
+                      onChange={setEndOnLootTarget}
+                      ariaLabel="End raid on loot target"
+                    />
+                  </div>
+                </div>
+                {endOnLootTarget ? (
+                  <div className="threshold-grid">
+                    {[
+                      { label: 'Target gold', value: lootTargetGold, setter: setLootTargetGold, icon: 'coin' as IconName, tone: 'gold' },
+                      { label: 'Target elixir', value: lootTargetElixir, setter: setLootTargetElixir, icon: 'drop' as IconName, tone: 'elixir' },
+                      { label: 'Target dark elixir', value: lootTargetDE, setter: setLootTargetDE, icon: 'drop' as IconName, tone: 'de' },
+                    ].map((item) => (
+                      <div key={item.label}>
+                        <label className="label" htmlFor={`loot-target-${item.tone}`}>{item.label}</label>
+                        <div className="threshold">
+                          <Icon name={item.icon} size={14} className="th-ico" />
+                          <input
+                            id={`loot-target-${item.tone}`}
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            max={THRESHOLD_MAX}
+                            value={item.value}
+                            onChange={(event) => item.setter(parseInt(event.target.value, 10) || 0)}
+                            aria-invalid={invalid(item.value, THRESHOLD_MAX)}
+                            className="field"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {lootTargetsInvalid ? (
+                  <p className="hint error" role="alert">
+                    Targets must be 0–{THRESHOLD_MAX.toLocaleString()}, with at least one above 0 when the switch is on.
+                  </p>
+                ) : null}
 
                 <div className="set-row">
                   <div className="set-label">

@@ -1,8 +1,10 @@
 package bot
 
 import (
+	"bytes"
 	"image"
 	"os"
+	"strings"
 	"testing"
 
 	"gocv.io/x/gocv"
@@ -347,10 +349,11 @@ func TestResolveStrategyPath(t *testing.T) {
 
 func TestRecordAttackReport_StoresHistoryAndLimitsCapacity(t *testing.T) {
 	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	drainGlobalWrites(t)
 	b := &Bot{
-		cfg:          &config.BotConfig{},
 		historyCache: []AttackReport{},
 	}
+	b.cfgPtr.Store(&config.BotConfig{})
 	rep1 := AttackReport{
 		Timestamp:     "2026-10-18T22:00:00Z",
 		Strategy:      "test_strat",
@@ -376,10 +379,12 @@ func TestRecordAttackReport_StoresHistoryAndLimitsCapacity(t *testing.T) {
 	if len(b.historyCache) != 500 {
 		t.Errorf("historyCache len after 511 inserts = %d, want 500", len(b.historyCache))
 	}
+
+	// 511 reports in a tight loop deliberately outrun the best-effort write
+	// queue. Drain and join it before t.TempDir removes the tree the worker
+	// writes into (otherwise cleanup races the last flush).
+	globalAsyncWriter.Close()
 }
-
-
-
 
 // TestSplashFirstCoversUnknownLoadingAndChest pins the cold-boot routing: the
 // "Tap!" loading-table frame can classify as Unknown (first frames), Loading
@@ -409,5 +414,27 @@ func TestSplashFirstCoversUnknownLoadingAndChest(t *testing.T) {
 	}
 	if got := splashStateForFrame(game.StateMainVillage, cl, frame); got != game.StateMainVillage {
 		t.Fatalf("a classified village must not be rewritten by splash probes, got %s", got)
+	}
+}
+
+// A recovered panic must leave a stack, not just the panic value: the two
+// recovery sites in the unattended path are the only record of why a farm
+// stopped working. This drives the attack-sequence guard with a nil config so
+// the panic happens before any game I/O.
+func TestExecuteAttackSequencePanicLogsStack(t *testing.T) {
+	var buf bytes.Buffer
+	b := &Bot{logger: zerolog.New(&buf)}
+
+	b.executeAttackSequence(nil)
+
+	out := buf.String()
+	if !strings.Contains(out, "recovered panic in attack sequence") {
+		t.Fatalf("recovery was not logged: %q", out)
+	}
+	if !strings.Contains(out, `"panic"`) {
+		t.Fatalf("log has no panic value: %q", out)
+	}
+	if !strings.Contains(out, `"stack"`) || !strings.Contains(out, "goroutine") {
+		t.Fatalf("log has no panic stack: %q", out)
 	}
 }

@@ -52,13 +52,37 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     result panel and Return Home were not exercised; the army was spent.
   - Verified: see `PROGRESS.md`.
 
+- [x] **H.4 Splash-first dismissal, live dialog misreads, tap floor**
+  - Fixed: splash probes own splash frames; reconnect/inactivity dialogs get
+    1024x768 signatures and verified dismissal taps; settle dual/triple gets a
+    65 ms floor. Evidence: `PROGRESS.md` 2026-11-17 H.4.
+- [x] **H.5 Process-wide tap floor + cold-boot splash coverage**
+  - Fixed: `HumanTapFloor` enforced in `routeTap`/`paceTap` for every path;
+    cold-boot splash probes cover Unknown/Loading/ChestReward. Evidence:
+    `PROGRESS.md` 2026-11-17 H.5.
+- [x] **H.6 Tap-floor review, cadence gate, drag-deploy finding**
+  - Fixed: `tapaudit -assert-human` is a clean cadence gate; drag-deploy tried
+    live and reverted. Evidence: `PROGRESS.md` 2026-11-17 H.6.
+- [x] **H.7 evdev multi-touch primitive, gated off**
+  - Added `internal/adb/multitouch.go` and `DragStroke`; live proof the game
+    ignores the injected stroke, so `evdevDragEnabled=false` keeps taps in
+    charge. Evidence: `PROGRESS.md` 2026-11-17 H.7.
+- [x] **H.8 Siege one-tap fix, result settle, human-paced default**
+  - Fixed: single siege tap on proven ground, bounded result settle with
+    zero-loot guard, default inter-attack gap 300 s. Evidence: `PROGRESS.md`
+    2026-11-17 H.8; `./tools/verify.sh` PASS.
+
 ---
 
 ## Phase 1 — Reliable farming (active)
 
-- [ ] **F.1 Dead-base / collector detection**
+- [ ] **F.1 Dead-base / collector detection** (blocked: no labelled recordings)
   - Why: full outside collectors are the cheapest loot; the bot currently
     judges loot from the HUD counters only.
+  - Blocked on data, not code: the tracked corpus has battle frames but no
+    hand-labelled outside-full / core bases, and no collector templates exist
+    in `assets/templates`. Shipping a colour heuristic without those labels
+    would be unverifiable on the acceptance criterion ("recorded frames").
   - Touch: `internal/game/loot.go` (+ zone helpers), attack search decision in
     `internal/bot`.
   - Acceptance: classifier over recorded frames returns an outside-full/core
@@ -66,14 +90,22 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     unchanged; one table-driven fixture test per verdict.
   - Verify: `go test ./internal/game -run 'Loot|Zone'`
 
-- [ ] **F.2 Early surrender on loot target**
+- [x] **F.2 Early surrender on loot target**
   - Why: end a raid once the target resource threshold is already banked.
   - Touch: `internal/attack` battle-end logic, `internal/config` (threshold +
-    enable flag, default off), stats/history reason.
-  - Acceptance: fake battle clock + loot readings end the attack exactly once
-    at the threshold; disabled config never triggers; reason recorded in
-    history; test covers threshold already met on entry.
-  - Verify: `go test ./internal/attack -run 'BattleEnd|Surrender'`
+    enable flag, default off), stats/history reason, Config UI.
+  - Fixed: `EndOnLootTarget` + per-resource targets (default off, validated:
+    enabled requires one non-zero target), `ReadBattleLootHUD` on the running
+    top-right counters (resolution-scaled from the 1280x720 geometry),
+    `lootTargetReached` gain-only decision, `battleEndReason` ->
+    `AttackReport.end_reason`, and Config > Search & loot controls wired
+    through `SaveConfig`. Tests cover save/load round trip + invalid rejection,
+    720p and resized 1024x768 HUD reads, decision table, threshold on entry,
+    and the fake-clock wait loop (below-target, no button, end, backwards HUD,
+    disabled, unreadable HUD).
+  - Verified: `go test -race ./internal/game ./internal/attack . -run
+    'LootTarget|BattleLootHUD|WaitForBattleEnd_LootTargetFakeClock|TestUI_LootTarget'`
+    PASS; `./tools/verify.sh` -> VERIFY PASSED (full).
 
 - [ ] **F.3 Hero recovery wait**
   - Why: attacking without designated heroes wastes army and loot.
@@ -97,9 +129,13 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
 
 ## Phase 2 — Test depth (active, parallel-safe)
 
-- [ ] **T.1 Attack pipeline fake-device test**
+- [ ] **T.1 Attack pipeline fake-device test** (blocked: no capture seam)
   - Why: deploy/spell/hero ordering is only covered in units; the orchestrated
     path needs one offline end-to-end check.
+  - Blocked: `Executor`/`TapExecutor` hold `*adb.Client`, and the client has a
+    tap hook but no capture source, so a "fake capture" cannot drive
+    `DeployDynamicV2` without adding a device interface across ~40 capture call
+    sites. That seam is an architectural decision, not a test edit.
   - Touch: `internal/attack/testharness_test.go`, orchestrator test.
   - Acceptance: fake capture + taps drive a full planned attack; assertion on
     ordered tap list; no sleeps; passes under `-race`.
@@ -237,6 +273,18 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     duplicate or inconsistent label; every control reachable at 1024x768,
     1024x600 and 1024x1440; tsc, guards and full verify green; clean console.
   - Verified: see `PROGRESS.md`.
+
+- [x] **T.9 UI unification + Army loot rates** (commit `f37307a`)
+- [x] **T.10 Responsive layout polish + Wails parity** (commit `a6f93e5`)
+- [x] **T.11 Hierarchy, edge widths, live states** (commit `d9d7858`)
+- [x] **T.12 Transient surface anchoring + exit speed** (commit `0cb17a0`)
+- [x] **T.13 Card surface radius unification** (commit `fea4d06`)
+- [x] **T.14 Page grid alignment** (commit `d5869ce`)
+- [x] **T.15 Quiet surfaces + rhythm** (commit `43ab423`)
+- [x] **T.16 Concentric nested corners** (commit `276cc8d`)
+  - All eight were verified by `./tools/verify.sh` plus `tsc`/browser checks in
+    their sessions; the per-task notes were not copied into this file at the
+    time (audit §3.7). Titles are the commit subjects.
 
 ---
 

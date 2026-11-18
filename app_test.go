@@ -252,7 +252,7 @@ func TestApp_AllUIBindingsAndFeatures(t *testing.T) {
 	}
 
 	// 2. SaveConfig
-	err := a.SaveConfig(350000, 350000, 1500, true, "valk_spam.yaml", true, 25)
+	err := a.SaveConfig(350000, 350000, 1500, true, "valk_spam.yaml", true, 25, false, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
 	}

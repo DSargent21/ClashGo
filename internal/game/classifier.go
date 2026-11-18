@@ -61,13 +61,20 @@ func (c *Classifier) ClassifyState(screen gocv.Mat) (GameState, int) {
 	// full-frame, 3-scale template match.
 	var best scoredState
 	found := false
-	for _, v := range c.evaluateRules(screen, false, true) {
-		if !v.Matched {
-			continue
+	bestPriority := -1
+	for i, rule := range c.rules {
+		v := c.scoreRule(screen, rule, false)
+		if v.Matched {
+			if v.Priority > bestPriority {
+				bestPriority = v.Priority
+			}
+			s := scoredState{State: v.State, Score: v.Score, Priority: v.Priority}
+			if !found || betterState(s, best) {
+				best, found = s, true
+			}
 		}
-		s := scoredState{State: v.State, Score: v.Score, Priority: v.Priority}
-		if !found || betterState(s, best) {
-			best, found = s, true
+		if bestPriority >= 0 && canStopEarly(c.rules, i, bestPriority) {
+			break
 		}
 	}
 
@@ -193,11 +200,17 @@ func SplashStateOnFrame(cl *Classifier, frame gocv.Mat) (GameState, bool) {
 	if cl == nil || frame.Empty() {
 		return StateUnknown, false
 	}
-	for _, v := range cl.EvaluateRules(frame, false) {
-		if !v.Matched {
+	// Only the two splash rules are scored. The old version evaluated the full
+	// rule list (EvaluateRules) and then filtered the verdicts, so this second
+	// pass on every Unknown/Loading/ChestReward frame paid for template matches
+	// whose verdicts no caller could ever read. Skipping non-splash rules cannot
+	// change the answer: each rule is scored independently, and the first
+	// matched splash rule in rule order still wins.
+	for _, rule := range cl.rules {
+		if rule.State != StateTapToContinue && rule.State != StateNewsSplash {
 			continue
 		}
-		if v.State == StateTapToContinue || v.State == StateNewsSplash {
+		if v := cl.scoreRule(frame, rule, false); v.Matched {
 			return v.State, true
 		}
 	}
@@ -212,153 +225,162 @@ func SplashStateOnFrame(cl *Classifier, frame gocv.Mat) (GameState, bool) {
 // rule list: it stops at the rule that made the answer final, so a caller must
 // not read it as a complete per-rule report (that is what detail + earlyExit
 // false is for).
-func (c *Classifier) evaluateRules(screen gocv.Mat, detail, earlyExit bool) []RuleVerdict {
-	verdicts := make([]RuleVerdict, 0, len(c.rules))
-	bestPriority := -1
-	for i, rule := range c.rules {
-		passed := 0
-		skipped := 0
-		var detailChecks []CheckResult
-		for _, chk := range rule.Checks {
-			// Reference coordinates -> live geometry. A HUD rule's probe sits on
-			// a widget the game anchors to the screen, so each axis follows the
-			// edge (or the viewport centre) that widget is anchored to; an
-			// overlay/world rule's probe follows the viewport centre on both
-			// axes. Both are the identity at the reference geometry (see
-			// Calibration.Hud / Centre and docs/RESOLUTION.md).
-			sx, sy := c.cal.AnchorPoint(chk.X, chk.Y, rule.Anchor)
-			if sx < 0 || sy < 0 || sx >= screen.Cols() || sy >= screen.Rows() {
-				skipped++
-				if detail {
-					detailChecks = append(detailChecks, CheckResult{
-						X: chk.X, Y: chk.Y, SX: sx, SY: sy,
-						Want:      [3]int{int(chk.R), int(chk.G), int(chk.B)},
-						Tolerance: chk.Tolerance, Skipped: true,
-					})
-				}
-				continue
-			}
-
-			b := screen.GetUCharAt(sy, sx*3)
-			g := screen.GetUCharAt(sy, sx*3+1)
-			r := screen.GetUCharAt(sy, sx*3+2)
-
-			dr := absDiff(int(r), int(chk.R))
-			dg := absDiff(int(g), int(chk.G))
-			db := absDiff(int(b), int(chk.B))
-			dist := math.Sqrt(float64(dr*dr + dg*dg + db*db))
-
-			hit := dist <= float64(chk.Tolerance)
-			if hit {
-				passed++
-			}
+// scoreRule evaluates one rule against a frame: pixel probes first, then the
+// template match only when the rule's evidence bar is already met. It is the
+// single scorer behind ClassifyState, EvaluateRules, SplashStateOnFrame and the
+// -why diagnostic, so those four cannot disagree about what a rule saw.
+func (c *Classifier) scoreRule(screen gocv.Mat, rule StateRule, detail bool) RuleVerdict {
+	passed := 0
+	skipped := 0
+	var detailChecks []CheckResult
+	for _, chk := range rule.Checks {
+		// Reference coordinates -> live geometry. A HUD rule's probe sits on
+		// a widget the game anchors to the screen, so each axis follows the
+		// edge (or the viewport centre) that widget is anchored to; an
+		// overlay/world rule's probe follows the viewport centre on both
+		// axes. Both are the identity at the reference geometry (see
+		// Calibration.Hud / Centre and docs/RESOLUTION.md).
+		sx, sy := c.cal.AnchorPoint(chk.X, chk.Y, rule.Anchor)
+		if sx < 0 || sy < 0 || sx >= screen.Cols() || sy >= screen.Rows() {
+			skipped++
 			if detail {
 				detailChecks = append(detailChecks, CheckResult{
 					X: chk.X, Y: chk.Y, SX: sx, SY: sy,
 					Want:      [3]int{int(chk.R), int(chk.G), int(chk.B)},
-					Got:       [3]int{int(r), int(g), int(b)},
-					Tolerance: chk.Tolerance, Distance: dist, Passed: hit,
+					Tolerance: chk.Tolerance, Skipped: true,
 				})
 			}
+			continue
 		}
 
-		// Evidence bar. At the reference geometry MinPass is exact: the probes
-		// were tuned there as a 1-pixel fingerprint. Elsewhere they are mapped
-		// predictions, and a rule with several probes and MinPass 1 fires off a
-		// single accidental colour hit on UI it was never authored against —
-		// measured on live village frames, one ObstacleDialog probe passing at
-		// 1920x1080 was enough to outrank the village. Requiring a second probe
-		// can only remove false positives; a single-probe rule keeps its bar,
-		// because those are full-screen states (loading) that must stay
-		// detectable. See docs/RESOLUTION.md.
-		minPass := rule.MinPass
-		if minPass == 1 && len(rule.Checks) > 1 && !c.cal.IsReferenceGeometry() {
-			minPass = 2
-		}
+		b := screen.GetUCharAt(sy, sx*3)
+		g := screen.GetUCharAt(sy, sx*3+1)
+		r := screen.GetUCharAt(sy, sx*3+2)
 
-		totalScore := 0
-		pixelPassed := false
-		if minPass > 0 {
-			if passed >= minPass {
-				totalScore = passed * 100
-				pixelPassed = true
-			}
-		} else {
-			// No pixel requirements
+		dr := absDiff(int(r), int(chk.R))
+		dg := absDiff(int(g), int(chk.G))
+		db := absDiff(int(b), int(chk.B))
+		dist := math.Sqrt(float64(dr*dr + dg*dg + db*db))
+
+		hit := dist <= float64(chk.Tolerance)
+		if hit {
+			passed++
+		}
+		if detail {
+			detailChecks = append(detailChecks, CheckResult{
+				X: chk.X, Y: chk.Y, SX: sx, SY: sy,
+				Want:      [3]int{int(chk.R), int(chk.G), int(chk.B)},
+				Got:       [3]int{int(r), int(g), int(b)},
+				Tolerance: chk.Tolerance, Distance: dist, Passed: hit,
+			})
+		}
+	}
+
+	// Evidence bar. At the reference geometry MinPass is exact: the probes
+	// were tuned there as a 1-pixel fingerprint. Elsewhere they are mapped
+	// predictions, and a rule with several probes and MinPass 1 fires off a
+	// single accidental colour hit on UI it was never authored against —
+	// measured on live village frames, one ObstacleDialog probe passing at
+	// 1920x1080 was enough to outrank the village. Requiring a second probe
+	// can only remove false positives; a single-probe rule keeps its bar,
+	// because those are full-screen states (loading) that must stay
+	// detectable. See docs/RESOLUTION.md.
+	minPass := rule.MinPass
+	if minPass == 1 && len(rule.Checks) > 1 && !c.cal.IsReferenceGeometry() {
+		minPass = 2
+	}
+
+	totalScore := 0
+	pixelPassed := false
+	if minPass > 0 {
+		if passed >= minPass {
+			totalScore = passed * 100
 			pixelPassed = true
 		}
+	} else {
+		// No pixel requirements
+		pixelPassed = true
+	}
 
-		templatePassed := false
-		bestConf := 0.0
-		// Optimization: Only run template matching if pixel checks pass (if any)
-		// Or if the rule has no pixel checks (pixelPassed will be true).
-		if rule.Template != "" && c.templates != nil && pixelPassed {
-			tpl, ok := c.templates.Get(rule.Template)
-			if ok && tpl.Cols() > 1 && tpl.Rows() > 1 {
-				// Match on the RAW frame with the templates scaled by the
-				// display scale k: the reference templates were captured at
-				// k == 1, and a non-reference geometry renders HUD chrome k
-				// times larger. Sweeping ±10% around k is exactly the legacy
-				// 0.9-1.1 sweep when k == 1, so the reference geometry keeps
-				// its calibrated thresholds — and it removes the per-frame
-				// ResizeToHeight(732) that used to precede this match.
-				// The cached variant builds the scaled template Mats once per
-				// (name, window) and reuses them for the rest of the session.
-				// Search the button's authored window, not the whole frame: the
-				// cost of this match is proportional to the searched area, and
-				// the window is the one the tap paths already use for the same
-				// button (see buttons.go). A template with no authored window
-				// keeps the full-frame search.
-				roi := RuleSearchROI(c.cal, rule.Template, rule.Anchor, image.Rect(0, 0, screen.Cols(), screen.Rows()))
-				k := c.cal.DisplayScale()
-				matches, err := vision.MatchMultiScaleROICached(
-					screen, tpl, rule.Template,
-					k*0.9, k*1.1, 3, c.cfg.TemplateThreshold,
-					roi,
-				)
-				if err == nil && len(matches) > 0 {
-					bestConf = matches[0].Confidence
-					templatePassed = true
-				} else if rule.Template == "btn_attack" {
-					if altTpl, altOk := c.templates.Get("btn_battle_village"); altOk && altTpl.Cols() > 1 && altTpl.Rows() > 1 {
-						altROI := RuleSearchROI(c.cal, "btn_battle_village", rule.Anchor, image.Rect(0, 0, screen.Cols(), screen.Rows()))
-						altMatches, altErr := vision.MatchMultiScaleROICached(
-							screen, altTpl, "btn_battle_village",
-							k*0.9, k*1.1, 3, c.cfg.TemplateThreshold,
-							altROI,
-						)
-						if altErr == nil && len(altMatches) > 0 {
-							bestConf = altMatches[0].Confidence
-							templatePassed = true
-						}
+	templatePassed := false
+	bestConf := 0.0
+	// Optimization: Only run template matching if pixel checks pass (if any)
+	// Or if the rule has no pixel checks (pixelPassed will be true).
+	if rule.Template != "" && c.templates != nil && pixelPassed {
+		tpl, ok := c.templates.Get(rule.Template)
+		if ok && tpl.Cols() > 1 && tpl.Rows() > 1 {
+			// Match on the RAW frame with the templates scaled by the
+			// display scale k: the reference templates were captured at
+			// k == 1, and a non-reference geometry renders HUD chrome k
+			// times larger. Sweeping ±10% around k is exactly the legacy
+			// 0.9-1.1 sweep when k == 1, so the reference geometry keeps
+			// its calibrated thresholds — and it removes the per-frame
+			// ResizeToHeight(732) that used to precede this match.
+			// The cached variant builds the scaled template Mats once per
+			// (name, window) and reuses them for the rest of the session.
+			// Search the button's authored window, not the whole frame: the
+			// cost of this match is proportional to the searched area, and
+			// the window is the one the tap paths already use for the same
+			// button (see buttons.go). A template with no authored window
+			// keeps the full-frame search.
+			roi := RuleSearchROI(c.cal, rule.Template, rule.Anchor, image.Rect(0, 0, screen.Cols(), screen.Rows()))
+			k := c.cal.DisplayScale()
+			matches, err := vision.MatchMultiScaleROICached(
+				screen, tpl, rule.Template,
+				k*0.9, k*1.1, 3, c.cfg.TemplateThreshold,
+				roi,
+			)
+			if err == nil && len(matches) > 0 {
+				bestConf = matches[0].Confidence
+				templatePassed = true
+			} else if rule.Template == "btn_attack" {
+				if altTpl, altOk := c.templates.Get("btn_battle_village"); altOk && altTpl.Cols() > 1 && altTpl.Rows() > 1 {
+					altROI := RuleSearchROI(c.cal, "btn_battle_village", rule.Anchor, image.Rect(0, 0, screen.Cols(), screen.Rows()))
+					altMatches, altErr := vision.MatchMultiScaleROICached(
+						screen, altTpl, "btn_battle_village",
+						k*0.9, k*1.1, 3, c.cfg.TemplateThreshold,
+						altROI,
+					)
+					if altErr == nil && len(altMatches) > 0 {
+						bestConf = altMatches[0].Confidence
+						templatePassed = true
 					}
 				}
 			}
 		}
+	}
 
-		matched := false
-		if pixelPassed && (passed > 0 || templatePassed) {
-			totalScore += int(bestConf * 1000)
-			totalScore += rule.Weight // Add weight exactly once
-			matched = true
-		}
+	matched := false
+	if pixelPassed && (passed > 0 || templatePassed) {
+		totalScore += int(bestConf * 1000)
+		totalScore += rule.Weight // Add weight exactly once
+		matched = true
+	}
 
-		verdict := RuleVerdict{
-			State:        rule.State,
-			Matched:      matched,
-			Score:        totalScore,
-			Priority:     rule.Priority,
-			PixelOK:      pixelPassed,
-			Passed:       passed,
-			Required:     minPass,
-			DeclaredMin:  rule.MinPass,
-			Checks:       len(rule.Checks),
-			Skipped:      skipped,
-			Template:     rule.Template,
-			TemplateOK:   templatePassed,
-			TemplateConf: bestConf,
-			Detail:       detailChecks,
-		}
+	verdict := RuleVerdict{
+		State:        rule.State,
+		Matched:      matched,
+		Score:        totalScore,
+		Priority:     rule.Priority,
+		PixelOK:      pixelPassed,
+		Passed:       passed,
+		Required:     minPass,
+		DeclaredMin:  rule.MinPass,
+		Checks:       len(rule.Checks),
+		Skipped:      skipped,
+		Template:     rule.Template,
+		TemplateOK:   templatePassed,
+		TemplateConf: bestConf,
+		Detail:       detailChecks,
+	}
+	return verdict
+}
+
+func (c *Classifier) evaluateRules(screen gocv.Mat, detail, earlyExit bool) []RuleVerdict {
+	verdicts := make([]RuleVerdict, 0, len(c.rules))
+	bestPriority := -1
+	for i, rule := range c.rules {
+		verdict := c.scoreRule(screen, rule, detail)
 		verdicts = append(verdicts, verdict)
 
 		// The stop check runs after EVERY rule, not only a matching one: rules
@@ -439,15 +461,21 @@ func (c *Classifier) buildRules() {
 		// StateChestReward is the post-attack event-reward chest screen.
 		//
 		// Detection uses the distinct vault room signature (arched sunlight
-		// beam at top center, dark stone walls, warm wooden floor) and/or
-		// the hammer prompt template if present. Priority 98 ensures it outranks
-		// transitional splash states (e.g. TapToContinue at 97 whose "Tap!" probe
-		// otherwise misfires on the chest's "Tap!" prompt).
+		// beam at top center, dark stone walls, warm wooden floor). Priority 98
+		// ensures it outranks transitional splash states (e.g. TapToContinue at
+		// 97 whose "Tap!" probe otherwise misfires on the chest's "Tap!"
+		// prompt).
+		//
+		// No template: this rule historically carried the `hammer` banner, but
+		// the pixel bar is evaluated first and the template is only a score
+		// bonus, so the banner could never create the detection. It did cost a
+		// full-frame 3-scale matchTemplate (measured ~213 ms) on every frame
+		// where the probes passed. The four probes are the whole detector.
 		{
 			State:    StateChestReward,
 			Priority: 98,
 			Weight:   105,
-			Desc:     "post-attack reward chest screen (vault room or hammer template)",
+			Desc:     "post-attack reward chest screen (vault room)",
 			Anchor:   AnchorEdge,
 			MinPass:  3,
 			Checks: []PixelCheck{
@@ -460,7 +488,6 @@ func (c *Classifier) buildRules() {
 				// Bottom-right warm wood floor
 				{760, 690, 0x60, 0x2C, 0x18, 45},
 			},
-			Template: "hammer",
 		},
 		{
 			State:    StateSearchMap,

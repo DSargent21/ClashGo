@@ -50,6 +50,22 @@ func NewScheduler(cfg config.ScheduleConfig, logger zerolog.Logger) *Scheduler {
 	return s
 }
 
+// SetConfig replaces the schedule under the same lock every reader takes, so a
+// live settings save cannot be observed half-applied (session window, break,
+// caps and active hours all belong to one config value).
+func (s *Scheduler) SetConfig(cfg config.ScheduleConfig) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
+}
+
+// Config returns a snapshot of the schedule for diagnostics.
+func (s *Scheduler) Config() config.ScheduleConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
 func (s *Scheduler) SetBreakHooks(onEnter, onExit func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

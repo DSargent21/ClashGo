@@ -1,0 +1,23 @@
+# gocv v0.43.0 compiles against OpenCV 4.x — its cgo preamble runs
+# `pkg-config --cflags opencv4`, and OpenCV 5 dropped the opencv4.pc file name.
+# `brew install opencv` now yields 5.0.0, so this pins the keg-only opencv@4
+# formula instead. The local dev env (sdk/cv-env) uses OpenCV 4.10 for the same
+# reason. PKG_CONFIG_PATH is exported through $GITHUB_ENV so every later step
+# (tests, race tests, build) links against the same keg.
+name: Install OpenCV 4
+description: Install keg-only opencv@4 and expose its pkg-config to later steps.
+
+runs:
+  using: composite
+  steps:
+    - name: brew install opencv@4
+      shell: bash
+      run: |
+        brew install opencv@4
+        OPENCV_PC="$(brew --prefix opencv@4)/lib/pkgconfig"
+        echo "PKG_CONFIG_PATH=$OPENCV_PC" >> "$GITHUB_ENV"
+        # Fail fast with a clear message if pkg-config can't see it.
+        if ! PKG_CONFIG_PATH="$OPENCV_PC" pkg-config --modversion opencv4; then
+          echo "opencv4.pc not found under $OPENCV_PC" >&2
+          exit 1
+        fi

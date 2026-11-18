@@ -67,7 +67,7 @@ func TestUI_ConfigFormSaveOrder(t *testing.T) {
 	a := NewApp()
 
 	// Same order and shape as App.saveSettings.
-	if err := a.SaveConfig(400000, 450000, 2500, true, "valk_spam.yaml", true, 45); err != nil {
+	if err := a.SaveConfig(400000, 450000, 2500, true, "valk_spam.yaml", true, 45, false, 0, 0, 0); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 	if err := a.SetStorageConfig(true, true, false, "ALL", 88, 80, true, true); err != nil {
@@ -445,7 +445,7 @@ func TestUI_ConfigSectionsPersistWhileDisabled(t *testing.T) {
 	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
 	a := NewApp()
 
-	if err := a.SaveConfig(123000, 234000, 3000, false, "", false, 0); err != nil {
+	if err := a.SaveConfig(123000, 234000, 3000, false, "", false, 0, false, 0, 0, 0); err != nil {
 		t.Fatalf("SaveConfig with search disabled: %v", err)
 	}
 	if err := a.SetScheduleConfig(false, "08:15", "21:45", 80, 17, 25, 7, false, 8, 50); err != nil {
@@ -487,5 +487,69 @@ func TestUI_ConfigSectionsPersistWhileDisabled(t *testing.T) {
 		fresh.Upgrade.LabStrategy != "spells_first" ||
 		!reflect.DeepEqual(fresh.Upgrade.PetPriorities, []string{"Diggy", "Phoenix"}) {
 		t.Fatalf("disabled section values did not survive reload: %+v %+v", fresh.Schedule, fresh.Upgrade)
+	}
+}
+
+// F.2's four Config controls go through SaveConfig like the other attack
+// settings. They must survive the save/load round trip, and an enabled target
+// with all three values at zero must be rejected instead of silently saved.
+func TestUI_LootTargetSettingsRoundTripAndValidation(t *testing.T) {
+	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
+	a := NewApp()
+
+	base := func(end bool, g, e, d int) error {
+		return a.SaveConfig(400000, 450000, 2500, true, "valk_spam.yaml", true, 45, end, g, e, d)
+	}
+
+	if err := base(true, 750_000, 650_000, 8_000); err != nil {
+		t.Fatalf("SaveConfig with loot targets: %v", err)
+	}
+
+	live := a.GetConfig().Attack
+	if !live.EndOnLootTarget || live.LootTargetGold != 750_000 ||
+		live.LootTargetElixir != 650_000 || live.LootTargetDE != 8_000 {
+		t.Fatalf("live attack config = %+v, want the four saved loot-target values", live)
+	}
+
+	disk := config.LoadOrDefault("config.json").Attack
+	if !disk.EndOnLootTarget || disk.LootTargetGold != 750_000 ||
+		disk.LootTargetElixir != 650_000 || disk.LootTargetDE != 8_000 {
+		t.Fatalf("reloaded attack config = %+v, want the four saved loot-target values", disk)
+	}
+
+	// The UI's own invalid shape: switch on, every target zero. Rejected, and
+	// the previously valid values stay on disk and in the engine.
+	if err := base(true, 0, 0, 0); err == nil {
+		t.Fatal("enabled loot target with all three targets at zero was saved")
+	}
+	after := config.LoadOrDefault("config.json").Attack
+	if !after.EndOnLootTarget || after.LootTargetGold != 750_000 || after.LootTargetDE != 8_000 {
+		t.Fatalf("rejected save changed disk config: %+v", after)
+	}
+	if live := a.GetConfig().Attack; live.LootTargetGold != 750_000 || live.LootTargetDE != 8_000 {
+		t.Fatalf("rejected save changed live config: %+v", live)
+	}
+
+	// Out-of-range targets are rejected by the same ValidateLootFloors path
+	// the other loot inputs use, on either side of the allowed range.
+	for _, bad := range []struct {
+		name string
+		g    int
+	}{
+		{"above the 10M ceiling", 10_000_001},
+		{"negative", -1},
+	} {
+		if err := base(true, bad.g, 0, 0); err == nil {
+			t.Fatalf("%s loot target was saved", bad.name)
+		}
+	}
+	afterBad := config.LoadOrDefault("config.json").Attack
+	if afterBad.LootTargetGold != 750_000 || afterBad.LootTargetDE != 8_000 {
+		t.Fatalf("rejected out-of-range target changed disk config: %+v", afterBad)
+	}
+
+	// Off with zero targets is the shipped default and must stay saveable.
+	if err := base(false, 0, 0, 0); err != nil {
+		t.Fatalf("disabled loot target with zero values rejected: %v", err)
 	}
 }

@@ -6,9 +6,10 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **H.4 splash-first dismissal + live misread + tap-floor pass**
-  (see the 2026-11-17 session log entry).
-- Next task: **F.1 Dead-base / collector detection** (`BUILD_PLAN.md`).
+- Last task: **v1.1.0 release** (version/docs, local DMG/zip/CLI build, tag).
+- Next task: **F.1 Dead-base / collector detection** — blocked on labelled
+  outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
+  fake-capture seam.
 - Last green commit: see `git log -1`.
 - Verify gate: `./tools/verify.sh` (full) / `./tools/verify.sh --fast`.
 
@@ -717,3 +718,209 @@ Format:
   checked. Checks green.
 - Commit: this commit
 - Next: F.1 dead-base detection.
+
+### 2026-11-18 — audit S1: race-free live config save
+- Changed: `internal/bot/{bot,live_config,scheduler,builder_manager}.go`,
+  `internal/attack/attack.go`, `internal/game/{navigator,chestdismiss}.go`,
+  `internal/bot/live_config_race_test.go` (new), affected test fixtures,
+  `docs/AUDIT.md`.
+- Fixed: a UI save published a new `*config.BotConfig` while the capture loop,
+  attack goroutine and stats poll read the old fields (race reported at
+  `bot.go:3713` / `live_config.go:34`). `Bot` now publishes through
+  `atomic.Pointer` (`cfgPtr` + `cfg()`), `armySlot` is `atomic.Int32`, the
+  scheduler takes `SetConfig` under its existing mutex, the builder manager
+  publishes under a new `RWMutex` (`settings()`), the attack executor publishes
+  its `AttackConfig` atomically, and the navigator's chest kill-switch is
+  `atomic.Bool`. `LiveConfig` reads each owner through its publication path.
+- Verified: `go test -race -run TestLiveConfigSaveIsRaceFree ./internal/bot`
+  PASS; `./tools/verify.sh` -> `VERIFY PASSED (full)` (includes
+  `go test -race ./...`, which now exercises the save-while-reading pattern).
+- Commit: none (worktree change).
+- Next: `docs/AUDIT.md` suggested order step 2 (atomic config writes).
+
+### 2026-11-18 — audit S1 review + S2: atomic state writes
+- Changed: `internal/bot/builder_manager.go` (one policy snapshot per
+  decision instead of one lock per field read),
+  `internal/paths/paths.go` (+`atomic_test.go`), `internal/accounts/accounts.go`,
+  `internal/bot/asyncwriter.go`, `internal/config/config.go`
+  (+`load_warn_test.go`), `app.go`, `app_ui_engine_test.go`, `docs/AUDIT.md`.
+- Fixed: every `config.json` save and every `AsyncWriteFile` target
+  (`stats.json`, attack history, reports) now goes through
+  `paths.WriteFileAtomic` (temp + fsync + rename), so a crash or full disk
+  leaves the previous document intact instead of a truncated one.
+  `LoadOrDefault` stays silent only when no file exists and otherwise logs
+  `config unreadable; running on defaults and leaving the existing file
+  untouched` with the path and parse error.
+- Also: `TestEngine_StartStopLifecycle` now waits for the detached `saveStats`
+  write before `t.TempDir` cleanup; it failed intermittently with `TempDir
+  RemoveAll cleanup: directory not empty` (8 consecutive runs green after).
+- Verified: `go test ./internal/paths ./internal/config ./internal/accounts .`
+  PASS; `go test -count=8 -run TestEngine_StartStopLifecycle .` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Commit: none (worktree change).
+- Next: `docs/AUDIT.md` suggested order step 3 (AsyncWriter semantics).
+
+### 2026-11-18 — audit S3: AsyncWriter contract
+- Changed: `internal/bot/asyncwriter.go` (rewritten),
+  `internal/bot/asyncwriter_test.go` (rewritten), `internal/bot/bot.go`
+  (`Start` re-arms the writer), `app.go` (`saveStatsSync` for shutdown and
+  updater flush), `internal/bot/{bot,notify,notify_e2e}_test.go` (drain before
+  temp-dir cleanup), `docs/AUDIT.md`.
+- Fixed: `Write` only queues now — it never waits for disk; one FIFO worker
+  performs every `paths.WriteFileAtomic`. Failed flushes log path + cause.
+  `Close` closes the queue, drains, and joins the worker with a bounded wait
+  (5 s); on timeout it logs `abandoning queued writes` with the pending count.
+  The writer re-arms on the next `Write`/`Start`, so a session after Stop
+  queues again instead of falling back to direct synchronous writes, and
+  `Bot.Start` calls `Start`. `WriteSync`/`WriteFileSync` are the explicit
+  on-disk path; they drain the queue first so an older queued snapshot cannot
+  overwrite the newer flush.
+- Flake fixed: tests that call `recordAttackReport` (the history-cap test and
+  the notify tests) queued writes that raced `t.TempDir` cleanup; they now
+  drain the writer via `drainGlobalWrites` before returning.
+- Verified: `go test -race -run TestAsyncWriter ./internal/bot` PASS;
+  `go test -race ./internal/bot .` PASS; `./tools/verify.sh` ->
+  `VERIFY PASSED (full)` (vet + tests + `go test -race ./...` + build).
+- Commit: none (worktree change).
+- Next: `docs/AUDIT.md` suggested order step 4 (panic stacks).
+
+### 2026-11-18 — audit S3: AsyncWriter concurrency edges
+- Changed: `internal/bot/asyncwriter.go` (Close joins an in-progress drain
+  rather than closing the queue twice; WriteSync returns `ErrFlushTimeout`
+  instead of writing while an older queued write may still land),
+  `internal/bot/asyncwriter_test.go`, `docs/AUDIT.md`.
+- Proved: Write racing Close is drained or rejected with `ErrWriterStopping`
+  (logged path), never a send on a closed queue; double Close and Start during
+  a drain are safe and do not reopen the queue; after a bounded abandon
+  Start/Write/WriteSync cannot create a second worker or reorder a stale
+  payload ahead of a newer flush; after normal Close no hook write occurs.
+- Verified: `go test -race -count=5 ./internal/bot` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Commit: none (worktree change).
+
+### 2026-11-18 — audit S4: panic stacks (+ AsyncWriter review)
+- Changed: `internal/bot/bot.go`, `app.go` (both recovery sites per file now
+  log `debug.Stack()` as `stack`), `internal/bot/bot_test.go`
+  (`TestExecuteAttackSequencePanicLogsStack`), `docs/AUDIT.md`.
+- AsyncWriter review: no further simplification; `closed` guard + shared drain
+  wait and `ErrFlushTimeout` are the minimum that keeps the proven ordering.
+- Verified: `go test -race -run TestExecuteAttackSequencePanicLogsStack
+  ./internal/bot` PASS; `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Commit: none (worktree change).
+- Next: step 5 CI verify job (`macos-latest` running `./tools/verify.sh`).
+
+### 2026-11-18 — audit S5: CI verify workflow
+- Changed: `.github/workflows/verify.yml` (push + PR, `macos-latest`,
+  `./tools/verify.sh`), `.github/actions/install-opencv4/action.yml` (shared
+  pinned opencv@4 install), `.github/workflows/release.yml` (uses the action
+  instead of a copied install block), `docs/AUDIT.md`.
+- Panic-stack review: no simplification; one inline `stack` field per recovery
+  site is smaller than a helper and the guard test already covers it.
+- Verified: all three YAML files parse (`ruby -e 'require "yaml"'`);
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`. Workflow itself not executed
+  here (no GitHub runner).
+- Commit: none (worktree change).
+- Next: step 6 reconcile `BUILD_PLAN.md`/`PROGRESS.md` (`T.9`–`T.16`,
+  `H.4`–`H.8`) and the 36 stale asset deletions.
+
+### 2026-11-18 — audit S6: plan state reconciled
+- Changed: `BUILD_PLAN.md`, `docs/AUDIT.md`, `PROGRESS.md`.
+- Fixed: `H.4`–`H.8` and `T.9`–`T.16` are now in the plan as done, with
+  commit/`PROGRESS.md` evidence; the 36 deleted assets were checked for
+  references (none) and the deletion is accepted. The remaining modified-file
+  worktree is prior-session work, deliberately left uncommitted.
+- Verified: `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Commit: none (worktree change).
+- Next: F.2 loop test, then the blocked F.1/T.1.
+
+### 2026-11-18 — F.2 partial: in-battle loot HUD + loot-target surrender
+- Changed: `internal/game/loot.go` (`ReadBattleLootHUD`),
+  `internal/config/{config,validate}.go` (enable flag + per-resource targets,
+  default off, validated), `internal/attack/attack.go` (gain-only
+  `lootTargetReached`, wait-loop auto-end, `BattleEndReason`),
+  `internal/bot/bot.go` (`AttackReport.end_reason`),
+  `internal/game/loot_test.go`, `internal/attack/battle_end_test.go`,
+  `BUILD_PLAN.md`, `docs/AUDIT.md`.
+- Fixed: a raid can now end as soon as the configured gold/elixir/DE gain is
+  banked, using the running top-right HUD counters differenced against a
+  battle baseline. Disabled/zero targets never trigger; a backwards HUD read
+  counts as zero gain; the reason is recorded in history.
+- Verified: recorded 720p frame reads 5,694,098 / 6,791,525 / 58,364;
+  decision table + threshold-on-entry tests PASS; `./tools/verify.sh` ->
+  `VERIFY PASSED (full)`.
+- Still open: fake-clock `WaitForBattleEndCtx` test (end exactly once), GUI
+  controls, and live HUD geometry on 1024x768 (the reader is measured on
+  1280x720 only).
+- Commit: none (worktree change).
+- Blocker: F.1 needs hand-labelled outside-full/core frames and collector
+  templates; T.1 needs a capture seam on `adb.Client`. Neither was invented
+  here.
+
+### 2026-11-18 — F.2 complete: GUI, HUD geometry, fake-clock wait test
+- Changed: `app.go` (`SaveConfig` carries the four loot-target values),
+  `internal/config/validate.go` (enabled requires a non-zero target),
+  `web/src/App.tsx`, `web/src/components/ConfigView.tsx`, `web/src/types.ts`,
+  `web/wailsjs/go/main/{App.d.ts,App.js,models.ts}`,
+  `web/public/wails-stub.js`, `internal/game/loot.go` (ROI scaled from the
+  1280x720 reference), `internal/game/loot_test.go`,
+  `internal/attack/attack.go` (fake-clock seams), new
+  `internal/attack/battle_wait_loot_test.go`, `app_ui_bindings_test.go`,
+  `BUILD_PLAN.md`, `docs/AUDIT.md`.
+- Fixed:
+  - Config > Search & loot has the switch and three targets; `SaveConfig`
+    persists them through the same config.json path, `ValidateAttack` rejects
+    enabled-with-all-zero, and `TestUI_LootTargetSettingsRoundTripAndValidation`
+    proves both the round trip and the rejection with no disk/live change.
+  - `ReadBattleLootHUD` derives ROIs from the actual frame size; the 720p
+    corpus test and the same frame resized to 1024x768 both read
+    5,694,098 / 6,791,525 / 58,364.
+  - `WaitForBattleEndCtx` has clock/tick/capture/HUD/button seams; the
+    fake-clock test covers below-target, target-without-button,
+    target-with-button (ends once, reason "loot target"), backwards HUD,
+    disabled, and unreadable HUD.
+- Verified: focused F.2 tests PASS under `-race`; `npx tsc --noEmit` PASS;
+  `node --check web/public/wails-stub.js` PASS; `./tools/verify.sh` ->
+  `VERIFY PASSED (full)`.
+- Commit: none (worktree change).
+- Next: F.1 and T.1 remain blocked as recorded; nothing else is open in F.2.
+
+### 2026-11-18 — F.2 audit: strengthen coverage, no behaviour change
+- Audited F.2 against its claims. Found the fake-clock test could pass without
+  exercising the HUD/button (only checked "did not end"), had a leftover
+  unused field, and had no unavailable-ticker case. Fixed the test: every case
+  now asserts exact HUD/capture/button call counts, waits on hook events (no
+  sleep poll), asserts backwards-HUD gain is false, and adds
+  `TestWaitForBattleEnd_NoTicks` for cancellation without ticks. GUI wiring
+  gained `TestUI_LootTargetControlsAreWired` (source-level guard for the
+  controls, load setters, SaveConfig argument order, stub persistence and
+  client-side invalid predicates) and the round-trip test now also rejects
+  out-of-range/negative targets and checks disk stayed unchanged.
+- Proved the corpus skip path by temporarily moving
+  `battle_mid_720p.png`: both HUD tests reported `--- SKIP` with
+  "no battle_mid_720p.png", then the frame was restored.
+- Verified: focused F.2 tests PASS under `-race`; `npx tsc --noEmit` PASS;
+  `node --check web/public/wails-stub.js` PASS; `./tools/verify.sh` ->
+  `VERIFY PASSED (full)`.
+- Commit: none (worktree change).
+
+### 2026-11-18 — v1.1.0 release
+- Changed: `wails.json`, `version.go`, `CHANGELOG.md`, `README.md`,
+  `docs/CLI.md`, `Casks/clashgo.rb`, `Makefile` (min_supported default), plus
+  the accumulated release worktree.
+- Built: `make release VERSION=1.1.0 NOTES_FILE=/tmp/clashgo-1.1.0-notes.md`
+  -> DMG 15 MB, zip 19 MB, CLI archive 17 MB, `latest.json`, `SHA256SUMS`,
+  cask; `hdiutil verify`, `codesign --verify --deep --strict`, `unzip -t`,
+  `tar -tzf`, `bot_cli -version` all passed.
+- Verified: `make test-install test-brew` -> PASS; `./tools/verify.sh` ->
+  VERIFY PASSED (full).
+- Commit: release commit (this change).
+- Next: release tag push + GitHub Actions publication; F.1/T.1 remain blocked.
+
+### 2026-11-18 — Codebase-wide audit
+- Wrote `docs/AUDIT.md`: 15 ranked proposals across reliability, performance/
+  efficiency, correctness/test quality and new features, each tied to a
+  file:line read this turn, plus a separate "Blocked on user input" section
+  for F.1's missing labelled frames/templates, T.1's missing adb capture seam,
+  and F.2's missing live-raid evidence.
+- Analysis only: no production, test or frontend code changed. Verification
+  recorded in the audit and the session report.

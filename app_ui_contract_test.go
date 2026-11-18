@@ -187,7 +187,7 @@ func containsString(list []string, want string) bool {
 func TestUI_ReadBindingsReflectEngineState(t *testing.T) {
 	a := engineHarness(t)
 
-	if err := a.SaveConfig(612000, 623000, 6400, true, "valk_spam.yaml", true, 55); err != nil {
+	if err := a.SaveConfig(612000, 623000, 6400, true, "valk_spam.yaml", true, 55, false, 0, 0, 0); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 	cfg := a.GetConfig()
@@ -343,5 +343,61 @@ func TestUI_SaveFullConfigValidatesAndSaves(t *testing.T) {
 	}
 	if disk := diskConfig(t); disk.Search.MinLootElixir != 654000 {
 		t.Fatalf("wizard config did not reach disk: %d", disk.Search.MinLootElixir)
+	}
+}
+
+// The four F.2 controls have no React test harness in this repo; this guard
+// pins the wiring that tsc cannot see: the ConfigView inputs and client-side
+// invalid predicate exist, App loads the fields, and both SaveConfig calls
+// forward them in the binding's argument order. The server-side round trip and
+// rejection are behavioural tests in app_ui_bindings_test.go.
+func TestUI_LootTargetControlsAreWired(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		return string(raw)
+	}
+
+	configView := read("web/src/components/ConfigView.tsx")
+	for _, want := range []string{
+		"endOnLootTarget: boolean;",
+		"setEndOnLootTarget",
+		"setLootTargetGold",
+		"setLootTargetElixir",
+		"setLootTargetDE",
+		"ariaLabel=\"End raid on loot target\"",
+		"htmlFor={`loot-target-${item.tone}`}",
+		"endOnLootTarget && lootTargetGold === 0 && lootTargetElixir === 0 && lootTargetDE === 0",
+		"invalid(lootTargetGold, THRESHOLD_MAX)",
+		"invalid(lootTargetElixir, THRESHOLD_MAX)",
+		"invalid(lootTargetDE, THRESHOLD_MAX)",
+		"|| lootTargetsInvalid",
+	} {
+		if !strings.Contains(configView, want) {
+			t.Errorf("ConfigView.tsx is missing %q; the loot-target control or its client validation is not wired", want)
+		}
+	}
+
+	app := read("web/src/App.tsx")
+	for _, want := range []string{
+		"setEndOnLootTarget(conf.attack.end_on_loot_target ?? false)",
+		"setLootTargetGold(conf.attack.loot_target_gold ?? 0)",
+		"setLootTargetElixir(conf.attack.loot_target_elixir ?? 0)",
+		"setLootTargetDE(conf.attack.loot_target_de ?? 0)",
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("App.tsx does not load %q; saved targets would not reach the controls", want)
+		}
+	}
+	if !regexp.MustCompile(`(?s)SaveConfig\([^)]*endOnLootTarget,[^)]*lootTargetGold,[^)]*lootTargetElixir,[^)]*lootTargetDE,`).MatchString(app) {
+		t.Error("App.tsx SaveConfig call does not forward the four loot-target values in binding order")
+	}
+
+	stub := read("web/public/wails-stub.js")
+	if !strings.Contains(stub, "loot_target_gold = lootTargetGold") {
+		t.Error("browser stub does not persist the loot-target fields, so the dev UI would silently lose them")
 	}
 }

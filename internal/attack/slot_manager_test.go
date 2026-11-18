@@ -201,16 +201,16 @@ func TestIsUnconfiguredCCSlot(t *testing.T) {
 	defer ccMat.Close()
 
 	// Fill region around x=239, y=705 with cyan
-	for r := 705 - 30; r < 705 + 30; r++ {
-		for c := 239 - 25; c < 239 + 25; c++ {
+	for r := 705 - 30; r < 705+30; r++ {
+		for c := 239 - 25; c < 239+25; c++ {
 			ccMat.SetUCharAt(r, c*3+0, 200) // B
 			ccMat.SetUCharAt(r, c*3+1, 200) // G
 			ccMat.SetUCharAt(r, c*3+2, 50)  // R
 		}
 	}
 	// Paint white center exclamation mark
-	for r := 705 - 15; r < 705 + 15; r++ {
-		for c := 239 - 5; c < 239 + 5; c++ {
+	for r := 705 - 15; r < 705+15; r++ {
+		for c := 239 - 5; c < 239+5; c++ {
 			ccMat.SetUCharAt(r, c*3+0, 250)
 			ccMat.SetUCharAt(r, c*3+1, 250)
 			ccMat.SetUCharAt(r, c*3+2, 250)
@@ -224,8 +224,8 @@ func TestIsUnconfiguredCCSlot(t *testing.T) {
 	// 2. Normal dark troop card (no cyan, no white center)
 	darkMat := gocv.NewMatWithSize(768, 1024, gocv.MatTypeCV8UC3)
 	defer darkMat.Close()
-	for r := 705 - 30; r < 705 + 30; r++ {
-		for c := 239 - 25; c < 239 + 25; c++ {
+	for r := 705 - 30; r < 705+30; r++ {
+		for c := 239 - 25; c < 239+25; c++ {
 			darkMat.SetUCharAt(r, c*3+0, 60)
 			darkMat.SetUCharAt(r, c*3+1, 60)
 			darkMat.SetUCharAt(r, c*3+2, 60)

@@ -354,6 +354,10 @@ export namespace config {
 	    warden_use_at_pct: number;
 	    reserve_de_percent: number;
 	    stall_timer_seconds: number;
+	    end_on_loot_target: boolean;
+	    loot_target_gold: number;
+	    loot_target_elixir: number;
+	    loot_target_de: number;
 	    strategy_slots?: Record<string, number>;
 	    strategy_auto_end?: Record<string, boolean>;
 	    min_seconds_between_attacks: number;
@@ -378,6 +382,10 @@ export namespace config {
 	        this.warden_use_at_pct = source["warden_use_at_pct"];
 	        this.reserve_de_percent = source["reserve_de_percent"];
 	        this.stall_timer_seconds = source["stall_timer_seconds"];
+	        this.end_on_loot_target = source["end_on_loot_target"];
+	        this.loot_target_gold = source["loot_target_gold"];
+	        this.loot_target_elixir = source["loot_target_elixir"];
+	        this.loot_target_de = source["loot_target_de"];
 	        this.strategy_slots = source["strategy_slots"];
 	        this.strategy_auto_end = source["strategy_auto_end"];
 	        this.min_seconds_between_attacks = source["min_seconds_between_attacks"];
@@ -941,6 +949,9 @@ export namespace main {
 	    target_edge: string;
 	    army_slot: number;
 	    end_at_percent: number;
+	    loot_per_hour: number;
+	    measured: boolean;
+	    raids: number;
 	    active: boolean;
 	    phases: ArmyPlanPhase[];
 	
@@ -957,6 +968,9 @@ export namespace main {
 	        this.target_edge = source["target_edge"];
 	        this.army_slot = source["army_slot"];
 	        this.end_at_percent = source["end_at_percent"];
+	        this.loot_per_hour = source["loot_per_hour"];
+	        this.measured = source["measured"];
+	        this.raids = source["raids"];
 	        this.active = source["active"];
 	        this.phases = this.convertValues(source["phases"], ArmyPlanPhase);
 	    }

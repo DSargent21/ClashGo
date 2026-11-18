@@ -7,13 +7,12 @@ detects this overlay and dismisses it automatically.
 ## How it works
 
 1. **Detection** — the classifier (`StateChestReward`,
-   `internal/game/classifier.go`) fires **only** when the `hammer`
-   ("TAP TO OPEN") template matches. It is template-only by design: the
-   hammer icon + prompt vanish the moment the chest breaks and never appear
-   on a normal village screen, so no pixel rule can false-trigger dismissal.
-   The hammer icon is small, stable UI chrome, so the rule survives CoC
-   event art swaps. Without `assets/templates/hammer.png` loaded,
-   `StateChestReward` never fires.
+   `internal/game/classifier.go`) fires on the vault-room signature: at least
+   3 of 4 pixel probes (arched window beam, the two top dark-stone walls,
+   warm wood floor). No template is involved. The rule used to carry the
+   `hammer` ("TAP TO OPEN") banner as a score bonus, but the pixel bar runs
+   first and the template cannot create a detection — it only cost a
+   full-frame search (removed 2026-11-17, see `docs/PERFORMANCE.md` P2).
 2. **Break the chest** — `DismissChestReward`
    (`internal/game/chestdismiss.go`) taps the chest box (configurable hammer
    count) until the classifier no longer sees `StateChestReward`.
@@ -30,16 +29,11 @@ stuck-watchdog instead.
 
 ## Setup (one-time, optional but recommended)
 
-The detection rule works out-of-the-box on the pixel invariants. For maximum
-robustness against art swaps, capture two templates once:
+The detection rule works out-of-the-box on the pixel invariants. The only
+template the flow uses is the Continue button — capture it once:
 
 ```sh
-# 1. Get to the chest screen, then in another terminal:
-go run cmd/capture_template -name=hammer -drag
-#    drag a TIGHT rect around the tap-to-open hammer icon (not the whole
-#    chest box) — it's small UI chrome, stable across event art. conf ~0.9.
-
-# 2. After the chest opens (or on a known Continue overlay), capture it:
+# On a known Continue overlay:
 go run cmd/capture_template -name=btn_continue -drag
 #    drag a tight rect around the Continue button.
 ```
@@ -64,9 +58,10 @@ particular event chest needs more hits to break.
 ## Tuning
 
 - Chest still not detected? Check the bot's logs: a captured chest frame
-  that classifies as `Unknown` (instead of `StateChestReward`) means the
-  `hammer` template isn't matching — recapture it (event art changed). If
-  the template matches but dismissal misbehaves, adjust the tap zone in
+  that classifies as `Unknown` (instead of `StateChestReward`) means fewer
+  than 3 of the 4 vault-room probes hit — event art changed the room, so
+  re-place the probes against a fresh capture. If detection works but
+  dismissal misbehaves, adjust the tap zone in
   `assets/chest_dismiss_roi.json`.
 - Continue misses? Recapture `btn_continue` (event art changed) or set
   `continue_button.json` to the button's rect.

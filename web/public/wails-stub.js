@@ -473,13 +473,17 @@
                         'Ready — press START BOT to begin',
                     ]),
                     GetLiveScreenshot: resolve(''),
-                    SaveConfig: function (minGold, minElixir, minDE, upgradeWalls, strategyFile, searchEnabled, stall) {
+                    SaveConfig: function (minGold, minElixir, minDE, upgradeWalls, strategyFile, searchEnabled, stall, endOnLootTarget, lootTargetGold, lootTargetElixir, lootTargetDE) {
                         stubConfig.search.min_loot_gold = minGold;
                         stubConfig.search.min_loot_elixir = minElixir;
                         stubConfig.search.min_loot_de = minDE;
                         stubConfig.search.enabled = searchEnabled;
                         stubConfig.upgrade.upgrade_walls = upgradeWalls;
                         stubConfig.attack.stall_timer_seconds = stall;
+                        stubConfig.attack.end_on_loot_target = endOnLootTarget;
+                        stubConfig.attack.loot_target_gold = lootTargetGold;
+                        stubConfig.attack.loot_target_elixir = lootTargetElixir;
+                        stubConfig.attack.loot_target_de = lootTargetDE;
                         if (strategyFile) stubConfig.attack.strategy_file = strategyFile;
                         return Promise.resolve(null);
                     },

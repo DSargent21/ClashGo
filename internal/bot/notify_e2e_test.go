@@ -23,6 +23,7 @@ import (
 func TestNotifyEndToEndFromConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLASHGO_CONFIG_DIR", dir)
+	drainGlobalWrites(t)
 
 	delivered := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +52,8 @@ func TestNotifyEndToEndFromConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	b := &Bot{cfg: cfg, logger: zerolog.Nop()}
+	b := &Bot{logger: zerolog.Nop()}
+	b.cfgPtr.Store(cfg)
 	b.notifier = newEventNotifier(ctx, cfg.Notify, zerolog.Nop())
 	if b.notifier == nil {
 		t.Fatal("a valid notify config produced no sender")

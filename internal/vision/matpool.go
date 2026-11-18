@@ -1,7 +1,6 @@
 package vision
 
 import (
-	"fmt"
 	"gocv.io/x/gocv"
 	"image"
 	"sync"
@@ -89,22 +88,31 @@ func GetMatFrom(src gocv.Mat) gocv.Mat {
 }
 
 type ScaledTemplateCache struct {
-	cache map[string][]gocv.Mat
+	cache map[templateScaleKey][]gocv.Mat
 	mu    sync.RWMutex
+}
+
+// templateScaleKey uniquely identifies a scaled-template set by template name
+// and the exact scale parameters. Different step counts must not share a cache
+// entry: a caller requesting 20 steps would otherwise silently reuse 60
+// pre-built mats (and the loop would iterate 60 times), defeating step-count
+// tuning. A struct key replaces the fmt.Sprintf string it used to build here —
+// this key is computed for every template match, i.e. several times per frame.
+type templateScaleKey struct {
+	name     string
+	minScale float64
+	maxScale float64
+	steps    int
 }
 
 func NewScaledTemplateCache() *ScaledTemplateCache {
 	return &ScaledTemplateCache{
-		cache: make(map[string][]gocv.Mat),
+		cache: make(map[templateScaleKey][]gocv.Mat),
 	}
 }
 
-// scaleKey uniquely identifies a scaled-template set by template name and the
-// exact scale parameters. Different step counts must not share a cache entry:
-// a caller requesting 20 steps would otherwise silently reuse 60 pre-built
-// mats (and the loop would iterate 60 times), defeating step-count tuning.
-func scaleKey(name string, minScale, maxScale float64, steps int) string {
-	return fmt.Sprintf("%s#%.4f#%.4f#%d", name, minScale, maxScale, steps)
+func scaleKey(name string, minScale, maxScale float64, steps int) templateScaleKey {
+	return templateScaleKey{name: name, minScale: minScale, maxScale: maxScale, steps: steps}
 }
 
 func (c *ScaledTemplateCache) GetOrBuild(name string, template gocv.Mat, minScale, maxScale float64, steps int) []gocv.Mat {
@@ -152,7 +160,7 @@ func (c *ScaledTemplateCache) Close() {
 			m.Close()
 		}
 	}
-	c.cache = make(map[string][]gocv.Mat)
+	c.cache = make(map[templateScaleKey][]gocv.Mat)
 }
 
 var globalTemplateCache = NewScaledTemplateCache()

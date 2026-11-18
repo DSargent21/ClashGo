@@ -380,3 +380,15 @@ func TestParse_SweepZeroWriteOffIsUnverified(t *testing.T) {
 		t.Errorf("valkyrie reason = %q, want the zero-count write-off explained", u.Reason)
 	}
 }
+
+// BenchmarkParseRunLog profiles the CLI report path on a real-shaped run log.
+// Parsing is per-invocation, not per frame, so this exists to tell us whether
+// the regex work is worth touching at all before changing it.
+func BenchmarkParseRunLog(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := parse(strings.NewReader(runLog), "fixture.log"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -1,3 +1,5 @@
+//go:build !cli
+
 package main
 
 // app_accounts.go — the Wails surface of the multi-account switcher.

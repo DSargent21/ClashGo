@@ -32,11 +32,13 @@ LDFLAGS := -s -w \
            -X main.commit=$(GIT_COMMIT)
 
 # min_supported in latest.json: the lowest version that can update in
-# place. For stable releases that's the version being shipped; for a
-# prerelease (e.g. 0.3.0-beta) it's the previous minor (0.2.0) so users
-# of the last stable/beta still get the update banner. Override with
+# place. It must be the previous shipped minor, not the version being
+# shipped: a 1.1.0 release has to stay installable over 1.0.0, otherwise
+# the updater classifies every 1.0.0 install as "below minimum" and
+# forces it. Special-case the first stable (1.0.0 -> 0.9.0), and keep
+# the prerelease rule (0.3.0-beta -> 0.2.0). Override with
 # MIN_SUPPORTED= on the command line when the default is wrong.
-MIN_SUPPORTED ?= $(shell echo "$(VERSION)" | awk -F'[.-]' '{ if ($$1 == "1" && $$2 == "0" && $$3 == "0") { print "0.9.0" } else if (NF > 3) { m = $$2 - 1; if (m < 0) m = 0; print $$1 "." m ".0" } else { print $$1 "." $$2 ".0" } }')
+MIN_SUPPORTED ?= $(shell echo "$(VERSION)" | awk -F'[.-]' '{ if ($$1 == "1" && $$2 == "0" && $$3 == "0") { print "0.9.0" } else if ($$2 > 0) { print $$1 "." ($$2 - 1) ".0" } else { print $$1 ".0.0" } }')
 
 # OpenCV test ldflags: the local Homebrew/sdk OpenCV build ships dylibs
 # with @rpath install names, so test binaries need the lib dir baked into
@@ -71,8 +73,13 @@ endif
 # second -Wl, flag is parsed by the Go linker as a flag of its own and the build
 # dies printing its usage (`-extldflags='a b'` does not survive either, because
 # the wails CLI splits the -ldflags string on spaces before handing it to Go).
+EXPORTED_SYMBOLS := $(CURDIR)/tools/darwin_exported_symbols.txt
 ifneq ($(OPENCV_LIBDIR),)
-    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names,-dead_strip_dylibs
+    # Only __mh_execute_header is needed in the executable's dynamic symbol
+    # table. Everything else here is a cgo wrapper export; hiding those lets
+    # the Mach-O linker dead-strip unreferenced wrappers. Same flag on both
+    # targets so the CLI and GUI do not diverge.
+    CLI_OPENCV_LDFLAGS := -extldflags=-Wl,-rpath,$(OPENCV_LIBDIR),-headerpad_max_install_names,-dead_strip,-dead_strip_dylibs,-exported_symbols_list,$(EXPORTED_SYMBOLS)
 endif
 
 # Release artifacts carry a pruned OpenCV. ClashGO calls only core, imgproc and
@@ -185,7 +192,7 @@ $(SLIM_MODFILE): tools/slim_build.sh go.mod go.sum
 build-cli: $(SLIM_MODFILE)
 	@echo "Building CLI (version=$(VERSION), commit=$(GIT_COMMIT))..."
 	@mkdir -p $(BUILD_DIR)
-	$(SLIM_ENV) MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -tags cli -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
+	$(SLIM_ENV) MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) go build -trimpath -tags cli -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
 
 # 24/7 daemon: runs the keepalive wrapper under a LaunchAgent so the farm
 # survives a closed terminal, a logout or a reboot, and caffeinate keeps the
@@ -372,7 +379,7 @@ build-gui: $(SLIM_MODFILE)
 	# environment (CI run #11 failed here on a fresh checkout; locally the
 	# same way). Skipping it works because the committed bindings are what
 	# generation would emit.
-	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) bash tools/build_gui.sh -o ClashGO -skipbindings -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)"
+	MACOSX_DEPLOYMENT_TARGET=$(MACOS_VERSION) bash tools/build_gui.sh -trimpath -o ClashGO -skipbindings -ldflags "$(LDFLAGS) $(CLI_OPENCV_LDFLAGS)"
 
 # manifest target — produces build/bin/latest.json once the zip is on
 # disk. Standalone so it can be invoked from CI without a full GUI
@@ -418,6 +425,7 @@ manifest:
 .PHONY: stage-app
 stage-app: build-gui
 	@echo "Staging assets + install helper into $(BUILD_DIR)/ClashGO.app..."
+	@rm -rf $(BUILD_DIR)/ClashGO.app/Contents/Resources/assets
 	@mkdir -p $(BUILD_DIR)/ClashGO.app/Contents/Resources/assets
 	@if [ -d assets ]; then cp -R assets/. $(BUILD_DIR)/ClashGO.app/Contents/Resources/assets/; fi
 	@if [ -f build/darwin/install_update.sh ]; then cp build/darwin/install_update.sh $(BUILD_DIR)/ClashGO.app/Contents/Resources/install_update.sh && chmod +x $(BUILD_DIR)/ClashGO.app/Contents/Resources/install_update.sh; fi

@@ -29,7 +29,9 @@ func autoLootBot(t *testing.T, auto bool, samples []autotune.Sample) *Bot {
 	cfg.Search.MinLootDarkElixir = 2000
 	cfg.Search.AutoLoot = auto
 
-	return &Bot{cfg: cfg, samples: store, logger: zerolog.Nop()}
+	b := &Bot{samples: store, logger: zerolog.Nop()}
+	b.cfgPtr.Store(cfg)
+	return b
 }
 
 func flat(gold, elixir, de, n int) []autotune.Sample {

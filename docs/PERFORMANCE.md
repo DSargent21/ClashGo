@@ -30,6 +30,10 @@ Assumes **Apple Silicon Mac**, **BlueStacks at 860×732 / 160 DPI**.
 | Scenario | ClashGO (Go) RSS | ClashGO CPU | + BlueStacks RSS | Combined RSS (est.) |
 |----------|----------------:|------------:|-----------------:|--------------------:|
 | Idle / UI only (1 FPS) | ~60–90 MB | ~1–3% (1 core) | ~800 MB–1.2 GB | ~0.9–1.3 GB |
+
+> Measured (Audit 3, 2026-11-17): packaged app idle at the dashboard was
+> **109 MB RSS / 0.0 % CPU** at both 10 s and 30 s after launch. The table above
+> is the original estimate; trust the measured line for this machine.
 | Active battle @ 15 FPS | ~90–140 MB | ~15–25% (1 core) | ~1.0–1.5 GB | ~1.1–1.7 GB |
 
 Notes:
@@ -632,6 +636,10 @@ the reference-geometry (860x732) frames **~250 → 121-123 ms**. Over the 13-fra
 mix the classify average is **425 → 306 → 236 ms** across the two passes
 (−44 % cumulative).
 
+> **Superseded (2026-11-17, Audit 3):** those numbers predate removing the
+> chest rule's dead full-frame `hammer` search and splitting the scorer. The
+> current measured corpus classify is ~12 ms/op (see Audit 3 at the end).
+
 **Exposure is a tie-break bonus, not a detection.** Every rule that carries a
 template, except the chest rule, has `MinPass >= 1` — so `matched` is already
 true when a pixel probe passes, and the template only contributes
@@ -752,34 +760,29 @@ bot's idle CPU**, i.e. the largest single item left on this list.
 
 ### P2. Bound the last full-frame search — the chest rule's `hammer`
 
-The ROI half of this is shipped (Shipped §6): six of the seven template-bearing
-rules now search 9–50 % of the frame. The seventh — `StateChestReward`, gated on
-the `hammer` template **alone** (`MinPass: 0`) — still searches the whole frame
-on **every** classified frame, and it is 213 ms of a 228 ms village classify:
-**93 % of the remaining cost, for a state that is on screen a few seconds per
-session.**
+> **Shipped (2026-11-17): the template was removed, not windowed.** The rule's
+> pixel bar (`MinPass: 3` of 4) is evaluated before the template, and a template
+> only contributes a score bonus — so `hammer` could never *create* a
+> detection, only raise a score on a frame the probes already matched. It was
+> pure cost. `StateChestReward` now carries no template and the four vault-room
+> probes are the whole detector.
+>
+> Measured with `BenchmarkListBenchmarkCorpusFrames` on the same machine:
+> `village_720p.png` early-exit classify **88.3 → 34.0 ms** (−62 %), full
+> evaluation **191.7 → 32.1 ms** (−83 %); `village_alt_720p.png` **68.4 →
+> 36.4 ms**. Detection did not move: the four real chest fixtures in
+> `internal/game/testdata/chest_test_frames/` still classify `ChestReward`, and
+> `see look -why ChestReward` reports `template hammer ok=false` on every one of
+> them — the banner never matched there either. `-why` also confirms the other
+> six template rules are all windowed, so no full-frame search remains on the
+> classify path.
+>
+> `TestClassify_ChestDetectedOnChestFrame` now runs with **no template store**
+> loaded, which pins the property that made the removal safe.
 
-It is left alone because windowing it cannot meet this pass's bar from here, and
-it is the one rule where a wrong window is not a tie-break loss but a *lost
-state*: `hammer` is 160x41 px (a wide, short banner — consistent with the
-bottom-centre "TAP TO OPEN" band the rule's comment blames for defeating pixel
-probes), no fixture in the corpus is a chest or reward screen, and the one
-authored chest rect on disk (`assets/chest_dismiss_roi.json`, `tap_roi`
-354,320-499,447) is a different screen's tap target whose own config documents an
-alternate zone, i.e. the artwork does not sit at one fixed place. Guessing here
-trades a measurable perf win for an unmeasurable detection risk.
-
-**Gate:** one live chest-reward capture.
-
-```bash
-bin/see capture -out tmp/chest.png     # with the reward screen on the device
-bin/see look -img tmp/chest.png -why StateChestReward
-```
-
-`-why` prints the matched template's location, which is the window's lower bound;
-add the same generous margin the other windows carry, then re-classify that frame.
-Once a frame exists, the window is a two-line addition to `buttonROIBounds` plus a
-fixture in the corpus manifest, and this becomes the cheapest large win left.
+Historical note: this entry originally proposed bounding the search instead,
+because the chest artwork's fixed position had never been measured. That premise
+turned out to be irrelevant — the template was never load-bearing.
 
 > Note the *other* half of the original P2 text, the scale sweep: at 720p the
 > templates are resized by k×0.9–k×1.1 (k=1.325), which grows template area by
@@ -952,3 +955,489 @@ The shipped changes all preserve behaviour by construction, and each has a test
 that fails if the property is lost — that is the standard this pass was held to,
 since none of them could be validated on a live emulator from here. The proposed
 items are the ones that cannot meet that bar without one.
+
+---
+
+# Audit 3 — profile-driven pass (2026-11-17)
+
+This pass worked from a CPU + allocation profile of the classifier benchmark
+(the closest offline stand-in for the capture loop's frame path) and from the
+committed corpus, not from the ranked list alone. Every change below was
+measured before and after on the same machine (Apple M5, OpenCV 4.10, Go
+1.25), and the corpus decisions were diffed byte-for-byte.
+
+## What the profile says
+
+`pprof` over `BenchmarkClassifyStateEarlyExit` (30 iterations, corpus mix):
+**96.5 % of samples are `runtime.cgocall`**, `gocv.MatchTemplate` is ~42 % of
+the whole run, and `gocv.IMRead` (fixture setup, outside the timed loop) is
+~55 %. The Go side of scoring is now noise. The practical consequence: the
+remaining CPU is inside the C++ template search, so a change only moves the
+number if it removes a search or makes the searched area smaller. Go-level
+cleanups are worth doing for allocation and GC pressure, not for headline CPU.
+
+## Landed
+
+### 1. Chest rule no longer searches a template it cannot use
+
+Covered in detail in P2 above. The `hammer` template could never create a
+detection (the pixel bar is evaluated first and a template only adds score),
+but every frame whose chest probes passed paid a full-frame 3-scale search.
+Removal: village corpus classify **88.3 → 34.0 ms** early-exit, **191.7 →
+32.1 ms** full evaluation. Decisions on all four real chest fixtures unchanged;
+the synthetic chest test now runs with no template store at all.
+
+### 2. One scorer, no verdict slice on the ClassifyState path
+
+`ClassifyState` used to call `evaluateRules`, which appended a `RuleVerdict` for
+every rule scored (and allocated the slice up front), then looped over the
+slice to pick the winner. `scoreRule` is now the single per-rule scorer;
+`EvaluateRules` still collects verdicts for `-why`, while `ClassifyState` calls
+`scoreRule` directly and keeps only the best. Same rules, same order, same
+template calls, same early-exit condition, same scores — without the per-frame
+slice and verdict copies.
+
+`BenchmarkClassifyStateEarlyExit`, 30x, 3 runs, same machine:
+- before: 12.32 / 16.26 / 20.95 ms (median **16.26 ms**), **16,825 B/op**,
+  16–17 allocs/op
+- after: 12.49 / 10.38 / 12.25 ms (median **12.25 ms**), **12,588 B/op**,
+  11–12 allocs/op
+- 300-iteration confirmation: **11.9 KB/op, 10 allocs/op**
+
+The wall-clock spread is benchmark noise on this laptop; the allocation drop is
+deterministic and is the part to trust. The median is 25 % lower.
+
+### 3. Splash probe scores only the two splash rules
+
+`SplashStateOnFrame` (called on every Unknown/Loading/ChestReward frame) used
+`EvaluateRules`, i.e. scored the full rule list, then filtered the verdicts for
+`TapToContinue`/`NewsSplash`. It now scores only those two rules. Independent
+rules cannot affect each other's verdicts, and the first matched splash rule in
+rule order still wins, so the answer is identical.
+
+`BenchmarkSplashStateOnFrameChest`, 30x, 3 runs:
+- before: 43.7 / 34.1 / 33.3 µs (median **34.1 µs**), **4096 B/op**, 1 alloc/op
+- after: 3.18 / 3.21 / 3.19 µs (median **3.2 µs**), **0 B/op, 0 allocs/op**
+
+`TestSplashStateMatchesFullEvaluation` pins the new path to the old full-filter
+answer across every corpus fixture and a synthetic TapToContinue frame.
+
+### 4. Scaled-template cache key is a struct, not a formatted string
+
+`GetScaledTemplates` built `fmt.Sprintf("%s#%.4f#%.4f#%d", ...)` on every call,
+and it is called once per template-bearing rule during scoring. The cache key
+is now a comparable struct (`templateScaleKey`), so the same entries match with
+no formatting allocation. The cache semantics (name + exact scale range + step
+count) are unchanged; `internal/vision` has no external key consumers.
+
+### 5. `-trimpath` on both release builds
+
+Adopted only after measuring both artifacts built with the same flags:
+- CLI: **8,538,322 → 8,472,274 bytes** (−66,048, −0.77 %)
+- GUI binary: **14,723,536 → 14,641,456 bytes** (−82,080, −0.56 %)
+
+It also removes local build paths from the binaries, which is the reproducibility
+win. `make build-cli` and `make build-gui` both still exit 0.
+
+## Rejected, with the measurement that rejects them
+
+### GOGC / GOMEMLIMIT
+
+Same benchmark, 300 iterations, peak RSS via `/usr/bin/time -l`:
+GOGC=100 → **127.4 MB**, GOGC=200 → **129.7 MB**, GOGC=400 → **129.9 MB**.
+CPU timings across three runs overlap completely (GOGC=100: 26.3/14.1/14.4 ms;
+GOGC=200: 26.3/21.0/11.5 ms). No CPU gain, +2.3–3.5 MB peak RSS. Left at the
+Go default; no `debug.SetGCPercent`/`SetMemoryLimit` in production code.
+
+### Score-only template skips
+
+The profile makes the next tempting change obvious: on a village frame the only
+template search is `btn_attack`, and MainVillage's priority is unique, so that
+search cannot change the *state* — it only adds score. Skipping it would be a
+large CPU win, but it changes the returned score and the diagnostic verdict, and
+same-priority rules elsewhere depend on that score for tie-breaks. That is a
+detection-output change, so it was not landed without a product decision.
+
+### Single-scale matching at k
+
+Cutting the 3-scale sweep would roughly third the remaining matchTemplate cost,
+but it removes ±10 % tolerance for live render/art drift. No live frame proves
+that is safe, so it stays open.
+
+## Footprint after this pass
+
+- CLI: **8,472,274 bytes** (8.1 MiB), **3 OpenCV dylibs** linked.
+  **Superseded by Audit 4:** after the CLI/GUI build split it is
+  **8,207,842 bytes**; see the Audit 4 footprint section.
+- App: **46 MB** on disk; binary **14,641,456 bytes**; Frameworks **30 MB**;
+  **3 OpenCV dylibs** linked. **Superseded by Audit 5:** 45 MB after the asset
+  and staging pass. Remaining frameworks are Homebrew's OpenCV
+  closure: `libopenblas` ~12 MB (core calls `cblas_*`), OpenEXR/Iex/Imath ~3 MB
+  via imgcodecs, `libomp` ~0.8 MB.
+- Idle packaged app, measured after this pass: **109 MB RSS, 0.0 % CPU**, stable
+  at 10 s and 30 s. (An earlier sample read 47 MB; it is not reproducible on the
+  current build, so the measured 109 MB is the number to trust.)
+- Live-raid RSS was not measured: that requires starting the bot against the
+  emulator and spending a real army. The corpus benchmark's peak (127 MB with
+  fixtures and template store resident) is the offline upper bound, not a live
+  claim.
+
+## Verification
+
+- **Corpus decisions identical.** A temporary snapshot printed
+  `state|score|rule-count` plus the splash verdict for all 10 corpus fixtures
+  and all 5 chest fixtures (42 lines). `diff` before/after: **no output**.
+- `TestSplashStateMatchesFullEvaluation` is the permanent equivalence check for
+  the new splash path; the existing early-exit equivalence test still covers
+  `ClassifyState` vs full evaluation on the corpus.
+- `./tools/verify.sh` → **VERIFY PASSED (full)**. One run hit a pre-existing
+  TempDir-cleanup flake in `TestEngine_StartStopLifecycle`; the test passed 5/5
+  in isolation under `-race` and the next full run was green.
+- `make build-cli` and `make build-gui` → exit 0; both artifacts checked with
+  `otool -L` for the 3-module OpenCV link. `docs/CHEST.md` and the P2 entry
+  above were updated so neither claims the removed template still exists.
+
+## Still open
+
+1. Custom slim OpenCV build (no LAPACK, OpenEXR, OpenMP): the only large
+   remaining footprint item, ~15–18 MB.
+2. Live-validated template gate (score-only skips) or single-scale matching:
+   needs live-art proof and a product decision about score semantics.
+3. Persistent shell pipe for the whole session: guest CPU win, timing risk.
+4. GOGC tuning: rejected above; revisit only with a live gctrace + RSS A/B.
+5. ~~CLI/GUI split of the Wails app object~~ — **done in Audit 4**: the GUI-only
+   `app*.go` files are `!cli`, and the shipped CLI links neither Wails nor Echo.
+   Further split work needs no API changes and is not planned.
+
+---
+
+# Audit 4 — damage, CLI and in-loop replay (2026-11-17)
+
+This pass followed the frame path into the end-of-battle work and the CLI's
+report path. The measurements below are from the downloaded release toolchain
+and fixtures on one machine (Apple M5, Go 1.25.0, OpenCV 4.10); none are live
+raid claims.
+
+## Profile: what the damage path actually costs
+
+`BenchmarkReadBattleResult` (20 reads, `testdata/screen_victory.png`, CPU and
+allocation profiles):
+
+- total **16.8–23.1 ms/read**, **64.5 KB/op**, **1,642 allocs/op**
+- 57 % of samples are external code; `GaussianBlur` alone is ~14.5 %,
+  `captureBattleColumn` ~22 %, `readRow` ~22 %
+- the two layout JSON reads are ~3 ms per read in the line profile — small
+  against OCR, but paid again on every settle attempt
+- `ReadDestructionPercentage` (the per-tick battle read):
+  **1.9–2.7 ms/op**, **3.7 KB/op**, **117 allocs/op**
+- `attacklog.Parse` on the real-shaped 439-line run log:
+  **0.55–0.66 ms/op**, **99 KB/op**, **352 allocs/op** — already tight; no
+  changes made there
+
+So the damage CPU is OpenCV morphology/OCR, not Go string building. The safe
+wins are avoiding repeated setup and repeated layout-file reads, not rewriting
+the OCR.
+
+## Landed
+
+### 1. Result layout resolved once per recogniser
+
+`ReadBattleResult` used to read and parse `battle_loot_rois.json` and
+`star_points.json` on every call. A recogniser now resolves them once
+(`resultLayoutOnce`); a new battle builds a new recogniser, so an on-disk ROI
+edit is still picked up on the next battle rather than needing a restart.
+
+`BenchmarkReadBattleResult` (10 iterations, 3 runs):
+- before: 16.84 / 18.73 / 23.15 ms (median **18.73 ms**), **64.5 KB/op**,
+  **1,642 allocs/op**
+- after: 11.62 / 15.61 / 18.95 ms (median **15.61 ms**), **60.6 KB/op**,
+  **1,600 allocs/op** (−16.7 % median CPU, −0.5 KB, −42 allocs)
+
+### 2. One recogniser per settle window
+
+The result loop rebuilt a `LootRecognizer` on every attempt, re-cloning and
+canonicalising all ten digit templates (up to `resultSettleAttempts` times per
+battle). The bot now builds it once and closes it after the loop. The layout
+cache above is what makes that reuse pay off.
+
+`BenchmarkResultSettleLoopRebuilt` vs `...Reused` (five reads per iteration):
+- rebuilt: median **100.10 ms**, **321.4 KB**, **8,257 allocs**
+- reused: median **99.82 ms**, **291.7 KB**, **7,965 allocs** (−9.2 % alloc,
+  −292 allocs; CPU within noise)
+
+The CPU saving is not claimed here; the allocation saving is deterministic.
+
+### 3. Battle wait shares the bot's loaded template store
+
+`WaitForBattleEndCtx` built a fresh `TemplateStore` and decoded the whole
+`assets/templates` directory per battle just to obtain the digit templates for
+the destruction OCR. The executor now takes the bot's already-loaded store
+(`SetTemplateStore`); standalone tools still fall back to loading their own and
+now close it (the old path also leaked the store for the life of the process).
+
+`BenchmarkBattleLootRecognizerSetup`:
+- owned store: **14.4–16.6 ms**, **76.0 KB**, **421 allocs** per battle
+- shared store: **64–67 µs**, **2.0 KB**, **15 allocs** per battle
+
+### 4. CLI/GUI build split
+
+The root `app*.go` files are GUI-only but were compiled into the CLI, pulling
+Wails and Echo into the shipped binary. They are now `//go:build !cli`; tests
+build without the tag and still exercise them.
+
+- CLI before split: **8,472,274 bytes** → after: **8,207,842 bytes**
+  (−264,432, −3.1 %); against the pre-`-trimpath` binary the total is
+  **8,538,322 → 8,207,842** (−330,480, −3.9 %)
+- `go list -tags cli -deps .` now contains **0** Wails or Echo packages
+- GUI binary re-measured: **14,641,472 bytes**; app bundle **46 MB** at that
+  point (**superseded by Audit 5:** 45 MB after the asset pass);
+  Frameworks **30 MB**; 3 OpenCV dylibs linked in both artifacts
+- `bot_cli -version` and `-help` run; `make build-cli` and `make build-gui`
+  both exit 0
+
+## In-loop replay
+
+The closest offline stand-in for the live loop, clearly **replayed, not live**:
+the committed corpus frames are the captures; each frame runs the real
+`ClassifyState`, and every 25th also runs `ReadBattleResult` on the result
+fixture. 600 frames, `BenchmarkReplayFrameLoop`, one test process:
+
+- **600 iterations**, 8.54 s wall, 8.83 s user + 0.20 s sys (≈1.06 core)
+- **13.05 ms/frame**, **13.1 KB/op**, **42 allocs/op**
+- RSS sampled every 100 ms: **start 98.4 MB**, **peak 130.6 MB**,
+  **end 130.6 MB**; `/usr/bin/time -l` peak RSS **135,757,824 bytes**
+- packaged app idle, same build: **112 MB at 10 s, 93 MB at 30 s, 0.0 % CPU**
+
+This excludes ADB capture, device I/O and real battle timing. It is not a
+substitute for a live-raid RSS number, which would require spending an army.
+
+## GOGC / GOMEMLIMIT re-test on the replay loop
+
+Same 600-frame replay, peak RSS from `/usr/bin/time -l`:
+
+- default: 15.98 ms/frame, **109.3 MB**
+- GOGC=200: 19.07 ms/frame, **128.0 MB**
+- GOGC=400: 26.36 ms/frame, **102.8 MB**
+
+CPU got worse at both non-default settings; the RSS values do not show a
+reliable reduction (the 400 case's lower peak did not repeat as a CPU win and
+is not a reason to raise the GC target). Production stays on the Go default;
+there is no `SetGCPercent`/`SetMemoryLimit` call.
+
+## Evidence and verification
+
+- **Corpus decisions identical.** The temporary 42-line snapshot covered all
+  10 corpus frames and 5 chest fixtures with state, score, rule-stop count and
+  splash verdict. `diff` against the baseline built from the pre-change
+  classifier: **no output**.
+- Damage fixtures: `TestLootVictory`, `TestBattleResultDefeat`,
+  `TestLootAccuracy` pass; the result reads are unchanged.
+- `./tools/verify.sh` → **VERIFY PASSED (full)**, exit 0.
+- `make build-cli` and `make build-gui` → exit 0; sizes above.
+
+## Still open
+
+1. Live-raid RSS and CPU: the replay numbers are the offline bound; a real raid
+   is needed for the live claim (and spends army).
+2. Custom slim OpenCV build: still the largest footprint item, ~15–18 MB.
+3. Single-scale template matching / score-only skips: unchanged risk, needs
+   live-art proof and a product decision.
+4. Persistent shell pipe: guest CPU only, timing risk.
+
+---
+
+# Audit 5 — shipped-asset and bundle footprint (2026-11-17)
+
+This pass measured everything the shipped product carries, then cut only what
+the measurements and a repository-wide reference search proved safe. No
+detector, button, strategy, embedded UI, firmware/dylib or runtime setting was
+removed.
+
+## Baseline (before)
+
+- `assets/`: **951,640 bytes** in **97 files**; of that `assets/templates` was
+  **930,387 bytes** (75 PNGs plus one `.bak`) and assets JSON was 6,041 bytes.
+- `web/dist` (the only GUI `go:embed` tree): **543,419 bytes**, 7 files.
+- Shipped asset bytes (`assets` + `web/dist`): **1,495,059**.
+- Bytes embedded by the shipped binaries, from `go list -deps`:
+  - CLI: **3,206** (`internal/adb/zoominject.jar` only)
+  - GUI: **546,625** (`zoominject.jar` + all of `web/dist`)
+- Loaded at steady state, measured by summing Mat storage:
+  - template store: **75 mats / 1,803,897 bytes**
+  - loot recogniser digit clones: **8,549 bytes**
+  - attack-executor unit templates: **689,139 bytes**
+  - total: **2,501,585 bytes**
+- CLI binary **8,207,842 bytes**; GUI binary **14,641,472 bytes**.
+- Packaged app: **47,495,649 bytes** total; Frameworks **31,707,920 bytes**
+  (25 dylibs); Resources **1,104,081 bytes**; `du` **46 MB**.
+- Go modules: **119** in `go list -m all`, **34** require entries;
+  `go mod tidy -diff` was empty.
+- Test fixtures, not shipped: `internal/game/testdata` 38,385,470 bytes,
+  `internal/attack/testdata` 5,335,240 bytes, `internal/bot/testdata` 123,614
+  bytes — untouched.
+
+## Cut
+
+### 1. Unused template files removed — 35 PNGs + one `.bak`, 104,725 bytes
+
+Removed after repository-wide reference checks (no `Get`, no rule `Template`,
+no strategy/config/JSON name, no dynamic `fmt.Sprintf` construction):
+
+- `btn_confirm_upgrade_cropped.png` (21,364 B)
+- `btn_recipe_use.png` (1,962 B)
+- `icn_builder_head.png` (25,992 B)
+- `hammer.png` (8,432 B) — no lookup since the chest rule dropped it
+- `chest.png` (31,042 B)
+- `Gold/digit_0..9`, `Elixir/digit_0..9`, `DE/digit_0..9` (30 files, 7,218 B):
+  the loaders construct only root-level `digit_%d`; these subfolder names were
+  never requested, and `TemplateStore.Get` is name-based.
+- `text_wall.png.bak` (8,715 B): the loader accepts only `.png`, so this was
+  never loaded.
+
+Store count falls 75 → 40 mats; decoded store storage falls by 217,464 bytes.
+
+### 2. Lossless PNG recompression — 197,775 bytes
+
+The remaining 40 template PNGs were re-encoded at maximum PNG compression
+(Pillow, `optimize=True`, `compress_level=9`). For every file, the decoded
+pixel array was compared before/after: same width, height, mode and RGBA bytes
+for all 40 (0 mismatches). 32 files shrank; the other 8 were left byte-for-byte
+unchanged. This changes container bytes only, never pixels, so template
+matching and OCR inputs are identical.
+
+### 3. Bundle staging no longer leaves stale assets
+
+`make stage-app` copied `assets/` over the built app's Resources directory
+without deleting files that no longer exist in the source tree. It now removes
+`Contents/Resources/assets` first and re-stages. A release from a clean build
+was already clean; this makes incremental builds match it and was required to
+measure the real app footprint after the asset cuts.
+
+## After (measured)
+
+- `assets/`: **649,140 bytes** in **61 files** (−302,500, **−31.8 %**);
+  `assets/templates` **627,887 bytes**, 40 PNGs (−302,500).
+- Shipped assets (`assets` + `web/dist`): **1,192,559** (−302,500, −20.2 %).
+- Embedded: CLI **3,206**, GUI **546,625** (unchanged; no embedded tree was
+  cut because every file is referenced by the app shell or updater).
+- Loaded steady state:
+  - template store: **40 mats / 1,586,433 bytes** (−217,464, −12.1 %)
+  - loot digit clones: **8,549 bytes**
+  - attack templates: **689,139 bytes**
+  - total: **2,284,121 bytes** (−217,464, **−8.7 %**)
+- CLI binary **8,207,842 bytes**; GUI binary **14,641,472 bytes** (both
+  unchanged — the cut was in external/resource payload, not code).
+- Packaged app: **47,183,339 bytes** total (−312,310, −0.66 %); Frameworks
+  **31,707,920 bytes** (25 dylibs, unchanged); Resources **801,581 bytes**
+  (−302,500); `du` **45 MB** (from 46 MB).
+- Go modules **119**, require entries **34** — unchanged; `go mod tidy -diff`
+  empty, so there was no unused module to remove. Wails/Echo remain because
+  the GUI uses them; they are already absent from the CLI dependency graph.
+
+## Why this is behavior-neutral
+
+- Removed templates have no lookup path: rule templates are the six literal
+  names in `classifier.go`; every other lookup is an explicit `Get`/button
+  name. The loader walks `.png` files but loading a file nobody asks for is not
+  behaviour, and the corpus/chest/damage paths never request these names.
+- PNG recompression was pixel-verified per file, not assumed from the encoder.
+- The 42-line corpus snapshot (all 10 corpus frames + 5 chest fixtures) with
+  state, score, **rule-stop count** and splash verdict is identical before and
+  after the asset cut: `diff` empty.
+- `TestLootVictory`, `TestBattleResultDefeat`, `TestLootAccuracy` pass after
+  the cut (the result panel uses icon/digit templates, not the removed files).
+- `./tools/verify.sh` → **VERIFY PASSED (full)**, exit 0.
+- `make build-cli` and `make build-gui` exit 0; `stage-app` re-signs and
+  verifies the bundle; `bot_cli -version` prints `ClashGO v1.0.0` and `-help`
+  exits 0; `git diff --check` is clean.
+
+## Deliberately left alone
+
+- `attack/dragon_duke.png` and `attack/royal_champion.png` are byte-identical
+  (44,059 B each) and both names are loaded by the attack executor. Deduping
+  would need alias/lifetime handling in two stores for ~44 KB decoded; not
+  worth the behavioural risk in this pass.
+- `btn_continue.png` / `btn_return_home.png` are identical (8,854 B each) and
+  both names are live lookups; kept separate.
+- `web/dist` is minified and every asset is referenced (JS/CSS/fonts/logo/
+  wails-stub); no embedded bytes cut.
+- Test fixtures and dylibs/OpenCV closure untouched; custom slim OpenCV remains
+  out of scope.
+
+# Audit 6 — compiled-artifact footprint (2026-11-17)
+
+## Change
+
+The Mach-O linker was exporting every cgo wrapper from both executables even
+though an app executable is entered through `LC_MAIN` and nothing looks those
+symbols up at runtime. `tools/darwin_exported_symbols.txt` now lists the only
+export an executable needs on this platform, `__mh_execute_header`, and the
+shared `CLI_OPENCV_LDFLAGS` used by both `make build-cli` and `make build-gui`
+adds `-dead_strip` plus `-exported_symbols_list,...`. Existing `-s -w`,
+`-trimpath` and `-dead_strip_dylibs` remain in place. The export list is a
+tracked source file, not a build-directory artifact, so a clean checkout
+reproduces the smaller binaries.
+
+`-dead_strip` removes the now-unreferenced cgo wrapper bodies; the export list
+removes their dynamic symbols. Neither changes Go code generation, template
+matching, OCR or the app's Objective-C/Wails entry points. The remaining
+Go `__gopclntab` is deliberately kept so panic traces still carry function
+names.
+
+## Before / after (exact bytes)
+
+| Artifact | Before | After | Saved |
+|---|---:|---:|---:|
+| CLI `build/bin/bot_cli` | 8,207,842 | **8,005,330** | **202,512** (−2.47%) |
+| GUI `Contents/MacOS/ClashGO` | 14,641,472 | **14,292,864** | **348,608** (−2.38%) |
+| App bundle, regular files | 47,183,339 | **46,834,343** | **348,996** (−0.74%) |
+| `Contents/Frameworks` | 31,707,920 | 31,707,920 | 0 |
+| `Contents/Resources` | 801,581 | **801,455** | **126** |
+
+Both binaries remain a single `arm64` slice with five `LC_SEGMENT_64`
+segments. `size` attributes the CLI saving as `__TEXT` 4,440,064 → 4,325,376
+(`__text` 3,590,048 → 3,505,084; `__gcc_except_tab` 11,900 → 1,488;
+`__unwind_info` 39,024 → 35,120) and `__LINKEDIT` 179,682 → 91,858. The CLI
+symbol table falls from 1,261 to 192 symbols. The GUI follows the same shape:
+`__TEXT` 7,995,392 → 7,782,400 (`__text` 6,108,400 → 5,920,152) and
+`__LINKEDIT` 278,528 → 147,456; its symbol table falls from 1,704 to 334.
+Page alignment accounts for the difference between the section totals and the
+reported file bytes.
+
+## Bundle closure audit
+
+The staged app was walked recursively with `otool -L`, resolving
+`@loader_path`, `@executable_path` and `@rpath` against each file's own
+`LC_RPATH`. All **25** regular dylibs (75 directory entries including 50
+version/alias symlinks, 31,707,920 bytes) are reachable from the executable
+through `libopencv_imgcodecs`/`imgproc`/`core`, `libc++`, OpenEXR, libtiff,
+libwebp and OpenBLAS. There are **zero** unreachable regular files, so nothing
+was removed from Frameworks and `tools/bundle_dylibs.sh` needed no change.
+`Contents/Resources` (62 files, 801,455 bytes) is the 40-template asset tree,
+16 root JSON/ROI files, 4 strategy files, `iconfile.icns` (named by
+`Info.plist`) and `install_update.sh` (invoked by the updater); all are loaded
+by the app. The one unloaded file found in this pass was
+`assets/troop_bar_config.json` (126 B): no Go, TypeScript, shell or config file
+names it and nothing constructs that name, so it was removed (assets 649,140 →
+649,014 B); the app signature shrank by a further 262 B as a consequence. No
+runtime path ever opened it.
+
+Left in place: the full 31.7 MB OpenCV/OpenEXR/OpenBLAS closure. Removing any
+of it needs a custom slim OpenCV build or dropping an image format the app
+supports, both explicitly out of scope for this pass. Also left in place: the
+Go pclntab (panic function names) and the 192/334 remaining dynamic symbols.
+
+## Behaviour proof
+
+The temporary replay harness (removed before the final gate) evaluated the
+same 21 frames at the same calibration as the pre-flag snapshot and printed
+state, score, rule-stop count and splash verdict. Both a normal test binary and
+a test binary linked with the new `-dead_strip` + export-list flags produced the
+exact 42-line snapshot (`diff` empty against `tmp/footprint_decisions_after.txt`).
+
+The damage/result fixtures (`TestLootVictory`, `TestBattleResultDefeat`,
+`TestLootAccuracy`, `TestReadDestructionPercentage_CorpusFrame`) pass in
+`./tools/verify.sh`, which ends `VERIFY PASSED (full)` exit 0. `make clean`,
+then `make build-cli`, `make stage-app` and `make bundle-dylibs` all exit 0;
+`bot_cli -version` prints `ClashGO v1.0.0 (commit: 7b95da3)`, `-help` exits 0,
+and `codesign --verify --deep --strict` passes on the staged bundle.

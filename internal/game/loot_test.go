@@ -394,6 +394,54 @@ func TestReadDestructionPercentage_CorpusFrame(t *testing.T) {
 	}
 }
 
+// ReadBattleLootHUD must read the top-right running counters on a real battle
+// frame; F.2 differences two of these reads to know what the raid has banked.
+func TestReadBattleLootHUD_CorpusFrame(t *testing.T) {
+	img := gocv.IMRead("testdata/corpus/battle_mid_720p.png", gocv.IMReadColor)
+	if img.Empty() {
+		t.Skip("no battle_mid_720p.png")
+	}
+	defer img.Close()
+	lr := newTestLootRecognizer(t)
+	got, err := lr.ReadBattleLootHUD(img)
+	if err != nil {
+		t.Fatalf("ReadBattleLootHUD: %v", err)
+	}
+	want := Resources{Gold: 5694098, Elixir: 6791525, DarkElixir: 58364}
+	if got != want {
+		t.Fatalf("ReadBattleLootHUD = %+v, want %+v (measured from the recorded frame's counters)", got, want)
+	}
+}
+
+// The reader must be resolution-aware: the same recorded frame resized to the
+// live 1024x768 geometry has to yield the same three counters, not a hardcoded
+// 720p ROI read. Skips when the gitignored live corpus frame is absent.
+func TestReadBattleLootHUD_ResizedTo1024x768(t *testing.T) {
+	img := gocv.IMRead("testdata/corpus/battle_mid_720p.png", gocv.IMReadColor)
+	if img.Empty() {
+		t.Skip("no battle_mid_720p.png")
+	}
+	defer img.Close()
+	lr := newTestLootRecognizer(t)
+
+	want := Resources{Gold: 5694098, Elixir: 6791525, DarkElixir: 58364}
+	at720, err := lr.ReadBattleLootHUD(img)
+	if err != nil || at720 != want {
+		t.Fatalf("720p read = %+v, %v; want %+v", at720, err, want)
+	}
+
+	resized := gocv.NewMat()
+	defer resized.Close()
+	gocv.Resize(img, &resized, image.Pt(1024, 768), 0, 0, gocv.InterpolationLinear)
+	at768, err := lr.ReadBattleLootHUD(resized)
+	if err != nil {
+		t.Fatalf("1024x768 read: %v", err)
+	}
+	if at768 != want {
+		t.Fatalf("1024x768 read = %+v, want %+v (720p read was %+v)", at768, want, at720)
+	}
+}
+
 func TestVillageResources_IsFull(t *testing.T) {
 	vr := VillageResources{
 		GoldFillPercent:   98.5,
@@ -447,5 +495,3 @@ func TestVillageResources_IsFull(t *testing.T) {
 		t.Errorf("expected true under ALL_3 rule when all 3 resources full")
 	}
 }
-
-

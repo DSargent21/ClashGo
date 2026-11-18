@@ -2,11 +2,13 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/paths"
+	"github.com/rs/zerolog/log"
 )
 
 type BotConfig struct {
@@ -271,6 +273,15 @@ type AttackConfig struct {
 	// (human-paced); a config file that sets it explicitly, including 0 to
 	// disable the pause, keeps that value.
 	MinSecondsBetweenAttacks int `json:"min_seconds_between_attacks"`
+
+	// EndOnLootTarget ends the battle once this raid has gained the configured
+	// loot, read from the running HUD counters. Off by default; a zero target
+	// disables that resource. It is independent of end_at_percent: whichever
+	// threshold is reached first ends the battle.
+	EndOnLootTarget  bool `json:"end_on_loot_target"`
+	LootTargetGold   int  `json:"loot_target_gold"`
+	LootTargetElixir int  `json:"loot_target_elixir"`
+	LootTargetDE     int  `json:"loot_target_de"`
 }
 
 // SearchConfig is the base-selection policy. It holds only knobs the search
@@ -682,9 +693,20 @@ func ResolveDisplayScale(override float64) (scale float64, source string, depart
 	}
 }
 
+// LoadOrDefault returns the configured settings, or defaults when there is no
+// usable file. A missing file is the normal first run and stays silent; any
+// other failure means a file exists but cannot be used, which is logged so a
+// corrupt or unreadable config does not look like "all my settings vanished".
+// The file is never rewritten here.
 func LoadOrDefault(path string) *BotConfig {
 	cfg, err := Load(path)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Warn().
+				Err(err).
+				Str("path", path).
+				Msg("config unreadable; running on defaults and leaving the existing file untouched")
+		}
 		return DefaultConfig()
 	}
 	return cfg

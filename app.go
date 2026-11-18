@@ -1,3 +1,5 @@
+//go:build !cli
+
 package main
 
 import (
@@ -6,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -209,11 +212,10 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	a.mu.Unlock()
 
-	// Persist final stats. saveStats writes through the async writer;
-	// with the worker now flushing synchronously-blocked requests
-	// immediately (see AsyncWriter.worker), this returns in ~1ms
-	// instead of stalling the close for up to the 5s ticker.
-	a.saveStats()
+	// Persist final stats before the process can go away. This is the
+	// shutdown path, so it uses the explicit on-disk write instead of the
+	// queue: an enqueued write would die with the process.
+	a.saveStatsSync()
 }
 
 // forwardUpdaterStatus pushes the updater's status to the React side
@@ -246,7 +248,14 @@ func (a *App) forwardUpdaterStatus(ctx context.Context) {
 	}
 }
 
-func (a *App) saveStats() {
+// saveStats queues the snapshot; the async worker writes it. Callers that are
+// about to exit (shutdown, updater) use saveStatsSync instead so the file is on
+// disk before the process goes away.
+func (a *App) saveStats() { a.writeStats(false) }
+
+func (a *App) saveStatsSync() { a.writeStats(true) }
+
+func (a *App) writeStats(sync bool) {
 	a.mu.Lock()
 	stats := a.lastStats
 	if a.bot != nil {
@@ -260,8 +269,15 @@ func (a *App) saveStats() {
 		return
 	}
 
-	if err := bot.AsyncWriteFile(paths.ResolveConfig("stats.json"), bytes, 0644); err != nil {
-		log.Error().Err(err).Msg("failed to write stats.json")
+	path := paths.ResolveConfig("stats.json")
+	if sync {
+		if err := bot.WriteFileSync(path, bytes, 0644); err != nil {
+			log.Error().Err(err).Msg("failed to write stats.json")
+		}
+		return
+	}
+	if err := bot.AsyncWriteFile(path, bytes, 0644); err != nil {
+		log.Error().Err(err).Msg("failed to queue stats.json")
 	}
 }
 
@@ -475,7 +491,7 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Error().Interface("panic", r).Msg("recovered panic during discarded-bot teardown")
+						log.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic during discarded-bot teardown")
 					}
 				}()
 				b.Stop()
@@ -502,7 +518,7 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Error().Interface("panic", r).Msg("recovered panic during discarded-bot teardown")
+							log.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic during discarded-bot teardown")
 						}
 					}()
 					b.Stop()
@@ -522,7 +538,7 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Error().Interface("panic", r).Msg("recovered panic during failed-start teardown")
+						log.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic during failed-start teardown")
 					}
 				}()
 				b.Stop()
@@ -628,7 +644,7 @@ func (a *App) StopBot() BotStatus {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error().Interface("panic", r).Msg("recovered panic during async bot stop")
+				log.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic during async bot stop")
 			}
 		}()
 		stopBotInstance(bot)
@@ -698,7 +714,7 @@ func (a *App) watchSessionEnd(done <-chan struct{}, stillCurrent func() bool, st
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error().Interface("panic", r).Msg("recovered panic while watching for the bot session end")
+				log.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic while watching for the bot session end")
 			}
 		}()
 
@@ -729,7 +745,7 @@ func (a *App) watchSessionEnd(done <-chan struct{}, stillCurrent func() bool, st
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Error().Interface("panic", r).Msg("recovered panic during async session-end teardown")
+					log.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("recovered panic during async session-end teardown")
 				}
 			}()
 			teardown()
@@ -868,7 +884,7 @@ func (a *App) refreshHistory() {
 }
 
 // SaveConfig updates config.json settings
-func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool, stall int) error {
+func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strategyFile string, searchEnabled bool, stall int, endOnLootTarget bool, lootTargetGold, lootTargetElixir, lootTargetDE int) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -879,6 +895,10 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	cfg.Upgrade.UpgradeWalls = upgradeWalls
 	cfg.Search.Enabled = searchEnabled
 	cfg.Attack.StallTimerSeconds = stall
+	cfg.Attack.EndOnLootTarget = endOnLootTarget
+	cfg.Attack.LootTargetGold = lootTargetGold
+	cfg.Attack.LootTargetElixir = lootTargetElixir
+	cfg.Attack.LootTargetDE = lootTargetDE
 	if strategyFile != "" {
 		if !strategyFileExists(strategyFile) {
 			return fmt.Errorf("strategy file %q is not on disk", strategyFile)
@@ -901,7 +921,7 @@ func (a *App) SaveConfig(minGold, minElixir, minDE int, upgradeWalls bool, strat
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+	return paths.WriteFileAtomic(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // SaveFullConfig saves the complete BotConfig structure to config.json.
@@ -921,7 +941,7 @@ func (a *App) SaveFullConfig(cfg config.BotConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+	return paths.WriteFileAtomic(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // SetStorageConfig updates storage full halting options.
@@ -950,7 +970,7 @@ func (a *App) SetStorageConfig(haltGold, haltElixir, haltDE bool, rule string, f
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+	return paths.WriteFileAtomic(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // SetScheduleConfig updates 24/7 scheduler and anti-ban settings.
@@ -981,7 +1001,7 @@ func (a *App) SetScheduleConfig(enabled bool, startHour, endHour string, session
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+	return paths.WriteFileAtomic(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // SetAutoUpgradeConfig updates the automated upgrade options (Builders, Lab, Pets, Filters).
@@ -1040,7 +1060,7 @@ func (a *App) SetAutoUpgradeConfig(
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+	return paths.WriteFileAtomic(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // SaveUpgradeSetup applies the launch screen's auto-upgrade page: whether
@@ -1148,7 +1168,7 @@ func (a *App) SetStrategyArmySlot(strategyName string, slot int) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+	return paths.WriteFileAtomic(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // SetStrategyAutoEnd configures whether auto-end at 50% damage is enabled for a strategy.
@@ -1175,7 +1195,7 @@ func (a *App) SetStrategyAutoEnd(strategyName string, enabled bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ResolveConfig("config.json"), bytes, 0644)
+	return paths.WriteFileAtomic(paths.ResolveConfig("config.json"), bytes, 0644)
 }
 
 // strategyFileExists reports whether a strategy reference names a YAML file
@@ -1322,9 +1342,9 @@ func (a *App) InstallAndRestart() error {
 		_ = a.StopBot()
 	}
 
-	// Step 2: flush persistent stats. saveStats is idempotent + safe
-	// even when no bot is running.
-	a.saveStats()
+	// Step 2: flush persistent stats synchronously; the helper is about to
+	// swap the bundle and relaunch, so a queued write would be lost.
+	a.saveStatsSync()
 
 	// Step 3: detach helper script for in-place bundle swap.
 	// Returns (started, error). If the helper is unavailable (e.g. running

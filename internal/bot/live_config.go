@@ -14,7 +14,7 @@ import (
 // wiring bot has no attack executor, for example).
 type LiveConfig struct {
 	// Config is the pointer the capture loop, storage gate, wall upgrade and
-	// scheduler gate read directly through b.cfg.
+	// scheduler gate read directly through b.cfg().
 	Config config.BotConfig
 	// ArmySlot is the recipe slot resolved from Attack.StrategySlots and the
 	// strategy YAML — what the train menu will arm.
@@ -26,21 +26,21 @@ type LiveConfig struct {
 	Upgrade *config.UpgradeConfig
 }
 
-// LiveConfig snapshots the effective configuration. Sequential access only:
-// the sub-manager copies are replaced wholesale by UpdateConfig, never mutated
-// in place, and this is a diagnostic/verification read.
+// LiveConfig snapshots the effective configuration. Every part is read through
+// the owner's own publication mechanism (atomic pointer or mutex-guarded copy),
+// so it is safe to call while a save is in flight.
 func (b *Bot) LiveConfig() LiveConfig {
 	out := LiveConfig{}
-	if b.cfg != nil {
-		out.Config = *b.cfg
-		out.ArmySlot = b.armySlot
+	if cfg := b.cfg(); cfg != nil {
+		out.Config = *cfg
+		out.ArmySlot = int(b.armySlot.Load())
 	}
 	if b.scheduler != nil {
-		cfg := b.scheduler.cfg
+		cfg := b.scheduler.Config()
 		out.Scheduler = &cfg
 	}
 	if b.builderManager != nil {
-		cfg := b.builderManager.cfg
+		cfg := b.builderManager.settings()
 		out.Upgrade = &cfg
 	}
 	return out
@@ -56,8 +56,8 @@ func NewHeadlessBot(cfg *config.BotConfig) *Bot {
 	if cfg == nil {
 		return b
 	}
-	b.cfg = cfg
-	b.armySlot = resolveArmySlot(cfg)
+	b.cfgPtr.Store(cfg)
+	b.armySlot.Store(int32(resolveArmySlot(cfg)))
 	b.scheduler = NewScheduler(cfg.Schedule, b.logger)
 	b.builderManager = NewBuilderManager(nil, nil, cfg.Upgrade, b.logger)
 	return b

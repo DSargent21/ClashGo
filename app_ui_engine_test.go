@@ -52,7 +52,7 @@ func diskConfig(t *testing.T) *config.BotConfig {
 func TestEngine_SearchAndAttackControls(t *testing.T) {
 	a := engineHarness(t)
 
-	if err := a.SaveConfig(510000, 520000, 5300, true, "valk_spam.yaml", false, 77); err != nil {
+	if err := a.SaveConfig(510000, 520000, 5300, true, "valk_spam.yaml", false, 77, false, 0, 0, 0); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
@@ -250,7 +250,7 @@ func TestEngine_UpgradeAndPetControlsReachBuilderManager(t *testing.T) {
 func TestEngine_ArmySlotAndAutoEndReachEngine(t *testing.T) {
 	a := engineHarness(t)
 
-	if err := a.SaveConfig(400000, 400000, 2000, false, "valk_spam.yaml", true, 30); err != nil {
+	if err := a.SaveConfig(400000, 400000, 2000, false, "valk_spam.yaml", true, 30, false, 0, 0, 0); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 	if err := a.SetStrategyArmySlot("assets/strategies/valk_spam.yaml", 3); err != nil {
@@ -527,6 +527,14 @@ func TestEngine_StartStopLifecycle(t *testing.T) {
 	if again := a.StopBot(); again.Running {
 		t.Fatalf("second StopBot = %+v, want not running", again)
 	}
+
+	// StopBot detaches its teardown, whose last act is saveStats. Let that
+	// write land before t.TempDir's cleanup removes the tree it writes into;
+	// otherwise cleanup fails with "directory not empty" when it wins the race.
+	waitFor(t, "stats flushed", func() bool {
+		_, err := os.Stat(filepath.Join(os.Getenv("CLASHGO_CONFIG_DIR"), "stats.json"))
+		return err == nil
+	})
 }
 
 func waitFor(t *testing.T, what string, ok func() bool) {

@@ -1,0 +1,43 @@
+# Verify — run the same gate an agent session must pass locally.
+#
+# `./tools/verify.sh` is the single definition of "done": vet, tests,
+# `go test -race ./...`, and `go build ./...`. Running it here means a green
+# local gate cannot hide behind a machine-specific setup difference.
+#
+# No release publishing here; release.yml owns tags. Both workflows install
+# OpenCV through .github/actions/install-opencv4 so the pinned keg and its
+# pkg-config path cannot drift between them.
+
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: tools/verify.sh (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Install OpenCV 4 (gocv build dependency)
+        uses: ./.github/actions/install-opencv4
+
+      - name: Run verify gate
+        run: ./tools/verify.sh

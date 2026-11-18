@@ -31,6 +31,17 @@ type LootRecognizer struct {
 	digitCanon     []gocv.Mat
 	logger         zerolog.Logger
 	Debug          bool
+
+	// The result-panel layout comes from two small JSON files. A recogniser is
+	// reused for every read while one result panel settles (up to
+	// resultSettleAttempts reads), and the file content cannot change mid-
+	// settle, so resolve it once per recogniser instead of on each read. A new
+	// battle builds a new recogniser, so an on-disk edit is still picked up on
+	// the next battle rather than requiring a restart.
+	resultLayoutOnce sync.Once
+	battleZone       image.Rectangle
+	bonusZone        image.Rectangle
+	starPoints       [3]image.Point
 }
 
 // lootKernels are static structuring elements reused across every readRow
@@ -164,6 +175,64 @@ func (lr *LootRecognizer) ReadAvailableLoot(screen gocv.Mat) (Resources, error) 
 	return report.Resources, nil
 }
 
+// battleHUDLootRows are the player's three running resource counters in the
+// top-right corner of a battle frame. Geometry is authored at the calibrated
+// 1280x720 frame and scaled to the actual capture, never hardcoded to one
+// resolution: the HUD anchors to the top-right, so a 1024x768 capture puts the
+// same rows at the same fractions of width/height. Measured on the 1280x720
+// battle frames: gold digits at y 32-44, elixir at 72-87, DE at 114-128; the
+// ROI deliberately stops before the resource icon (x≈1241) — including it
+// makes readRow read the icon's ring as a digit (observed: 56940981 instead of
+// 5694098).
+const (
+	battleHUDRefW = 1280
+	battleHUDRefH = 720
+)
+
+var battleHUDLootRows = []struct {
+	resource string
+	y0, y1   int // reference pixels at 720p
+}{
+	{"gold", 22, 50},
+	{"elixir", 65, 94},
+	{"dark_elixir", 104, 137},
+}
+
+// ReadBattleLootHUD reads the player's running resource counters shown in the
+// top-right HUD of a battle frame. The caller differences two reads (battle
+// start vs now) to get the loot gained this raid; see attack.lootTargetReached.
+// It returns an error when none of the three rows produced a plausible count,
+// which is the signal that this HUD geometry is not the one the reader was
+// measured on — better no early end than ending on a fabricated threshold.
+func (lr *LootRecognizer) ReadBattleLootHUD(screen gocv.Mat) (Resources, error) {
+	if screen.Empty() {
+		return Resources{}, fmt.Errorf("battle loot HUD: empty frame")
+	}
+	w, h := screen.Cols(), screen.Rows()
+	if w < 600 || h < 400 {
+		return Resources{}, fmt.Errorf("battle loot HUD: frame %dx%d too small", w, h)
+	}
+
+	// Scale the authored 720p ROIs by the capture's own dimensions. This is
+	// what makes a 1024x768 frame read the same counters as 1280x720: the HUD
+	// is anchored top-right, not laid out in absolute pixels.
+	sx, sy := float64(w)/battleHUDRefW, float64(h)/battleHUDRefH
+	x0, x1 := int(0.76*float64(battleHUDRefW)*sx), int(0.97*float64(battleHUDRefW)*sx)
+	values := make([]int, len(battleHUDLootRows))
+	found := 0
+	for i, row := range battleHUDLootRows {
+		roi := image.Rect(x0, int(float64(row.y0)*sy), x1, int(float64(row.y1)*sy))
+		values[i] = lr.readRow(screen, roi)
+		if values[i] > 0 {
+			found++
+		}
+	}
+	if found == 0 {
+		return Resources{}, fmt.Errorf("battle loot HUD: no readable counters at %dx%d", w, h)
+	}
+	return Resources{Gold: values[0], Elixir: values[1], DarkElixir: values[2]}, nil
+}
+
 func (lr *LootRecognizer) ReadDestructionPercentage(screen gocv.Mat, roi image.Rectangle) int {
 	if roi.Empty() {
 		return 0
@@ -199,32 +268,9 @@ func (lr *LootRecognizer) ReadDestructionPercentage(screen gocv.Mat, roi image.R
 func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error) {
 	var result BattleResult
 
-	// Reference-resolution search zones (860x732). The battle zone's left
-	// edge starts at 300: digit rows begin at x>=325 on every observed
-	// layout, and the victory-ribbon tail bleeding into the panel's left
-	// edge (x~240-272) otherwise forms a phantom "text line" that displaces
-	// the gold row.
-	battleZone := battleLootSearch
-	bonusZone := bonusLootSearch
-
-	if data, err := os.ReadFile(paths.Resolve("battle_loot_rois.json")); err == nil {
-		var custom struct {
-			BattleSearch struct{ X1, Y1, X2, Y2 int } `json:"battleSearch"`
-			BonusSearch  struct{ X1, Y1, X2, Y2 int } `json:"bonusSearch"`
-		}
-		if json.Unmarshal(data, &custom) == nil {
-			if custom.BattleSearch.X2 > custom.BattleSearch.X1 {
-				battleZone = image.Rect(custom.BattleSearch.X1, custom.BattleSearch.Y1, custom.BattleSearch.X2, custom.BattleSearch.Y2)
-			}
-			if custom.BonusSearch.X2 > custom.BonusSearch.X1 {
-				bonusZone = image.Rect(custom.BonusSearch.X1, custom.BonusSearch.Y1, custom.BonusSearch.X2, custom.BonusSearch.Y2)
-			}
-			lr.logger.Info().Msg("loaded custom battle loot ROIs")
-		}
-	}
-
-	lr.captureBattleColumn(screen, battleZone, &result.Loot)
-	lr.captureBattleColumn(screen, bonusZone, &result.Bonus)
+	lr.resultLayoutOnce.Do(lr.loadResultLayout)
+	lr.captureBattleColumn(screen, lr.battleZone, &result.Loot)
+	lr.captureBattleColumn(screen, lr.bonusZone, &result.Bonus)
 
 	// Star detection. Two complementary passes share one goal: a defeat
 	// (0 stars) must NEVER read as a victory, and a victory must read its
@@ -233,26 +279,55 @@ func (lr *LootRecognizer) ReadBattleResult(screen gocv.Mat) (BattleResult, error
 	// stars, and it read the ~110-luminance gray placeholder rings on a
 	// DEFEAT screen as stars — a live 35% defeat was reported as "2⭐".
 	// See readStars for the two-pass design.
-	starPoints := []image.Point{
+	result.Stars = lr.readStars(screen, lr.starPoints[:])
+
+	return result, nil
+}
+
+// loadResultLayout resolves the result-panel search zones and star points once
+// per recogniser. Defaults are the authored reference geometry; the JSON files
+// can override them exactly as before.
+func (lr *LootRecognizer) loadResultLayout() {
+	// Reference-resolution search zones (860x732). The battle zone's left
+	// edge starts at 300: digit rows begin at x>=325 on every observed
+	// layout, and the victory-ribbon tail bleeding into the panel's left
+	// edge (x~240-272) otherwise forms a phantom "text line" that displaces
+	// the gold row.
+	lr.battleZone = battleLootSearch
+	lr.bonusZone = bonusLootSearch
+	lr.starPoints = [3]image.Point{
 		{X: 327, Y: 205}, // Left
 		{X: 430, Y: 196}, // Middle
 		{X: 535, Y: 210}, // Right
 	}
+
+	if data, err := os.ReadFile(paths.Resolve("battle_loot_rois.json")); err == nil {
+		var custom struct {
+			BattleSearch struct{ X1, Y1, X2, Y2 int } `json:"battleSearch"`
+			BonusSearch  struct{ X1, Y1, X2, Y2 int } `json:"bonusSearch"`
+		}
+		if json.Unmarshal(data, &custom) == nil {
+			if custom.BattleSearch.X2 > custom.BattleSearch.X1 {
+				lr.battleZone = image.Rect(custom.BattleSearch.X1, custom.BattleSearch.Y1, custom.BattleSearch.X2, custom.BattleSearch.Y2)
+			}
+			if custom.BonusSearch.X2 > custom.BonusSearch.X1 {
+				lr.bonusZone = image.Rect(custom.BonusSearch.X1, custom.BonusSearch.Y1, custom.BonusSearch.X2, custom.BonusSearch.Y2)
+			}
+			lr.logger.Info().Msg("loaded custom battle loot ROIs")
+		}
+	}
+
 	if data, err := os.ReadFile(paths.Resolve("star_points.json")); err == nil {
 		var custom struct {
 			Stars []struct{ X, Y int } `json:"stars"`
 		}
 		if json.Unmarshal(data, &custom) == nil && len(custom.Stars) == 3 {
 			for i := 0; i < 3; i++ {
-				starPoints[i] = image.Pt(custom.Stars[i].X, custom.Stars[i].Y)
+				lr.starPoints[i] = image.Pt(custom.Stars[i].X, custom.Stars[i].Y)
 			}
 			lr.logger.Info().Msg("loaded custom star points")
 		}
 	}
-
-	result.Stars = lr.readStars(screen, starPoints)
-
-	return result, nil
 }
 
 // ---------------------------------------------------------------------------

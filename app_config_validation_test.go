@@ -64,11 +64,11 @@ func TestValidation_SearchFormRejectsBadValues(t *testing.T) {
 		label string
 		call  func() error
 	}{
-		{"negative gold floor", func() error { return a.SaveConfig(-1, 0, 0, false, "", true, 30) }},
-		{"floor above UI ceiling", func() error { return a.SaveConfig(50_000_000, 0, 0, false, "", true, 30) }},
-		{"stall timer below the useful floor", func() error { return a.SaveConfig(0, 0, 0, false, "", true, 5) }},
-		{"stall timer above UI ceiling", func() error { return a.SaveConfig(0, 0, 0, false, "", true, 601) }},
-		{"strategy that is not on disk", func() error { return a.SaveConfig(0, 0, 0, false, "no_such_army.yaml", true, 30) }},
+		{"negative gold floor", func() error { return a.SaveConfig(-1, 0, 0, false, "", true, 30, false, 0, 0, 0) }},
+		{"floor above UI ceiling", func() error { return a.SaveConfig(50_000_000, 0, 0, false, "", true, 30, false, 0, 0, 0) }},
+		{"stall timer below the useful floor", func() error { return a.SaveConfig(0, 0, 0, false, "", true, 5, false, 0, 0, 0) }},
+		{"stall timer above UI ceiling", func() error { return a.SaveConfig(0, 0, 0, false, "", true, 601, false, 0, 0, 0) }},
+		{"strategy that is not on disk", func() error { return a.SaveConfig(0, 0, 0, false, "no_such_army.yaml", true, 30, false, 0, 0, 0) }},
 	}
 	for _, c := range cases {
 		before := snapshotValidation(t, a)
@@ -76,7 +76,7 @@ func TestValidation_SearchFormRejectsBadValues(t *testing.T) {
 	}
 
 	// 0 is the form's "disabled" value and the engine honours it.
-	if err := a.SaveConfig(0, 0, 0, false, "", true, 0); err != nil {
+	if err := a.SaveConfig(0, 0, 0, false, "", true, 0, false, 0, 0, 0); err != nil {
 		t.Fatalf("stall timer 0 (disabled) rejected: %v", err)
 	}
 	if got := a.bot.LiveConfig().Config.Attack.StallTimerSeconds; got != 0 {
@@ -84,7 +84,7 @@ func TestValidation_SearchFormRejectsBadValues(t *testing.T) {
 	}
 
 	// The same form with valid values still lands in disk and live config.
-	if err := a.SaveConfig(510000, 520000, 5300, true, "valk_spam.yaml", true, 45); err != nil {
+	if err := a.SaveConfig(510000, 520000, 5300, true, "valk_spam.yaml", true, 45, false, 0, 0, 0); err != nil {
 		t.Fatalf("valid search form rejected: %v", err)
 	}
 	if got := a.bot.LiveConfig().Config.Search.MinLootGold; got != 510000 {
@@ -204,7 +204,7 @@ func TestValidation_StrategyOverridesRejectBadReferences(t *testing.T) {
 
 	// The slot only takes effect for the active strategy, which is the
 	// arrangement the UI produces (army chosen, then slot picked).
-	if err := a.SaveConfig(0, 0, 0, false, "valk_spam.yaml", true, 30); err != nil {
+	if err := a.SaveConfig(0, 0, 0, false, "valk_spam.yaml", true, 30, false, 0, 0, 0); err != nil {
 		t.Fatalf("select strategy: %v", err)
 	}
 	if err := a.SetStrategyArmySlot("valk_spam.yaml", 3); err != nil {

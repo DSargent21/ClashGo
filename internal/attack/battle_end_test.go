@@ -136,7 +136,7 @@ func TestResolveEndAtPercent_ValkDefaultsAndOverrides(t *testing.T) {
 
 func TestResolveStallTimerSeconds(t *testing.T) {
 	cfg := &config.AttackConfig{StallTimerSeconds: 30}
-	
+
 	// 1. Without strategy override, uses config value
 	stratNoOverride := &strategy.DynamicStrategy{Name: "Generic"}
 	if got := resolveStallTimerSeconds(cfg, stratNoOverride); got != 30 {
@@ -613,5 +613,55 @@ func TestBattleEndContextCancellationWithZeroStrategy(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled wait did not return promptly")
+	}
+}
+
+// F.2: the loot-target auto-end must fire only on gains since the battle
+// baseline, only for configured resources, and only when enabled. A threshold
+// already met on entry ends immediately (the test calls the decision with
+// start == now and a target above zero only when the accumulated gain is
+// there), and a zero target never ends.
+func TestLootTargetReached_Semantics(t *testing.T) {
+	on := &config.AttackConfig{
+		EndOnLootTarget:  true,
+		LootTargetGold:   500_000,
+		LootTargetElixir: 0,
+		LootTargetDE:     5_000,
+	}
+	off := &config.AttackConfig{LootTargetGold: 500_000}
+	zero := &config.AttackConfig{EndOnLootTarget: true}
+
+	base := game.Resources{Gold: 1_000_000, Elixir: 2_000_000, DarkElixir: 50_000}
+	cases := []struct {
+		name  string
+		cfg   *config.AttackConfig
+		start game.Resources
+		now   game.Resources
+		want  bool
+	}{
+		{"disabled never ends", off, base, game.Resources{Gold: 9_000_000, Elixir: 9_000_000, DarkElixir: 999_999}, false},
+		{"all targets zero never ends", zero, base, game.Resources{Gold: 9_000_000}, false},
+		{"below all targets", on, base, game.Resources{Gold: 1_499_999, Elixir: 2_000_000, DarkElixir: 54_999}, false},
+		{"gold exactly at target", on, base, game.Resources{Gold: 1_500_000, Elixir: 2_000_000, DarkElixir: 50_000}, true},
+		{"DE exactly at target", on, base, game.Resources{Gold: 1_000_000, Elixir: 2_000_000, DarkElixir: 55_000}, true},
+		{"dark elixir gain ignored when no target", &config.AttackConfig{EndOnLootTarget: true, LootTargetGold: 1}, base, game.Resources{Gold: 1_000_000, DarkElixir: 999_999}, false},
+		{"HUD went backwards, no negative gain", on, base, game.Resources{Gold: 1, Elixir: 1, DarkElixir: 1}, false},
+		{"nil config", nil, base, game.Resources{Gold: 9_000_000}, false},
+	}
+	for _, tc := range cases {
+		if got := lootTargetReached(tc.cfg, tc.start, tc.now); got != tc.want {
+			t.Errorf("%s: lootTargetReached = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A target already satisfied by the baseline-to-first-tick difference ends on
+// the first evaluation, not one tick later.
+func TestLootTargetReached_ThresholdMetOnEntry(t *testing.T) {
+	cfg := &config.AttackConfig{EndOnLootTarget: true, LootTargetGold: 1}
+	start := game.Resources{Gold: 1_000_000}
+	now := game.Resources{Gold: 1_000_001}
+	if !lootTargetReached(cfg, start, now) {
+		t.Fatal("a one-unit gain against a 1-unit target must end the raid on the first evaluation")
 	}
 }

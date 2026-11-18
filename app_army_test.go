@@ -74,7 +74,7 @@ func TestArmyControlsFlowThroughToPlans(t *testing.T) {
 	if err := a.SetStrategyAutoEnd("valk_spam.yaml", false); err != nil {
 		t.Fatalf("SetStrategyAutoEnd: %v", err)
 	}
-	if err := a.SaveConfig(400000, 400000, 2000, false, "valk_spam.yaml", true, 30); err != nil {
+	if err := a.SaveConfig(400000, 400000, 2000, false, "valk_spam.yaml", true, 30, false, 0, 0, 0); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 

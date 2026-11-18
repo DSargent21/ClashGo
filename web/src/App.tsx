@@ -278,6 +278,10 @@ function App() {
   const [searchEnabled, setSearchEnabled] = useState(true);
   const [upgradeWalls, setUpgradeWalls] = useState(false);
   const [stallTimer, setStallTimer] = useState(30);
+  const [endOnLootTarget, setEndOnLootTarget] = useState(false);
+  const [lootTargetGold, setLootTargetGold] = useState(0);
+  const [lootTargetElixir, setLootTargetElixir] = useState(0);
+  const [lootTargetDE, setLootTargetDE] = useState(0);
   const [strategySlots, setStrategySlots] = useState<Record<string, number>>({});
   const [strategyAutoEnd, setStrategyAutoEnd] = useState<Record<string, boolean>>({});
 
@@ -359,6 +363,10 @@ function App() {
         setUpgradeWalls(conf.upgrade.upgrade_walls);
         setSelectedStrategy(conf.attack.strategy_file);
         setStallTimer(conf.attack.stall_timer_seconds);
+        setEndOnLootTarget(conf.attack.end_on_loot_target ?? false);
+        setLootTargetGold(conf.attack.loot_target_gold ?? 0);
+        setLootTargetElixir(conf.attack.loot_target_elixir ?? 0);
+        setLootTargetDE(conf.attack.loot_target_de ?? 0);
         if (conf.attack.strategy_slots) {
           setStrategySlots(conf.attack.strategy_slots);
         }
@@ -620,6 +628,10 @@ function App() {
       selectedStrategy,
       searchEnabled,
       stallTimer,
+      endOnLootTarget,
+      lootTargetGold,
+      lootTargetElixir,
+      lootTargetDE,
     );
     await SetStorageConfig(
       haltGold,
@@ -958,6 +970,10 @@ function App() {
         file,
         searchEnabled,
         stallTimer,
+        endOnLootTarget,
+        lootTargetGold,
+        lootTargetElixir,
+        lootTargetDE,
       );
       setSelectedStrategy(file);
       await refreshArmyPlans();
@@ -967,7 +983,7 @@ function App() {
     }
   }, [
     goldThreshold, elixirThreshold, deThreshold, upgradeWalls,
-    searchEnabled, stallTimer, refreshArmyPlans,
+    searchEnabled, stallTimer, endOnLootTarget, lootTargetGold, lootTargetElixir, lootTargetDE, refreshArmyPlans,
   ]);
 
   const configProps = useMemo(() => ({
@@ -977,6 +993,10 @@ function App() {
       searchEnabled, setSearchEnabled,
       upgradeWalls, setUpgradeWalls,
       stallTimer, setStallTimer,
+      endOnLootTarget, setEndOnLootTarget,
+      lootTargetGold, setLootTargetGold,
+      lootTargetElixir, setLootTargetElixir,
+      lootTargetDE, setLootTargetDE,
       autoLoot: autotune,
       autoLootBusy: autotuneBusy,
       onToggleAutoLoot: handleToggleAutoLoot,
@@ -1022,6 +1042,7 @@ function App() {
   }), [
     goldThreshold, elixirThreshold, deThreshold,
     searchEnabled, upgradeWalls, stallTimer,
+    endOnLootTarget, lootTargetGold, lootTargetElixir, lootTargetDE,
     autotune, autotuneBusy, handleToggleAutoLoot, handleApplyAutoLoot, handleResetAutoLoot,
     haltGold, haltElixir, haltDE, haltRule, storageThreshold, resumeThreshold, dumpToWallsBeforeHalt, autoCollect,
     scheduleEnabled, activeHoursStart, activeHoursEnd, sessionDuration, breakDuration, forceStopOnBreak, maxPerHour, maxPerDay,

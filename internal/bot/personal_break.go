@@ -99,7 +99,7 @@ func (b *Bot) personalBreakDetected(screen gocv.Mat) bool {
 	// before the OCR, so every unclassified frame — a loading screen, a
 	// transition, the BlueStacks launcher — logged "a Personal Break dialog
 	// may be on screen" every 12 s for the whole stall (live 2026-11-16).
-	if !b.cfg.Schedule.Enabled {
+	if !b.cfg().Schedule.Enabled {
 		// The break state lives in the scheduler; with pacing off there is
 		// nothing to pause.
 		b.logger.Warn().Str("phrase", phrase).Msg("Personal Break dialog detected, but schedule.enabled is false so the bot cannot pause for it — enable the pacing schedule or close the dialog by hand")

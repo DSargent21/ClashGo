@@ -76,7 +76,7 @@ func (b *Bot) scheduleAllowed() (bool, string) {
 	}
 
 	allowed, reason := true, ""
-	if b.scheduler != nil && b.cfg.Schedule.Enabled {
+	if b.scheduler != nil && b.cfg().Schedule.Enabled {
 		allowed, reason = b.scheduler.CanAttack(now)
 		wasAllowed := b.gate.cached.allowed || b.gate.cached.evaledAt.IsZero()
 		if !allowed && wasAllowed {
@@ -114,7 +114,7 @@ func (b *Bot) scheduleAllowed() (bool, string) {
 // CanAttack both plans the next break and (through the break hooks) can stop
 // the game over ADB. None of that belongs on a stats read.
 func (b *Bot) haltLocked() HaltReason {
-	if b.cfg.Schedule.Enabled && !b.gate.cached.evaledAt.IsZero() && !b.gate.cached.allowed {
+	if b.cfg().Schedule.Enabled && !b.gate.cached.evaledAt.IsZero() && !b.gate.cached.allowed {
 		return HaltScheduler
 	}
 	if b.storageHalted.Load() {
@@ -123,7 +123,7 @@ func (b *Bot) haltLocked() HaltReason {
 	if b.armyEmpty.Load() {
 		return HaltArmyEmpty
 	}
-	if sessionCapReached(b.cfg.Attack.MaxAttackPerSession, b.attackCount.Load()) {
+	if sessionCapReached(b.cfg().Attack.MaxAttackPerSession, b.attackCount.Load()) {
 		return HaltCap
 	}
 	return HaltNone
@@ -150,7 +150,7 @@ func (b *Bot) intentionalIdle(inVillage bool) bool {
 	if b.storageHalted.Load() || b.armyEmpty.Load() {
 		return true
 	}
-	if b.scheduler != nil && b.cfg.Schedule.Enabled {
+	if b.scheduler != nil && b.cfg().Schedule.Enabled {
 		// Cached verdict: checkStuck runs every frame, and CanAttack plans the
 		// next session/break as a side effect.
 		if allowed, _ := b.scheduleAllowed(); !allowed {

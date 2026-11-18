@@ -266,7 +266,7 @@ func (b *Bot) builderBaseDue(now time.Time) (bool, string) {
 	b.bbMu.Unlock()
 
 	since := int(b.attackCount.Load()) - int(b.bbAtAttack.Load())
-	return builderBasePlan(b.cfg.BuilderBase, b.builderBaseUnlocked, since, today)
+	return builderBasePlan(b.cfg().BuilderBase, b.builderBaseUnlocked, since, today)
 }
 
 // maybeRunBuilderBase runs at most one Builder Base battle, synchronously, from
@@ -275,7 +275,7 @@ func (b *Bot) builderBaseDue(now time.Time) (bool, string) {
 func (b *Bot) maybeRunBuilderBase(logger zerolog.Logger) {
 	due, why := b.builderBaseDue(time.Now())
 	if !due {
-		if b.cfg.BuilderBase.Enabled {
+		if b.cfg().BuilderBase.Enabled {
 			logger.Debug().Str("reason", why).Msg("Builder Base battle not due")
 		}
 		return
@@ -296,12 +296,12 @@ func (b *Bot) maybeRunBuilderBase(logger zerolog.Logger) {
 	b.bbMu.Unlock()
 
 	logger.Info().
-		Str("mode", b.cfg.BuilderBase.Mode).
+		Str("mode", b.cfg().BuilderBase.Mode).
 		Int("attacks_today", today).
-		Int("daily_cap", b.cfg.BuilderBase.MaxPerDay).
+		Int("daily_cap", b.cfg().BuilderBase.MaxPerDay).
 		Msg("starting the Builder Base battle")
 
-	if err := runBuilderBaseBattle(bbBotDevice{b: b}, b.cfg.BuilderBase); err != nil {
+	if err := runBuilderBaseBattle(bbBotDevice{b: b}, b.cfg().BuilderBase); err != nil {
 		logger.Warn().Err(err).Msg("Builder Base battle did not complete; returning to the home village")
 		b.notifyEvent("halt", "Builder Base battle failed", err.Error())
 		b.returnToHomeVillage()

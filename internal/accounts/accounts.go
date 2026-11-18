@@ -608,36 +608,15 @@ func (s *Store) saveLocked() error {
 	return nil
 }
 
-// writeAtomic replaces path via a synced temp file, keeping one .bak of the
-// previous document. A crash mid-write can lose the newest change, never
-// the whole registry.
+// writeAtomic replaces path atomically, keeping one .bak of the previous
+// document. A crash mid-write can lose the newest change, never the whole
+// registry. The rename itself lives in paths so config and stats writes share
+// the same guarantee.
 func writeAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
 	if prev, err := os.ReadFile(path); err == nil {
 		_ = os.WriteFile(path+".bak", prev, perm)
 	}
-	tmp, err := os.CreateTemp(dir, ".accounts-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return paths.WriteFileAtomic(path, data, perm)
 }
 
 func bootstrapRegistry(dir string) Registry {

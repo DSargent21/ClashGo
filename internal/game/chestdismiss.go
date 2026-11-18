@@ -273,7 +273,7 @@ func defaultChestROIFallback() *ChestROISchema {
 // stay on screen forever; instead the cascade cap above us will
 // escalate on the next capture.
 func (n *Navigator) DismissChestReward() error {
-	if n.disableChestDismissal {
+	if n.disableChestDismissal.Load() {
 		n.logger.Info().Msg("chest dismissal disabled by config; deferring to stuck-watchdog ladder")
 		return nil
 	}

@@ -54,7 +54,7 @@ export function ResetLootAutotune():Promise<main.AutotuneStatus>;
 
 export function ResetStats():Promise<void>;
 
-export function SaveConfig(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:string,arg6:boolean,arg7:number):Promise<void>;
+export function SaveConfig(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:string,arg6:boolean,arg7:number,arg8:boolean,arg9:number,arg10:number,arg11:number):Promise<void>;
 
 export function SaveFullConfig(arg1:config.BotConfig):Promise<void>;
 

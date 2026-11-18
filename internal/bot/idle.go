@@ -65,7 +65,7 @@ func (b *Bot) maintainVillage(gc *game.GameContext, screen gocv.Mat) (trainingDi
 
 	// Free builder / lab / pet slot opened up while waiting or training.
 	if b.builderManager != nil &&
-		(b.cfg.Upgrade.AutoBuilders || b.cfg.Upgrade.AutoLab || b.cfg.Upgrade.AutoPets) &&
+		(b.cfg().Upgrade.AutoBuilders || b.cfg().Upgrade.AutoLab || b.cfg().Upgrade.AutoPets) &&
 		time.Since(b.lastUpgradeCheck) > villageUpgradeInterval {
 		b.lastUpgradeCheck = time.Now()
 		go func() {
@@ -79,7 +79,7 @@ func (b *Bot) maintainVillage(gc *game.GameContext, screen gocv.Mat) (trainingDi
 	}
 
 	// Collectors, drills, and the loot cart.
-	if b.cfg.Storage.AutoCollect && time.Since(b.lastCollectTime) > villageCollectInterval {
+	if b.cfg().Storage.AutoCollect && time.Since(b.lastCollectTime) > villageCollectInterval {
 		b.lastCollectTime = time.Now()
 		go func() {
 			if b.seqRunning.Load() {
@@ -132,13 +132,13 @@ func (b *Bot) refreshStorageGate(gc *game.GameContext, screen gocv.Mat) {
 	// account keeps raiding and simply wastes the overflow. The halt itself only
 	// applies while a spender is enabled (see storageHaltApplies): with nothing
 	// able to drain the storages, halting would stop the account for good.
-	if b.cfg.Attack.AttackWhenFull {
+	if b.cfg().Attack.AttackWhenFull {
 		if b.storageHalted.Swap(false) {
 			b.logger.Info().Msg("attack.attack_when_full is on; attacks continue with full storages")
 		}
 		return
 	}
-	if !b.cfg.Storage.HaltWhenGoldFull && !b.cfg.Storage.HaltWhenElixirFull && !b.cfg.Storage.HaltWhenDEFull {
+	if !b.cfg().Storage.HaltWhenGoldFull && !b.cfg().Storage.HaltWhenElixirFull && !b.cfg().Storage.HaltWhenDEFull {
 		b.storageHalted.Store(false)
 		return
 	}
@@ -151,17 +151,17 @@ func (b *Bot) refreshStorageGate(gc *game.GameContext, screen gocv.Mat) {
 	b.lastStorageCheck = time.Now()
 
 	fill := game.ReadVillageStorageFillMat(screen, b.cal.DisplayScale())
-	thresh := b.cfg.Storage.FullThresholdPercent
+	thresh := b.cfg().Storage.FullThresholdPercent
 	if b.storageHalted.Load() {
 		// Hysteresis: a village that halted at 95% resumes at the configured
 		// resume level, so one wall upgrade cannot flip the gate every cycle.
-		thresh = b.cfg.Storage.ResumeThresholdPercent
+		thresh = b.cfg().Storage.ResumeThresholdPercent
 	}
 	full := fill.IsFull(
-		b.cfg.Storage.HaltWhenGoldFull,
-		b.cfg.Storage.HaltWhenElixirFull,
-		b.cfg.Storage.HaltWhenDEFull,
-		b.cfg.Storage.HaltRule,
+		b.cfg().Storage.HaltWhenGoldFull,
+		b.cfg().Storage.HaltWhenElixirFull,
+		b.cfg().Storage.HaltWhenDEFull,
+		b.cfg().Storage.HaltRule,
 		thresh,
 	)
 
@@ -171,14 +171,14 @@ func (b *Bot) refreshStorageGate(gc *game.GameContext, screen gocv.Mat) {
 				Float64("gold", fill.GoldFillPercent).
 				Float64("elixir", fill.ElixirFillPercent).
 				Float64("de", fill.DEFillPercent).
-				Float64("resume_threshold", b.cfg.Storage.ResumeThresholdPercent).
+				Float64("resume_threshold", b.cfg().Storage.ResumeThresholdPercent).
 				Msg("storages drained below the resume threshold; attacks resume")
 		}
 		b.storageNoSpenderWarned.Store(false)
 		return
 	}
 
-	if !storageHaltApplies(b.cfg) {
+	if !storageHaltApplies(b.cfg()) {
 		// Nothing can spend the loot, so the halt would never end. Clear any
 		// latch a previous config left behind and keep raiding: wasted overflow
 		// is recoverable, a permanently idle account is not. Say it once per
@@ -210,7 +210,7 @@ func (b *Bot) refreshStorageGate(gc *game.GameContext, screen gocv.Mat) {
 
 	// Spend the overflow into walls before giving up. This runs off the capture
 	// loop because a wall dump is a minutes-long tap sequence.
-	if b.cfg.Storage.DumpToWallsBeforeHalt && b.cfg.Upgrade.UpgradeWalls &&
+	if b.cfg().Storage.DumpToWallsBeforeHalt && b.cfg().Upgrade.UpgradeWalls &&
 		b.wallsDumping.CompareAndSwap(false, true) {
 		b.logger.Info().Msg("dumping storage overflow into walls while the attack gate is closed")
 		go func() {

@@ -108,6 +108,10 @@ export interface BotConfig {
   attack: {
     strategy_file: string;
     stall_timer_seconds: number;
+    end_on_loot_target: boolean;
+    loot_target_gold: number;
+    loot_target_elixir: number;
+    loot_target_de: number;
     strategy_slots?: Record<string, number>;
     strategy_auto_end?: Record<string, boolean>;
   };

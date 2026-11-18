@@ -264,3 +264,60 @@ func ruleFor(t *testing.T, c *Classifier, state GameState) StateRule {
 	t.Fatalf("no rule for %s", state)
 	return StateRule{}
 }
+
+// SplashStateOnFrame used to score every rule and then filter the verdicts; it
+// now scores only the two splash rules. This pins the shortcut to the old
+// answer on the corpus frames and on a synthetic splash frame (the corpus has
+// no splash-positive fixture, so a corpus-only check could go vacuous).
+func TestSplashStateMatchesFullEvaluation(t *testing.T) {
+	manifest := loadCorpusManifest(t, filepath.Join("testdata", "corpus.json"))
+	bySize := make(map[string]*Classifier, 2)
+	for _, fr := range manifest.Frames {
+		path := filepath.Join("testdata", fr.File)
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		img := gocv.IMRead(path, gocv.IMReadColor)
+		if img.Empty() {
+			t.Fatalf("decode %s", path)
+		}
+		key := fmt.Sprintf("%dx%d", img.Cols(), img.Rows())
+		c, ok := bySize[key]
+		if !ok {
+			scale := manifest.DisplayScale
+			if img.Cols() == RefWidth && img.Rows() == RefHeight {
+				scale = 0
+			}
+			c = newCorpusClassifier(t, scale, img.Cols(), img.Rows())
+			bySize[key] = c
+		}
+		got, gotOK := SplashStateOnFrame(c, img)
+		want, wantOK := StateUnknown, false
+		for _, v := range c.EvaluateRules(img, false) {
+			if v.Matched && (v.State == StateTapToContinue || v.State == StateNewsSplash) {
+				want, wantOK = v.State, true
+				break
+			}
+		}
+		if got != want || gotOK != wantOK {
+			t.Errorf("%s: splash = %s/%v; full filter = %s/%v", filepath.Base(path), got, gotOK, want, wantOK)
+		}
+		img.Close()
+	}
+
+	cal := &Calibration{PhysicalW: RefWidth, PhysicalH: RefHeight, ScaleX: 1, ScaleY: 1}
+	c := NewClassifier(cal, DefaultClassifierConfig(), zerolog.Nop())
+	rule := ruleFor(t, c, StateTapToContinue)
+	if rule.MinPass > len(rule.Checks) {
+		t.Fatalf("TapToContinue needs %d probes but declares %d", rule.MinPass, len(rule.Checks))
+	}
+	m := gocv.NewMatWithSize(RefHeight, RefWidth, gocv.MatTypeCV8UC3)
+	defer m.Close()
+	m.SetTo(gocv.NewScalar(20, 20, 20, 0))
+	for _, chk := range rule.Checks {
+		setRGB(m, chk.X, chk.Y, chk.R, chk.G, chk.B)
+	}
+	if got, ok := SplashStateOnFrame(c, m); !ok || got != StateTapToContinue {
+		t.Fatalf("painted TapToContinue frame: splash = %s/%v; want TapToContinue/true", got, ok)
+	}
+}

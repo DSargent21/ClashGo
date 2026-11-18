@@ -2,9 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.0] - 2026-11-18
 
 ### Added
+- **Early end on loot target** (`attack.end_on_loot_target`, `loot_target_gold`, `loot_target_elixir`, `loot_target_de`): optionally end a raid once the running top-right HUD has banked the configured gain, instead of waiting for the result panel. Off by default; enabled targets validate as at least one non-zero, the HUD read is resolution-scaled from the authored 1280x720 geometry, the first readable frame is the baseline so pre-raid loot does not count, and the battle still ends only when the End Battle control is visible. Wired through Config → Search & loot and recorded in `AttackReport.end_reason`. Fake-clock tests cover below-target, target-without-button, end-once, backwards HUD, disabled and unreadable HUD; the feature stays off by default while live-raid validation continues.
 - **Builder Base battles** (`builder_base`): an optional one-troop Builder Base raid between home attacks — boat, Attack, versus screen, drop, surrender, home — for the cheapest loot the account has. Off by default, `elixir` mode only (`gold` is refused rather than attempted blind), scheduled by home attacks since the last raid and a per-day cap. Every step proves its screen before the next tap; a failure names the step, alerts the webhook and returns to the home village instead of restarting the game. The troop card and drop anchors are documented for a one-time `see look` check on the emulator.
 - **Town Hall sized loot floors** (`internal/village`, `search.use_suggested_floors` / `search.town_hall_level`): the search minimums now follow the account's Town Hall instead of one static pair, which is why a fresh low-TH install used to skip every base it found. The level comes from `search.town_hall_level` or from the game's own Data Export (`bot_cli -import-village <file>`, also parsed for builders, Laboratory, pets and Builder Base), autotune keeps overriding both once it has samples, and a floor above what any base can offer is capped with one warning instead of an endless search.
 - **Webhook notifications** (`internal/notify`, `notify.*` config): a finished attack, a storage halt and a scheduler pause/resume now leave the machine as a Discord, Telegram or generic JSON webhook instead of only reaching `logs/`. Delivery is a bounded queue on one worker goroutine with one retry on 5xx/429, and the Telegram token is scrubbed from transport errors. Off by default; see `docs/CLI.md`.
@@ -41,7 +42,7 @@ All notable changes to this project will be documented in this file.
 ### Removed
 - Dead search knobs `min_trophies`, `max_trophies`, `min_town_hall`, `max_town_hall`, `skip_big_base`, `skip_max_th`, `attack_if_trophies_gt`, their two CLI flags, and `upgrade.lab_priorities` — nothing read them, so the UI/CLI advertised filtering the bot never performed.
 
-### Added
+### Added (desktop UI and installer)
 - **Guided First-Run Setup** (`web/src/components/LaunchSetup.tsx`, `app_launch.go`):
   - Three-step wizard (army → builders → settings) with a calm two-pane layout, neutral active navigation, flat sections, and a single gold accent.
   - Builders step covers lab research order and pet automation alongside building categories and wall reserve; lab and pets follow the engine switch.

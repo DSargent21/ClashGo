@@ -98,8 +98,8 @@ export function ResetStats() {
   return window['go']['main']['App']['ResetStats']();
 }
 
-export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
-  return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+export function SaveConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11) {
+  return window['go']['main']['App']['SaveConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11);
 }
 
 export function SaveFullConfig(arg1) {

@@ -51,7 +51,7 @@ type Navigator struct {
 	// startup via SetDisableChestDismissal. NOT exposed through
 	// NavigatorConfig because the field is feature-flag-shaped
 	// (operator-level switch), not a runtime tunable.
-	disableChestDismissal bool
+	disableChestDismissal atomic.Bool
 
 	// zoomStickyShape remembers which pinch shape actually moved the camera,
 	// encoded as variant+1 so the zero value means "not learned yet".
@@ -97,7 +97,7 @@ func (n *Navigator) SetClassifier(cl *Classifier) {
 // feature-flag-shaped (operator-level switch), not a runtime
 // tunable like SettleTime or InterruptDepth.
 func (n *Navigator) SetDisableChestDismissal(disable bool) {
-	n.disableChestDismissal = disable
+	n.disableChestDismissal.Store(disable)
 }
 
 func (n *Navigator) Navigate(ctx *GameContext, target GameState) bool {
