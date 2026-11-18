@@ -142,11 +142,18 @@ func TestServiceCheckNoReleases(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// Point the Service at the test server by overriding the URL
-	// builders. We can't easily redirect Service.manifestURL /
-	// fetchLatestRelease without changing production code, so we
-	// call them directly with the test server URL — same code path.
-	s := newServiceForTest(t, "0.1.0-beta", srv.Client())
+	// fetchLatestRelease builds the production GitHub URL, so route that
+	// request to the test server without changing the production URL builder.
+	// Passing srv.Client() alone does not redirect it: the client would still
+	// call api.github.com and this test would depend on GitHub's rate limit.
+	client := srv.Client()
+	host := strings.TrimPrefix(srv.URL, "http://")
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		req.URL.Scheme = "http"
+		req.URL.Host = host
+		return http.DefaultTransport.RoundTrip(req)
+	})
+	s := newServiceForTest(t, "0.1.0-beta", client)
 
 	// Pre-seed with a stale "available update" to verify the
 	// no-releases branch CLEARS it (regression guard: previously
@@ -602,6 +609,12 @@ func TestService_UpdateSequenceEndToEnd(t *testing.T) {
 
 // ----- helpers -----
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 // newServiceForTest assembles a Service with mocked HTTPClient + a
 // downloads dir under t.TempDir(). The caller is responsible for
 // keeping the returned temp dir alive for the test's duration.
@@ -800,4 +813,3 @@ func TestInstallUpdateScript_EndToEnd(t *testing.T) {
 
 // Ensure io is referenced (used in streamToFile progress reader).
 var _ = io.EOF
-
