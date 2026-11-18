@@ -185,6 +185,12 @@ optional when they are not.
   opens with a `Village N` name, the first instance with a free row and that
   row, so adding a village is pick-the-row + confirm. Host, server port and
   serial survive under `Enter the connection manually`.
+- **Capture switch templates lives in Accounts.** One click
+  (`CaptureSwitchTemplates`) taps through the running game, installs the three
+  `acct_*` templates plus the row geometry, and reports the rows the switch will
+  tap in a dismissable banner. It refuses while the bot is running (the capture
+  needs the game's own menus) and names the emulator it could not reach. Setup
+  therefore needs no terminal and no image editing.
 - **Switching shows what the game did.** `SwitchAccount` taps the in-game
   Supercell ID list and refuses to start when the profile screen shows a
   different village; the error (both villages named) renders in the Accounts

@@ -353,7 +353,11 @@ Workflow and stop conditions live in `AGENTS.md`. Current state lives in
     profile corner by geometry (the banner text is account-specific), requires
     only `acct_settings`/`acct_supercell`/`acct_slot_list`, and retries the
     identity OCR while the village reloads.
-  - Verified: see `PROGRESS.md` 2026-11-18 (second and third entries).
+  - Follow-up (2026-11-18, fourth entry): the capture is also a UI action
+    (**Capture switch templates** in Accounts), and it installs three templates
+    instead of four — `acct_profile.png` was never read, because the switch
+    addresses the profile corner by geometry.
+  - Verified: see `PROGRESS.md` 2026-11-18 (second, third and fourth entries).
 
 ---
 

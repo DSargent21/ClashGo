@@ -259,23 +259,27 @@ twice under two names.
 
 The switch is template-based, so a game update that moves a button needs one
 recapture, not a code change. Put the game on the main village of any signed-in
-village and run one command:
+village, then press **Capture switch templates** in **Accounts** (the button next
+to *Add account*), or run the same thing headless:
 
 ```bash
 go run ./cmd/account_templates
 ```
 
-That is the whole setup. It taps the profile corner itself, opens Settings or
-Supercell ID depending on what the build shows, captures each screen, and writes
-everything the switch needs into the directory the runtime reads
+That is the whole setup. It taps the profile corner, opens Settings only when
+this build hides Supercell ID behind it, captures each screen, and writes the
+templates plus the row geometry into the directory the runtime reads
 (`<assets>/templates` + `<assets>/account_switch.json`):
 
 | File | Shows |
 |---|---|
-| `acct_profile.png` | the village HUD corner the switch taps to open the profile |
 | `acct_settings.png` | the Settings tab/gear on the profile screen |
 | `acct_supercell.png` | the "Supercell ID" row (or its Open button) |
 | `acct_slot_list.png` | the first account row, which anchors the slot list |
+
+There is no banner template: the banner shows the *current* village's name, so
+the switch taps the profile corner by geometry (4% W / 6.5% H) instead — that
+works for every village on the emulator.
 
 Nothing is cropped by hand, and nothing is installed unverified:
 
@@ -288,25 +292,25 @@ Nothing is cropped by hand, and nothing is installed unverified:
   on the account-list rows, not between them.
 
 Anything that would fail later fails now, naming the file, the coordinate and
-the flag to adjust (`-profile`, `-settings`, `-supercell`, `-slot-list`,
-`-slot-row1-offset`, `-slot-row-spacing`). Screens are saved under
-`output/account_templates/<ts>/` so a refusal can be replayed offline:
+the flag to adjust (`-settings`, `-supercell`, `-slot-list`,
+`-slot-row1-offset`, `-slot-row-spacing`). The UI shows the rows the switch will
+tap, so a wrong capture is visible before the first switch. Screens are saved
+under `output/account_templates/<ts>/` for a replay:
 
 ```bash
 go run ./cmd/account_templates -source output/account_templates/<ts> -slot-row-spacing 0.1172
 ```
 
-`-source DIR` reads `village.png`, `profile.png`, `settings.png`, `panel.png`
-and an optional `text.json` (OCR boxes, so a machine without the game can
-reproduce a run). Omit it to capture live from `config.json`'s device or
-`-device`.
+`-source DIR` reads `profile.png`, `settings.png`, `panel.png` and an optional
+`text.json` (OCR boxes, so a machine without the game can reproduce a run).
+Omit it to capture live from `config.json`'s device or `-device`.
 
 Then press **Switch** (or **Switch & start**) on the account. The switch taps
 through the in-game list, reads the profile's player tag and refuses with both
 identities if the wrong village logged in.
 
 Most builds show Supercell ID directly on the profile screen; if the game hides
-it behind a Settings tab, the helper taps that tab itself, using its text when
+it behind a Settings tab, the capture taps that tab itself, using its text when
 it is visible and the top-right HUD corner when the build is icon-only.
 
 `assets/account_switch.json` holds the two row fractions as fractions of screen
@@ -317,11 +321,10 @@ height:
 - `slot_row_spacing` — pitch between consecutive rows.
 
 If a slot taps the neighbouring row, the identity check refuses the start and
-names the village it actually got; re-run the helper (it re-derives both) or
-adjust the fractions by the difference.
-
-The file is optional: missing values fall back to the defaults, and a
-present-but-malformed file is reported, not ignored.
+names the village it actually got; re-run the capture (it re-derives both) or
+adjust the fractions by the difference. The file is optional: missing values
+fall back to the defaults, and a present-but-malformed file is reported, not
+ignored.
 
 Do not run ClashGO's GUI and CLI against the same config directory at the same
 time; each process assumes it owns the active profile.
@@ -338,15 +341,12 @@ Deliberate limits:
 - **No credential automation.** The fast switcher is driven; enrolling a new
   village (email code) is still operator work, and no Supercell credential is
   stored.
-- **Templates are per game UI.** Four PNGs must be captured once per game
-  version; a moved button fails with the template name instead of tapping
-  blind.
+- **Templates are per game UI.** Three PNGs must be captured once per game
+  version (one click in Accounts, or one CLI command); a moved button fails with
+  the template name instead of tapping blind.
 - **Identity check needs the OCR helper.** Reading the player tag uses
   `tools/ocr.swift` (macOS Vision). Without it the switch refuses to start
   rather than hand over an unverified village.
-- **Start on the already-active account does not re-verify.** Pressing Start on
-  the active card boots the bot as before; use **Switch** (even to the same
-  account) when the game may have been left on another village by hand.
 - **No proxy/IP management per account.** Out of scope for a local emulator
   fleet.
 - **One process per config tree.** No cross-process locking yet.
@@ -374,7 +374,7 @@ Natural next steps, in order of value:
 | Rotation never advances | All accounts on cooldown/cap, rotation disabled, or auto-start off | Check the Accounts header and rotation panel |
 | `daily_limit` but attacks remain | Daily counter is local to ClashGO and only resets at midnight or via **Reset usage** | Reset usage from the account card |
 | Stats look reset after upgrade | New `stats.json` for the `default` profile | Check `accounts/default/stats.json`; legacy files were copied, not moved |
-| `in-game account switching needs 3 template PNGs` | The switch templates were never captured | Run `go run ./cmd/account_templates` once (5.1) |
+| `in-game account switching needs 3 template PNGs` | The switch templates were never captured | Press **Capture switch templates** in Accounts (5.1) |
 | `could not find "acct_settings"` / `"acct_supercell"` on screen | Game is not on the expected screen, or the button moved after an update | Put the game on the main village and re-run `go run ./cmd/account_templates` |
 | `slot N logged the game in as …` | Wrong row number, or the row order changed in-game | Check profile → Settings → Supercell ID and fix the account's slot |
 | `account "X" has no Supercell ID slot yet` | Legacy profile (slot 0), or the drawer was closed before saving | Edit the account, pick its row, save |

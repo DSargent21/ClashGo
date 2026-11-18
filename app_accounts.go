@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Ducky705/ClashGO/internal/accounts"
@@ -319,6 +320,87 @@ func (a *App) driveGameToAccount(acct accounts.Account) error {
 		return a.switchGameAccounts(acct)
 	}
 	return a.switchGameAccount(acct)
+}
+
+// SwitchCaptureResult is what "Capture switch templates" hands back to the UI:
+// the files it installed and the rows the switch will tap.
+type SwitchCaptureResult struct {
+	Files   []string `json:"files"`
+	Rows    []int    `json:"rows"`
+	Message string   `json:"message"`
+}
+
+// CaptureSwitchTemplates installs the switch templates from the running game on
+// account id's emulator, so setup never needs a terminal. It is safe to re-run:
+// every file is verified before it replaces the old one (kept as .bak).
+func (a *App) CaptureSwitchTemplates(id string) (SwitchCaptureResult, error) {
+	st, err := a.ensureAccounts()
+	if err != nil {
+		return SwitchCaptureResult{}, err
+	}
+	acct, ok := st.Get(id)
+	if !ok {
+		return SwitchCaptureResult{}, fmt.Errorf("account %q not found", id)
+	}
+	if a.IsRunning() {
+		return SwitchCaptureResult{}, fmt.Errorf("stop the bot first: the capture taps through the game's own menus")
+	}
+	if a.captureSwitchTemplates != nil {
+		return a.captureSwitchTemplates(acct)
+	}
+	return a.captureSwitchTemplatesFor(acct)
+}
+
+// captureSwitchTemplatesFor drives the game on acct's emulator, then installs
+// and verifies every template the switch needs.
+func (a *App) captureSwitchTemplatesFor(acct accounts.Account) (SwitchCaptureResult, error) {
+	framesDir := filepath.Join("output", "account_templates", time.Now().Format("20060102_150405"))
+
+	client := adb.NewClient(
+		adb.WithHost(acct.Device.ADBHost),
+		adb.WithPort(acct.Device.ADBPort),
+		adb.WithTimeout(30*time.Second),
+	)
+	client.DeviceID = acct.Device.DeviceID
+	defer func() { _ = client.Close() }()
+	if err := client.ConnectConfigured(); err != nil {
+		return SwitchCaptureResult{}, fmt.Errorf("connect to %s: %w — start the emulator, open the game on the main village, then try again", acct.Device.DeviceID, err)
+	}
+	if err := os.MkdirAll(framesDir, 0o755); err != nil {
+		return SwitchCaptureResult{}, fmt.Errorf("create %s: %w", framesDir, err)
+	}
+
+	frames, regions, err := game.CaptureSwitchFrames(client, framesDir, 1500*time.Millisecond, game.SwitchTemplateRegions{})
+	if err != nil {
+		return SwitchCaptureResult{}, fmt.Errorf("%w (screens saved in %s)", err, framesDir)
+	}
+	defer frames.Close()
+
+	cfg, err := game.LoadSwitchConfig(paths.Resolve("account_switch.json"))
+	if err != nil {
+		log.Warn().Err(err).Msg("account_switch.json unreadable; using defaults")
+	}
+	report, err := game.InstallSwitchTemplates(game.SwitchInstallInput{
+		Frames:  frames,
+		Config:  cfg,
+		Regions: regions,
+	})
+	if err != nil {
+		return SwitchCaptureResult{}, err
+	}
+
+	rows := make([]int, 0, len(report.SlotY))
+	rows = append(rows, report.SlotY...)
+	log.Info().
+		Str("account", acct.ID).
+		Str("device", acct.Device.DeviceID).
+		Strs("files", report.Files).
+		Msg("switch templates installed")
+	return SwitchCaptureResult{
+		Files:   report.Files,
+		Rows:    rows,
+		Message: fmt.Sprintf("Installed %d templates; the switch will tap rows at y=%v", len(report.Files), rows),
+	}, nil
 }
 
 // switchGameAccount taps through the game's own switcher to acct.Slot, then

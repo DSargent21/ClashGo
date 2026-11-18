@@ -10,6 +10,7 @@ import type {
   AccountView,
   DetectedDevice,
   Rotation,
+  SwitchCaptureResult,
   SwitchResult,
 } from './types';
 
@@ -51,6 +52,12 @@ export const setRotation = (rotation: Rotation) =>
 
 export const switchAccount = (id: string, start: boolean) =>
   call<SwitchResult>('SwitchAccount', id, start);
+
+// Installs the in-game switch templates from the running game, so setup never
+// needs a terminal. Safe to re-run; every file is verified before it replaces
+// the previous one.
+export const captureSwitchTemplates = (id: string) =>
+  call<SwitchCaptureResult>('CaptureSwitchTemplates', id);
 
 // Live emulator discovery. Read-only: it scans the emulator ADB port span and
 // asks each instance for its model, and never touches the adb server or a

@@ -43,6 +43,7 @@ interface AccountsViewProps {
   error: string | null;
   onRefresh: () => void;
   onSwitch: (id: string, start: boolean) => Promise<void>;
+  onCaptureTemplates: (id: string) => Promise<string>;
   onStop: () => Promise<void>;
   onSave: (id: string | null, input: AccountInput) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -561,6 +562,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
   error,
   onRefresh,
   onSwitch,
+  onCaptureTemplates,
   onStop,
   onSave,
   onDelete,
@@ -570,6 +572,7 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
   const [editor, setEditor] = React.useState<{ account: AccountView | null } | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState<string | null>(null);
   const [rotationDraft, setRotationDraft] = React.useState<Rotation>(state?.rotation ?? DEFAULT_ROTATION);
 
@@ -588,6 +591,21 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
     setActionError(null);
     try {
       await fn();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Capturing installs the templates the switch taps. It is the only setup
+  // step that used to need a terminal, so it lives here, next to Add account.
+  const captureTemplates = async (id: string) => {
+    setBusy('capture');
+    setActionError(null);
+    setNotice(null);
+    try {
+      setNotice(await onCaptureTemplates(id));
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -623,6 +641,16 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
           <button type="button" className="btn sm" onClick={onRefresh} aria-label="Refresh accounts">
             <Icon name="refresh" size={13} className={loading ? 'spin' : undefined} />
             Refresh
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            disabled={busy === 'capture' || accounts.length === 0}
+            onClick={() => void captureTemplates(active?.id ?? accounts[0].id)}
+            title="Taps through the running game and installs the templates the switcher needs — no terminal, no cropping"
+          >
+            <Icon name="device" size={13} />
+            {busy === 'capture' ? 'Capturing…' : 'Capture switch templates'}
           </button>
           <button type="button" className="btn primary sm" onClick={() => setEditor({ account: null })}>
             <Icon name="plus" size={13} />
@@ -664,6 +692,14 @@ const AccountsView: React.FC<AccountsViewProps> = React.memo(({
       <div className="section-stack" style={{ marginBottom: 16 }}>
         <RotationPanel rotation={rotationDraft} busy={busy === 'rotation'} onChange={changeRotation} />
       </div>
+
+      {notice ? (
+        <div className="notice-banner" style={{ marginBottom: 16 }}>
+          <Icon name="check" size={14} />
+          <div style={{ flex: 1 }}>{notice}</div>
+          <button type="button" className="btn sm" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      ) : null}
 
       {(error || actionError) ? (
         <div className="error-banner" style={{ marginBottom: 16 }}>

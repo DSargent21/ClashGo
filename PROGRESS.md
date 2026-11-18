@@ -6,8 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **T.19 follow-up — one-command switch templates** (cold-start
-  `cmd/account_templates` install, self-verified crops + row geometry).
+- Last task: **T.19 follow-up — one-click switch templates** (Accounts button +
+  CLI share one verified capture driver; three templates).
 - Next task: **F.1 Dead-base / collector detection** — blocked on labelled
   outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
   fake-capture seam.
@@ -1001,6 +1001,45 @@ Format:
 - Not verified: real Wails IPC window (stub only); a real create→boot cycle
   against BlueStacks (would start the bot; not requested).
 - Commit: this commit.
+
+## 2026-11-18 (fourth entry) — one-click capture, three templates
+
+- Task: review the cold-start capture with fresh eyes, cut what is dead, and put
+  it in the UI so setup never needs a terminal.
+- Cut: `acct_profile.png` and its banner detection. The switch taps the profile
+  corner by geometry (`ProfileTapPoint`) because the banner carries the current
+  village's name, so the PNG was installed and never read. Gone with it: the
+  village frame, the `-profile` flag, `SwitchInstallInput.Rows/Anchor`
+  (the installer detects rows from the panel anyway), `unionRects`, `minInt`,
+  and the duplicated `switchRuntimeTemplates` list (now derived from
+  `switchTemplateHelp`). The switch needs three templates, and there is one
+  list of them.
+- Shared driver: `game.CaptureSwitchFrames(dev, dir, settle, overrides)` now
+  holds the tap→capture→detect walk that used to live only in
+  `cmd/account_templates/main.go`; the CLI is a thin flag wrapper over it and
+  the app calls the same function.
+- UI: **Capture switch templates** button in Accounts (next to *Add account*),
+  `App.CaptureSwitchTemplates(id) -> {files, rows, message}` — targets that
+  account's own emulator, refuses while the bot runs, installs and verifies,
+  and shows the rows the switch will tap in a dismissable green banner. Wired
+  through `accountsApi`, `types.ts`, the browser stub and the generated Wails
+  bindings.
+- Tests: `TestApp_CaptureSwitchTemplatesDrivesTheAccountsEmulator` (right
+  emulator, report passed through, registry untouched),
+  `TestApp_CaptureSwitchTemplatesRejectsUnknownAccount`, coverage entry in
+  `uiBindingCoverage`; capture fixture and switch fixture updated to three
+  templates; `TestInstalledTemplatesSatisfyTheRuntimeSwitch` still proves
+  install → runtime store → gate → slot tap.
+- Verified: `npx tsc --noEmit` PASS; recorded
+  `go run ./cmd/account_templates -source /tmp/clashgo-fixture -out
+  /tmp/clashgo-install2/templates -config …` installed all three PNGs with
+  `slot_row1_offset=0`, `slot_row_spacing=0.1172` (rows y=305/395/485) after the
+  refactor; full `./tools/verify.sh` -> `VERIFY PASSED`.
+- Not verified: the UI button against a live emulator (the emulator was not
+  driven this session; the button's Go path is the same function the CLI run
+  above exercises, the browser stub only fakes it). The live Supercell ID list
+  is still unreachable until two villages are signed in on one instance.
+- Next: first live run of the button on a device with two signed-in villages.
 
 ## 2026-11-18 (third entry) — Cold-start switch templates in one command
 

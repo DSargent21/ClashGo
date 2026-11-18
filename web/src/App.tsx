@@ -740,6 +740,15 @@ function App() {
     }
   };
 
+  // Setup action: install the switch templates from the running game. The
+  // message names the rows the switch will tap, so a wrong capture is visible
+  // immediately instead of at the first switch.
+  const handleCaptureTemplates = async (id: string): Promise<string> => {
+    const res = await accountsApi.captureSwitchTemplates(id);
+    await loadAccounts(true);
+    return res.message;
+  };
+
   const handleSaveAccount = async (id: string | null, input: AccountInput) => {
     if (id) {
       await accountsApi.updateAccount(id, input);
@@ -1178,6 +1187,7 @@ function App() {
               error={accountsError}
               onRefresh={() => void loadAccounts()}
               onSwitch={handleSwitchAccount}
+              onCaptureTemplates={handleCaptureTemplates}
               onStop={handleStop}
               onSave={handleSaveAccount}
               onDelete={handleDeleteAccount}

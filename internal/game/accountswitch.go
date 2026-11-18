@@ -38,7 +38,6 @@ import (
 // (cmd/account_templates) and docs/ACCOUNTS.md; renaming one without the other
 // is what turns a setup screen into a mystery.
 const (
-	AcctProfileTemplate   = "acct_profile"
 	AcctSettingsTemplate  = "acct_settings"
 	AcctSupercellTemplate = "acct_supercell"
 	AcctSlotListTemplate  = "acct_slot_list"
@@ -62,17 +61,20 @@ var switchTemplateHelp = []struct {
 	Name string
 	What string
 }{
-	{AcctProfileTemplate, "the player banner button at the top left of the main village"},
 	{AcctSettingsTemplate, "the gear that opens Settings, on the profile screen"},
 	{AcctSupercellTemplate, "the \"Supercell ID\" row in Settings"},
 	{AcctSlotListTemplate, "the account list panel that opens from that row (its header is enough)"},
 }
 
-// switchRuntimeTemplates are the templates the switch taps. acct_profile is
-// installed too (it records the village HUD at capture time) but is not a tap
-// target: the banner carries the player's name, which changes with the account.
-// The HUD corner is addressed by geometry instead — see ProfileTapPoint.
-var switchRuntimeTemplates = []string{AcctSettingsTemplate, AcctSupercellTemplate, AcctSlotListTemplate}
+// switchTemplateNames is the single list of PNGs the switch needs, in the order
+// the switch taps them.
+var switchTemplateNames = func() []string {
+	names := make([]string, 0, len(switchTemplateHelp))
+	for _, h := range switchTemplateHelp {
+		names = append(names, h.Name)
+	}
+	return names
+}()
 
 // ProfileTapPoint is where the switch taps to open the profile: the level badge
 // in the top-left HUD corner. It is geometry, not a template, because the
@@ -192,7 +194,7 @@ type MissingTemplatesError struct {
 func (e *MissingTemplatesError) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "in-game account switching needs %d template PNGs and %d are missing from %s:\n",
-		len(switchRuntimeTemplates), len(e.Missing), e.Dir)
+		len(switchTemplateNames), len(e.Missing), e.Dir)
 	missing := make(map[string]bool, len(e.Missing))
 	for _, name := range e.Missing {
 		missing[name] = true
@@ -259,10 +261,10 @@ func (s *AccountSwitcher) Config() SwitchConfig { return s.cfg }
 // CheckTemplates reports the missing capture PNGs, if any.
 func (s *AccountSwitcher) CheckTemplates() error {
 	if s.templates == nil {
-		return &MissingTemplatesError{Dir: s.cfg.TemplateDir, Missing: switchRuntimeTemplates}
+		return &MissingTemplatesError{Dir: s.cfg.TemplateDir, Missing: switchTemplateNames}
 	}
 	var missing []string
-	for _, name := range switchRuntimeTemplates {
+	for _, name := range switchTemplateNames {
 		if _, ok := s.templates.Get(name); !ok {
 			missing = append(missing, name)
 		}

@@ -1237,6 +1237,23 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SwitchCaptureResult {
+	    files: string[];
+	    rows: number[];
+	    message: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SwitchCaptureResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.files = source["files"];
+	        this.rows = source["rows"];
+	        this.message = source["message"];
+	    }
+	}
+
 	export class SwitchResult {
 	    account: AccountView;
 	    started: boolean;

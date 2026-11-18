@@ -86,6 +86,8 @@ export function StopBot():Promise<main.BotStatus>;
 
 export function SwitchAccount(arg1:string,arg2:boolean):Promise<main.SwitchResult>;
 
+export function CaptureSwitchTemplates(arg1:string):Promise<main.SwitchCaptureResult>;
+
 export function TestDeviceMenu(arg1:string):Promise<void>;
 
 export function UpdateAccount(arg1:string,arg2:accounts.Input):Promise<main.AccountView>;

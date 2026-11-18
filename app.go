@@ -78,6 +78,9 @@ type App struct {
 	// Supercell ID switcher to the target account's slot. Nil means "use the
 	// real ADB/template driver" (see app_accounts.go).
 	switchGameAccounts func(target accounts.Account) error
+	// captureSwitchTemplates is the seam for the setup action that installs the
+	// switch templates from the running game. Nil means the real driver.
+	captureSwitchTemplates func(target accounts.Account) (SwitchCaptureResult, error)
 	// rotateCh receives one notification when a bot ends its own session
 	// (attack cap or daily cap), which is the only moment rotation should
 	// hand the device to the next account.

@@ -51,18 +51,12 @@ func (f *captureFixture) close() {
 func newCaptureFixture(t *testing.T) *captureFixture {
 	t.Helper()
 	bg := color.RGBA{20, 24, 30, 255}
-	red := color.RGBA{190, 50, 50, 255}
 	yellow := color.RGBA{245, 220, 70, 255}
 	blue := color.RGBA{40, 90, 210, 255}
 	white := color.RGBA{235, 235, 235, 255}
 	green := color.RGBA{30, 140, 70, 255}
 
 	f := &captureFixture{}
-	village := fillMat(t, captureW, captureH, bg)
-	bannerArt := fixtureTemplate(t, 60, 28, red, yellow)
-	paste(t, village, image.Rect(90, 16, 150, 44), bannerArt)
-	bannerArt.Close()
-
 	profile := fillMat(t, captureW, captureH, bg)
 	// The Settings tab, as current builds show it on the profile screen.
 	settingsTab := image.Rect(512, 32, 612, 72)
@@ -82,7 +76,6 @@ func newCaptureFixture(t *testing.T) *captureFixture {
 	row1.Close()
 
 	f.texts = map[string][]vision.TextRegion{
-		"village":  {{X: 80, Y: 20, W: 120, H: 20, Text: "MAIN VILLAGE"}},
 		"profile":  {{X: settingsTab.Min.X, Y: settingsTab.Min.Y, W: settingsTab.Dx(), H: settingsTab.Dy(), Text: "Settings"}},
 		"settings": {{X: supercell.Min.X, Y: supercell.Min.Y, W: supercell.Dx(), H: supercell.Dy(), Text: "Supercell ID"}},
 		"panel": {
@@ -91,8 +84,8 @@ func newCaptureFixture(t *testing.T) *captureFixture {
 			{X: 240, Y: 310, W: 120, H: 20, Text: "#GHI789"},
 		},
 	}
-	f.frames = SwitchFrames{Village: village, Profile: profile, Settings: settings, Panel: panel}
-	f.screens = []gocv.Mat{village, profile, settings, panel}
+	f.frames = SwitchFrames{Profile: profile, Settings: settings, Panel: panel}
+	f.screens = []gocv.Mat{profile, settings, panel}
 	t.Cleanup(f.close)
 	return f
 }
@@ -145,11 +138,11 @@ func TestInstalledTemplatesSatisfyTheRuntimeSwitch(t *testing.T) {
 	f := newCaptureFixture(t)
 	report, tplDir, cfgPath := installForTest(t, f, nil)
 
-	if len(report.Files) != 4 {
-		t.Fatalf("installed %d files (%v), want 4", len(report.Files), report.Files)
+	if len(report.Files) != 3 {
+		t.Fatalf("installed %d files (%v), want 3", len(report.Files), report.Files)
 	}
 	for _, name := range []string{
-		AcctProfileTemplate, AcctSettingsTemplate, AcctSupercellTemplate, AcctSlotListTemplate,
+		AcctSettingsTemplate, AcctSupercellTemplate, AcctSlotListTemplate,
 	} {
 		if _, err := os.Stat(filepath.Join(tplDir, name+".png")); err != nil {
 			t.Fatalf("%s was not installed into the runtime directory: %v", name, err)
@@ -185,12 +178,15 @@ func TestInstalledTemplatesSatisfyTheRuntimeSwitch(t *testing.T) {
 		t.Fatalf("load runtime config: %v", err)
 	}
 
+	// The switch opens on whatever village is on screen, so a plain frame stands
+	// in for it: the profile corner is geometry, not a template.
+	village := fillMat(t, captureW, captureH, color.RGBA{20, 24, 30, 255})
 	screens := []gocv.Mat{
-		f.frames.Village.Clone(),  // before any tap: player banner
-		f.frames.Profile.Clone(),  // profile screen: gear
+		village.Clone(),           // before any tap
+		f.frames.Profile.Clone(),  // profile screen: Settings tab
 		f.frames.Settings.Clone(), // settings: Supercell ID row
 		f.frames.Panel.Clone(),    // account list: row 1 anchor
-		f.frames.Village.Clone(),  // after the slot tap
+		village.Clone(),           // after the slot tap
 		f.frames.Profile.Clone(),  // profile, for the identity read
 	}
 	defer func() {
@@ -248,7 +244,7 @@ func TestInstallRejectsWrongRowGeometry(t *testing.T) {
 			t.Errorf("error %q is missing %q", err, needle)
 		}
 	}
-	if _, statErr := os.Stat(filepath.Join(root, "templates", AcctProfileTemplate+".png")); statErr == nil {
+	if _, statErr := os.Stat(filepath.Join(root, "templates", AcctSettingsTemplate+".png")); statErr == nil {
 		t.Fatal("templates were installed despite the geometry failure")
 	}
 }

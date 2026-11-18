@@ -1199,6 +1199,19 @@ html:not(.dark) .data-table tbody tr:hover { background: rgba(0, 0, 0, .025); }
   animation: view-in var(--motion-base) var(--ease-out) both;
 }
 
+.notice-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(76, 195, 138, .3);
+  background: var(--green-soft);
+  color: var(--green);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .skeleton {
   border-radius: var(--r);
   background: linear-gradient(90deg, var(--raised), var(--overlay), var(--raised));

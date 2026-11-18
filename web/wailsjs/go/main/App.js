@@ -158,6 +158,10 @@ export function StopBot() {
   return window['go']['main']['App']['StopBot']();
 }
 
+export function CaptureSwitchTemplates(arg1) {
+  return window['go']['main']['App']['CaptureSwitchTemplates'](arg1);
+}
+
 export function SwitchAccount(arg1, arg2) {
   return window['go']['main']['App']['SwitchAccount'](arg1, arg2);
 }

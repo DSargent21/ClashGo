@@ -213,3 +213,53 @@ func TestApp_StartOnActiveAccountReDrivesVerification(t *testing.T) {
 		t.Fatal("a bot was started despite the mismatch")
 	}
 }
+
+// TestApp_CaptureSwitchTemplatesDrivesTheAccountsEmulator proves the setup
+// action targets the account's own instance (never another running one) and
+// hands the UI the rows the switch will tap.
+func TestApp_CaptureSwitchTemplatesDrivesTheAccountsEmulator(t *testing.T) {
+	a := newSwitchTestApp(t)
+
+	var got accounts.Account
+	a.captureSwitchTemplates = func(acct accounts.Account) (SwitchCaptureResult, error) {
+		got = acct
+		return SwitchCaptureResult{
+			Files:   []string{"acct_settings.png", "acct_supercell.png", "acct_slot_list.png"},
+			Rows:    []int{320, 400, 480},
+			Message: "installed",
+		}, nil
+	}
+
+	res, err := a.CaptureSwitchTemplates(accounts.DefaultAccountID)
+	if err != nil {
+		t.Fatalf("CaptureSwitchTemplates: %v", err)
+	}
+	if got.Device.DeviceID != "localhost:5555" {
+		t.Errorf("captured on %q, want the account's emulator localhost:5555", got.Device.DeviceID)
+	}
+	if len(res.Files) != 3 || len(res.Rows) != 3 || res.Message != "installed" {
+		t.Errorf("result = %+v, want the seam's report passed through", res)
+	}
+	// The action installs files; it must not move the registry. The UI re-reads
+	// the fleet afterwards, so the state it shows has to be unchanged.
+	state, err := a.GetAccounts()
+	if err != nil {
+		t.Fatalf("GetAccounts: %v", err)
+	}
+	if state.ActiveID != accounts.DefaultAccountID {
+		t.Errorf("active account = %q, want %q", state.ActiveID, accounts.DefaultAccountID)
+	}
+}
+
+// TestApp_CaptureSwitchTemplatesRejectsUnknownAccount keeps a stale UI id from
+// starting an ADB session.
+func TestApp_CaptureSwitchTemplatesRejectsUnknownAccount(t *testing.T) {
+	a := newSwitchTestApp(t)
+	a.captureSwitchTemplates = func(accounts.Account) (SwitchCaptureResult, error) {
+		t.Fatal("capture ran for an account that does not exist")
+		return SwitchCaptureResult{}, nil
+	}
+	if _, err := a.CaptureSwitchTemplates("nope"); err == nil {
+		t.Fatal("unknown account id was accepted")
+	}
+}

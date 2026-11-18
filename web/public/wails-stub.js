@@ -474,6 +474,17 @@
                         }));
                     },
                     SwitchAccount: resolve({ account: sampleAccounts[0], started: false, message: 'browser-stub' }),
+                    // Setup action: in browser dev nothing taps a game, so it
+                    // reports the rows a real capture would derive.
+                    CaptureSwitchTemplates: function (id) {
+                        var found = sampleAccounts.find(function (account) { return account.id === id; });
+                        if (!found) return Promise.reject(new Error('account ' + id + ' not found'));
+                        return Promise.resolve({
+                            files: ['acct_settings.png', 'acct_supercell.png', 'acct_slot_list.png'],
+                            rows: [320, 400, 480],
+                            message: 'browser-stub: 3 templates installed; the switch will tap rows at y=[320 400 480]',
+                        });
+                    },
                     // Account CRUD mutates the in-memory list so the editor,
                     // delete and reset-usage buttons all show a real result in
                     // browser dev. Nothing is persisted; the real store lives in

@@ -1,7 +1,7 @@
 package game
 
-// accountcapture.go installs the four switch templates from the game's own
-// screens, with no hand cropping.
+// accountcapture.go installs the switch templates from the game's own screens,
+// with no hand cropping.
 //
 // A cold start used to need an operator to screenshot, measure and crop four
 // PNGs before the switcher would run. That manual step was the bug: the
@@ -30,20 +30,28 @@ import (
 	"gocv.io/x/gocv"
 )
 
-// SwitchFrames are the four screens the switch walks through, captured in the
-// order the runtime taps them.
+// SwitchFrames are the screens the switch walks through, captured in the order
+// the runtime taps them. There is no village frame: the profile is addressed by
+// geometry, and the banner carries the current player's name.
 type SwitchFrames struct {
-	Village  gocv.Mat
 	Profile  gocv.Mat
 	Settings gocv.Mat
 	Panel    gocv.Mat
 }
 
+// Close releases the captured frames.
+func (f SwitchFrames) Close() {
+	for _, m := range []gocv.Mat{f.Profile, f.Settings, f.Panel} {
+		if !m.Empty() {
+			m.Close()
+		}
+	}
+}
+
 // SwitchTemplateRegions are the crops the runtime templates come from.
 type SwitchTemplateRegions struct {
-	Profile   image.Rectangle // player banner, village screen
-	Settings  image.Rectangle // gear, profile screen
-	Supercell image.Rectangle // Supercell ID row, settings screen
+	Settings  image.Rectangle // Settings tab/gear, profile screen
+	Supercell image.Rectangle // Supercell ID row or its Open button
 	SlotList  image.Rectangle // first account row, panel screen
 }
 
@@ -76,29 +84,6 @@ func switchText(reader SwitchTextReader, frame string, screen gocv.Mat) ([]visio
 		return nil, fmt.Errorf("read the screen's text: %w", err)
 	}
 	return vision.SortedRegions(regions), nil
-}
-
-// DetectBannerRegion finds the player banner button: the text block in the
-// top-left of the village screen (name and level), padded to cover the badge.
-func DetectBannerRegion(screen gocv.Mat, text SwitchTextReader) (image.Rectangle, error) {
-	w, h := screen.Cols(), screen.Rows()
-	regions, err := switchText(text, "village", screen)
-	if err != nil {
-		return image.Rectangle{}, err
-	}
-	var found []image.Rectangle
-	for _, region := range regions {
-		c := region.Center()
-		if c.X <= w*35/100 && c.Y <= h*18/100 {
-			found = append(found, region.Rect())
-		}
-	}
-	if len(found) == 0 {
-		return image.Rectangle{}, fmt.Errorf("no player name/level text in the top-left of the village screen — open the main village and re-run")
-	}
-	box := unionRects(found)
-	pad := maxInt(8, box.Dy()/2)
-	return clampRect(padRect(box, pad), w, h), nil
 }
 
 // DetectSettingsRegion finds the control that opens the Settings panel. Current
@@ -186,6 +171,92 @@ func DetectSlotListRegion(screen gocv.Mat, text SwitchTextReader) ([]image.Point
 	return rows, anchor, nil
 }
 
+// CaptureSwitchFrames drives the running game to each screen the installer
+// crops and saves every frame under dir (so a refusal can be replayed with
+// -source). It taps the profile corner, opens Settings only when Supercell ID is
+// not already on the profile screen, and returns to the village afterwards.
+// overrides replaces any crop the caller wants to force.
+func CaptureSwitchFrames(dev Device, dir string, settle time.Duration, overrides SwitchTemplateRegions) (SwitchFrames, SwitchTemplateRegions, error) {
+	var frames SwitchFrames
+	var regions SwitchTemplateRegions
+
+	wait := func() { time.Sleep(settle) }
+	capture := func(name string) (gocv.Mat, error) {
+		mat, err := dev.CaptureToMat()
+		if err != nil {
+			return gocv.NewMat(), fmt.Errorf("capture the %s screen: %w", name, err)
+		}
+		if dir != "" && !gocv.IMWrite(filepath.Join(dir, name+".png"), mat) {
+			fmt.Fprintf(os.Stderr, "WARN: could not save %s.png in %s\n", name, dir)
+		}
+		return mat, nil
+	}
+	tap := func(r image.Rectangle) error {
+		p := image.Pt(r.Min.X+r.Dx()/2, r.Min.Y+r.Dy()/2)
+		if err := dev.TapRandomized(p.X, p.Y); err != nil {
+			return fmt.Errorf("tap (%d,%d): %w", p.X, p.Y, err)
+		}
+		wait()
+		return nil
+	}
+
+	var err error
+	if frames.Profile, err = capture("profile"); err != nil {
+		return frames, regions, err
+	}
+	// Back out exactly as deep as we went: Back on the village opens the exit
+	// dialog, which would break the next switch.
+	depth := 0
+	defer func() {
+		for i := 0; i < depth; i++ {
+			_ = dev.Back()
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+
+	if !overrides.Settings.Empty() {
+		regions.Settings = overrides.Settings
+	}
+
+	// Current builds show the Supercell ID row on the profile screen itself;
+	// older ones hide it behind Settings. Probe first, tap Settings only if the
+	// row is not already there.
+	if !overrides.Supercell.Empty() {
+		regions.Supercell = overrides.Supercell
+		frames.Settings = frames.Profile.Clone()
+	} else if regions.Supercell, err = DetectSupercellRegion(frames.Profile, nil); err == nil {
+		frames.Settings = frames.Profile.Clone()
+	} else {
+		if regions.Settings.Empty() {
+			regions.Settings = DetectSettingsRegion(frames.Profile, nil)
+		}
+		if err := tap(regions.Settings); err != nil {
+			return frames, regions, err
+		}
+		depth++
+		if frames.Settings, err = capture("settings"); err != nil {
+			return frames, regions, err
+		}
+		if regions.Supercell, err = DetectSupercellRegion(frames.Settings, nil); err != nil {
+			return frames, regions, fmt.Errorf("%w (tapped (x,y)=(%d,%d); pass -settings x1,y1,x2,y2 to point at it, or open Supercell ID by hand and install from saved frames with -source)", err, regions.Settings.Min.X+regions.Settings.Dx()/2, regions.Settings.Min.Y+regions.Settings.Dy()/2)
+		}
+	}
+
+	if err := tap(regions.Supercell); err != nil {
+		return frames, regions, err
+	}
+	depth++
+	if frames.Panel, err = capture("panel"); err != nil {
+		return frames, regions, err
+	}
+	if _, anchor, derr := DetectSlotListRegion(frames.Panel, nil); derr != nil {
+		return frames, regions, derr
+	} else if regions.SlotList.Empty() {
+		regions.SlotList = anchor
+	}
+	return frames, regions, nil
+}
+
 // SwitchInstallInput is everything the installer needs. Regions, Rows and
 // Anchor are optional: whatever is left empty is detected from Frames.
 type SwitchInstallInput struct {
@@ -193,8 +264,6 @@ type SwitchInstallInput struct {
 	Text    SwitchTextReader
 	Config  SwitchConfig
 	Regions SwitchTemplateRegions
-	Rows    []image.Point
-	Anchor  image.Rectangle
 
 	// TemplateDir and ConfigPath default to the assets paths the runtime reads.
 	TemplateDir string
@@ -242,11 +311,6 @@ func InstallSwitchTemplates(in SwitchInstallInput) (SwitchInstallReport, error) 
 	}
 	regions := in.Regions
 	var err error
-	if regions.Profile.Empty() {
-		if regions.Profile, err = DetectBannerRegion(in.Frames.Village, reader); err != nil {
-			return report, err
-		}
-	}
 	if regions.Settings.Empty() {
 		regions.Settings = DetectSettingsRegion(in.Frames.Profile, reader)
 	}
@@ -255,18 +319,9 @@ func InstallSwitchTemplates(in SwitchInstallInput) (SwitchInstallReport, error) 
 			return report, err
 		}
 	}
-	rows, anchor := in.Rows, in.Anchor
-	if len(rows) == 0 || anchor.Empty() {
-		detectedRows, detectedAnchor, derr := DetectSlotListRegion(in.Frames.Panel, reader)
-		if derr != nil {
-			return report, derr
-		}
-		if len(rows) == 0 {
-			rows = detectedRows
-		}
-		if anchor.Empty() {
-			anchor = detectedAnchor
-		}
+	rows, anchor, err := DetectSlotListRegion(in.Frames.Panel, reader)
+	if err != nil {
+		return report, err
 	}
 	if regions.SlotList.Empty() {
 		regions.SlotList = anchor
@@ -300,7 +355,6 @@ func InstallSwitchTemplates(in SwitchInstallInput) (SwitchInstallReport, error) 
 		screen gocv.Mat
 		rect   image.Rectangle
 	}{
-		{AcctProfileTemplate, in.Frames.Village, regions.Profile},
 		{AcctSettingsTemplate, in.Frames.Profile, regions.Settings},
 		{AcctSupercellTemplate, in.Frames.Settings, regions.Supercell},
 		{AcctSlotListTemplate, in.Frames.Panel, regions.SlotList},
@@ -482,8 +536,6 @@ func LoadSwitchConfigFile(path string) SwitchConfig {
 // so every installed-template failure can tell the operator what to adjust.
 func templateRectFlag(name string) string {
 	switch name {
-	case AcctProfileTemplate:
-		return "-profile"
 	case AcctSettingsTemplate:
 		return "-settings"
 	case AcctSupercellTemplate:
@@ -497,13 +549,12 @@ func templateRectFlag(name string) string {
 
 func framesPresent(f SwitchFrames) error {
 	for name, mat := range map[string]gocv.Mat{
-		"village":  f.Village,
 		"profile":  f.Profile,
 		"settings": f.Settings,
 		"panel":    f.Panel,
 	} {
 		if mat.Empty() || mat.Cols() < 4 || mat.Rows() < 4 {
-			return fmt.Errorf("the %s screen was not captured; the installer needs all four screens", name)
+			return fmt.Errorf("the %s screen was not captured; the installer needs all three screens", name)
 		}
 	}
 	return nil
@@ -518,27 +569,12 @@ func clampRect(r image.Rectangle, w, h int) image.Rectangle {
 	return r.Intersect(image.Rect(0, 0, w, h))
 }
 
-func unionRects(rects []image.Rectangle) image.Rectangle {
-	out := rects[0]
-	for _, r := range rects[1:] {
-		out = out.Union(r)
-	}
-	return out
-}
-
 func overlapArea(a, b image.Rectangle) int {
 	inter := a.Intersect(b)
 	if inter.Empty() {
 		return 0
 	}
 	return inter.Dx() * inter.Dy()
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // grayStdDev is the pixel spread of a crop: near zero means nothing is drawn

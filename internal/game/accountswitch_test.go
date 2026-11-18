@@ -50,7 +50,6 @@ func paste(t *testing.T, dst gocv.Mat, at image.Rectangle, tpl gocv.Mat) {
 type switchFixture struct {
 	templates   map[string]gocv.Mat
 	screens     []gocv.Mat
-	profileAt   image.Rectangle
 	settingsAt  image.Rectangle
 	supercellAt image.Rectangle
 }
@@ -58,19 +57,16 @@ type switchFixture struct {
 func newSwitchFixture(t *testing.T, screenH int, slotListAnchor image.Rectangle) *switchFixture {
 	t.Helper()
 	f := &switchFixture{templates: map[string]gocv.Mat{
-		AcctProfileTemplate:   fixtureTemplate(t, 44, 32, color.RGBA{180, 40, 40, 255}, color.RGBA{240, 220, 60, 255}),
 		AcctSettingsTemplate:  fixtureTemplate(t, 32, 32, color.RGBA{60, 60, 200, 255}, color.RGBA{230, 230, 230, 255}),
 		AcctSupercellTemplate: fixtureTemplate(t, 120, 26, color.RGBA{30, 120, 60, 255}, color.RGBA{250, 250, 250, 255}),
 		AcctSlotListTemplate:  fixtureTemplate(t, 150, 30, color.RGBA{90, 30, 120, 255}, color.RGBA{200, 200, 90, 255}),
 	}}
 	bg := color.RGBA{18, 20, 24, 255}
-	f.profileAt = image.Rect(16, 16, 60, 48)
 	f.settingsAt = image.Rect(testScreenW-80, 40, testScreenW-48, 72)
 	// Keep the Supercell ID row inside the frame for short test screens.
 	f.supercellAt = image.Rect(300, screenH-160, 420, screenH-134)
 
 	village := fillMat(t, testScreenW, screenH, bg)
-	paste(t, village, f.profileAt, f.templates[AcctProfileTemplate])
 
 	profile := fillMat(t, testScreenW, screenH, bg)
 	paste(t, profile, f.settingsAt, f.templates[AcctSettingsTemplate])

@@ -200,6 +200,14 @@ export interface AccountInput {
   max_attacks_per_session: number;
 }
 
+// What the Accounts view shows after installing the switch templates from the
+// running game. Mirrors main.SwitchCaptureResult.
+export interface SwitchCaptureResult {
+  files: string[];
+  rows: number[];
+  message: string;
+}
+
 export interface SwitchResult {
   account: AccountView;
   started: boolean;
