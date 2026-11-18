@@ -6,8 +6,8 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **updater polish** (download prompt before install, first-launch
-  release notes, setup-first stacking).
+- Last task: **v1.1.1 release** (staged updater, first-launch release notes,
+  installer issue close, main fast-forward).
 - Next task: **F.1 Dead-base / collector detection** — blocked on labelled
   outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
   fake-capture seam.
@@ -903,6 +903,22 @@ Format:
   `node --check web/public/wails-stub.js` PASS; `./tools/verify.sh` ->
   `VERIFY PASSED (full)`.
 - Commit: none (worktree change).
+
+### 2026-11-18 — v1.1.1 release
+- Released: `v1.1.1` from `fad5ee4`; `main` fast-forwarded from `71c7eb9` to
+  `fad5ee4`, and both `main` and `development` are pushed.
+- Contents: staged updater download/install prompts and once-per-version
+  release notes from `ba274d8`; installers and checksum assets remain part of
+  the v1.1 line.
+- Issue #2 (one-command installer) verified against the published release in
+  temp directories and closed as completed.
+- Artifacts: [v1.1.1](https://github.com/DSargent21/ClashGo/releases/tag/v1.1.1)
+  — DMG, zip, CLI tarball, `latest.json`, `SHA256SUMS`, cask. All downloaded
+  checksums verified; DMG is version 1.1.1, codesign verifies, and its binary
+  contains the new `clashgoSeenVersion` / "Download update" / "Install &
+  restart" strings. Installed CLI reports `ClashGO v1.1.1 (commit: fad5ee4)`.
+- CI: Release and Verify for v1.1.1, main, and development all green.
+- Next: no published release action pending.
 
 ### 2026-11-18 — updater polish
 - Changed: `web/src/components/UpdateBanner.tsx` now stages download and
