@@ -222,6 +222,7 @@ export namespace bot {
 	    bonus_elixir: number;
 	    bonus_de: number;
 	    total_attacks_session: number;
+	    end_reason?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AttackReport(source);
@@ -244,6 +245,7 @@ export namespace bot {
 	        this.bonus_elixir = source["bonus_elixir"];
 	        this.bonus_de = source["bonus_de"];
 	        this.total_attacks_session = source["total_attacks_session"];
+	        this.end_reason = source["end_reason"];
 	    }
 	}
 	export class BotStats {
@@ -356,13 +358,13 @@ export namespace config {
 	    warden_use_at_pct: number;
 	    reserve_de_percent: number;
 	    stall_timer_seconds: number;
+	    strategy_slots?: Record<string, number>;
+	    strategy_auto_end?: Record<string, boolean>;
+	    min_seconds_between_attacks: number;
 	    end_on_loot_target: boolean;
 	    loot_target_gold: number;
 	    loot_target_elixir: number;
 	    loot_target_de: number;
-	    strategy_slots?: Record<string, number>;
-	    strategy_auto_end?: Record<string, boolean>;
-	    min_seconds_between_attacks: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AttackConfig(source);
@@ -384,13 +386,13 @@ export namespace config {
 	        this.warden_use_at_pct = source["warden_use_at_pct"];
 	        this.reserve_de_percent = source["reserve_de_percent"];
 	        this.stall_timer_seconds = source["stall_timer_seconds"];
+	        this.strategy_slots = source["strategy_slots"];
+	        this.strategy_auto_end = source["strategy_auto_end"];
+	        this.min_seconds_between_attacks = source["min_seconds_between_attacks"];
 	        this.end_on_loot_target = source["end_on_loot_target"];
 	        this.loot_target_gold = source["loot_target_gold"];
 	        this.loot_target_elixir = source["loot_target_elixir"];
 	        this.loot_target_de = source["loot_target_de"];
-	        this.strategy_slots = source["strategy_slots"];
-	        this.strategy_auto_end = source["strategy_auto_end"];
-	        this.min_seconds_between_attacks = source["min_seconds_between_attacks"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -792,31 +794,6 @@ export namespace config {
 
 export namespace main {
 	
-	export class DetectedDevice {
-	    serial: string;
-	    model: string;
-	    width: number;
-	    height: number;
-	    bound_to: string;
-	    used_slots: number[];
-	    active: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new DetectedDevice(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.serial = source["serial"];
-	        this.model = source["model"];
-	        this.width = source["width"];
-	        this.height = source["height"];
-	        this.bound_to = source["bound_to"];
-	        this.used_slots = source["used_slots"];
-	        this.active = source["active"];
-	    }
-	}
-	
 	export class AccountView {
 	    id: string;
 	    name: string;
@@ -857,6 +834,7 @@ export namespace main {
 	        this.notes = source["notes"];
 	        this.device = this.convertValues(source["device"], accounts.Device);
 	        this.enabled = source["enabled"];
+	        this.slot = source["slot"];
 	        this.priority = source["priority"];
 	        this.cooldown_minutes = source["cooldown_minutes"];
 	        this.max_attacks_per_day = source["max_attacks_per_day"];
@@ -980,6 +958,9 @@ export namespace main {
 	    loot_per_hour: number;
 	    measured: boolean;
 	    raids: number;
+	    window_start?: string;
+	    window_end?: string;
+	    window_minutes: number;
 	    active: boolean;
 	    phases: ArmyPlanPhase[];
 	
@@ -999,6 +980,9 @@ export namespace main {
 	        this.loot_per_hour = source["loot_per_hour"];
 	        this.measured = source["measured"];
 	        this.raids = source["raids"];
+	        this.window_start = source["window_start"];
+	        this.window_end = source["window_end"];
+	        this.window_minutes = source["window_minutes"];
 	        this.active = source["active"];
 	        this.phases = this.convertValues(source["phases"], ArmyPlanPhase);
 	    }
@@ -1081,6 +1065,30 @@ export namespace main {
 	        this.message = source["message"];
 	    }
 	}
+	export class DetectedDevice {
+	    serial: string;
+	    model: string;
+	    width: number;
+	    height: number;
+	    bound_to: string;
+	    used_slots: number[];
+	    active: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DetectedDevice(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.serial = source["serial"];
+	        this.model = source["model"];
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.bound_to = source["bound_to"];
+	        this.used_slots = source["used_slots"];
+	        this.active = source["active"];
+	    }
+	}
 	export class LaunchLoadoutUnit {
 	    name: string;
 	    count: number;
@@ -1145,6 +1153,9 @@ export namespace main {
 	    loot_per_hour: number;
 	    measured: boolean;
 	    raids: number;
+	    window_start?: string;
+	    window_end?: string;
+	    window_minutes: number;
 	    recommended: boolean;
 	    army_slot: number;
 	    end_at_percent: number;
@@ -1163,6 +1174,9 @@ export namespace main {
 	        this.loot_per_hour = source["loot_per_hour"];
 	        this.measured = source["measured"];
 	        this.raids = source["raids"];
+	        this.window_start = source["window_start"];
+	        this.window_end = source["window_end"];
+	        this.window_minutes = source["window_minutes"];
 	        this.recommended = source["recommended"];
 	        this.army_slot = source["army_slot"];
 	        this.end_at_percent = source["end_at_percent"];
@@ -1241,11 +1255,11 @@ export namespace main {
 	    files: string[];
 	    rows: number[];
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SwitchCaptureResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.files = source["files"];
@@ -1253,7 +1267,6 @@ export namespace main {
 	        this.message = source["message"];
 	    }
 	}
-
 	export class SwitchResult {
 	    account: AccountView;
 	    started: boolean;

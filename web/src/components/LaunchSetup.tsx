@@ -1,6 +1,6 @@
 import React from 'react';
 import { main } from '../../wailsjs/go/models';
-import { compactNumber } from '../utils';
+import { compactNumber, formatWindow } from '../utils';
 import type { DetectedDevice } from '../types';
 import { MAX_ACCOUNT_SLOTS } from '../types';
 import { detectDevices } from '../accountsApi';
@@ -329,18 +329,27 @@ const LaunchSetup: React.FC<LaunchSetupProps> = React.memo(({ options, busy, err
                             </span>
                             <span className="plan-title">
                               <b>{option.name}</b>
-                              <span>{option.measured ? `${option.raids} measured raids` : 'Estimated rate'}</span>
+                              <span>{option.measured ? 'Measured rate' : 'No estimate yet'}</span>
                             </span>
                             <span className="plan-select" aria-hidden="true">
                               {active ? <Icon name="check" size={10} /> : null}
                             </span>
                           </span>
 
-                          <span className="plan-rate">
-                            <b className="mono">{compactNumber(option.loot_per_hour)}</b>
-                            <span>loot / hour</span>
-                            {option.recommended ? <em className="plan-recommended">Recommended</em> : null}
-                          </span>
+                          {option.loot_per_hour > 0 ? (
+                            <span className="plan-rate">
+                              <b className="mono">{compactNumber(option.loot_per_hour)}</b>
+                              <span>loot / hour</span>
+                              {option.window_minutes > 0 ? (
+                                <span className="plan-window">
+                                  {option.raids} raids · {formatWindow(option.window_minutes)}
+                                </span>
+                              ) : null}
+                              {option.recommended ? <em className="plan-recommended">Recommended</em> : null}
+                            </span>
+                          ) : (
+                            <span className="plan-rate plan-rate-empty">No raids yet</span>
+                          )}
                           <span className="plan-pitch">{option.pitch}</span>
 
                           <span className="plan-foot">

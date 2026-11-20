@@ -33,9 +33,7 @@ import {
   SkipCurrentVersion,
   ClearSkippedVersion,
   GetLootAutotune,
-  ApplyLootAutotune,
   SetAutoLoot,
-  ResetLootAutotune,
   GetLaunchOptions,
   ChooseArmy,
 } from '../wailsjs/go/main/App';
@@ -290,8 +288,6 @@ function App() {
   const [lootTargetGold, setLootTargetGold] = useState(0);
   const [lootTargetElixir, setLootTargetElixir] = useState(0);
   const [lootTargetDE, setLootTargetDE] = useState(0);
-  const [strategySlots, setStrategySlots] = useState<Record<string, number>>({});
-  const [strategyAutoEnd, setStrategyAutoEnd] = useState<Record<string, boolean>>({});
 
   // Real strategy YAML plans plus the effective slots/auto-end values.
   const [armyPlans, setArmyPlans] = useState<ArmyPlan[]>([]);
@@ -375,12 +371,6 @@ function App() {
         setLootTargetGold(conf.attack.loot_target_gold ?? 0);
         setLootTargetElixir(conf.attack.loot_target_elixir ?? 0);
         setLootTargetDE(conf.attack.loot_target_de ?? 0);
-        if (conf.attack.strategy_slots) {
-          setStrategySlots(conf.attack.strategy_slots);
-        }
-        if (conf.attack.strategy_auto_end) {
-          setStrategyAutoEnd(conf.attack.strategy_auto_end);
-        }
         if (conf.storage) {
           setHaltGold(conf.storage.halt_when_gold_full ?? true);
           setHaltElixir(conf.storage.halt_when_elixir_full ?? true);
@@ -844,34 +834,6 @@ function App() {
     }
   }, [loadAutotune]);
 
-  const handleApplyAutoLoot = useCallback(async () => {
-    setAutotuneBusy(true);
-    try {
-      setAutotune(await ApplyLootAutotune());
-      // The form inputs mirror config.json, so re-read what was just written
-      // instead of leaving the fields showing the pre-tuning values.
-      const conf = await GetConfig();
-      setGoldThreshold(conf.search.min_loot_gold);
-      setElixirThreshold(conf.search.min_loot_elixir);
-      setDeThreshold(conf.search.min_loot_de);
-    } catch (err) {
-      console.error('Apply loot tuning failed:', err);
-    } finally {
-      setAutotuneBusy(false);
-    }
-  }, []);
-
-  const handleResetAutoLoot = useCallback(async () => {
-    setAutotuneBusy(true);
-    try {
-      setAutotune(await ResetLootAutotune());
-    } catch (err) {
-      console.error('Reset loot tuning failed:', err);
-    } finally {
-      setAutotuneBusy(false);
-    }
-  }, []);
-
   const finishLaunch = useCallback(() => {
     try {
       localStorage.setItem('launchSetupDone', '1');
@@ -967,39 +929,28 @@ function App() {
     setTab('config');
   }, [finishLaunch]);
 
-  // Per-plan values live on the Army page: it lists the plans, so the active
-  // plan owns its recipe slot and auto-end switch. Config only carries
-  // engine-wide settings, so the same control never appears twice.
-  const stratBase = selectedStrategy.split('/').pop() || '';
-  const activePlan = armyPlans.find((plan) => plan.active && plan.file === stratBase);
-  const currentArmySlot = activePlan?.army_slot
-    ?? strategySlots[stratBase]
-    ?? (stratBase.includes('valk') ? 4 : 1);
-  const currentAutoEnd = activePlan
-    ? activePlan.end_at_percent > 0
-    : (strategyAutoEnd[stratBase] ?? stratBase.toLowerCase().includes('valk'));
-
-  const handleSetArmySlot = useCallback(async (slot: number) => {
-    setStrategySlots(prev => ({ ...prev, [stratBase]: slot }));
+  // Per-plan values live on the Army page: it previews any plan and writes
+  // that plan's recipe slot / auto-end, not only the active one. Config only
+  // carries engine-wide settings, so the same control never appears twice.
+  const handleSetArmySlot = useCallback(async (file: string, slot: number) => {
     try {
-      await SetStrategyArmySlot(selectedStrategy, slot);
+      await SetStrategyArmySlot(file, slot);
       await refreshArmyPlans();
     } catch (err) {
       console.error('Failed to set strategy army slot:', err);
       setArmyError(err instanceof Error ? err.message : String(err));
     }
-  }, [selectedStrategy, stratBase, refreshArmyPlans]);
+  }, [refreshArmyPlans]);
 
-  const handleSetAutoEnd = useCallback(async (enabled: boolean) => {
-    setStrategyAutoEnd(prev => ({ ...prev, [stratBase]: enabled }));
+  const handleSetAutoEnd = useCallback(async (file: string, enabled: boolean) => {
     try {
-      await SetStrategyAutoEnd(selectedStrategy, enabled);
+      await SetStrategyAutoEnd(file, enabled);
       await refreshArmyPlans();
     } catch (err) {
       console.error('Failed to set strategy auto end:', err);
       setArmyError(err instanceof Error ? err.message : String(err));
     }
-  }, [selectedStrategy, stratBase, refreshArmyPlans]);
+  }, [refreshArmyPlans]);
 
   const handleUseArmy = useCallback(async (file: string) => {
     try {
@@ -1041,8 +992,6 @@ function App() {
       autoLoot: autotune,
       autoLootBusy: autotuneBusy,
       onToggleAutoLoot: handleToggleAutoLoot,
-      onApplyAutoLoot: handleApplyAutoLoot,
-      onResetAutoLoot: handleResetAutoLoot,
       haltGold, setHaltGold,
       haltElixir, setHaltElixir,
       haltDE, setHaltDE,
@@ -1084,7 +1033,7 @@ function App() {
     goldThreshold, elixirThreshold, deThreshold,
     searchEnabled, upgradeWalls, stallTimer,
     endOnLootTarget, lootTargetGold, lootTargetElixir, lootTargetDE,
-    autotune, autotuneBusy, handleToggleAutoLoot, handleApplyAutoLoot, handleResetAutoLoot,
+    autotune, autotuneBusy, handleToggleAutoLoot,
     haltGold, haltElixir, haltDE, haltRule, storageThreshold, resumeThreshold, dumpToWallsBeforeHalt, autoCollect,
     scheduleEnabled, activeHoursStart, activeHoursEnd, sessionDuration, breakDuration, forceStopOnBreak, maxPerHour, maxPerDay,
     autoBuilders, reserveBuilders, upgradeStrategy, upgradeDefenses, upgradeResources, upgradeArmy, upgradeTraps, upgradeHeroes,
@@ -1173,8 +1122,6 @@ function App() {
               plans={armyPlans}
               loading={armyLoading}
               error={armyError}
-              armySlot={currentArmySlot}
-              autoEnd={currentAutoEnd}
               onSetSlot={handleSetArmySlot}
               onSetAutoEnd={handleSetAutoEnd}
               onActivate={handleUseArmy}

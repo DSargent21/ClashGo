@@ -28,18 +28,21 @@ type ArmyPlanPhase struct {
 // recipe slot / auto-end values the bot will use for it and the same loot/hour
 // estimate the launch screen shows (history-backed once a profile has raids).
 type ArmyPlan struct {
-	File         string          `json:"file"`
-	Name         string          `json:"name"`
-	Description  string          `json:"description"`
-	Emblem       string          `json:"emblem"`
-	TargetEdge   string          `json:"target_edge"`
-	ArmySlot     int             `json:"army_slot"`
-	EndAtPercent int             `json:"end_at_percent"`
-	LootPerHour  int64           `json:"loot_per_hour"`
-	Measured     bool            `json:"measured"`
-	Raids        int             `json:"raids"`
-	Active       bool            `json:"active"`
-	Phases       []ArmyPlanPhase `json:"phases"`
+	File          string          `json:"file"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Emblem        string          `json:"emblem"`
+	TargetEdge    string          `json:"target_edge"`
+	ArmySlot      int             `json:"army_slot"`
+	EndAtPercent  int             `json:"end_at_percent"`
+	LootPerHour   int64           `json:"loot_per_hour"` // 0 = no estimate yet
+	Measured      bool            `json:"measured"`      // true = from real raids
+	Raids         int             `json:"raids"`         // raids in the measured session
+	WindowStart   string          `json:"window_start,omitempty"`
+	WindowEnd     string          `json:"window_end,omitempty"`
+	WindowMinutes int             `json:"window_minutes"` // wall clock, training gaps included
+	Active        bool            `json:"active"`
+	Phases        []ArmyPlanPhase `json:"phases"`
 }
 
 // GetArmyPlans reads assets/strategies/*.yaml and reports what the bot will
@@ -51,6 +54,7 @@ func (a *App) GetArmyPlans() []ArmyPlan {
 
 	plans := []ArmyPlan{}
 	history := a.GetAttackHistory()
+	sessions := loadSessionRecords()
 	matches, err := filepath.Glob(paths.Resolve("strategies/*.yaml"))
 	if err != nil {
 		return plans
@@ -92,22 +96,24 @@ func (a *App) GetArmyPlans() []ArmyPlan {
 
 		// Same estimate the launch screen uses, so the two pages cannot
 		// disagree about an army's loot rate.
-		key := lootEstimateKey(base)
-		lootPerHour, measured, raids := estimateLootPerHour(history, key, placeholderLootPerHour[key])
+		estimate := estimateLootPerHour(history, lootEstimateKey(base), sessions)
 
 		plans = append(plans, ArmyPlan{
-			File:         base,
-			Name:         strat.Name,
-			Description:  strat.Description,
-			Emblem:       emblem,
-			TargetEdge:   strat.TargetEdge,
-			ArmySlot:     slot,
-			EndAtPercent: effectivePlanEnd(cfg.Attack.StrategyAutoEnd, base, strat.Name, strat.EndAtPercent),
-			LootPerHour:  lootPerHour,
-			Measured:     measured,
-			Raids:        raids,
-			Active:       base == activeBase,
-			Phases:       phases,
+			File:          base,
+			Name:          strat.Name,
+			Description:   strat.Description,
+			Emblem:        emblem,
+			TargetEdge:    strat.TargetEdge,
+			ArmySlot:      slot,
+			EndAtPercent:  effectivePlanEnd(cfg.Attack.StrategyAutoEnd, base, strat.Name, strat.EndAtPercent),
+			LootPerHour:   estimate.PerHour,
+			Measured:      estimate.Measured,
+			Raids:         estimate.Raids,
+			WindowStart:   estimate.WindowStartString(),
+			WindowEnd:     estimate.WindowEndString(),
+			WindowMinutes: estimate.WindowMinutes(),
+			Active:        base == activeBase,
+			Phases:        phases,
 		})
 	}
 	return plans

@@ -28,8 +28,8 @@ type slotItem struct {
 }
 
 type armySlotsData struct {
-	Width         int                 `json:"width"`
-	Height        int                 `json:"height"`
+	Width         int `json:"width"`
+	Height        int `json:"height"`
 	DropdownArrow struct {
 		X int `json:"x"`
 		Y int `json:"y"`
@@ -89,12 +89,12 @@ func (s *server) loadConfig() {
 		DropdownArrow: struct {
 			X int `json:"x"`
 			Y int `json:"y"`
-		}{X: 742, Y: 71},
+		}{X: 755, Y: 163},
 		Slots: map[string]slotItem{
-			"1": {X: 740, Y: 150, W: 417, H: 55, Name: "Slot 1 (Imported Army 3)"},
-			"2": {X: 740, Y: 222, W: 417, H: 55, Name: "Slot 2 (Army 2)"},
-			"3": {X: 740, Y: 293, W: 417, H: 55, Name: "Slot 3 (Imported Army 3)"},
-			"4": {X: 740, Y: 366, W: 417, H: 55, Name: "Slot 4 (Imported Army 4)"},
+			"1": {X: 755, Y: 225, W: 417, H: 55, Name: "Slot 1 (Imported Army 3)"},
+			"2": {X: 755, Y: 289, W: 417, H: 55, Name: "Slot 2 (Army 2)"},
+			"3": {X: 755, Y: 353, W: 417, H: 55, Name: "Slot 3 (Imported Army 3)"},
+			"4": {X: 755, Y: 418, W: 417, H: 55, Name: "Slot 4 (Imported Army 4)"},
 		},
 	}
 	raw, err := os.ReadFile(s.configPath)

@@ -28,8 +28,6 @@ interface ConfigViewProps {
   autoLoot: main.AutotuneStatus | null;
   autoLootBusy: boolean;
   onToggleAutoLoot: (enabled: boolean) => void;
-  onApplyAutoLoot: () => void;
-  onResetAutoLoot: () => void;
   haltGold: boolean;
   setHaltGold: (v: boolean) => void;
   haltElixir: boolean;
@@ -138,7 +136,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
   lootTargetGold, setLootTargetGold,
   lootTargetElixir, setLootTargetElixir,
   lootTargetDE, setLootTargetDE,
-  autoLoot, autoLootBusy, onToggleAutoLoot, onApplyAutoLoot, onResetAutoLoot,
+  autoLoot, autoLootBusy, onToggleAutoLoot,
   haltGold, setHaltGold,
   haltElixir, setHaltElixir,
   haltDE, setHaltDE,
@@ -356,7 +354,8 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                     <b>Auto loot tuning</b>
                     <span>
                       Derive the minimums above from the loot the bot reads on every searched base,
-                      optimising loot per hour. Falls back to your numbers until it has enough data.
+                      optimising loot per hour. Applied automatically as data arrives; your numbers
+                      are the floor until it has enough.
                     </span>
                   </div>
                   <div className="set-ctl">
@@ -368,7 +367,7 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                   </div>
                 </div>
 
-                {autoLoot ? (
+                {autoLoot?.enabled ? (
                   <div className="autotune" aria-live="polite">
                     <div className="autotune-head">
                       <span className={`status-pill ${autoLoot.ready ? 'running' : ''}`.trim()}>
@@ -405,25 +404,6 @@ const ConfigView: React.FC<ConfigViewProps> = React.memo(({
                         })}
                       </div>
                     ) : null}
-                    <div className="autotune-actions">
-                      <button
-                        type="button"
-                        className="btn sm primary"
-                        onClick={onApplyAutoLoot}
-                        disabled={!autoLoot.ready || autoLootBusy}
-                      >
-                        Apply suggestion
-                      </button>
-                      <button
-                        type="button"
-                        className="btn sm ghost"
-                        onClick={onResetAutoLoot}
-                        disabled={autoLootBusy}
-                        title="Delete the search history and learn again from the current trophy range"
-                      >
-                        Reset history
-                      </button>
-                    </div>
                   </div>
                 ) : null}
 

@@ -2853,22 +2853,20 @@ func (b *Bot) clickSequence() bool {
 				return b.waitForBattleState(60 * time.Second)
 			}
 		}
-		// The army sheet is already open on MY ARMY (the active army). When the
-		// strategy asked for a saved recipe it has to be armed first; only then
-		// does the sheet's own action button start the search.
-		if b.armySlot.Load() >= 1 {
-			if !b.selectArmySlot() {
-				if screen, err := b.client.CaptureToMat(); err == nil {
-					b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": int(b.armySlot.Load())})
-					screen.Close()
-				}
-				b.logger.Error().
-					Int("army_slot", int(b.armySlot.Load())).
-					Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
-				return false
+		// The army sheet opens on MY ARMY (the active army), which is not one of
+		// the four saved recipes. The strategy's recipe is armed first; only
+		// then does the sheet's own action button start the search.
+		if !b.selectArmySlot() {
+			if screen, err := b.client.CaptureToMat(); err == nil {
+				b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": int(b.armySlot.Load())})
+				screen.Close()
 			}
-			b.client.JitteredSleep(500 * time.Millisecond)
+			b.logger.Error().
+				Int("army_slot", int(b.armySlot.Load())).
+				Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
+			return false
 		}
+		b.client.JitteredSleep(500 * time.Millisecond)
 		if _, ok := b.pressPanelAction("Army Sheet Attack", sheetActionRegion, 8*time.Second); ok {
 			b.logger.Info().Msg("waiting for battle state (searching)...")
 			return b.waitForBattleState(60 * time.Second)
@@ -2939,19 +2937,16 @@ func (b *Bot) clickSequence() bool {
 			b.DumpDiagnostics("click_army_slot_not_found", screen, map[string]interface{}{"army_slot": int(b.armySlot.Load())})
 			screen.Close()
 		}
-		if b.armySlot.Load() > 1 {
-			// Fail closed: an explicitly requested saved recipe (slot > 1)
-			// that never selected means the battle would run with whatever
-			// army is currently active — silently wrong composition, a
-			// wasted attack. There is no positive "selected" evidence to
-			// check (the toast is transient and unmapped), so a tap that
-			// did not land after 3 attempts is enough to refuse.
-			b.logger.Error().
-				Int("army_slot", int(b.armySlot.Load())).
-				Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
-			return false
-		}
-		b.logger.Warn().Int("army_slot", int(b.armySlot.Load())).Msg("army recipe card did not appear, continuing anyway")
+		// Fail closed: a saved recipe that never selected means the battle
+		// would run with whatever army is currently active — silently wrong
+		// composition, a wasted attack. There is no positive "selected"
+		// evidence to check (the toast is transient and unmapped), so a tap
+		// that did not land after 3 attempts is enough to refuse. Slot 1 is a
+		// saved recipe too, so it is not exempt.
+		b.logger.Error().
+			Int("army_slot", int(b.armySlot.Load())).
+			Msg("saved army recipe card did not select after retries; refusing to attack with an unconfirmed army")
+		return false
 	}
 	b.client.JitteredSleep(500 * time.Millisecond)
 
@@ -3078,12 +3073,14 @@ var sheetActionRegion = [4]float64{0.5, 0.5, 1.0, 1.0}
 // (measured on the live 860x732 BlueStacks layout). Slot 1 keeps the
 // legacy template path (btn_army_1) for backward compatibility with
 // older game layouts; slots 2+ use the measured card geometry.
+//
+// All four slots are real saved recipes. "MY ARMY" is a separate tab, not
+// slot 1, so slot 1 is selected from the dropdown too — returning early left
+// the previously active army armed (live-verified 2026-11-18).
 func (b *Bot) selectArmySlot() bool {
 	slot := int(b.armySlot.Load())
-	if slot <= 1 {
-		// Slot 1 is the default active army ("MY ARMY") already displayed when
-		// the army sheet opens. No dropdown selection needed.
-		return true
+	if slot < 1 || slot > 4 {
+		slot = 1
 	}
 
 	// Off the reference geometry, select from the Saved Recipes dropdown:
@@ -3116,6 +3113,15 @@ func (b *Bot) selectArmySlot() bool {
 // 1280x720 sheet as fractions of the frame (the sheet is full-screen and
 // centred, so fractions survive the reflow that made the authored reference
 // coordinates miss here). Only the tab tap uses these: the press itself lands
+// armySlotRect is one calibrated Saved Recipes row.
+type armySlotRect struct {
+	X    int    `json:"x"`
+	Y    int    `json:"y"`
+	W    int    `json:"w"`
+	H    int    `json:"h"`
+	Name string `json:"name"`
+}
+
 type armySlotsConfig struct {
 	Width         int `json:"width"`
 	Height        int `json:"height"`
@@ -3123,13 +3129,7 @@ type armySlotsConfig struct {
 		X int `json:"x"`
 		Y int `json:"y"`
 	} `json:"dropdown_arrow"`
-	Slots map[string]struct {
-		X    int    `json:"x"`
-		Y    int    `json:"y"`
-		W    int    `json:"w"`
-		H    int    `json:"h"`
-		Name string `json:"name"`
-	} `json:"slots"`
+	Slots map[string]armySlotRect `json:"slots"`
 }
 
 func loadArmySlotsConfig() *armySlotsConfig {
@@ -3145,34 +3145,51 @@ func loadArmySlotsConfig() *armySlotsConfig {
 	return &cfg
 }
 
+// Saved Recipes dropdown layout on the live army sheet, as fractions of the
+// physical frame. Measured on the 1024x768 BlueStacks sheet: dropdown arrow
+// (604,174), rows at y 240/308/377/445 for slots 1-4, all at x 603 (a tap on
+// the row's centre arms that recipe). The sheet is full-screen and centred,
+// so fractions survive the resolution reflow.
+const (
+	armySlotArrowX = 0.5898
+	armySlotArrowY = 0.2266
+	armySlotRowX   = 0.5898
+	armySlotRowY   = 0.3125
+	armySlotRowGap = 0.0892
+)
+
+// armySlotTapPoints resolves the dropdown-arrow and recipe-row taps for slot
+// (1..4) on a w x h frame, preferring calibrated army_slots.json coordinates
+// when they exist.
+func armySlotTapPoints(w, h, slot int, cfg *armySlotsConfig) (arrowX, arrowY, slotX, slotY int) {
+	if slot < 1 || slot > 4 {
+		slot = 1
+	}
+	round := func(f float64) int { return int(f + 0.5) }
+	arrowX = round(armySlotArrowX * float64(w))
+	arrowY = round(armySlotArrowY * float64(h))
+	slotX = round(armySlotRowX * float64(w))
+	slotY = round((armySlotRowY + float64(slot-1)*armySlotRowGap) * float64(h))
+
+	if cfg == nil {
+		return arrowX, arrowY, slotX, slotY
+	}
+	if cfg.DropdownArrow.X > 0 && cfg.DropdownArrow.Y > 0 {
+		arrowX = round(float64(cfg.DropdownArrow.X) * float64(w) / float64(cfg.Width))
+		arrowY = round(float64(cfg.DropdownArrow.Y) * float64(h) / float64(cfg.Height))
+	}
+	if s, ok := cfg.Slots[fmt.Sprintf("%d", slot)]; ok && s.X > 0 && s.Y > 0 {
+		slotX = round(float64(s.X) * float64(w) / float64(cfg.Width))
+		slotY = round(float64(s.Y) * float64(h) / float64(cfg.Height))
+	}
+	return arrowX, arrowY, slotX, slotY
+}
+
 // selectArmySlotLive arms saved recipe `slot` (1..4) from the Saved Recipes
 // dropdown menu on the army sheet (opened via the [v] arrow button beside
 // the "Saved Recipes" tab).
 func (b *Bot) selectArmySlotLive(slot int) bool {
-	if slot < 1 || slot > 4 {
-		slot = 1
-	}
-
-	w, h := b.cal.PhysicalW, b.cal.PhysicalH
-
-	// Default measured geometry (1280x720)
-	arrowX := int((742.0 / 1280.0) * float64(w))
-	arrowY := int((71.0 / 720.0) * float64(h))
-	slotX := int((740.0 / 1280.0) * float64(w))
-	slotY := int(((150.0 + float64(slot-1)*72.0) / 720.0) * float64(h))
-
-	// If calibrated army_slots.json exists, obey its user-selected coordinates
-	if cfg := loadArmySlotsConfig(); cfg != nil {
-		if cfg.DropdownArrow.X > 0 && cfg.DropdownArrow.Y > 0 {
-			arrowX = int(float64(cfg.DropdownArrow.X) * float64(w) / float64(cfg.Width))
-			arrowY = int(float64(cfg.DropdownArrow.Y) * float64(h) / float64(cfg.Height))
-		}
-		slotKey := fmt.Sprintf("%d", slot)
-		if s, ok := cfg.Slots[slotKey]; ok && s.X > 0 && s.Y > 0 {
-			slotX = int(float64(s.X) * float64(w) / float64(cfg.Width))
-			slotY = int(float64(s.Y) * float64(h) / float64(cfg.Height))
-		}
-	}
+	arrowX, arrowY, slotX, slotY := armySlotTapPoints(b.cal.PhysicalW, b.cal.PhysicalH, slot, loadArmySlotsConfig())
 
 	b.logger.Info().Int("arrow_x", arrowX).Int("arrow_y", arrowY).Msg("opening Saved Recipes dropdown")
 	if err := b.client.TapRandomized(arrowX, arrowY); err != nil {

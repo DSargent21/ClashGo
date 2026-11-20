@@ -10,6 +10,8 @@ export function ApplyLootAutotune():Promise<main.AutotuneStatus>;
 
 export function ApplyUpdate():Promise<void>;
 
+export function CaptureSwitchTemplates(arg1:string):Promise<main.SwitchCaptureResult>;
+
 export function CheckForUpdate():Promise<updater.Status>;
 
 export function ChooseArmy(arg1:string,arg2:boolean,arg3:number):Promise<void>;
@@ -85,8 +87,6 @@ export function StartBot(arg1:number,arg2:number,arg3:number,arg4:boolean,arg5:b
 export function StopBot():Promise<main.BotStatus>;
 
 export function SwitchAccount(arg1:string,arg2:boolean):Promise<main.SwitchResult>;
-
-export function CaptureSwitchTemplates(arg1:string):Promise<main.SwitchCaptureResult>;
 
 export function TestDeviceMenu(arg1:string):Promise<void>;
 

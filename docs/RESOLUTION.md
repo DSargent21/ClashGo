@@ -434,8 +434,12 @@ Still open, in the order that unblocks a full 720p run:
    speech bubble up, the first tap dismisses the bubble and the menu does not
    open — the verified menu step will wait out such a tap, but the Attack tap
    itself is still single-shot);
-3. recipe selection (`army_slot > 1`) at a non-reference geometry, which needs
-   the sheet's recipe list located rather than predicted.
+3. ~~recipe selection (`army_slot > 1`) at a non-reference geometry, which needs
+   the sheet's recipe list located rather than predicted~~ — closed 2026-11-18:
+   all four Saved Recipes rows were live-measured at 1024×768 (arrow (604,174),
+   rows y 240/308/377/445 at x 603). They are frame fractions in
+   `selectArmySlotLive`, and slot 1 is selected like the rest: "MY ARMY" is a
+   separate tab, not slot 1.
 
 ### Deploy geometry, 2026-09-21: the formula path was using a law the game does not follow
 

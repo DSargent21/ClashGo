@@ -39,7 +39,7 @@ func TestGetArmyPlansReadsAuthoredStrategies(t *testing.T) {
 
 // TestArmyPlansCarryLootEstimates keeps the Army page honest: every shipped
 // plan must expose the same loot/hour estimate the launch screen shows, and a
-// profile without raids must label it as an estimate rather than measured data.
+// profile without raids must report no estimate rather than an invented rate.
 func TestArmyPlansCarryLootEstimates(t *testing.T) {
 	t.Setenv("CLASHGO_CONFIG_DIR", t.TempDir())
 
@@ -47,19 +47,17 @@ func TestArmyPlansCarryLootEstimates(t *testing.T) {
 	for _, plan := range (&App{}).GetArmyPlans() {
 		seen[plan.File] = plan
 	}
-	for file, key := range map[string]string{
-		"auto_edrag_rush.yaml": "edrag",
-		"valk_spam.yaml":       "valk",
-	} {
+	for _, file := range []string{"auto_edrag_rush.yaml", "valk_spam.yaml"} {
 		plan, ok := seen[file]
 		if !ok {
 			t.Fatalf("%s missing from plans", file)
 		}
-		if plan.LootPerHour != placeholderLootPerHour[key] {
-			t.Errorf("%s loot/hour = %d, want first-launch estimate %d", file, plan.LootPerHour, placeholderLootPerHour[key])
+		if plan.LootPerHour != 0 {
+			t.Errorf("%s loot/hour = %d with no history, want 0 (no estimate)", file, plan.LootPerHour)
 		}
-		if plan.Measured || plan.Raids != 0 {
-			t.Errorf("%s claims measured loot on an empty profile: measured=%v raids=%d", file, plan.Measured, plan.Raids)
+		if plan.Measured || plan.Raids != 0 || plan.WindowMinutes != 0 {
+			t.Errorf("%s claims measured loot on an empty profile: measured=%v raids=%d window=%dm",
+				file, plan.Measured, plan.Raids, plan.WindowMinutes)
 		}
 	}
 }

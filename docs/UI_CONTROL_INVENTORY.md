@@ -39,11 +39,13 @@ a pattern. Conditional controls are marked.
 
 | Control | Location | Action |
 |---|---|---|
-| Slot 1 / 2 / 3 / 4 | Active plan card, Saved recipe slot | Set the recipe slot armed for the active strategy. |
-| Auto-end battle | Active plan card, switch | Persist the active strategy's auto-end choice. |
-| Use this army | Each non-active plan card | Save that strategy as the active plan. |
+| Plan card (Auto EDrag Rush, Valkyrie Earthquake Spam, ...) | Plan gallery | Preview that plan's stats, loadout and saved settings. |
+| Slot 1 / 2 / 3 / 4 | Arming strip, Saved recipe slot | Set the recipe slot for the previewed plan. |
+| Auto-end battle | Arming strip, switch | Persist the previewed plan's auto-end choice. |
+| Use this army | Selected-plan header, non-active plan only | Save the previewed plan as the active strategy. |
 
-The active plan also has read-only facts and phase chips; they are not controls.
+The selected plan's stat strip and phase sequence are read-only; the active
+plan is marked LIVE on its card and ACTIVE in the selected-plan header.
 
 ## Analytics
 
@@ -100,9 +102,7 @@ Outcome, revenue, activity heatmap and strategy table are read-only.
 | Control | Location | Action |
 |---|---|---|
 | Min gold / Min elixir / Min dark elixir | Threshold grid | Edit matchmaking floors. |
-| Auto loot tuning | Card switch | Enable adaptive floors learned from search history. |
-| Apply suggestion | Learning panel | Apply the learned floors. Disabled while learning/busy, with visible progress. |
-| Reset history | Learning panel | Delete learned samples and start over. |
+| Auto loot tuning | Card switch | Enable adaptive floors learned from search history. Applied automatically; no manual apply or reset. |
 | Stall timer seconds | Card row | Set the stalled-battle abort (0 disables). |
 | Enable search | Card switch | Gate loot-floor enforcement. |
 

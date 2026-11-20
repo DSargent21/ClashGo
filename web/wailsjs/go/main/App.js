@@ -10,6 +10,10 @@ export function ApplyUpdate() {
   return window['go']['main']['App']['ApplyUpdate']();
 }
 
+export function CaptureSwitchTemplates(arg1) {
+  return window['go']['main']['App']['CaptureSwitchTemplates'](arg1);
+}
+
 export function CheckForUpdate() {
   return window['go']['main']['App']['CheckForUpdate']();
 }
@@ -156,10 +160,6 @@ export function StartBot(arg1, arg2, arg3, arg4, arg5) {
 
 export function StopBot() {
   return window['go']['main']['App']['StopBot']();
-}
-
-export function CaptureSwitchTemplates(arg1) {
-  return window['go']['main']['App']['CaptureSwitchTemplates'](arg1);
 }
 
 export function SwitchAccount(arg1, arg2) {

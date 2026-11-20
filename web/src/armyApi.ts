@@ -19,6 +19,12 @@ export interface ArmyPlan {
   target_edge: string;
   army_slot: number;
   end_at_percent: number;
+  loot_per_hour: number;
+  measured: boolean;
+  raids: number;
+  window_start?: string;
+  window_end?: string;
+  window_minutes: number;
   active: boolean;
   phases: ArmyPlanPhase[];
 }

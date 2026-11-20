@@ -470,8 +470,6 @@ EXPECT = {
     ("config-Attack & loot", "Attack strategy"): ["SaveConfig"],
     ("config-Attack & loot", "Save settings"): ["SaveConfig", "SetStorageConfig", "SetScheduleConfig", "SetAutoUpgradeConfig"],
     ("config-Attack & loot", "Auto loot tuning"): ["SetAutoLoot"],
-    ("config-Attack & loot", "Apply suggestion"): ["ApplyLootAutotune"],
-    ("config-Attack & loot", "Reset history"): ["ResetLootAutotune"],
     ("config-Attack & loot", "Auto end battle at 50 percent"): ["SetStrategyAutoEnd"],
     ("config-Attack & loot", "Slot 1"): ["SetStrategyArmySlot"],
     ("config-Attack & loot", "Slot 2"): ["SetStrategyArmySlot"],

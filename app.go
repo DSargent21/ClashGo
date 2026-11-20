@@ -46,6 +46,12 @@ type App struct {
 	lastStats bot.BotStats
 	logBuffer []string
 
+	// sessionStartedAt is when the current run became live. Paired with the
+	// stop time it is the server-side wall clock for loot/hour, so idle
+	// startup, training and teardown count as time the army was not earning.
+	// Zero when no session is running.
+	sessionStartedAt time.Time
+
 	// cachedHistory is the in-memory mirror of attack_history.json
 	// so React's 2 s poll for GetAttackHistory doesn't hit the
 	// filesystem on every tick. Refreshed lazily on first call
@@ -553,9 +559,15 @@ func (a *App) startBotWithConfig(cfg *config.BotConfig) BotStatus {
 			return
 		}
 
-		// The bot is running. Watch for it ending its OWN session (the
-		// attack cap in bot.go cancels the runtime context), which nothing
-		// else clears a.bot for — see watchBotSessionEnd.
+		// The bot is running. Record the real start of the session before
+		// any raid can land; the loot/hour denominator uses it.
+		a.mu.Lock()
+		a.sessionStartedAt = time.Now()
+		a.mu.Unlock()
+
+		// Watch for it ending its OWN session (the attack cap in bot.go
+		// cancels the runtime context), which nothing else clears a.bot
+		// for — see watchBotSessionEnd.
 		a.watchBotSessionEnd(b)
 	}(bootCtx)
 
@@ -632,6 +644,8 @@ func (a *App) StopBot() BotStatus {
 	// or state transitions issued from this point on.
 	bot := a.bot
 	bot.Cancel()
+	sessionStart := a.sessionStartedAt
+	a.sessionStartedAt = time.Time{}
 
 	// Detach references under the lock so:
 	//   1. `IsRunning()` returns false the moment the lock is released
@@ -642,6 +656,12 @@ func (a *App) StopBot() BotStatus {
 	a.bot = nil
 	a.cancel = nil
 	a.mu.Unlock()
+
+	// Persist the real stop before the detached teardown runs. The estimator
+	// divides the session's loot by this span, startup and teardown included.
+	if !sessionStart.IsZero() {
+		appendSessionRecord(sessionStart, time.Now())
+	}
 
 	// Detach the slow teardown. The captureLoop will exit on its own
 	// now that b.ctx is cancelled; this goroutine just releases OS
@@ -738,8 +758,15 @@ func (a *App) watchSessionEnd(done <-chan struct{}, stillCurrent func() bool, st
 		if a.cancel != nil {
 			a.cancel()
 		}
+		sessionStart := a.sessionStartedAt
+		a.sessionStartedAt = time.Time{}
 		a.clearStartStateLocked()
 		a.mu.Unlock()
+
+		// Natural end (attack cap): same stop timestamp as a user Stop.
+		if !sessionStart.IsZero() {
+			appendSessionRecord(sessionStart, time.Now())
+		}
 
 		// React's 2 s IsRunning() poll notices the cleared bot reference
 		// on its next tick, so no event is needed to flip the sidebar.

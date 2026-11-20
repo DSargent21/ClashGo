@@ -14,6 +14,15 @@ export const adbHealthDisplay = (
   return { label: 'Awaiting', tone: 'warn' };
 };
 
+/** Short wall-clock span for measured loot rates: 42m, 1h 42m. */
+export const formatWindow = (minutes: number): string => {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '';
+  const hours = Math.floor(minutes / 60);
+  const mins = Math.round(minutes % 60);
+  if (hours === 0) return `${mins}m`;
+  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+};
+
 /** Compact, human-readable number for dense UI (1.2M, 48K, 912). */
 export const compactNumber = (value: number): string => {
   if (!Number.isFinite(value) || value === 0) return '0';

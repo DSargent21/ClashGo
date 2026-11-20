@@ -149,8 +149,8 @@ func (b *Bot) trainArmy() {
 		return
 	}
 
-	// Arm the configured saved recipe. Slot 1 is the active army and needs no
-	// card selection; selectArmySlot already handles both shapes.
+	// Arm the configured saved recipe. Every slot, slot 1 included, is a real
+	// saved recipe and must be selected from the dropdown.
 	if !b.armyRecipeSelected() {
 		b.logger.Warn().Int("army_slot", int(b.armySlot.Load())).Msg("training: saved recipe card was not confirmed; leaving the editor untouched")
 		_ = b.client.Back()
@@ -176,10 +176,6 @@ func (b *Bot) trainArmy() {
 // armyRecipeSelected wraps selectArmySlot so the training path can record its
 // own outcome without changing the pre-attack behaviour.
 func (b *Bot) armyRecipeSelected() bool {
-	if b.armySlot.Load() <= 1 {
-		// Active army: the editor already shows it. Nothing to select.
-		return true
-	}
 	return b.selectArmySlot()
 }
 

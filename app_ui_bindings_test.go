@@ -317,9 +317,9 @@ func TestUI_PlanAndWallControlsHaveOneHome(t *testing.T) {
 			t.Errorf("ConfigView renders %q; per-plan controls belong to ArmyView", needle)
 		}
 	}
-	for _, needle := range []string{"armySlot", "onSetAutoEnd", "Auto-end battle"} {
+	for _, needle := range []string{"army_slot", "onSetAutoEnd", "Auto-end battle"} {
 		if !strings.Contains(armyView, needle) {
-			t.Errorf("ArmyView lost %q; the active plan must expose it", needle)
+			t.Errorf("ArmyView lost %q; the plan view must expose its recipe slot and auto-end", needle)
 		}
 	}
 	if strings.Count(configView, "ariaLabel=\"Auto upgrade walls\"") != 1 {

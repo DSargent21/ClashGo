@@ -6,8 +6,9 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **T.19 follow-up — one-click switch templates** (Accounts button +
-  CLI share one verified capture driver; three templates).
+- Last task: **army preset selection** (all four Saved Recipes arm correctly;
+  live-measured dropdown geometry, slot 1 no longer a no-op) plus the auto
+  loot tuning panel losing its manual apply/reset buttons.
 - Next task: **F.1 Dead-base / collector detection** — blocked on labelled
   outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
   fake-capture seam.
@@ -1209,3 +1210,171 @@ Format:
   on this host, so nothing was judged visually — all of the above is DOM text
   and IPC data read from the live window.
 - Commit: this commit.
+
+### 2026-11-18 — UI: auto loot tuning is hands-off
+- Changed: `web/src/{App.tsx,components/ConfigView.tsx,styles/views.css}`,
+  `tools/ui_control_e2e.py`, `docs/UI_CONTROL_INVENTORY.md`.
+- Fixed: the learning panel no longer offers "Apply suggestion" or "Reset
+  history"; tuning already runs inside `internal/bot.searchThresholds`, so the
+  panel is status-only and only renders while the switch is on.
+- Verified: `cd web && npx tsc --noEmit` PASS; `./tools/verify.sh` ->
+  `VERIFY PASSED (full)`.
+- Commit: none (worktree change)
+- Next: F.1 dead-base detection.
+
+### 2026-11-18 — army preset: all four saved recipes selected from the dropdown
+- Changed: `internal/bot/{bot,training,army_slot_test}.go`,
+  `app_ui_engine_test.go`, `assets/army_slots.json`,
+  `cmd/pick_army_slots/main.go`, `docs/RESOLUTION.md`.
+- Defect: `selectArmySlot` returned success for slot 1 without selecting
+  anything, on the assumption that "MY ARMY" is slot 1. It is a separate tab:
+  the four entries under Saved Recipes are the recipes. Slot 1 therefore armed
+  whatever army was already active (live-confirmed: selecting Imported ARMY 3
+  from the dropdown changed the displayed army). The hardcoded live-sheet
+  geometry was also stale — arrow y 71/720 vs the real 174/768 — so slots 2-4
+  tapped the village behind the sheet.
+- Fixed: all four slots go through the Saved Recipes dropdown; the pre-battle
+  and training paths fail closed when the recipe cannot be armed (slot 1 no
+  longer exempt). Live-sheet layout is now frame fractions in
+  `armySlotTapPoints` (arrow 0.5898/0.2266, rows x 0.5898, y 0.3125 + 0.0892 per
+  slot), with `army_slots.json` still overriding when calibrated; the shipped
+  asset and the picker defaults carry the measured values.
+- Live (BlueStacks `localhost:5555`, 1024x768): dropdown arrow (604,174) and
+  row taps at x 603 / y 240, 308, 377, 445 each produced the game toast
+  `Recipe <name> set as active army!` for all four distinct recipes
+  (Imported ARMY 3, ARMY 2, Imported ARMY 3, Imported ARMY 4). No battle was
+  started, so no army was spent.
+- Tests: `TestArmySlotTapPoints_{AllFourSlots,ScalesTo720p,HonoursCalibration,ClampsSlot}`
+  pin every row; `TestEngine_ArmySlotAndAutoEndReachEngine` now writes slots 1-4
+  and checks live config, the rendered plan and `config.json` each time.
+- Verified: focused `go test` PASS; `./tools/verify.sh` -> `VERIFY PASSED (full)`.
+- Not verified: `selectArmySlot`'s own taps were not run through a full bot
+  cycle (would spend the army); the live proof is the same coordinates driven
+  by hand plus the pinned unit test.
+- Commit: none (worktree change)
+- Next: F.1 dead-base detection.
+
+### 2026-11-18 — UI: Army page redesigned in the setup-wizard language
+- Changed: `web/src/components/ArmyView.tsx`, `web/src/App.tsx`,
+  `web/src/armyApi.ts`, `web/src/styles/views.css`,
+  `app_ui_bindings_test.go`, `docs/UI_CONTROL_INVENTORY.md`.
+- Layout: 280px plan rail (each row = plan name, recipe slot, phase count,
+  loot/hour, LIVE marker) beside a detail pane. The pane carries a 46px emblem,
+  ACTIVE/REFERENCE pill, pitch, rate source ("measured over N raids" /
+  "estimated"), a four-cell stat strip (loot/hour, recipe slot, target edge,
+  auto-end), recipe-slot chips, auto-end switch, the numbered deployment
+  sequence with unit chips, and a footnote on how arming works. Same tokens,
+  borders, mono labels and 6px radii as `LaunchSetup`.
+- Behaviour: the page now previews any plan, not just the active one, and the
+  slot / auto-end controls write that previewed plan (`SetStrategyArmySlot` /
+  `SetStrategyAutoEnd` take the plan file). "Use this army" stays on non-active
+  plans. Removed the now-unused `strategySlots` / `strategyAutoEnd` form state
+  and the dead army card CSS.
+- Guard updated: `TestUI_PlanAndWallControlsHaveOneHome` now looks for
+  `army_slot` (the data field) instead of the removed `armySlot` prop; it still
+  requires the slot, auto-end switch and single-home contract.
+- Verified: `cd web && npx tsc --noEmit` PASS; `npx vite build` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`. Browser (vite + Wails stub,
+  localhost:5173): both plans previewed, slot chip 3 wrote and re-rendered the
+  rail meta ("Slot 3"), no console errors; checked at 1536px and 1024px, no
+  horizontal overflow.
+- Commit: none (worktree change)
+- Next: F.1 dead-base detection.
+
+### 2026-11-18 — UI: Army page locked to design B (gallery) + arming strip
+- Changed: `web/src/components/ArmyView.tsx`, `web/src/styles/views.css`,
+  `docs/UI_CONTROL_INVENTORY.md`.
+- Design: kept the gallery direction — plan cards on top (name, rate source,
+  loot/hour, pitch, slot/phases, LIVE + selection check), one selected-plan
+  panel below (header with ACTIVE/REFERENCE and "Use this army", four-cell stat
+  strip, arming strip, deployment sequence). Removed the temporary A/B/C
+  preview switcher and the tabs/dossier variants and their CSS.
+- Toggle fix: auto-end no longer floats in a three-column bar next to a stray
+  "Armed before each attack" note. The arming strip is two aligned cells with a
+  divider: recipe slot + chips | auto-end label/description with the switch
+  pinned top-right. Switching plans keeps each plan's own slot/auto-end.
+- Verified: `cd web && npx tsc --noEmit` PASS; `npx vite build` PASS;
+  `./tools/verify.sh` -> `VERIFY PASSED (full)`. Browser (vite + stub, 1440px):
+  gallery, active and reference selection, slot 4 and auto-end 50% on the
+  Valkyrie plan; no console errors.
+- Commit: none (worktree change)
+- Next: F.1 dead-base detection.
+
+### 2026-11-18 — Army loot/hour from real history (wall-clock)
+- Changed: `app_launch.go`, `app_army.go`, `app_launch_test.go`, `app_army_test.go`,
+  `web/src/components/ArmyView.tsx`, `web/src/components/LaunchSetup.tsx`,
+  `web/src/utils.ts`, `web/src/styles/views.css`, `web/src/armyApi.ts`,
+  `web/wailsjs/go/models.ts`, `web/public/wails-stub.js`.
+- Removed the illustrative `placeholderLootPerHour` numbers (5.8M / 4.9M). No
+  history now means no estimate, not an invented rate.
+- Estimator: latest farming session only (a gap >2h starts a new session), total
+  stolen loot (gold + elixir + DE) divided by the session's wall clock from first
+  raid to last raid. Training gaps, search and result parsing count as time.
+  Requires 8+ raids and a window of at least 1 minute. Reports raid count,
+  window start/end and window minutes; a zero rate or zero window returns no
+  estimate.
+- Army page cards and stat strip, and the launch-screen cards: measured plans
+  show `N raids · 1h 42m`; plans without an estimate show "No raids yet" instead
+  of a dash. Launch recommendation now only picks between measured armies — with
+  no history it recommends none and defaults to the first card.
+- Tests: rate math for wall clock, training gap, latest-session isolation,
+  overnight split, army filtering, zero window, no-history; API wiring and
+  launch recommendation tests updated.
+- Verified: focused Go tests PASS; `cd web && npx tsc --noEmit && npx vite build`
+  PASS; `./tools/verify.sh` -> `VERIFY PASSED (full)`. UI not visually checked.
+- Commit: none (worktree change)
+- Next: F.1 dead-base detection.
+
+### 2026-11-18 — Loot/hour uses real session start/stop
+- Changed: `app.go`, `app_sessions.go` (new), `app_launch.go`, `app_army.go`,
+  `app_launch_test.go`, `app_sessions_test.go` (new), `app_ui_engine_test.go`,
+  `web/src/components/ArmyView.tsx`, `web/src/components/LaunchSetup.tsx`.
+- `sessions.json` (config dir, atomic write, latest 100) records the bot's real
+  start when the run becomes live and its stop on user Stop or natural attack-cap
+  end. StopBot writes synchronously; the watcher writes on session end.
+- Estimator: matching raids inside the latest session for that army; denominator
+  is session start→stop, so startup, search, training and teardown count. History
+  with no session records (old installs, crash/kill) keeps the first-to-last-raid
+  span. Invalid or incomplete records are ignored.
+- Cards: subline "No estimate yet", rate row "No raids yet" (one message each,
+  no duplicate). Same on launch-screen cards.
+- Tests: session denominator, session-too-short no estimate, latest session per
+  army, malformed records fallback, record round-trip/empty/cap, and Start/Stop
+  lifecycle asserting sessions.json exists with a real span.
+- Verified: `./tools/verify.sh` -> `VERIFY PASSED (full)`; `npx tsc --noEmit` and
+  `npx vite build` PASS. Visual (vite + stub, 1440px): Army and launch cards show
+  "No raids yet" with no dashes.
+  Screenshots: `tmp/army-no-raids-final3.png`, `tmp/launch-no-raids.png`.
+- Commit: none (worktree change)
+- Next: F.1 dead-base detection.
+
+### 2026-11-18 — live verification: zero-loot rows were pre-deploy aborts
+- Reported: every attack-history row showed 0 stars / 0 loot. History showed
+  all 16 recent rows `deploy_success:false` with `strategy army is not on the
+  troop bar: Balloon, Electro Dragon missing`; the live troop bar held 44
+  Valkyries, 11 Earthquakes and a Stone Slammer. Loot OCR itself read the
+  search HUD correctly (637,783 / 984,259 / 6,522), and the result panel was
+  never reached.
+- Installed `/Applications/ClashGO.app` is v1.1.1, whose `selectArmySlot`
+  returns success for slot 1 without selecting; config maps Auto EDrag Rush to
+  slot 1, so the bot attacked with the active Valk army and aborted before
+  deploying.
+- Fix verified in the worktree build: `make build-gui`; live
+  `ClashGO --live-smoke` on the 1024x768 emulator logged
+  `opening Saved Recipes dropdown arrow_x=604 arrow_y=174` then
+  `selecting army recipe slot from dropdown army_slot=4 slot_x=604 slot_y=446`,
+  completed one raid and printed
+  `LIVE SMOKE PASS ... attacks=0->1 history=223->224 gold=664866
+  elixir=637673 de=8857`. New history row: Valkyrie Earthquake Spam,
+  `deploy_success:true`, `undeployed_slots:0`, `parsed_results:true`, 1 star,
+  421,666 gold + 243,200 bonus, 394,473 elixir + 243,200 bonus, 7,033 DE +
+  1,824 bonus.
+- Config: `attack.strategy_file` switched to
+  `assets/strategies/valk_spam.yaml` because the trained army is the Valk
+  loadout; EDrag needs that recipe trained before selecting Auto EDrag Rush.
+  The installed app remains v1.1.1; the verified bundle is
+  `build/bin/ClashGO.app` (not installed over `/Applications`).
+- Verified: `./tools/verify.sh --fast` PASS; `./tools/verify.sh` ->
+  `VERIFY PASSED (full)`.
+- Commit: none (worktree change)
+- Next: install the fixed bundle (or retrain/verify the EDrag slot-1 path).

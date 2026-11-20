@@ -253,28 +253,32 @@ func TestEngine_ArmySlotAndAutoEndReachEngine(t *testing.T) {
 	if err := a.SaveConfig(400000, 400000, 2000, false, "valk_spam.yaml", true, 30, false, 0, 0, 0); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
-	if err := a.SetStrategyArmySlot("assets/strategies/valk_spam.yaml", 3); err != nil {
-		t.Fatalf("SetStrategyArmySlot: %v", err)
-	}
-	if got := a.bot.LiveConfig().ArmySlot; got != 3 {
-		t.Fatalf("live army slot = %d, want 3", got)
-	}
-	plans := a.GetArmyPlans()
-	var active *ArmyPlan
-	for i := range plans {
-		if plans[i].Active {
-			active = &plans[i]
-			break
+	// All four saved recipes: the write must reach the live bot, the plan the
+	// Army page renders, and config.json, not just one slot.
+	for slot := 1; slot <= 4; slot++ {
+		if err := a.SetStrategyArmySlot("assets/strategies/valk_spam.yaml", slot); err != nil {
+			t.Fatalf("SetStrategyArmySlot(%d): %v", slot, err)
 		}
-	}
-	if active == nil {
-		t.Fatal("no active army plan after selecting the strategy")
-	}
-	if active.File != "valk_spam.yaml" || active.ArmySlot != 3 {
-		t.Fatalf("active plan = %s slot %d, want valk_spam.yaml slot 3", active.File, active.ArmySlot)
-	}
-	if diskConfig(t).Attack.StrategySlots["valk_spam.yaml"] != 3 {
-		t.Fatal("army slot did not persist to config.json")
+		if got := a.bot.LiveConfig().ArmySlot; got != slot {
+			t.Fatalf("live army slot = %d, want %d", got, slot)
+		}
+		plans := a.GetArmyPlans()
+		var active *ArmyPlan
+		for i := range plans {
+			if plans[i].Active {
+				active = &plans[i]
+				break
+			}
+		}
+		if active == nil {
+			t.Fatal("no active army plan after selecting the strategy")
+		}
+		if active.File != "valk_spam.yaml" || active.ArmySlot != slot {
+			t.Fatalf("active plan = %s slot %d, want valk_spam.yaml slot %d", active.File, active.ArmySlot, slot)
+		}
+		if diskConfig(t).Attack.StrategySlots["valk_spam.yaml"] != slot {
+			t.Fatalf("army slot %d did not persist to config.json", slot)
+		}
 	}
 
 	// Auto end is per strategy and the report the UI renders must agree with
@@ -537,6 +541,17 @@ func TestEngine_StartStopLifecycle(t *testing.T) {
 	waitFor(t, "bot cleared", func() bool { return !a.IsRunning() })
 	if again := a.StopBot(); again.Running {
 		t.Fatalf("second StopBot = %+v, want not running", again)
+	}
+
+	// The loot/hour denominator is this run's real start and stop. StopBot
+	// writes it synchronously, so it is already on disk here.
+	records := loadSessionRecords()
+	if len(records) != 1 {
+		t.Fatalf("session records = %d after one Start/Stop, want 1", len(records))
+	}
+	sessionStart, sessionEnd, ok := records[0].parse()
+	if !ok || !sessionEnd.After(sessionStart) {
+		t.Fatalf("session record = %+v, want a real start/stop span", records[0])
 	}
 
 	// StopBot detaches its teardown, whose last act is saveStats. Let that
