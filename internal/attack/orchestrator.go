@@ -135,6 +135,14 @@ func (e *Executor) DeployDynamicV2(s *strategy.DynamicStrategy, screen gocv.Mat,
 	if err := e.runtimeContext().Err(); err != nil {
 		return 0, err
 	}
+	// The battle opens at 1x. Tap the speed pill now, from this same verified
+	// battle frame, so troops fight at 4x for the whole raid instead of only
+	// after deployment. No-op when the pill is absent (older game builds) or
+	// when a standalone tool has no template store.
+	if pt, ok := game.SpeedButtonPoint(screen, e.templateStore); ok {
+		e.logger.Info().Interface("pt", pt).Msg("tapping the 1x speed pill; battle now runs at 4x")
+		e.client.TapFast(pt.X, pt.Y, 2.0)
+	}
 	w, h := screen.Cols(), screen.Rows()
 	targetEdge := s.TargetEdge
 

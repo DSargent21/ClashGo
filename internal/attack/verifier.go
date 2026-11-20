@@ -328,12 +328,13 @@ func (v *Verifier) retryDeploy(slot *TrackedSlot) {
 		return
 	}
 
-	// Heroes get the hero-shaped retry: one tight tap cluster on the
-	// deploy line, delta-verified — never the troop triple-tap spam,
-	// which spreads a single hero across the whole line (the exact
-	// misuse the sweeper's deployHeroSlotOnce docs call out).
+	// Hero taps are capped at select + drop + ability, all spent in the hero
+	// phase. The verifier must not spend a fourth tap after the ability pass.
 	if v.isHeroShapedRetry(slot) {
-		v.retryHeroSlot(slot)
+		v.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("retry: hero taps are capped at select+drop+ability; leaving the hero without another tap")
 		return
 	}
 

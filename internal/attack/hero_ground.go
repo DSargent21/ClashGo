@@ -5,7 +5,9 @@ import (
 	"math"
 	"sort"
 
+	"github.com/Ducky705/ClashGO/internal/vision"
 	"github.com/Ducky705/ClashGO/pkg/formula"
+	"gocv.io/x/gocv"
 )
 
 // Hero ground selection — where a hero (or a sweep hero retry) is allowed to
@@ -589,4 +591,48 @@ func dedupePoints(pts []image.Point) []image.Point {
 		out = append(out, p)
 	}
 	return out
+}
+
+// heroHpBarVisible reports whether the hero card shows the deployed health
+// bar. Live 2026-11-19: the card-activity ratio does not change when a hero
+// deploys (portrait + level badge stay in the probe: 0.59 -> 0.60, 0.74 ->
+// 0.74), so the old delta confirm called three landed heroes refused and the
+// ability pass skipped them. The green health bar above the card is the
+// signal that does change: 0.00 -> 0.41-0.42 on the same frames.
+//
+// The strip is scaled from the 1024px reference: 70 px above the slot, 60 px
+// wide, 12 px tall. A refused drop leaves the card unselected/full and the
+// strip empty.
+func heroHpBarVisible(screen gocv.Mat, slot *TrackedSlot, screenW int) bool {
+	if screen.Empty() || slot == nil || screenW <= 0 {
+		return false
+	}
+	scale := float64(screenW) / 1024.0
+	halfW := int(30 * scale)
+	if halfW < 10 {
+		halfW = 10
+	}
+	h := int(12 * scale)
+	if h < 4 {
+		h = 4
+	}
+	off := int(70 * scale)
+	if off < 20 {
+		off = 20
+	}
+	r := image.Rect(slot.X-halfW, slot.Y-off, slot.X+halfW, slot.Y-off+h)
+	r = r.Intersect(image.Rect(0, 0, screen.Cols(), screen.Rows()))
+	if r.Dx() <= 0 || r.Dy() <= 0 {
+		return false
+	}
+	sub := screen.Region(r)
+	defer sub.Close()
+	hsv := vision.GetMat(sub.Rows(), sub.Cols(), gocv.MatTypeCV8UC3)
+	defer vision.PutMat(hsv)
+	gocv.CvtColor(sub, &hsv, gocv.ColorBGRToHSV)
+	mask := vision.GetMatFrom(hsv)
+	defer vision.PutMat(mask)
+	gocv.InRangeWithScalar(hsv, gocv.NewScalar(35, 80, 80, 0), gocv.NewScalar(90, 255, 255, 0), &mask)
+	frac := float64(gocv.CountNonZero(mask)) / float64(r.Dx()*r.Dy())
+	return frac >= 0.15
 }

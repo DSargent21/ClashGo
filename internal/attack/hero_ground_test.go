@@ -2,6 +2,7 @@ package attack
 
 import (
 	"image"
+	"image/color"
 	"math"
 	"testing"
 
@@ -106,16 +107,10 @@ func TestHeroGroundCandidates_NoZoneKeepsLegacyChoice(t *testing.T) {
 	}
 }
 
-// TestHeroDeploy_FieldRetryOnNewGroundKeepsCardBudget: a refused drop is
-// recovered by re-aiming the FIELD, and the field can only be re-aimed after the
-// card is re-selected — the game DESELECTS a hero's card when it refuses the
-// ground (measured live 2026-09-27, see maxHeroRearms).
-//
-// The re-arm is not a second placement tap: the game never registered the first
-// one as a selection, so the placement budget is untouched and the ability still
-// has its tap. That is the difference between this and the old "displaced retry"
-// that spent the hero's second tap on placement and left the ability nothing.
-func TestHeroDeploy_FieldRetryOnNewGroundKeepsCardBudget(t *testing.T) {
+// TestHeroDeploy_UnconfirmedDropLeavesNoPlacementBudget pins the user-requested
+// cap: when the single field tap does not confirm, the hero is reported, not
+// re-armed and re-dropped. One card tap, one field tap, nothing more.
+func TestHeroDeploy_UnconfirmedDropLeavesNoPlacementBudget(t *testing.T) {
 	line := []image.Point{
 		{X: 935, Y: 300}, {X: 935, Y: 450}, {X: 935, Y: 600},
 		{X: 1088, Y: 300}, {X: 1088, Y: 450}, {X: 1088, Y: 600},
@@ -123,77 +118,28 @@ func TestHeroDeploy_FieldRetryOnNewGroundKeepsCardBudget(t *testing.T) {
 	slot := heroSlotNamed("archer queen", 287)
 	hm, tl := newHeroTapHarness(t, DeployLine{Points: line}, []*TrackedSlot{slot})
 	hm.SetRedZone(rectZone(400, 100, 1010, 650))
-	// pre 0.74, first drop unconfirmed through all three confirm beats
-	// (delta 0), then the field retry lands (0.74 -> 0.11).
-	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.74, 0.11)
+	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.74)
 
 	d := HeroDeployment{Unit: strategy.Unit{Name: "Archer Queen"}, Slot: slot}
 	pre := gocv.NewMat()
 	defer pre.Close()
-	if !hm.deploySingleHero(d, pre) {
-		t.Fatal("deploySingleHero must confirm a placement the field retry achieved")
-	}
-
-	if got := len(tl.slotTaps()); got != 3 {
-		t.Errorf("card taps = %d, want 3 (selection prime + placement + one re-arm)", got)
-	}
-	if slot.SpotTaps != 1 {
-		t.Errorf("placement budget spent = %d, want 1: the re-arm must not eat the ability's tap", slot.SpotTaps)
-	}
-	if slot.SpotRearms != 1 {
-		t.Errorf("re-arms = %d, want exactly 1", slot.SpotRearms)
-	}
-	pts := tl.fieldTaps()
-	if len(pts) != 2 {
-		t.Fatalf("field taps = %d, want 2 (the drop plus one field retry)", len(pts))
-	}
-	if pts[0] == pts[1] {
-		t.Errorf("the field retry must aim at new ground, both taps were %v", pts[0])
-	}
-	if !hm.executor.HeroSpotTapBudgetLeft(slot) {
-		t.Error("the ability tap (card tap #2) must still be available")
-	}
-}
-
-// TestHeroDeploy_ExhaustedFieldRetriesCostNoCardTap: even when every candidate
-// fails, the retries themselves are field taps only, and the single re-arm is
-// not renewable — the hero keeps its ability tap, which is what the 2-tap
-// ceiling exists to protect.
-func TestHeroDeploy_ExhaustedFieldRetriesCostNoCardTap(t *testing.T) {
-	line := []image.Point{
-		{X: 935, Y: 300}, {X: 935, Y: 450}, {X: 935, Y: 600},
-		{X: 1088, Y: 300}, {X: 1088, Y: 450}, {X: 1088, Y: 600},
-	}
-	slot := heroSlotNamed("grand warden", 650)
-	hm, tl := newHeroTapHarness(t, DeployLine{Points: line}, []*TrackedSlot{slot})
-	hm.SetRedZone(rectZone(400, 100, 1010, 650))
-	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.74, 0.74, 0.74)
-
-	d := HeroDeployment{Unit: strategy.Unit{Name: "Grand Warden"}, Slot: slot}
-	pre := gocv.NewMat()
-	defer pre.Close()
 	if hm.deploySingleHero(d, pre) {
-		t.Fatal("deploySingleHero must not claim success when nothing confirms")
+		t.Fatal("deploySingleHero must not claim success when the drop never confirms")
 	}
-	// One re-arm per field retry: a refused tap deselects the card, so a retry
-	// that skips its own re-arm fires at an unselected card and can never land.
-	if got := len(tl.slotTaps()); got != 2+heroFieldRetries {
-		t.Errorf("card taps = %d, want %d (selection prime + placement + one re-arm per field retry)", got, 2+heroFieldRetries)
+	if got := len(tl.slotTaps()); got != 1 {
+		t.Errorf("card taps = %d, want 1 (selection only)", got)
 	}
 	if slot.SpotTaps != 1 {
-		t.Errorf("placement budget spent = %d, want 1: retries must never cost the ability's tap", slot.SpotTaps)
+		t.Errorf("placement budget spent = %d, want 1", slot.SpotTaps)
 	}
-	if got := len(tl.fieldTaps()); got != 1+heroFieldRetries {
-		t.Errorf("field taps = %d, want %d (the drop plus %d retries)", got, 1+heroFieldRetries, heroFieldRetries)
+	if slot.SpotRearms != 0 {
+		t.Errorf("re-arms = %d, want 0: the rescue pass is gone", slot.SpotRearms)
 	}
-	if slot.SpotRearms != heroFieldRetries {
-		t.Errorf("re-arms = %d, want %d (one per field retry)", slot.SpotRearms, heroFieldRetries)
+	if got := len(tl.fieldTaps()); got != 1 {
+		t.Errorf("field taps = %d, want 1 (drop only)", got)
 	}
-	if hm.executor.RearmSlot(slot) {
-		t.Error("the re-arm budget must be bounded: maxHeroRearms stops the card being re-tapped forever")
-	}
-	if !hm.executor.HeroSpotTapBudgetLeft(slot) {
-		t.Error("a card tap must remain for the sweep/verifier to recover the hero, and for its ability")
+	if hm.executor.HeroSpotTapBudgetLeft(slot) {
+		t.Error("the one placement tap is spent; no later path may tap the hero again")
 	}
 }
 
@@ -358,5 +304,61 @@ func TestRunHeroFieldRetriesRearmsBeforeEveryRetry(t *testing.T) {
 	}
 	if rearms != heroFieldRetries || fired != heroFieldRetries {
 		t.Fatalf("re-arms = %d, field taps = %d, want %d of each (one re-arm per retry)", rearms, fired, heroFieldRetries)
+	}
+}
+
+// TestHeroDeploy_FirstGroundIsFormulaPoint pins the ground the first tap uses
+// for a Point-pattern hero: the strategy formula point, the same ground the
+// sweep lands on its first tap. The troop-line lead was refused for every hero
+// live on 2026-11-19, which cost the ability pass.
+func TestHeroDeploy_FirstGroundIsFormulaPoint(t *testing.T) {
+	line := DeployLine{Points: []image.Point{{X: 200, Y: 300}, {X: 200, Y: 600}}}
+	slot := heroSlotNamed("archer queen", 287)
+	hm, tl := newHeroTapHarness(t, line, []*TrackedSlot{slot})
+	hm.formula = &formula.Formula{Units: map[string]formula.UnitEntry{
+		"archer queen": {Type: "point", P: &formula.Point{X: 220, Y: 450}},
+	}}
+	hm.ratioHook = scriptedRatios(0.74, 0.11)
+
+	cands := hm.heroDropCandidates(slot, "archer queen")
+	if len(cands) == 0 {
+		t.Fatal("no hero candidates")
+	}
+	want := hm.executor.safeFieldPoint(ClampToDeployBand(image.Pt(220, 450), UICutoff(hm.h)))
+	_ = cands
+
+	d := HeroDeployment{Unit: strategy.Unit{Name: "Archer Queen", Pattern: "Point"}, Slot: slot}
+	pre := gocv.NewMat()
+	defer pre.Close()
+	if !hm.deploySingleHero(d, pre) {
+		t.Fatal("deploy failed on a drop whose card transitioned")
+	}
+	pts := tl.fieldTaps()
+	if len(pts) != 1 {
+		t.Fatalf("field taps = %d, want 1", len(pts))
+	}
+	if dist(pts[0], want) > 6 {
+		t.Fatalf("first ground = %v, want formula point %v", pts[0], want)
+	}
+}
+
+// TestHeroHpBarVisible pins the deploy signal that replaced the card-activity
+// delta: the green health bar above the hero card. The old delta read 0.59 ->
+// 0.60 on a landed hero (live 2026-11-19), so it called every deployment a
+// failure and skipped the ability pass.
+func TestHeroHpBarVisible(t *testing.T) {
+	screen := gocv.NewMatWithSize(768, 1024, gocv.MatTypeCV8UC3)
+	defer screen.Close()
+	gocv.Rectangle(&screen, image.Rect(0, 0, 1024, 768), color.RGBA{R: 30, G: 30, B: 30, A: 255}, -1)
+	slot := heroSlotNamed("archer queen", 325)
+	slot.Y = 705 // measured hero bar position at 1024 px
+
+	if heroHpBarVisible(screen, slot, 1024) {
+		t.Fatal("plain card background reported a deployed health bar")
+	}
+	// 70 px above the slot, 60x12: the measured bar position at 1024 px.
+	gocv.Rectangle(&screen, image.Rect(295, 635, 355, 647), color.RGBA{R: 0, G: 255, B: 0, A: 255}, -1)
+	if !heroHpBarVisible(screen, slot, 1024) {
+		t.Fatal("green health bar above the card was not detected")
 	}
 }

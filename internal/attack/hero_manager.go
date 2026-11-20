@@ -280,7 +280,32 @@ func (hm *HeroManager) deploySingleHero(d HeroDeployment, _ gocv.Mat) bool {
 func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 	batch := make([]*heroBatchEntry, 0, len(deps))
 	for _, d := range deps {
-		batch = append(batch, &heroBatchEntry{d: d, cands: hm.heroDropCandidates(d.Slot, d.Unit.Name)})
+		cands := hm.heroDropCandidates(d.Slot, d.Unit.Name)
+		// Lead with the outward ladder step, not the raw troop-line point.
+		// Live 2026-11-19: the line point (683,172) was refused for every hero
+		// while the ladder point 40px outward (723,197) landed every time; the
+		// same happened again with 801,501 refused. Step outward from the line
+		// ground before the first tap so the drop lands without a rescue tap.
+		// Point-pattern heroes lead with the strategy's formula point: that is
+		// the ground the sweep uses, and live it has landed on its first tap.
+		// The troop-line lead was refused for every hero in the 2026-11-19 raids
+		// (683,172 and 801,501), so it is not proven ground for heroes.
+		if d.Unit.Pattern == "Point" {
+			if entry, ok := hm.formulaEntry(d.Unit.Name); ok {
+				if fps := heroFormulaCandidates(entry, hm.h); len(fps) > 0 {
+					cands = append([]image.Point{fps[0]}, cands...)
+				} else if len(cands) > 0 {
+					if out := outwardHeroLadder(cands[0], hm.deployLine.Points, hm.w, hm.h, 1); len(out) > 0 {
+						cands = append([]image.Point{out[0]}, cands...)
+					}
+				}
+			} else if len(cands) > 0 {
+				if out := outwardHeroLadder(cands[0], hm.deployLine.Points, hm.w, hm.h, 1); len(out) > 0 {
+					cands = append([]image.Point{out[0]}, cands...)
+				}
+			}
+		}
+		batch = append(batch, &heroBatchEntry{d: d, cands: cands})
 	}
 
 	// Wave 0: the drops, back to back. No captures between them.
@@ -314,13 +339,9 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 				Msg("hero card tap budget exhausted before placement; skipping hero")
 			continue
 		}
-		// The battle's first selection does not arm the card (runs 10-12: every
-		// first field tap refused, at three different classes of ground, while the
-		// next selection always landed). One more selection tap makes the first
-		// drop behave like the rescue/sweep selection that works, without spending
-		// the ability or the rescue budget.
-		hm.executor.client.HumanSleep(120, 20)
-		hm.executor.PrimeSlot(p.d.Slot)
+		// One selection tap, then the drop. The old second selection ("prime")
+		// did not stop the first drop being refused live, and only added a tap;
+		// see maxHeroSpotTaps. Settle long enough for the card animation.
 		hm.executor.client.HumanSleep(heroFirstArmMs, 30)
 		hm.debugDump(fmt.Sprintf("wave%d_pre", i))
 		// Spread the heroes over the candidate ground and widen the drop jitter
@@ -346,55 +367,20 @@ func (hm *HeroManager) deployHeroBatch(deps []HeroDeployment) []*TrackedSlot {
 	// Shared confirmation: two reads per pending hero off ONE frame per read.
 	hm.confirmHeroWave(batch)
 
-	// Rescues: only heroes whose card is PROVEN to still hold them, and only
-	// on ground the first tap did not use.
-	for _, p := range batch {
-		if p.placed || !p.fired || p.reads == 0 {
-			continue // placed, dropped-but-unverifiable, or never dropped
-		}
-		if hm.executor.DeployBudgetExhausted() {
-			// A re-arm is a card tap. With no window left for its field tap, the
-			// only cheap move is to let the sweep's fresh frame decide.
-			hm.logger.Warn().
-				Str("unit", p.d.Unit.Name).
-				Int("slot_x", p.d.Slot.X).
-				Msg("deploy window spent before the hero could be rescued; leaving it to the sweep (no re-arm)")
-			continue
-		}
-		if len(p.cands) <= 1 {
-			hm.logger.Warn().
-				Str("unit", p.d.Unit.Name).
-				Int("slot_x", p.d.Slot.X).
-				Msg("hero drop unconfirmed but there is no new ground to re-aim at; leaving it to the sweep (no stray re-arm)")
-			continue
-		}
-		retryCands := hm.heroRescueGround(p.cands[p.firstIndex], p.cands)
-
-		// A refused drop DESELECTS the card, so every retry is re-armed first
-		// (see maxHeroRearms). A re-arm is not a placement and spends no
-		// placement budget — the hero keeps its one placement and its one ability.
-		rearm := func() bool {
-			// A refused drop deselects the card. An "armed" reading is not a
-			// substitute for the re-tap: live 2026-11-16 the card read armed after
-			// a refusal and three field taps on new ground did nothing until the
-			// sweep re-selected it. Always re-arm.
-			if !hm.executor.RearmSlot(p.d.Slot) {
-				return false
-			}
-			hm.executor.client.HumanSleep(heroArmSettleMs, 30)
-			return true
-		}
-		hm.debugDump("rescue_" + p.d.Unit.Name + "_pre")
-		if hm.retryHeroFieldTaps(p.d.Slot, p.d.Unit.Name, retryCands, p.last, true, "batch-confirm", rearm) {
-			p.placed = true
-		}
-	}
+	// No rescue pass. A hero gets one selection tap, one field tap and its
+	// ability. If the drop is unconfirmed, the slot is reported and left alone:
+	// re-arming and re-dropping was the 4th, 5th and 6th tap the user saw on
+	// every hero, every raid (live 2026-11-19).
 
 	// Verdicts, and the log lines attack_report reads.
 	var deployed []*TrackedSlot
 	for _, p := range batch {
 		if p.placed {
 			deployed = append(deployed, p.d.Slot)
+			hm.logger.Info().
+				Str("unit", p.d.Unit.Name).
+				Int("slot_x", p.d.Slot.X).
+				Msg("hero deployed (single card tap + single field tap)")
 			if hm.slotManager != nil {
 				hm.slotManager.MarkDeployed(p.d.Unit.Name)
 			}
@@ -462,6 +448,13 @@ func (hm *HeroManager) confirmHeroWave(batch []*heroBatchEntry) {
 			}
 			p.reads++
 			placed := heroPlaced(p.last, r, true)
+			if !placed && haveFrame && heroHpBarVisible(frame, p.d.Slot, hm.w) {
+				placed = true
+				hm.logger.Info().
+					Str("unit", p.d.Unit.Name).
+					Int("slot_x", p.d.Slot.X).
+					Msg("hero card shows the deployed health bar")
+			}
 			if placed {
 				p.placed = true
 			}

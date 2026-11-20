@@ -2031,7 +2031,6 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 
 	lastPct := 0
 	lastPctTime := now()
-	battleWaitStart := now()
 	speedUpTaps := 0
 	var lastSpeedUpTap time.Time
 	stallSec := resolveStallTimerSeconds(e.cfg(), e.activeStrategy)
@@ -2183,18 +2182,20 @@ func (e *Executor) WaitForBattleEndCtx(ctx context.Context, timeout time.Duratio
 				}
 			}
 
-			// 4x Speed-Up Button: appears after 2 minutes of battle (120s from battle start, or ~110s into battle-wait).
-			// Tapping it accelerates battle playback to 4x speed.
-			if time.Since(battleWaitStart) >= 110*time.Second && (lastSpeedUpTap.IsZero() || time.Since(lastSpeedUpTap) >= 3*time.Second) {
-				pt := image.Pt(978, 492)
-				if e.cal != nil && (e.cal.PhysicalW != 1024 || e.cal.PhysicalH != 768) {
-					sx, sy := e.cal.ScaleRef(978, 492)
-					pt = image.Pt(sx, sy)
+			// 1x speed pill: one tap switches battle playback to 4x. It is
+			// located on THIS frame (never a guessed coordinate), and the
+			// detector only matches while the pill reads "1x" — once tapped
+			// it reads "4x" and stops matching, so a battle is never slowed
+			// back down. Bounded per battle: if a tap does not register the
+			// pill stays "1x" and three honest attempts are enough before the
+			// result/watchdog path owns the rest.
+			if speedUpTaps < 3 && (lastSpeedUpTap.IsZero() || now().Sub(lastSpeedUpTap) >= 2*time.Second) {
+				if pt, ok := game.SpeedButtonPoint(screen, tStore); ok {
+					e.logger.Info().Interface("pt", pt).Int("tap", speedUpTaps+1).Msg("tapping the 1x speed pill; battle now runs at 4x")
+					e.client.TapFast(pt.X, pt.Y, 2.0)
+					speedUpTaps++
+					lastSpeedUpTap = now()
 				}
-				e.logger.Info().Interface("pt", pt).Int("tap", speedUpTaps+1).Msg("tapping 4x speed-up button to fast-forward remaining battle")
-				e.client.TapFast(pt.X, pt.Y, 2.0)
-				speedUpTaps++
-				lastSpeedUpTap = now()
 			}
 
 			// Per-strategy auto-end threshold from end_at_percent (0 = off).

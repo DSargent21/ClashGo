@@ -235,19 +235,15 @@ func (t *TapExecutor) DeployBudgetRemaining() time.Duration {
 }
 
 // maxHeroSpotTaps is the hard ceiling on how many times the bot may tap a
-// hero's CARD per battle to PLACE it: the initial drop, and at most one rescue.
-// Never more. A tapped card is the only way to drop a hero, so an uncapped
-// retry/sweep/verify pass is exactly the "it keeps tapping the Archer Queen"
-// symptom.
+// hero's CARD per battle to PLACE it: exactly one selection, followed by one
+// field tap. No rescue, no re-arm, no sweep or verifier retry. A tapped card
+// is the only way to drop a hero, so an uncapped retry/sweep/verify pass is
+// exactly the "it keeps tapping the Archer Queen" symptom.
 //
-// The ability is no longer part of this budget. One shared counter meant a
-// hero whose drop the sweep had to rescue had spent both taps before the
-// ability pass ran, so the pass skipped the activation — a deployed hero, with
-// its ability unused. Live 2026-10-01 (TopLeft): exactly that happened to the
-// Grand Warden. The ability now carries its own one-shot flag
-// (TrackedSlot.AbilityFired), which still permits exactly one activation per
-// hero per battle.
-const maxHeroSpotTaps = 2
+// The ability is not part of this budget. It carries its own one-shot flag
+// (TrackedSlot.AbilityFired), which permits exactly one activation per hero
+// per battle. Total physical taps per hero: select + drop + ability = 3.
+const maxHeroSpotTaps = 1
 
 // The single hero placement sequence, shared by the hero phase and the sweep.
 // They had drifted into two near-identical copies (card-tap jitter 8 vs 4,
@@ -581,26 +577,6 @@ func (t *TapExecutor) avoidSiegeGroundXY(x, y int) (int, int) {
 func (t *TapExecutor) TapUnitField(pt image.Point, stdDev float64) {
 	pt = t.safeFieldPoint(pt)
 	t.noteInput(t.client.TapFast(pt.X, pt.Y, stdDev), "unit field tap")
-}
-
-// PrimeSlot is the wave's second selection tap on a hero card, sent before the
-// first field tap. Live runs 10-12: the battle's FIRST selection of a hero card
-// never armed — the first field tap was refused at formula ground (run 10), a
-// pinned tile (run 11) and a troop-line tile (run 12) — while the next selection
-// of the same card at the same kind of ground landed every time (rescue re-arm,
-// and the sweep's re-select at 150 ms). This tap is not a placement and not a
-// rescue: SpotTaps and SpotRearms stay untouched, so the ability and the bounded
-// rescue keep their taps.
-func (t *TapExecutor) PrimeSlot(slot *TrackedSlot) bool {
-	if !isHeroCardSlot(slot) {
-		return false
-	}
-	t.logger.Info().
-		Str("unit", slot.UnitName).
-		Int("x", slot.X).
-		Msg("second hero card selection before the first field tap (the battle's first selection does not arm)")
-	t.noteInput(t.fireSlotTap(slot, heroCardTapJitter), "hero selection prime")
-	return true
 }
 
 // RearmSlot re-selects a hero's card after a placement the game did not

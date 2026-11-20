@@ -1070,13 +1070,18 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 		if err := b.client.Reconnect(); err == nil {
 			if screen, capErr := b.client.CaptureToMat(); capErr == nil && !screen.Empty() {
 				after, _ := b.classifier.ClassifyState(screen)
+				attackVisible := b.findAttackButton(screen, 0.45)
 				screen.Close()
-				if after != game.StateUnknown {
+				if reconnectRecovered(after, attackVisible) {
 					b.logger.Info().Str("state", after.String()).Msg("adb reconnect restored capture; skipping game restart")
 					b.recordActivity()
 					b.lastSoftRecovery = time.Time{}
 					return
 				}
+				b.logger.Warn().
+					Str("state", after.String()).
+					Bool("attack_visible", attackVisible).
+					Msg("adb reconnect restored capture but the village is still blocked (no Attack button); restarting game instead of idling")
 			}
 		} else {
 			b.logger.Warn().Err(err).Msg("adb reconnect failed; the device link needs attention")
@@ -1087,6 +1092,23 @@ func (b *Bot) checkStuck(gc *game.GameContext) {
 		b.lastSequenceStart = time.Now()
 		b.lastSoftRecovery = time.Time{}
 	}
+}
+
+// reconnectRecovered reports whether an ADB reconnect produced a screen the bot
+// can actually act on: a classified non-village screen, or a village whose
+// Attack button is visible. A classified village with the button hidden is
+// still behind a panel or modal; treating that as recovered left the bot idle
+// forever after a connection loss (live 2026-11-19: clan chat plus a Clan War
+// "War Ended" modal, all three Back presses spent, watchdog looping
+// "adb reconnect restored capture; skipping game restart").
+func reconnectRecovered(after game.GameState, attackVisible bool) bool {
+	if after == game.StateUnknown {
+		return false
+	}
+	if isVillageState(after) {
+		return attackVisible
+	}
+	return true
 }
 
 // claimReturnHome reports whether a Return Home attempt may fire right now and

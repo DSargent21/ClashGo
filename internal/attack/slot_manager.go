@@ -55,7 +55,7 @@ type TrackedSlot struct {
 
 	// SpotTaps counts how many times the bot has tapped this slot's CARD
 	// (not the field) to PLACE the unit. A hero card is capped at
-	// maxHeroSpotTaps: the initial drop plus at most one rescue. Every
+	// maxHeroSpotTaps = 1: one selection, one drop, then its ability. Every
 	// deploy path shares this one counter (main drop, sweep, verifier) so
 	// no combination of retries can ever exceed the cap.
 	//

@@ -80,11 +80,9 @@ func TestHeroDeploy_OnePlacementTapThenAbility(t *testing.T) {
 		t.Fatal("deploySingleHero failed on a drop whose slot transitioned to cooldown")
 	}
 
-	// Two physical card taps: the selection prime (the battle's first selection
-	// does not arm) and the placement. SpotTaps below still proves only one was
-	// a PLACEMENT.
-	if got := len(tl.slotTaps()); got != 2 {
-		t.Fatalf("placement used %d card taps, want 2 (prime + one placement)", got)
+	// One physical card tap for placement: the selection. No prime, no rescue.
+	if got := len(tl.slotTaps()); got != 1 {
+		t.Fatalf("placement used %d card taps, want 1 (select only)", got)
 	}
 	if slot.SpotTaps != 1 {
 		t.Fatalf("placement budget spent = %d, want 1", slot.SpotTaps)
@@ -93,7 +91,7 @@ func TestHeroDeploy_OnePlacementTapThenAbility(t *testing.T) {
 		t.Fatalf("placement used %d field taps, want exactly 1", got)
 	}
 
-	// Ability is card tap #2.
+	// Ability is card tap #2 and the last physical tap per hero.
 	if !hm.executor.TapHeroAbility(slot) {
 		t.Fatal("the ability tap (card tap #2) must be allowed")
 	}
@@ -111,8 +109,8 @@ func TestHeroDeploy_OnePlacementTapThenAbility(t *testing.T) {
 	if hm.executor.TapSlot(slot, 8) {
 		t.Error("a second placement tap on an already-deployed hero must be refused")
 	}
-	if got := len(tl.slotTaps()); got != 3 {
-		t.Fatalf("total hero card taps = %d, want 3 (selection prime + place + ability)", got)
+	if got := len(tl.slotTaps()); got != 2 {
+		t.Fatalf("total hero card taps = %d, want 2 (select + ability)", got)
 	}
 }
 
@@ -160,52 +158,44 @@ func TestHeroDeploy_NoRetryTapWhenVerifyFails(t *testing.T) {
 		t.Fatal("deploySingleHero must not claim success on an unconfirmed drop")
 	}
 
-	if got := len(tl.slotTaps()); got != 2 {
-		t.Errorf("an unconfirmed drop with no new ground must fire exactly 2 card taps (prime + placement), got %d", got)
+	if got := len(tl.slotTaps()); got != 1 {
+		t.Errorf("an unconfirmed drop must fire exactly 1 card tap (the selection), got %d", got)
 	}
 	if slot.SpotTaps != 1 {
 		t.Errorf("placement budget spent = %d, want 1", slot.SpotTaps)
 	}
 	if slot.SpotRearms != 0 {
-		t.Errorf("re-arms = %d, want 0: a re-arm that leads to no field tap is a stray tap", slot.SpotRearms)
+		t.Errorf("re-arms = %d, want 0: no rescue pass exists", slot.SpotRearms)
 	}
 	if got := len(tl.fieldTaps()); got != 1 {
 		t.Errorf("an unconfirmed drop must fire exactly 1 field tap, got %d", got)
 	}
-	if !hm.executor.HeroSpotTapBudgetLeft(slot) {
-		t.Error("one card tap must remain so the sweep/verifier can recover the hero, and for its ability")
+	if hm.executor.HeroSpotTapBudgetLeft(slot) {
+		t.Error("the single placement tap is spent; no sweep/verifier path may tap the hero again")
 	}
 }
 
-// TestHeroSpotTapCeiling_SharedAcrossPaths proves both caps are per-slot and
-// independent: placement stops at two (the drop plus one rescue) and the
-// ability fires exactly once, whichever path asks first.
-//
-// This is the fix for the live defect the user reported as "it doesn't activate
-// heroes properly": when the sweep rescued a hero it spent both placement taps,
-// so the deferred ability pass found no budget and skipped the activation. The
-// caps being separate is what lets a rescued hero still fire its ability.
+// TestHeroSpotTapCeiling_SharedAcrossPaths pins the per-slot cap: one placement
+// selection and one ability, whichever path asks first. There is no second
+// placement (rescue) and no sweep/verifier bypass.
 func TestHeroSpotTapCeiling_SharedAcrossPaths(t *testing.T) {
 	slot := heroSlotNamed("dragon duke", 400)
 	hm, tl := newHeroTapHarness(t, DeployLine{}, []*TrackedSlot{slot})
 
 	if !hm.executor.TapSlot(slot, 4) {
-		t.Fatal("placement tap #1 must be allowed")
-	}
-	if !hm.executor.TapSlot(slot, 4) {
-		t.Fatal("placement tap #2 (the one rescue) must be allowed while the hero is not confirmed deployed")
+		t.Fatal("placement tap #1 (the only one) must be allowed")
 	}
 	if hm.executor.TapSlot(slot, 4) {
-		t.Fatal("a third placement tap must be refused")
+		t.Fatal("a second placement tap must be refused: select+drop+ability is the cap")
 	}
 	if !hm.executor.TapHeroAbility(slot) {
-		t.Fatal("the ability must still fire after two placement taps; it has its own one-shot flag")
+		t.Fatal("the ability must still fire after the placement tap; it has its own one-shot flag")
 	}
 	if hm.executor.TapHeroAbility(slot) {
 		t.Fatal("a second ability tap must be refused")
 	}
-	if got := len(tl.slotTaps()); got != 3 {
-		t.Fatalf("recorded card taps = %d, want 3 (two placements + one ability)", got)
+	if got := len(tl.slotTaps()); got != 2 {
+		t.Fatalf("recorded card taps = %d, want 2 (one placement + one ability)", got)
 	}
 }
 
@@ -285,13 +275,11 @@ func TestAttackLog_HeroRetryFailureStaysUnverified(t *testing.T) {
 	}
 }
 
-// TestRearmDoesNotStealTheAbility is the outcome the user actually asked for,
-// end to end: the pinned point is refused, the bot re-arms the card and places
-// the hero on the next ground, and the hero's ability still fires on its second
-// card tap. Before the re-arm existed, the refused drop left the card
-// deselected, every retry tap hit nothing, and the sweep — which arms the card
-// itself — placed the hero seconds AFTER the ability pass had already skipped it.
-func TestRearmDoesNotStealTheAbility(t *testing.T) {
+// TestUnconfirmedHeroDropCostsNoExtraTap is the user-requested cap, end to
+// end: a hero whose drop never confirms gets one selection tap and one field
+// tap — no re-arm, no second ground, no sweep rescue — and its ability tap is
+// still available once. Three physical taps is the ceiling.
+func TestUnconfirmedHeroDropCostsNoExtraTap(t *testing.T) {
 	line := []image.Point{
 		{X: 935, Y: 300}, {X: 935, Y: 450}, {X: 935, Y: 600},
 		{X: 1088, Y: 300}, {X: 1088, Y: 450}, {X: 1088, Y: 600},
@@ -299,44 +287,28 @@ func TestRearmDoesNotStealTheAbility(t *testing.T) {
 	slot := heroSlotNamed("dragon duke", 550)
 	hm, tl := newHeroTapHarness(t, DeployLine{Points: line}, []*TrackedSlot{slot})
 	hm.SetRedZone(rectZone(400, 100, 1010, 650))
-	// The drop is refused (0.74 through all three confirm beats), the retry
-	// lands (0.74 -> 0.11).
-	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.74, 0.11)
+	hm.ratioHook = scriptedRatios(0.74, 0.74, 0.74) // never transitions
 
 	d := HeroDeployment{Unit: strategy.Unit{Name: "Dragon Duke"}, Slot: slot}
 	pre := gocv.NewMat()
 	defer pre.Close()
-	if !hm.deploySingleHero(d, pre) {
-		t.Fatal("deploySingleHero must confirm the placement the re-armed retry achieved")
+	if hm.deploySingleHero(d, pre) {
+		t.Fatal("deploySingleHero must not claim success on an unconfirmed drop")
 	}
-	if slot.SpotRearms != 1 {
-		t.Fatalf("re-arms = %d, want 1", slot.SpotRearms)
+	if got := len(tl.slotTaps()); got != 1 {
+		t.Fatalf("card taps = %d, want 1 (selection only)", got)
 	}
-	// Checked BEFORE the ability tap: the re-arm must not have counted as a
-	// placement, so only the placement is on the shared counter here.
-	if slot.SpotTaps != 1 {
-		t.Fatalf("placement budget spent = %d, want 1 (the re-arm must not be counted as placement)", slot.SpotTaps)
+	if got := len(tl.fieldTaps()); got != 1 {
+		t.Fatalf("field taps = %d, want 1 (drop only)", got)
+	}
+	if slot.SpotRearms != 0 {
+		t.Fatalf("re-arms = %d, want 0", slot.SpotRearms)
 	}
 	if !hm.executor.TapHeroAbility(slot) {
-		t.Fatal("the ability tap must still be available after a re-arm: the re-arm replaces a tap the game never registered as a placement")
+		t.Fatal("the ability tap must still be available after the single placement tap")
 	}
-	// Four physical card taps here: the selection prime, the placement, the one
-	// re-arm this drop's single retry needs, and the ability.
-	// What is preserved is exactly one placement and exactly one ability, never a
-	// second placement — which is why the re-arm is accounted separately from the
-	// placement budget.
-	if got := len(tl.slotTaps()); got != 4 {
-		t.Fatalf("total card taps = %d, want 4 (prime + placement + one re-arm + ability)", got)
-	}
-	// After the ability: the placement counter still holds exactly the one
-	// placement (the re-arm and the ability are accounted elsewhere), and the
-	// ability's own one-shot flag is set — the contract the 2-tap rule protects
-	// is "exactly one placement and exactly one ability".
-	if slot.SpotTaps != 1 {
-		t.Fatalf("placement taps = %d, want 1", slot.SpotTaps)
-	}
-	if !slot.AbilityFired {
-		t.Fatal("AbilityFired must be set after the ability tap")
+	if got := len(tl.slotTaps()); got != 2 {
+		t.Fatalf("total card taps = %d, want 2 (select + ability)", got)
 	}
 	if hm.executor.TapHeroAbility(slot) {
 		t.Fatal("a second ability tap must be refused: one activation per hero per battle")

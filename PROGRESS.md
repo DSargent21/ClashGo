@@ -6,9 +6,9 @@ reads this first, then `BUILD_PLAN.md`. Never rely on chat history.
 ## Now
 
 - Objective: reliable unattended farming + deeper offline tests.
-- Last task: **army preset selection** (all four Saved Recipes arm correctly;
-  live-measured dropdown geometry, slot 1 no longer a no-op) plus the auto
-  loot tuning panel losing its manual apply/reset buttons.
+- Last task: **battle reliability** (heroes cap at three taps and confirm via
+  the HP bar; the battle speed pill is detected, not guessed; a reconnect on a
+  blocked village escalates to a game restart).
 - Next task: **F.1 Dead-base / collector detection** — blocked on labelled
   outside-collector frames (see `BUILD_PLAN.md`). `T.1` is blocked on a missing
   fake-capture seam.
@@ -1378,3 +1378,20 @@ Format:
   `VERIFY PASSED (full)`.
 - Commit: none (worktree change)
 - Next: install the fixed bundle (or retrain/verify the EDrag slot-1 path).
+
+### 2026-11-19 — battle reliability: hero tap cap, 1x speed pill, blocked-village restart
+- Changed: `internal/attack/{attack,executor,hero_ground,hero_manager,orchestrator,slot_manager,sweep,verifier}.go`,
+  `internal/game/speed_button.go`, `internal/bot/{bot,stuck_reconnect_test}.go`,
+  hero/speed tests, `assets/templates/speed_{1x,4x}.png`.
+- Fixed: a hero now takes exactly select + field drop + ability; the old prime
+  pass, rescue pass and repeated card taps are gone, and landing is confirmed
+  by the deployed HP bar instead of card-activity deltas. Battle wait taps the
+  detected 1x pill (bounded, never a guessed 4x coordinate). The watchdog no
+  longer treats an ADB reconnect as recovery when the village still has no
+  Attack button, so a chat or war modal escalates to a game restart instead of
+  idling forever.
+- Verified: `./tools/verify.sh` -> `VERIFY PASSED (full)`. One-hour live run,
+  walls on: 11 battles, 34 hero deployments with the three-tap flow, 94 wall
+  upgrades, 0 connection losses, 0 restarts, 0 watchdog events.
+- Commit: this commit
+- Next: F.1 dead-base detection.

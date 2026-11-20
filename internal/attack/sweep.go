@@ -559,7 +559,14 @@ func (sw *Sweeper) deploySlot(slot *TrackedSlot, count int, isEventTroop bool) b
 	// troops wearing a stale manual label — they must be dumped along
 	// the line like a troop, not single-tapped like a hero.
 	if slot.Category == "Hero" && !slot.FallbackLabeled {
-		return sw.deployHeroSlotOnce(slot)
+		// Hero taps are capped at select + drop + ability, all spent in the
+		// hero phase. A sweep re-tap here is exactly the post-ability tapping
+		// the user reported; leave the slot and let the report show it failed.
+		sw.logger.Warn().
+			Int("x", slot.X).
+			Str("unit", slot.UnitName).
+			Msg("sweep: hero taps are capped at select+drop+ability; skipping hero instead of re-tapping its card")
+		return false
 	}
 
 	// The siege machine took its one placement tap (see
